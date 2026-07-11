@@ -1,0 +1,15 @@
+# 参考用に取得した外部リポジトリ (リポジトリには含めない)
+/references/
+
+# C++ / Visual Studio
+build/
+out/
+x64/
+Win32/
+Debug/
+Release/
+*.user
+.vs/
+
+# Rust
+target/
