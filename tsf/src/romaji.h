@@ -2,17 +2,34 @@
 
 #include <string>
 
-// ローマ字入力の途中状態 (未確定の子音) を保持する最小バッファ。
-// フェーズ1では composition を持たないため、かなが確定した時点で
-// 即座に文字列を返す。フェーズ2で本格的な変換テーブルに置き換える。
-class RomajiBuffer {
+// ローマ字入力を逐次かなへ変換するコンポーザ。
+// 「確定済みのかな列」と「まだ変換できない未変換ローマ字列」を保持し、
+// composition にはこの2つを連結した文字列を表示する。
+class RomajiComposer {
 public:
-    // 英小文字を1文字受け取り、確定したかな文字列を返す (未確定なら空文字列)
-    std::wstring Push(wchar_t c);
+    // 英小文字を1文字受け取り、変換を進める
+    void Push(wchar_t c);
 
-    // 入力途中の子音を破棄する
+    // かな1文字を直接追加する (ー 、 。 など記号キー用)。
+    // 未変換ローマ字が残っていれば先に確定処理をしてから追加する
+    void PushKana(const std::wstring& kana);
+
+    // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)
+    void Backspace();
+
     void Clear();
+    bool Empty() const;
+
+    // composition 表示用: 確定済みかな + 未変換ローマ字
+    std::wstring Display() const;
+
+    // 確定用文字列: 未変換ローマ字は "n" のみ「ん」へ救済し、残りはそのまま付ける
+    std::wstring Commit() const;
 
 private:
-    std::wstring pending_;
+    // 未変換ローマ字の先頭を可能な限りかなへ変換する
+    void Convert();
+
+    std::wstring kana_;    // 確定済みのかな
+    std::wstring pending_; // 未変換のローマ字
 };

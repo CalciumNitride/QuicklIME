@@ -2,93 +2,37 @@
 
 #include <new>
 
+#include "display_attribute.h"
+#include "edit_session.h"
 #include "globals.h"
 
 namespace {
 
-// 確定文字列をカーソル位置へ挿入する edit session。
-// ドキュメントの編集は必ず edit session の中 (DoEditSession) で行う必要がある。
-class InsertTextEditSession : public ITfEditSession {
-public:
-    InsertTextEditSession(ITfContext* context, std::wstring text)
-        : refCount_(1), context_(context), text_(std::move(text))
-    {
-        context_->AddRef();
+// 記号キー (仮想キーコード) → 入力するかな
+// 日本語キーボード配列の想定 (フェーズ5で配列設定に対応する)
+const wchar_t* SymbolKeyToKana(WPARAM wparam)
+{
+    switch (wparam) {
+    case VK_OEM_COMMA:  return L"、";
+    case VK_OEM_PERIOD: return L"。";
+    case VK_OEM_MINUS:  return L"ー";
+    default:            return nullptr;
     }
+}
 
-    // IUnknown
-    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
-    {
-        if (ppv == nullptr) {
-            return E_INVALIDARG;
-        }
-        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfEditSession)) {
-            *ppv = static_cast<ITfEditSession*>(this);
-            AddRef();
-            return S_OK;
-        }
-        *ppv = nullptr;
-        return E_NOINTERFACE;
-    }
-
-    STDMETHODIMP_(ULONG) AddRef() override
-    {
-        return InterlockedIncrement(&refCount_);
-    }
-
-    STDMETHODIMP_(ULONG) Release() override
-    {
-        LONG count = InterlockedDecrement(&refCount_);
-        if (count == 0) {
-            delete this;
-        }
-        return count;
-    }
-
-    // ITfEditSession
-    STDMETHODIMP DoEditSession(TfEditCookie ec) override
-    {
-        ITfInsertAtSelection* insertAtSelection = nullptr;
-        HRESULT hr = context_->QueryInterface(IID_ITfInsertAtSelection,
-                                              reinterpret_cast<void**>(&insertAtSelection));
-        if (FAILED(hr)) {
-            return hr;
-        }
-
-        ITfRange* range = nullptr;
-        hr = insertAtSelection->InsertTextAtSelection(
-            ec, 0, text_.c_str(), static_cast<LONG>(text_.size()), &range);
-        insertAtSelection->Release();
-        if (FAILED(hr)) {
-            return hr;
-        }
-
-        // カーソルを挿入した文字列の直後へ移動する
-        range->Collapse(ec, TF_ANCHOR_END);
-        TF_SELECTION selection = {};
-        selection.range = range;
-        selection.style.ase = TF_AE_NONE;
-        selection.style.fInterimChar = FALSE;
-        context_->SetSelection(ec, 1, &selection);
-        range->Release();
-        return S_OK;
-    }
-
-private:
-    ~InsertTextEditSession()
-    {
-        context_->Release();
-    }
-
-    LONG refCount_;
-    ITfContext* context_;
-    std::wstring text_;
-};
+bool IsLetterKey(WPARAM wparam)
+{
+    return wparam >= 'A' && wparam <= 'Z';
+}
 
 } // namespace
 
 TextService::TextService()
-    : refCount_(1), threadMgr_(nullptr), clientId_(TF_CLIENTID_NULL)
+    : refCount_(1),
+      threadMgr_(nullptr),
+      clientId_(TF_CLIENTID_NULL),
+      composition_(nullptr),
+      inputAttribute_(TF_INVALID_GUIDATOM)
 {
     globals::DllAddRef();
 }
@@ -110,6 +54,10 @@ STDMETHODIMP TextService::QueryInterface(REFIID riid, void** ppv)
         *ppv = static_cast<ITfTextInputProcessorEx*>(this);
     } else if (IsEqualIID(riid, IID_ITfKeyEventSink)) {
         *ppv = static_cast<ITfKeyEventSink*>(this);
+    } else if (IsEqualIID(riid, IID_ITfCompositionSink)) {
+        *ppv = static_cast<ITfCompositionSink*>(this);
+    } else if (IsEqualIID(riid, IID_ITfDisplayAttributeProvider)) {
+        *ppv = static_cast<ITfDisplayAttributeProvider*>(this);
     } else {
         *ppv = nullptr;
         return E_NOINTERFACE;
@@ -151,10 +99,19 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
     threadMgr_->AddRef();
     clientId_ = clientId;
 
+    // 未確定文字列の表示属性 GUID を atom に変換しておく
+    ITfCategoryMgr* categoryMgr = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_TF_CategoryMgr, nullptr, CLSCTX_INPROC_SERVER,
+                                  IID_ITfCategoryMgr, reinterpret_cast<void**>(&categoryMgr));
+    if (SUCCEEDED(hr)) {
+        categoryMgr->RegisterGUID(kInputDisplayAttributeGuid, &inputAttribute_);
+        categoryMgr->Release();
+    }
+
     // キーイベントを受け取るために key event sink を登録する
     ITfKeystrokeMgr* keystrokeMgr = nullptr;
-    HRESULT hr = threadMgr_->QueryInterface(IID_ITfKeystrokeMgr,
-                                            reinterpret_cast<void**>(&keystrokeMgr));
+    hr = threadMgr_->QueryInterface(IID_ITfKeystrokeMgr,
+                                    reinterpret_cast<void**>(&keystrokeMgr));
     if (FAILED(hr)) {
         Deactivate();
         return hr;
@@ -170,7 +127,11 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
 STDMETHODIMP TextService::Deactivate()
 {
-    romaji_.Clear();
+    composer_.Clear();
+    if (composition_ != nullptr) {
+        composition_->Release();
+        composition_ = nullptr;
+    }
 
     if (threadMgr_ != nullptr) {
         ITfKeystrokeMgr* keystrokeMgr = nullptr;
@@ -200,11 +161,25 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0) {
         return false;
     }
-    // Shift 併用 (大文字入力など) はフェーズ2で扱う。今はアプリへ素通しする
+
+    if (Composing()) {
+        // composition 中は編集キーも IME が処理する
+        switch (wparam) {
+        case VK_RETURN:
+        case VK_ESCAPE:
+        case VK_BACK:
+        case VK_SPACE:
+            return true;
+        default:
+            break;
+        }
+    }
+
+    // Shift 併用 (大文字入力など) は今はアプリへ素通しする
     if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
         return false;
     }
-    return wparam >= 'A' && wparam <= 'Z';
+    return IsLetterKey(wparam) || SymbolKeyToKana(wparam) != nullptr;
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -217,10 +192,6 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         return E_INVALIDARG;
     }
     *eaten = IsKeyEaten(wparam) ? TRUE : FALSE;
-    if (*eaten == FALSE) {
-        // 英字以外のキーが押されたら入力途中の子音は破棄する
-        romaji_.Clear();
-    }
     return S_OK;
 }
 
@@ -234,13 +205,9 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     }
     *eaten = IsKeyEaten(wparam) ? TRUE : FALSE;
     if (*eaten == FALSE) {
-        romaji_.Clear();
         return S_OK;
     }
-
-    // 仮想キーコード ('A'-'Z') を英小文字へ変換してローマ字バッファに渡す
-    const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
-    return InsertText(context, romaji_.Push(c));
+    return HandleKey(context, wparam);
 }
 
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -282,7 +249,148 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     return S_OK;
 }
 
-// ---- 内部処理 ----
+// ---- ITfCompositionSink ----
+
+STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
+                                                  ITfComposition* composition)
+{
+    UNREFERENCED_PARAMETER(ecWrite);
+    UNREFERENCED_PARAMETER(composition);
+
+    // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
+    composer_.Clear();
+    if (composition_ != nullptr) {
+        composition_->Release();
+        composition_ = nullptr;
+    }
+    return S_OK;
+}
+
+// ---- ITfDisplayAttributeProvider ----
+
+STDMETHODIMP TextService::EnumDisplayAttributeInfo(IEnumTfDisplayAttributeInfo** enumInfo)
+{
+    if (enumInfo == nullptr) {
+        return E_INVALIDARG;
+    }
+    auto* enumerator = new (std::nothrow) ::EnumDisplayAttributeInfo();
+    if (enumerator == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    *enumInfo = enumerator;
+    return S_OK;
+}
+
+STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttributeInfo** info)
+{
+    if (info == nullptr) {
+        return E_INVALIDARG;
+    }
+    if (!IsEqualGUID(guid, kInputDisplayAttributeGuid)) {
+        *info = nullptr;
+        return E_INVALIDARG;
+    }
+    auto* attribute = new (std::nothrow) InputDisplayAttributeInfo();
+    if (attribute == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    *info = attribute;
+    return S_OK;
+}
+
+// ---- 状態機械 ----
+
+HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
+{
+    // 英字: ローマ字入力を進める
+    if (IsLetterKey(wparam)) {
+        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
+        composer_.Push(c);
+        if (!Composing()) {
+            HRESULT hr = StartComposition(context);
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+        }
+        return UpdateComposition(context);
+    }
+
+    // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
+    if (const wchar_t* kana = SymbolKeyToKana(wparam)) {
+        if (Composing()) {
+            composer_.PushKana(kana);
+            return UpdateComposition(context);
+        }
+        return InsertText(context, kana);
+    }
+
+    // 以下は composition 中のみ食べているキー
+    switch (wparam) {
+    case VK_RETURN:
+        return EndComposition(context, composer_.Commit());
+    case VK_ESCAPE:
+        return EndComposition(context, L"");
+    case VK_BACK:
+        composer_.Backspace();
+        if (composer_.Empty()) {
+            return EndComposition(context, L"");
+        }
+        return UpdateComposition(context);
+    case VK_SPACE:
+        // TODO(フェーズ2b): かな漢字変換の開始に置き換える。今はそのまま確定する
+        return EndComposition(context, composer_.Commit());
+    default:
+        return S_OK;
+    }
+}
+
+// ---- composition 操作 ----
+
+HRESULT TextService::RequestSync(ITfContext* context, ITfEditSession* session)
+{
+    if (session == nullptr) {
+        return E_OUTOFMEMORY;
+    }
+    HRESULT hrSession = S_OK;
+    HRESULT hr = context->RequestEditSession(clientId_, session, TF_ES_SYNC | TF_ES_READWRITE,
+                                             &hrSession);
+    session->Release();
+    return FAILED(hr) ? hr : hrSession;
+}
+
+HRESULT TextService::StartComposition(ITfContext* context)
+{
+    if (Composing() || context == nullptr) {
+        return E_UNEXPECTED;
+    }
+    return RequestSync(context, new (std::nothrow) StartCompositionEditSession(
+                                    context, static_cast<ITfCompositionSink*>(this),
+                                    &composition_));
+}
+
+HRESULT TextService::UpdateComposition(ITfContext* context)
+{
+    if (!Composing() || context == nullptr) {
+        return E_UNEXPECTED;
+    }
+    return RequestSync(context, new (std::nothrow) UpdateCompositionEditSession(
+                                    context, composition_, composer_.Display(),
+                                    inputAttribute_));
+}
+
+HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& commitText)
+{
+    if (!Composing() || context == nullptr) {
+        return E_UNEXPECTED;
+    }
+    HRESULT hr = RequestSync(
+        context, new (std::nothrow) EndCompositionEditSession(context, composition_, commitText));
+    composition_->Release();
+    composition_ = nullptr;
+    composer_.Clear();
+    return hr;
+}
 
 HRESULT TextService::InsertText(ITfContext* context, const std::wstring& text)
 {
@@ -292,16 +400,5 @@ HRESULT TextService::InsertText(ITfContext* context, const std::wstring& text)
     if (context == nullptr) {
         return E_INVALIDARG;
     }
-
-    auto* session = new (std::nothrow) InsertTextEditSession(context, text);
-    if (session == nullptr) {
-        return E_OUTOFMEMORY;
-    }
-
-    // キーイベント処理中なので同期の edit session が使える
-    HRESULT hrSession = S_OK;
-    HRESULT hr = context->RequestEditSession(clientId_, session, TF_ES_SYNC | TF_ES_READWRITE,
-                                             &hrSession);
-    session->Release();
-    return FAILED(hr) ? hr : hrSession;
+    return RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text));
 }

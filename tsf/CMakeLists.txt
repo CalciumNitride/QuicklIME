@@ -4,6 +4,8 @@ project(quicklime_tsf LANGUAGES CXX)
 
 add_library(quicklime_tsf SHARED
     src/dll_main.cpp
+    src/display_attribute.cpp
+    src/edit_session.cpp
     src/globals.cpp
     src/registry.cpp
     src/romaji.cpp

@@ -9,10 +9,12 @@ namespace {
 
 // このテキストサービスが対応する TSF カテゴリ。
 // - TIP_KEYBOARD: キーボード型の入力方式であること (必須)
+// - DISPLAYATTRIBUTEPROVIDER: 未確定文字列の表示属性 (下線) を提供する
 // - TIPCAP_IMMERSIVESUPPORT: UWP / immersive アプリでの動作に対応
 // - TIPCAP_SYSTRAYSUPPORT: デスクトップの入力インジケータでの表示に対応
 const GUID kSupportCategories[] = {
     GUID_TFCAT_TIP_KEYBOARD,
+    GUID_TFCAT_DISPLAYATTRIBUTEPROVIDER,
     GUID_TFCAT_TIPCAP_IMMERSIVESUPPORT,
     GUID_TFCAT_TIPCAP_SYSTRAYSUPPORT,
 };
