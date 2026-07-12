@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "candidate_window.h"
+#include "engine_client.h"
 #include "romaji.h"
 
 // TSF テキストサービス本体。
@@ -87,4 +88,5 @@ private:
     std::vector<std::wstring> candidates_;   // 変換候補
     size_t candidateIndex_;                  // 選択中の候補
     CandidateWindow candidateWindow_;
+    EngineClient engine_;                    // 変換エンジンへの named pipe クライアント
 };

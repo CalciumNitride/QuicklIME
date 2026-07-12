@@ -172,15 +172,3 @@ std::wstring RomajiComposer::Commit() const
     }
     return kana_ + pending_;
 }
-
-std::wstring ToKatakana(const std::wstring& kana)
-{
-    std::wstring result = kana;
-    for (wchar_t& c : result) {
-        // ひらがな (ぁ U+3041 〜 ゖ U+3096) はカタカナと 0x60 差で並んでいる
-        if (c >= 0x3041 && c <= 0x3096) {
-            c += 0x60;
-        }
-    }
-    return result;
-}

@@ -387,11 +387,13 @@ HRESULT TextService::StartConversion(ITfContext* context)
         return E_UNEXPECTED;
     }
 
-    // 暫定候補: カタカナ / ひらがな (フェーズ4でエンジンの変換候補に差し替える)
+    // 変換候補はエンジンに問い合わせる。
+    // エンジンが起動していない場合はひらがな1候補のみで動作を継続する
     const std::wstring kana = composer_.Commit();
-    candidates_.clear();
-    candidates_.push_back(ToKatakana(kana));
-    candidates_.push_back(kana);
+    if (!engine_.Convert(kana, &candidates_) || candidates_.empty()) {
+        candidates_.clear();
+        candidates_.push_back(kana);
+    }
     candidateIndex_ = 0;
     converting_ = true;
 
