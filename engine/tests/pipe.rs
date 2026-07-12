@@ -10,7 +10,10 @@ use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
 
 #[test]
 fn エンジンにconvert要求を送ると候補が返る() {
+    // 固定の小さな辞書 (tests/fixtures) を使い、実辞書の有無に依存しないようにする
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
     let mut server = Command::new(env!("CARGO_BIN_EXE_quicklime-engine"))
+        .env("QUICKLIME_DICT_DIR", fixtures)
         .spawn()
         .expect("エンジンを起動できない");
 
@@ -39,5 +42,9 @@ fn エンジンにconvert要求を送ると候補が返る() {
 
     server.kill().ok();
 
-    assert_eq!(result.expect("パイプ通信に失敗"), "OK\tニホンゴ\tにほんご\n");
+    // 辞書候補 (コスト順) → カタカナ → ひらがな
+    assert_eq!(
+        result.expect("パイプ通信に失敗"),
+        "OK\t日本語\tニホンゴ\tにほんご\n"
+    );
 }
