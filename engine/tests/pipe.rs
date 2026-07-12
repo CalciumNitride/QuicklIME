@@ -18,7 +18,7 @@ fn エンジンにconvert要求を送ると候補が返る() {
         .expect("エンジンを起動できない");
 
     // テスト本体はクロージャで実行し、失敗してもエンジンを必ず終了させる
-    let result = (|| -> std::io::Result<String> {
+    let result = (|| -> std::io::Result<(String, String)> {
         // エンジンの起動 (pipe 作成) を接続リトライで待つ
         let mut stream = None;
         for _ in 0..50 {
@@ -33,18 +33,26 @@ fn エンジンにconvert要求を送ると候補が返る() {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::TimedOut, "接続できない"))?;
 
         let (recv, mut send) = stream.split();
-        send.write_all("CONVERT\tにほんご\n".as_bytes())?;
+        let mut reader = BufReader::new(recv);
 
-        let mut line = String::new();
-        BufReader::new(recv).read_line(&mut line)?;
-        Ok(line)
+        // 単語の変換
+        send.write_all("CONVERT\tにほんご\n".as_bytes())?;
+        let mut word = String::new();
+        reader.read_line(&mut word)?;
+
+        // 文の変換 (Viterbi)
+        send.write_all("CONVERT\tきょうははれです\n".as_bytes())?;
+        let mut sentence = String::new();
+        reader.read_line(&mut sentence)?;
+
+        Ok((word, sentence))
     })();
 
     server.kill().ok();
 
+    let (word, sentence) = result.expect("パイプ通信に失敗");
     // 辞書候補 (コスト順) → カタカナ → ひらがな
-    assert_eq!(
-        result.expect("パイプ通信に失敗"),
-        "OK\t日本語\tニホンゴ\tにほんご\n"
-    );
+    assert_eq!(word, "OK\t日本語\tニホンゴ\tにほんご\n");
+    // 文変換 → カタカナ → ひらがな
+    assert_eq!(sentence, "OK\t今日は晴れです\tキョウハハレデス\tきょうははれです\n");
 }
