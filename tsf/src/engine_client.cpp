@@ -1,11 +1,51 @@
 #include "engine_client.h"
 
+#include "globals.h"
+
 namespace {
 
 constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\quicklime-engine";
 
-// 応答が長くなった場合の暴走防止 (フェーズ3では候補2つなので十分大きい)
+// 応答が長くなった場合の暴走防止
 constexpr size_t kMaxResponseBytes = 64 * 1024;
+
+// エンジン起動を再試行するまでの間隔 (起動失敗の連打を防ぐ)
+constexpr ULONGLONG kLaunchCooldownMs = 10 * 1000;
+
+// エンジン起動後、パイプ作成を待つ最大回数と間隔 (計2秒)
+constexpr int kConnectRetryCount = 20;
+constexpr DWORD kConnectRetryIntervalMs = 100;
+
+// エンジン exe の探索候補を返す。
+// 1. DLL と同じディレクトリ (配布時のレイアウト)
+// 2. 開発レイアウト (tsf/build/Debug -> engine/target/{release,debug})
+std::wstring FindEngineExe()
+{
+    wchar_t dllPath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(globals::dllInstance, dllPath, ARRAYSIZE(dllPath));
+    if (length == 0 || length >= ARRAYSIZE(dllPath)) {
+        return {};
+    }
+    std::wstring dir(dllPath);
+    const size_t lastSep = dir.find_last_of(L'\\');
+    if (lastSep == std::wstring::npos) {
+        return {};
+    }
+    dir.resize(lastSep);
+
+    const wchar_t* candidates[] = {
+        L"\\quicklime-engine.exe",
+        L"\\..\\..\\..\\engine\\target\\release\\quicklime-engine.exe",
+        L"\\..\\..\\..\\engine\\target\\debug\\quicklime-engine.exe",
+    };
+    for (const wchar_t* candidate : candidates) {
+        const std::wstring path = dir + candidate;
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return path;
+        }
+    }
+    return {};
+}
 
 std::string WideToUtf8(const std::wstring& wide)
 {
@@ -47,12 +87,8 @@ EngineClient::~EngineClient()
     Disconnect();
 }
 
-bool EngineClient::EnsureConnected()
+bool EngineClient::TryOpenPipe()
 {
-    if (pipe_ != INVALID_HANDLE_VALUE) {
-        return true;
-    }
-
     for (int attempt = 0; attempt < 2; ++attempt) {
         pipe_ = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
                             0, nullptr);
@@ -62,6 +98,57 @@ bool EngineClient::EnsureConnected()
         // 全インスタンスが使用中の場合だけ少し待って再試行する
         if (GetLastError() != ERROR_PIPE_BUSY || !WaitNamedPipeW(kPipeName, 200)) {
             return false;
+        }
+    }
+    return false;
+}
+
+bool EngineClient::TryLaunchEngine()
+{
+    // 直前に起動を試みたばかりなら何もしない (起動失敗の連打防止)
+    const ULONGLONG now = GetTickCount64();
+    if (lastLaunchTick_ != 0 && now - lastLaunchTick_ < kLaunchCooldownMs) {
+        return false;
+    }
+    lastLaunchTick_ = now;
+
+    const std::wstring exePath = FindEngineExe();
+    if (exePath.empty()) {
+        return false;
+    }
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo = {};
+    // コンソールウィンドウを出さずに起動する
+    if (!CreateProcessW(exePath.c_str(), nullptr, nullptr, nullptr, FALSE, CREATE_NO_WINDOW,
+                        nullptr, nullptr, &startupInfo, &processInfo)) {
+        return false;
+    }
+    CloseHandle(processInfo.hThread);
+    CloseHandle(processInfo.hProcess);
+    return true;
+}
+
+bool EngineClient::EnsureConnected()
+{
+    if (pipe_ != INVALID_HANDLE_VALUE) {
+        return true;
+    }
+    if (TryOpenPipe()) {
+        return true;
+    }
+
+    // エンジンが起動していないようなので自動起動を試みる
+    if (!TryLaunchEngine()) {
+        return false;
+    }
+
+    // 辞書読み込みが終わってパイプができるまで少し待つ
+    for (int i = 0; i < kConnectRetryCount; ++i) {
+        Sleep(kConnectRetryIntervalMs);
+        if (TryOpenPipe()) {
+            return true;
         }
     }
     return false;

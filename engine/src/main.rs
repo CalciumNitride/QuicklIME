@@ -38,13 +38,21 @@ struct EngineData {
 }
 
 fn main() -> std::io::Result<()> {
+    let pipe = pipe_name();
+
+    // 既に別のエンジンが同じパイプで待機していれば二重起動しない
+    // (TSF 側の自動起動が複数アプリから同時に走った場合の保険)
+    if Stream::connect(pipe.clone().to_ns_name::<GenericNamespaced>()?).is_ok() {
+        eprintln!("既にエンジンが起動しているため終了します");
+        return Ok(());
+    }
+
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
         functional: load_functional_ids(),
     });
 
-    let pipe = pipe_name();
     let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new().name(name).create_sync()?;
     eprintln!("quicklime-engine: \\\\.\\pipe\\{pipe} で待機中");

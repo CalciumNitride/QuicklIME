@@ -1,24 +1,29 @@
 // エンジンを実際に起動して named pipe 経由の応答を確認する統合テスト
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::Command;
+use std::process::{Child, Command};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
 use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
 
+/// テスト用エンジンを起動する。
+/// 固定の小さな辞書 (tests/fixtures) を使い、実辞書の有無に依存しないようにする。
+/// パイプ名は呼び出し側で一意にして、起動しっぱなしの開発用エンジンと衝突しないようにする
+fn spawn_engine(pipe_name: &str) -> Child {
+    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    Command::new(env!("CARGO_BIN_EXE_quicklime-engine"))
+        .env("QUICKLIME_DICT_DIR", fixtures)
+        .env("QUICKLIME_PIPE_NAME", pipe_name)
+        .spawn()
+        .expect("エンジンを起動できない")
+}
+
 #[test]
 fn エンジンにconvert要求を送ると候補が返る() {
-    // 固定の小さな辞書 (tests/fixtures) を使い、実辞書の有無に依存しないようにする。
-    // パイプ名は実行ごとに一意にして、起動しっぱなしの開発用エンジンと衝突しないようにする
-    let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
     let pipe_name = format!("quicklime-engine-test-{}", std::process::id());
-    let mut server = Command::new(env!("CARGO_BIN_EXE_quicklime-engine"))
-        .env("QUICKLIME_DICT_DIR", fixtures)
-        .env("QUICKLIME_PIPE_NAME", &pipe_name)
-        .spawn()
-        .expect("エンジンを起動できない");
+    let mut server = spawn_engine(&pipe_name);
 
     // テスト本体はクロージャで実行し、失敗してもエンジンを必ず終了させる
     let result = (|| -> std::io::Result<(String, String, String)> {
@@ -69,4 +74,39 @@ fn エンジンにconvert要求を送ると候補が返る() {
         "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\
          \tはれです\x1f晴れです\x1fハレデス\x1fはれです\n"
     );
+}
+
+#[test]
+fn 同じパイプ名のエンジンは二重起動しない() {
+    let pipe_name = format!("quicklime-engine-test-dup-{}", std::process::id());
+    let mut first = spawn_engine(&pipe_name);
+
+    // 1台目の起動 (パイプ作成) を接続の成功で確認する
+    let mut connected = false;
+    for _ in 0..50 {
+        let name = pipe_name.clone().to_ns_name::<GenericNamespaced>().unwrap();
+        if Stream::connect(name).is_ok() {
+            connected = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    // 2台目は「既に起動している」と判断して自分から終了するはず
+    let mut second = spawn_engine(&pipe_name);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut second_exited_ok = false;
+    while Instant::now() < deadline {
+        if let Ok(Some(status)) = second.try_wait() {
+            second_exited_ok = status.success();
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    second.kill().ok();
+    first.kill().ok();
+
+    assert!(connected, "1台目のエンジンに接続できない");
+    assert!(second_exited_ok, "2台目のエンジンが自動終了しない");
 }
