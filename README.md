@@ -20,7 +20,21 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 ## ビルド
 
 - エンジン: `cd engine && cargo build`
-- TSF層: (フェーズ1で追記)
+- TSF層 (VS付属のCMakeを使用):
+  ```
+  cmake -S tsf -B tsf/build -G "Visual Studio 17 2022" -A x64
+  cmake --build tsf/build --config Debug
+  ```
+  成果物: `tsf/build/Debug/QuicklIME.dll`
+
+## IME の登録と解除 (要管理者権限)
+
+```
+regsvr32 tsf\build\Debug\QuicklIME.dll      # 登録
+regsvr32 /u tsf\build\Debug\QuicklIME.dll   # 解除
+```
+
+登録後、Win+Space で「QuicklIME」を選択して使用する。
 
 ## 注意
 
