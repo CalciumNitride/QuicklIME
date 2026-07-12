@@ -47,11 +47,15 @@ private:
     ITfComposition** compositionOut_;  // 開始した composition の受け取り先
 };
 
-// composition のテキストを差し替え、表示属性を適用し、キャレットを末尾へ移動する
+// composition のテキストを差し替え、表示属性を適用し、キャレットを末尾へ移動する。
+// targetLength > 0 のときは [targetStart, targetStart+targetLength) の部分範囲へ
+// targetAttribute (変換対象文節の強調) を上書き適用する
 class UpdateCompositionEditSession : public EditSessionBase {
 public:
     UpdateCompositionEditSession(ITfContext* context, ITfComposition* composition,
-                                 std::wstring text, TfGuidAtom displayAttribute);
+                                 std::wstring text, TfGuidAtom displayAttribute,
+                                 TfGuidAtom targetAttribute = TF_INVALID_GUIDATOM,
+                                 LONG targetStart = 0, LONG targetLength = 0);
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
 private:
@@ -60,6 +64,9 @@ private:
     ITfComposition* composition_;
     std::wstring text_;
     TfGuidAtom displayAttribute_;
+    TfGuidAtom targetAttribute_;
+    LONG targetStart_;
+    LONG targetLength_;
 };
 
 // composition の画面上の矩形 (スクリーン座標) を取得する (候補ウィンドウの位置決め用)

@@ -149,14 +149,17 @@ STDMETHODIMP StartCompositionEditSession::DoEditSession(TfEditCookie ec)
 
 // ---- UpdateCompositionEditSession ----
 
-UpdateCompositionEditSession::UpdateCompositionEditSession(ITfContext* context,
-                                                           ITfComposition* composition,
-                                                           std::wstring text,
-                                                           TfGuidAtom displayAttribute)
+UpdateCompositionEditSession::UpdateCompositionEditSession(
+    ITfContext* context, ITfComposition* composition, std::wstring text,
+    TfGuidAtom displayAttribute, TfGuidAtom targetAttribute, LONG targetStart,
+    LONG targetLength)
     : EditSessionBase(context),
       composition_(composition),
       text_(std::move(text)),
-      displayAttribute_(displayAttribute)
+      displayAttribute_(displayAttribute),
+      targetAttribute_(targetAttribute),
+      targetStart_(targetStart),
+      targetLength_(targetLength)
 {
     composition_->AddRef();
 }
@@ -177,6 +180,20 @@ STDMETHODIMP UpdateCompositionEditSession::DoEditSession(TfEditCookie ec)
     hr = range->SetText(ec, 0, text_.c_str(), static_cast<LONG>(text_.size()));
     if (SUCCEEDED(hr)) {
         ApplyDisplayAttribute(ec, context_, range, displayAttribute_);
+
+        // 変換対象文節の部分範囲へ強調属性を上書きする
+        if (targetLength_ > 0 && targetAttribute_ != TF_INVALID_GUIDATOM) {
+            ITfRange* target = nullptr;
+            if (SUCCEEDED(range->Clone(&target))) {
+                LONG shifted = 0;
+                target->Collapse(ec, TF_ANCHOR_START);
+                target->ShiftEnd(ec, targetStart_ + targetLength_, &shifted, nullptr);
+                target->ShiftStart(ec, targetStart_, &shifted, nullptr);
+                ApplyDisplayAttribute(ec, context_, target, targetAttribute_);
+                target->Release();
+            }
+        }
+
         CollapseSelectionToEnd(ec, context_, range);
     }
     range->Release();

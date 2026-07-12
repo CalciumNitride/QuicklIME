@@ -7,30 +7,21 @@
 // {4129DAA2-56F7-4A6F-8047-8BB4BD59931C}
 extern const GUID kInputDisplayAttributeGuid;
 
-// 入力中テキストの表示属性 (点線下線) を表すオブジェクト
-class InputDisplayAttributeInfo : public ITfDisplayAttributeInfo {
-public:
-    InputDisplayAttributeInfo();
+// 変換対象の文節用の表示属性の GUID
+// {FE4A53BB-970F-4850-80DC-59CE2EC5494E}
+extern const GUID kTargetDisplayAttributeGuid;
 
-    // IUnknown
-    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override;
-    STDMETHODIMP_(ULONG) AddRef() override;
-    STDMETHODIMP_(ULONG) Release() override;
+// 提供する表示属性の数 (入力中 / 変換対象文節)
+constexpr ULONG kDisplayAttributeCount = 2;
 
-    // ITfDisplayAttributeInfo
-    STDMETHODIMP GetGUID(GUID* guid) override;
-    STDMETHODIMP GetDescription(BSTR* description) override;
-    STDMETHODIMP GetAttributeInfo(TF_DISPLAYATTRIBUTE* attribute) override;
-    STDMETHODIMP SetAttributeInfo(const TF_DISPLAYATTRIBUTE* attribute) override;
-    STDMETHODIMP Reset() override;
+// index (0 = 入力中, 1 = 変換対象文節) から表示属性オブジェクトを作る。
+// 範囲外は nullptr
+ITfDisplayAttributeInfo* CreateDisplayAttributeInfo(ULONG index);
 
-private:
-    virtual ~InputDisplayAttributeInfo();
+// GUID から表示属性オブジェクトを作る。未知の GUID は nullptr
+ITfDisplayAttributeInfo* CreateDisplayAttributeInfoForGuid(REFGUID guid);
 
-    LONG refCount_;
-};
-
-// InputDisplayAttributeInfo 1件だけを列挙する enumerator
+// 表示属性1件を列挙対象ごとに返す enumerator
 class EnumDisplayAttributeInfo : public IEnumTfDisplayAttributeInfo {
 public:
     EnumDisplayAttributeInfo();
@@ -50,5 +41,5 @@ private:
     virtual ~EnumDisplayAttributeInfo();
 
     LONG refCount_;
-    ULONG index_; // 次に返す要素 (0 または 1)
+    ULONG index_; // 次に返す要素
 };

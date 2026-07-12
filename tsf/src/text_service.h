@@ -68,12 +68,20 @@ private:
     // composition を使わない直接挿入 (composition が無いときの記号入力用)
     HRESULT InsertText(ITfContext* context, const std::wstring& text);
 
-    // 変換の開始 / 候補の移動 / 変換の取消 (composition は残してかな表示に戻す)
+    // 変換の開始 / 現在文節の候補移動 / 文節の移動 / 変換の取消 (かな表示に戻す)
     HRESULT StartConversion(ITfContext* context);
     HRESULT CycleCandidate(ITfContext* context, int delta);
+    HRESULT MoveSegment(ITfContext* context, int delta);
     HRESULT CancelConversion(ITfContext* context);
-    // composition の位置に候補ウィンドウを表示する
+
+    // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
+    HRESULT UpdateConvertingDisplay(ITfContext* context);
+    // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
+    std::wstring ConvertedText() const;
+    // 現在文節の候補一覧で候補ウィンドウを表示する
     void ShowCandidateWindow(ITfContext* context);
+    // 変換状態を破棄する (composition は触らない)
+    void ClearConversion();
 
     bool Composing() const { return composition_ != nullptr; }
 
@@ -83,10 +91,12 @@ private:
     ITfComposition* composition_;   // 進行中の composition (無ければ nullptr)
     RomajiComposer composer_;
     TfGuidAtom inputAttribute_;     // 未確定文字列に付ける表示属性の atom
+    TfGuidAtom targetAttribute_;    // 変換対象文節に付ける表示属性の atom
 
-    bool converting_;                        // 変換中 (候補選択中) かどうか
-    std::vector<std::wstring> candidates_;   // 変換候補
-    size_t candidateIndex_;                  // 選択中の候補
+    bool converting_;                          // 変換中 (候補選択中) かどうか
+    std::vector<ConversionSegment> segments_;  // 変換結果の文節列
+    std::vector<size_t> selected_;             // 文節ごとの選択中候補 index
+    size_t segmentIndex_;                      // 操作対象の文節
     CandidateWindow candidateWindow_;
-    EngineClient engine_;                    // 変換エンジンへの named pipe クライアント
+    EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
 };

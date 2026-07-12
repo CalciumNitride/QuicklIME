@@ -33,8 +33,9 @@ TextService::TextService()
       clientId_(TF_CLIENTID_NULL),
       composition_(nullptr),
       inputAttribute_(TF_INVALID_GUIDATOM),
+      targetAttribute_(TF_INVALID_GUIDATOM),
       converting_(false),
-      candidateIndex_(0)
+      segmentIndex_(0)
 {
     globals::DllAddRef();
 }
@@ -107,6 +108,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
                                   IID_ITfCategoryMgr, reinterpret_cast<void**>(&categoryMgr));
     if (SUCCEEDED(hr)) {
         categoryMgr->RegisterGUID(kInputDisplayAttributeGuid, &inputAttribute_);
+        categoryMgr->RegisterGUID(kTargetDisplayAttributeGuid, &targetAttribute_);
         categoryMgr->Release();
     }
 
@@ -129,9 +131,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
 STDMETHODIMP TextService::Deactivate()
 {
-    candidateWindow_.Hide();
-    converting_ = false;
-    candidates_.clear();
+    ClearConversion();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -177,7 +177,9 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
             return true;
         case VK_UP:
         case VK_DOWN:
-            // 候補選択中のみ矢印キーを使う
+        case VK_LEFT:
+        case VK_RIGHT:
+            // 候補選択中のみ矢印キーを使う (↑↓=候補移動, ←→=文節移動)
             return converting_;
         default:
             break;
@@ -267,10 +269,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     UNREFERENCED_PARAMETER(composition);
 
     // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
-    candidateWindow_.Hide();
-    converting_ = false;
-    candidates_.clear();
-    candidateIndex_ = 0;
+    ClearConversion();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -299,16 +298,8 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
     if (info == nullptr) {
         return E_INVALIDARG;
     }
-    if (!IsEqualGUID(guid, kInputDisplayAttributeGuid)) {
-        *info = nullptr;
-        return E_INVALIDARG;
-    }
-    auto* attribute = new (std::nothrow) InputDisplayAttributeInfo();
-    if (attribute == nullptr) {
-        return E_OUTOFMEMORY;
-    }
-    *info = attribute;
-    return S_OK;
+    *info = CreateDisplayAttributeInfoForGuid(guid);
+    return *info != nullptr ? S_OK : E_INVALIDARG;
 }
 
 // ---- 状態機械 ----
@@ -318,7 +309,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)
     if (IsLetterKey(wparam)) {
         if (converting_) {
-            HRESULT hr = EndComposition(context, candidates_[candidateIndex_]);
+            HRESULT hr = EndComposition(context, ConvertedText());
             if (FAILED(hr)) {
                 return hr;
             }
@@ -338,7 +329,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
     if (const wchar_t* kana = SymbolKeyToKana(wparam)) {
         if (converting_) {
-            HRESULT hr = EndComposition(context, candidates_[candidateIndex_]);
+            HRESULT hr = EndComposition(context, ConvertedText());
             if (FAILED(hr)) {
                 return hr;
             }
@@ -354,8 +345,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 以下は composition 中のみ食べているキー
     switch (wparam) {
     case VK_RETURN:
-        return EndComposition(context,
-                              converting_ ? candidates_[candidateIndex_] : composer_.Commit());
+        return EndComposition(context, converting_ ? ConvertedText() : composer_.Commit());
     case VK_ESCAPE:
         // 候補選択中は変換を取り消してかな表示に戻る。それ以外は全消去
         return converting_ ? CancelConversion(context) : EndComposition(context, L"");
@@ -374,12 +364,16 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return converting_ ? CycleCandidate(context, +1) : S_OK;
     case VK_UP:
         return converting_ ? CycleCandidate(context, -1) : S_OK;
+    case VK_LEFT:
+        return converting_ ? MoveSegment(context, -1) : S_OK;
+    case VK_RIGHT:
+        return converting_ ? MoveSegment(context, +1) : S_OK;
     default:
         return S_OK;
     }
 }
 
-// ---- 変換 (候補選択) ----
+// ---- 変換 (文節と候補の選択) ----
 
 HRESULT TextService::StartConversion(ITfContext* context)
 {
@@ -387,39 +381,91 @@ HRESULT TextService::StartConversion(ITfContext* context)
         return E_UNEXPECTED;
     }
 
-    // 変換候補はエンジンに問い合わせる。
-    // エンジンが起動していない場合はひらがな1候補のみで動作を継続する
+    // 文節列をエンジンに問い合わせる。
+    // エンジンが起動していない場合はひらがな1文節のみで動作を継続する
     const std::wstring kana = composer_.Commit();
-    if (!engine_.Convert(kana, &candidates_) || candidates_.empty()) {
-        candidates_.clear();
-        candidates_.push_back(kana);
+    if (!engine_.ConvertSegments(kana, &segments_) || segments_.empty()) {
+        segments_.clear();
+        ConversionSegment fallback;
+        fallback.reading = kana;
+        fallback.candidates.push_back(kana);
+        segments_.push_back(std::move(fallback));
     }
-    candidateIndex_ = 0;
+    selected_.assign(segments_.size(), 0);
+    segmentIndex_ = 0;
     converting_ = true;
 
-    HRESULT hr = UpdateCompositionText(context, candidates_[candidateIndex_]);
+    HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
     return hr;
 }
 
 HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
 {
-    if (!converting_ || candidates_.empty()) {
+    if (!converting_ || segments_.empty()) {
         return E_UNEXPECTED;
     }
-    const size_t count = candidates_.size();
-    candidateIndex_ = (candidateIndex_ + count + delta) % count;
-    candidateWindow_.SetSelection(candidateIndex_);
-    return UpdateCompositionText(context, candidates_[candidateIndex_]);
+    const size_t count = segments_[segmentIndex_].candidates.size();
+    selected_[segmentIndex_] = (selected_[segmentIndex_] + count + delta) % count;
+    candidateWindow_.SetSelection(selected_[segmentIndex_]);
+    return UpdateConvertingDisplay(context);
+}
+
+HRESULT TextService::MoveSegment(ITfContext* context, int delta)
+{
+    if (!converting_ || segments_.empty()) {
+        return E_UNEXPECTED;
+    }
+    const size_t count = segments_.size();
+    segmentIndex_ = (segmentIndex_ + count + delta) % count;
+    HRESULT hr = UpdateConvertingDisplay(context);
+    ShowCandidateWindow(context); // 候補一覧を現在文節のものに差し替える
+    return hr;
 }
 
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
+    ClearConversion();
+    return UpdateCompositionText(context, composer_.Display());
+}
+
+void TextService::ClearConversion()
+{
     candidateWindow_.Hide();
     converting_ = false;
-    candidates_.clear();
-    candidateIndex_ = 0;
-    return UpdateCompositionText(context, composer_.Display());
+    segments_.clear();
+    selected_.clear();
+    segmentIndex_ = 0;
+}
+
+std::wstring TextService::ConvertedText() const
+{
+    std::wstring text;
+    for (size_t i = 0; i < segments_.size(); ++i) {
+        text += segments_[i].candidates[selected_[i]];
+    }
+    return text;
+}
+
+HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
+{
+    if (!Composing() || context == nullptr) {
+        return E_UNEXPECTED;
+    }
+
+    // 現在文節の位置 (文字数) を求めて、その範囲だけ強調属性を付ける
+    LONG targetStart = 0;
+    for (size_t i = 0; i < segmentIndex_; ++i) {
+        targetStart += static_cast<LONG>(segments_[i].candidates[selected_[i]].size());
+    }
+    const LONG targetLength =
+        static_cast<LONG>(segments_[segmentIndex_].candidates[selected_[segmentIndex_]].size());
+
+    return RequestSync(context,
+                       new (std::nothrow) UpdateCompositionEditSession(
+                           context, composition_, ConvertedText(), inputAttribute_,
+                           targetAttribute_, targetStart, targetLength),
+                       TF_ES_SYNC | TF_ES_READWRITE);
 }
 
 void TextService::ShowCandidateWindow(ITfContext* context)
@@ -448,7 +494,10 @@ void TextService::ShowCandidateWindow(ITfContext* context)
         }
     }
 
-    candidateWindow_.Show(rect, candidates_, candidateIndex_);
+    if (!segments_.empty()) {
+        candidateWindow_.Show(rect, segments_[segmentIndex_].candidates,
+                              selected_[segmentIndex_]);
+    }
 }
 
 // ---- composition 操作 ----
@@ -492,15 +541,12 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         return E_UNEXPECTED;
     }
 
-    // commitText は candidates_ の要素への参照であることがあるため、
+    // commitText は変換状態の要素への参照であることがあるため、
     // 変換状態を後始末する前に必ずコピーを取る
     const std::wstring text = commitText;
 
     // 変換状態と候補ウィンドウの後始末
-    candidateWindow_.Hide();
-    converting_ = false;
-    candidates_.clear();
-    candidateIndex_ = 0;
+    ClearConversion();
 
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),

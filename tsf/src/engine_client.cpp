@@ -116,18 +116,41 @@ bool EngineClient::Transact(const std::string& request, std::string* response)
     return false;
 }
 
-bool EngineClient::Convert(const std::wstring& kana, std::vector<std::wstring>* candidates)
+namespace {
+
+// separator で区切られたフィールド列に分割する (空フィールドは捨てる)
+std::vector<std::string> SplitFields(const std::string& text, char separator)
 {
-    if (candidates == nullptr || kana.empty()) {
+    std::vector<std::string> fields;
+    size_t begin = 0;
+    while (begin <= text.size()) {
+        size_t end = text.find(separator, begin);
+        if (end == std::string::npos) {
+            end = text.size();
+        }
+        if (end > begin) {
+            fields.push_back(text.substr(begin, end - begin));
+        }
+        begin = end + 1;
+    }
+    return fields;
+}
+
+} // namespace
+
+bool EngineClient::ConvertSegments(const std::wstring& kana,
+                                   std::vector<ConversionSegment>* segments)
+{
+    if (segments == nullptr || kana.empty()) {
         return false;
     }
 
     std::string response;
-    if (!Transact("CONVERT\t" + WideToUtf8(kana) + "\n", &response)) {
+    if (!Transact("CONVSEG\t" + WideToUtf8(kana) + "\n", &response)) {
         return false;
     }
 
-    // 応答: "OK\t候補1\t候補2...\n"
+    // 応答: "OK\t読み\x1F候補1\x1F候補2...\t読み\x1F候補...\n"
     const size_t newline = response.find('\n');
     if (newline != std::string::npos) {
         response.resize(newline);
@@ -136,18 +159,18 @@ bool EngineClient::Convert(const std::wstring& kana, std::vector<std::wstring>* 
         return false;
     }
 
-    candidates->clear();
-    size_t begin = 3; // "OK\t" の直後
-    while (begin <= response.size()) {
-        size_t end = response.find('\t', begin);
-        if (end == std::string::npos) {
-            end = response.size();
+    segments->clear();
+    for (const std::string& segmentField : SplitFields(response.substr(3), '\t')) {
+        const std::vector<std::string> fields = SplitFields(segmentField, '\x1f');
+        if (fields.size() < 2) {
+            return false; // 読み + 候補1つ以上が必須
         }
-        const std::string field = response.substr(begin, end - begin);
-        if (!field.empty()) {
-            candidates->push_back(Utf8ToWide(field));
+        ConversionSegment segment;
+        segment.reading = Utf8ToWide(fields[0]);
+        for (size_t i = 1; i < fields.size(); ++i) {
+            segment.candidates.push_back(Utf8ToWide(fields[i]));
         }
-        begin = end + 1;
+        segments->push_back(std::move(segment));
     }
-    return !candidates->empty();
+    return !segments->empty();
 }

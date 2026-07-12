@@ -5,89 +5,139 @@
 const GUID kInputDisplayAttributeGuid = {
     0x4129daa2, 0x56f7, 0x4a6f, {0x80, 0x47, 0x8b, 0xb4, 0xbd, 0x59, 0x93, 0x1c}};
 
-// ---- InputDisplayAttributeInfo ----
+const GUID kTargetDisplayAttributeGuid = {
+    0xfe4a53bb, 0x970f, 0x4850, {0x80, 0xdc, 0x59, 0xce, 0x2e, 0xc5, 0x49, 0x4e}};
 
-InputDisplayAttributeInfo::InputDisplayAttributeInfo() : refCount_(1)
-{
-}
+namespace {
 
-InputDisplayAttributeInfo::~InputDisplayAttributeInfo()
-{
-}
-
-STDMETHODIMP InputDisplayAttributeInfo::QueryInterface(REFIID riid, void** ppv)
-{
-    if (ppv == nullptr) {
-        return E_INVALIDARG;
+// 1つの表示属性 (GUID + 属性値 + 説明) を表す汎用オブジェクト
+class DisplayAttributeInfo : public ITfDisplayAttributeInfo {
+public:
+    DisplayAttributeInfo(REFGUID guid, const wchar_t* description,
+                         const TF_DISPLAYATTRIBUTE& attribute)
+        : refCount_(1), guid_(guid), description_(description), attribute_(attribute)
+    {
     }
-    if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfDisplayAttributeInfo)) {
-        *ppv = static_cast<ITfDisplayAttributeInfo*>(this);
-        AddRef();
+
+    // IUnknown
+    STDMETHODIMP QueryInterface(REFIID riid, void** ppv) override
+    {
+        if (ppv == nullptr) {
+            return E_INVALIDARG;
+        }
+        if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfDisplayAttributeInfo)) {
+            *ppv = static_cast<ITfDisplayAttributeInfo*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    STDMETHODIMP_(ULONG) AddRef() override
+    {
+        return InterlockedIncrement(&refCount_);
+    }
+
+    STDMETHODIMP_(ULONG) Release() override
+    {
+        LONG count = InterlockedDecrement(&refCount_);
+        if (count == 0) {
+            delete this;
+        }
+        return count;
+    }
+
+    // ITfDisplayAttributeInfo
+    STDMETHODIMP GetGUID(GUID* guid) override
+    {
+        if (guid == nullptr) {
+            return E_INVALIDARG;
+        }
+        *guid = guid_;
         return S_OK;
     }
-    *ppv = nullptr;
-    return E_NOINTERFACE;
-}
 
-STDMETHODIMP_(ULONG) InputDisplayAttributeInfo::AddRef()
-{
-    return InterlockedIncrement(&refCount_);
-}
-
-STDMETHODIMP_(ULONG) InputDisplayAttributeInfo::Release()
-{
-    LONG count = InterlockedDecrement(&refCount_);
-    if (count == 0) {
-        delete this;
+    STDMETHODIMP GetDescription(BSTR* description) override
+    {
+        if (description == nullptr) {
+            return E_INVALIDARG;
+        }
+        *description = SysAllocString(description_);
+        return *description != nullptr ? S_OK : E_OUTOFMEMORY;
     }
-    return count;
-}
 
-STDMETHODIMP InputDisplayAttributeInfo::GetGUID(GUID* guid)
-{
-    if (guid == nullptr) {
-        return E_INVALIDARG;
+    STDMETHODIMP GetAttributeInfo(TF_DISPLAYATTRIBUTE* attribute) override
+    {
+        if (attribute == nullptr) {
+            return E_INVALIDARG;
+        }
+        *attribute = attribute_;
+        return S_OK;
     }
-    *guid = kInputDisplayAttributeGuid;
-    return S_OK;
-}
 
-STDMETHODIMP InputDisplayAttributeInfo::GetDescription(BSTR* description)
-{
-    if (description == nullptr) {
-        return E_INVALIDARG;
+    STDMETHODIMP SetAttributeInfo(const TF_DISPLAYATTRIBUTE* attribute) override
+    {
+        UNREFERENCED_PARAMETER(attribute);
+        return E_NOTIMPL;
     }
-    *description = SysAllocString(L"QuicklIME Input Text");
-    return *description != nullptr ? S_OK : E_OUTOFMEMORY;
-}
 
-STDMETHODIMP InputDisplayAttributeInfo::GetAttributeInfo(TF_DISPLAYATTRIBUTE* attribute)
-{
-    if (attribute == nullptr) {
-        return E_INVALIDARG;
+    STDMETHODIMP Reset() override
+    {
+        return S_OK;
     }
-    // 文字色・背景色はアプリ既定のまま、点線下線のみ付ける
-    attribute->crText.type = TF_CT_NONE;
-    attribute->crText.nIndex = 0;
-    attribute->crBk.type = TF_CT_NONE;
-    attribute->crBk.nIndex = 0;
-    attribute->lsStyle = TF_LS_DOT;
-    attribute->fBoldLine = FALSE;
-    attribute->crLine.type = TF_CT_NONE;
-    attribute->crLine.nIndex = 0;
-    attribute->bAttr = TF_ATTR_INPUT;
-    return S_OK;
+
+private:
+    virtual ~DisplayAttributeInfo() = default;
+
+    LONG refCount_;
+    GUID guid_;
+    const wchar_t* description_;
+    TF_DISPLAYATTRIBUTE attribute_;
+};
+
+// 色指定なしの下線だけの属性値を作る
+TF_DISPLAYATTRIBUTE UnderlineAttribute(TF_DA_LINESTYLE style, BOOL bold, TF_DA_ATTR_INFO attr)
+{
+    TF_DISPLAYATTRIBUTE da = {};
+    da.crText.type = TF_CT_NONE;
+    da.crBk.type = TF_CT_NONE;
+    da.lsStyle = style;
+    da.fBoldLine = bold;
+    da.crLine.type = TF_CT_NONE;
+    da.bAttr = attr;
+    return da;
 }
 
-STDMETHODIMP InputDisplayAttributeInfo::SetAttributeInfo(const TF_DISPLAYATTRIBUTE* attribute)
+} // namespace
+
+ITfDisplayAttributeInfo* CreateDisplayAttributeInfo(ULONG index)
 {
-    UNREFERENCED_PARAMETER(attribute);
-    return E_NOTIMPL;
+    switch (index) {
+    case 0:
+        // 入力中: 点線下線
+        return new (std::nothrow) DisplayAttributeInfo(
+            kInputDisplayAttributeGuid, L"QuicklIME Input Text",
+            UnderlineAttribute(TF_LS_DOT, FALSE, TF_ATTR_INPUT));
+    case 1:
+        // 変換対象文節: 実線太下線
+        return new (std::nothrow) DisplayAttributeInfo(
+            kTargetDisplayAttributeGuid, L"QuicklIME Target Segment",
+            UnderlineAttribute(TF_LS_SOLID, TRUE, TF_ATTR_TARGET_CONVERTED));
+    default:
+        return nullptr;
+    }
 }
 
-STDMETHODIMP InputDisplayAttributeInfo::Reset()
+ITfDisplayAttributeInfo* CreateDisplayAttributeInfoForGuid(REFGUID guid)
 {
-    return S_OK;
+    if (IsEqualGUID(guid, kInputDisplayAttributeGuid)) {
+        return CreateDisplayAttributeInfo(0);
+    }
+    if (IsEqualGUID(guid, kTargetDisplayAttributeGuid)) {
+        return CreateDisplayAttributeInfo(1);
+    }
+    return nullptr;
 }
 
 // ---- EnumDisplayAttributeInfo ----
@@ -150,14 +200,14 @@ STDMETHODIMP EnumDisplayAttributeInfo::Next(ULONG count, ITfDisplayAttributeInfo
     }
 
     ULONG taken = 0;
-    if (count > 0 && index_ == 0) {
-        auto* attribute = new (std::nothrow) InputDisplayAttributeInfo();
+    while (taken < count && index_ < kDisplayAttributeCount) {
+        ITfDisplayAttributeInfo* attribute = CreateDisplayAttributeInfo(index_);
         if (attribute == nullptr) {
             return E_OUTOFMEMORY;
         }
-        info[0] = attribute;
-        taken = 1;
-        index_ = 1;
+        info[taken] = attribute;
+        ++taken;
+        ++index_;
     }
 
     if (fetched != nullptr) {
@@ -174,9 +224,11 @@ STDMETHODIMP EnumDisplayAttributeInfo::Reset()
 
 STDMETHODIMP EnumDisplayAttributeInfo::Skip(ULONG count)
 {
-    if (count > 0 && index_ == 0) {
-        index_ = 1;
-        return count == 1 ? S_OK : S_FALSE;
+    const ULONG remaining = kDisplayAttributeCount - index_;
+    if (count <= remaining) {
+        index_ += count;
+        return S_OK;
     }
-    return count == 0 ? S_OK : S_FALSE;
+    index_ = kDisplayAttributeCount;
+    return S_FALSE;
 }
