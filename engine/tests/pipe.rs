@@ -13,9 +13,12 @@ use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
 /// パイプ名は呼び出し側で一意にして、起動しっぱなしの開発用エンジンと衝突しないようにする
 fn spawn_engine(pipe_name: &str) -> Child {
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    // 学習ファイルも一時パスに隔離し、実ユーザの学習データの影響を受けないようにする
+    let learn_file = std::env::temp_dir().join(format!("{pipe_name}-learning.tsv"));
     Command::new(env!("CARGO_BIN_EXE_quicklime-engine"))
         .env("QUICKLIME_DICT_DIR", fixtures)
         .env("QUICKLIME_PIPE_NAME", pipe_name)
+        .env("QUICKLIME_LEARN_FILE", &learn_file)
         .spawn()
         .expect("エンジンを起動できない")
 }

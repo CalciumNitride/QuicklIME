@@ -309,7 +309,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)
     if (IsLetterKey(wparam)) {
         if (converting_) {
-            HRESULT hr = EndComposition(context, ConvertedText());
+            HRESULT hr = CommitConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
@@ -329,7 +329,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
     if (const wchar_t* kana = SymbolKeyToKana(wparam)) {
         if (converting_) {
-            HRESULT hr = EndComposition(context, ConvertedText());
+            HRESULT hr = CommitConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
@@ -345,7 +345,8 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 以下は composition 中のみ食べているキー
     switch (wparam) {
     case VK_RETURN:
-        return EndComposition(context, converting_ ? ConvertedText() : composer_.Commit());
+        return converting_ ? CommitConversion(context)
+                           : EndComposition(context, composer_.Commit());
     case VK_ESCAPE:
         // 候補選択中は変換を取り消してかな表示に戻る。それ以外は全消去
         return converting_ ? CancelConversion(context) : EndComposition(context, L"");
@@ -427,6 +428,18 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 {
     ClearConversion();
     return UpdateCompositionText(context, composer_.Display());
+}
+
+HRESULT TextService::CommitConversion(ITfContext* context)
+{
+    // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)
+    std::vector<std::pair<std::wstring, std::wstring>> pairs;
+    for (size_t i = 0; i < segments_.size(); ++i) {
+        pairs.emplace_back(segments_[i].reading, segments_[i].candidates[selected_[i]]);
+    }
+    engine_.Learn(pairs);
+
+    return EndComposition(context, ConvertedText());
 }
 
 void TextService::ClearConversion()

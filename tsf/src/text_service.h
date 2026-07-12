@@ -74,6 +74,8 @@ private:
     HRESULT MoveSegment(ITfContext* context, int delta);
     HRESULT CancelConversion(ITfContext* context);
 
+    // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
+    HRESULT CommitConversion(ITfContext* context);
     // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)

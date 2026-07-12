@@ -261,3 +261,23 @@ bool EngineClient::ConvertSegments(const std::wstring& kana,
     }
     return !segments->empty();
 }
+
+bool EngineClient::Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs)
+{
+    std::string request = "LEARN";
+    size_t count = 0;
+    for (const auto& [reading, surface] : pairs) {
+        if (reading.empty() || surface.empty()) {
+            continue;
+        }
+        request += "\t" + WideToUtf8(reading) + "\x1f" + WideToUtf8(surface);
+        ++count;
+    }
+    if (count == 0) {
+        return false;
+    }
+    request += "\n";
+
+    std::string response;
+    return Transact(request, &response) && response.rfind("OK", 0) == 0;
+}

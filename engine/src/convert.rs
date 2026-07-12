@@ -5,6 +5,7 @@
 // 全文一括の候補 (candidates) も互換のため残している。
 
 use crate::dict::Dictionary;
+use crate::learn::LearningStore;
 use crate::matrix::ConnectionMatrix;
 use crate::pos::FunctionalIds;
 
@@ -42,6 +43,7 @@ pub fn convert_segments(
     dict: &Dictionary,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
+    learning: &LearningStore,
 ) -> Vec<Segment> {
     let Some(path) = viterbi_path(kana, dict, matrix) else {
         return Vec::new();
@@ -63,14 +65,20 @@ pub fn convert_segments(
     groups
         .into_iter()
         .map(|(reading, surface)| {
-            let candidates = segment_candidates(&reading, &surface, dict);
+            let candidates = segment_candidates(&reading, &surface, dict, learning);
             Segment { reading, candidates }
         })
         .collect()
 }
 
-/// 1文節の候補リスト: 経路上の表記 → 読み全体の辞書候補 → カタカナ → ひらがな
-fn segment_candidates(reading: &str, best_surface: &str, dict: &Dictionary) -> Vec<String> {
+/// 1文節の候補リスト: 経路上の表記 → 読み全体の辞書候補 → カタカナ → ひらがな。
+/// 学習済みの表記があれば先頭へ移動する
+fn segment_candidates(
+    reading: &str,
+    best_surface: &str,
+    dict: &Dictionary,
+    learning: &LearningStore,
+) -> Vec<String> {
     let mut result = vec![best_surface.to_string()];
 
     let mut entries: Vec<_> = dict.lookup(reading).iter().collect();
@@ -88,6 +96,12 @@ fn segment_candidates(reading: &str, best_surface: &str, dict: &Dictionary) -> V
         if !result.contains(&extra) {
             result.push(extra);
         }
+    }
+
+    // 学習済みの表記を先頭へ (候補に無ければ追加)
+    if let Some(learned) = learning.get(reading) {
+        result.retain(|s| s != learned);
+        result.insert(0, learned.to_string());
     }
     result
 }
@@ -313,6 +327,7 @@ mod tests {
             &sample_dict(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
+            &LearningStore::in_memory(),
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "はれです"]);
@@ -327,6 +342,7 @@ mod tests {
             &sample_dict(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
+            &LearningStore::in_memory(),
         );
         assert_eq!(segments.len(), 1);
         let c = &segments[0].candidates;
@@ -342,6 +358,7 @@ mod tests {
             &sample_dict(),
             &ConnectionMatrix::empty(),
             &FunctionalIds::empty(),
+            &LearningStore::in_memory(),
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょう", "は"]);
@@ -380,9 +397,26 @@ mod tests {
             "",
             &Dictionary::empty(),
             &ConnectionMatrix::empty(),
-            &FunctionalIds::empty()
+            &FunctionalIds::empty(),
+            &LearningStore::in_memory()
         )
         .is_empty());
+    }
+
+    #[test]
+    fn 学習済みの表記が文節候補の先頭に来る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("きょうは", "京は");
+        let segments = convert_segments(
+            "きょうは",
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &learning,
+        );
+        // 学習した「京は」(辞書候補に無い表記) が先頭に挿入される
+        assert_eq!(segments[0].candidates[0], "京は");
+        assert_eq!(segments[0].candidates[1], "今日は");
     }
 
     #[test]

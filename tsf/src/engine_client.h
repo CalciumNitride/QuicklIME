@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // 変換結果の1文節
@@ -24,6 +25,10 @@ public:
     // かなを文節列に変換する (CONVSEG)。
     // エンジンに接続できない・応答が不正な場合は false を返す (呼び出し側でフォールバック)
     bool ConvertSegments(const std::wstring& kana, std::vector<ConversionSegment>* segments);
+
+    // 文節ごとの確定結果 (読み, 表記) をエンジンに記録する (LEARN)。
+    // 失敗しても確定処理には影響させない
+    bool Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs);
 
 private:
     bool EnsureConnected();

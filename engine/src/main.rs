@@ -6,12 +6,13 @@
 
 mod convert;
 mod dict;
+mod learn;
 mod matrix;
 mod pos;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
 
@@ -19,6 +20,7 @@ use interprocess::local_socket::traits::{ListenerExt, Stream as _};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 
 use dict::Dictionary;
+use learn::LearningStore;
 use matrix::ConnectionMatrix;
 use pos::FunctionalIds;
 
@@ -35,6 +37,8 @@ struct EngineData {
     dictionary: Dictionary,
     matrix: ConnectionMatrix,
     functional: FunctionalIds,
+    /// 学習データ (LEARN で書き込むため Mutex で保護)
+    learning: Mutex<LearningStore>,
 }
 
 fn main() -> std::io::Result<()> {
@@ -51,6 +55,7 @@ fn main() -> std::io::Result<()> {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
         functional: load_functional_ids(),
+        learning: Mutex::new(LearningStore::load_default()),
     });
 
     let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
@@ -177,11 +182,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         },
         Some("CONVSEG") => match fields.next() {
             Some(kana) if !kana.is_empty() => {
+                let learning = data.learning.lock().expect("learning lock");
                 let segments = convert::convert_segments(
                     kana,
                     &data.dictionary,
                     &data.matrix,
                     &data.functional,
+                    &learning,
                 );
                 let body = segments
                     .iter()
@@ -196,6 +203,22 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("LEARN") => {
+            // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する
+            let mut learning = data.learning.lock().expect("learning lock");
+            let mut count = 0;
+            for pair in fields {
+                if let Some((reading, surface)) = pair.split_once(FIELD_SEPARATOR) {
+                    learning.record(reading, surface);
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                "OK\n".to_string()
+            } else {
+                "ERR\t記録する内容がありません\n".to_string()
+            }
+        }
         _ => "ERR\t不明なコマンドです\n".to_string(),
     }
 }
@@ -209,6 +232,7 @@ mod tests {
             dictionary: Dictionary::empty(),
             matrix: ConnectionMatrix::empty(),
             functional: FunctionalIds::empty(),
+            learning: Mutex::new(LearningStore::in_memory()),
         }
     }
 
@@ -218,7 +242,12 @@ mod tests {
             .load_from("きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\n".as_bytes())
             .unwrap();
         let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
-        EngineData { dictionary, matrix: ConnectionMatrix::empty(), functional }
+        EngineData {
+            dictionary,
+            matrix: ConnectionMatrix::empty(),
+            functional,
+            learning: Mutex::new(LearningStore::in_memory()),
+        }
     }
 
     #[test]
@@ -249,5 +278,22 @@ mod tests {
             response,
             "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\n"
         );
+    }
+
+    #[test]
+    fn learnで記録した表記が次のconvsegで先頭に来る() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN\tきょうは\x1fキョウハ", &data), "OK\n");
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert_eq!(
+            response,
+            "OK\tきょうは\x1fキョウハ\x1f今日は\x1fきょうは\n"
+        );
+    }
+
+    #[test]
+    fn learnの内容が空ならエラー() {
+        assert!(handle_request("LEARN", &empty_data()).starts_with("ERR\t"));
+        assert!(handle_request("LEARN\t読みだけ", &empty_data()).starts_with("ERR\t"));
     }
 }
