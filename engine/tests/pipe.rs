@@ -10,19 +10,22 @@ use interprocess::local_socket::{GenericNamespaced, Stream, ToNsName};
 
 #[test]
 fn エンジンにconvert要求を送ると候補が返る() {
-    // 固定の小さな辞書 (tests/fixtures) を使い、実辞書の有無に依存しないようにする
+    // 固定の小さな辞書 (tests/fixtures) を使い、実辞書の有無に依存しないようにする。
+    // パイプ名は実行ごとに一意にして、起動しっぱなしの開発用エンジンと衝突しないようにする
     let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+    let pipe_name = format!("quicklime-engine-test-{}", std::process::id());
     let mut server = Command::new(env!("CARGO_BIN_EXE_quicklime-engine"))
         .env("QUICKLIME_DICT_DIR", fixtures)
+        .env("QUICKLIME_PIPE_NAME", &pipe_name)
         .spawn()
         .expect("エンジンを起動できない");
 
     // テスト本体はクロージャで実行し、失敗してもエンジンを必ず終了させる
-    let result = (|| -> std::io::Result<(String, String)> {
+    let result = (|| -> std::io::Result<(String, String, String)> {
         // エンジンの起動 (pipe 作成) を接続リトライで待つ
         let mut stream = None;
         for _ in 0..50 {
-            let name = "quicklime-engine".to_ns_name::<GenericNamespaced>()?;
+            let name = pipe_name.clone().to_ns_name::<GenericNamespaced>()?;
             if let Ok(s) = Stream::connect(name) {
                 stream = Some(s);
                 break;
@@ -45,14 +48,25 @@ fn エンジンにconvert要求を送ると候補が返る() {
         let mut sentence = String::new();
         reader.read_line(&mut sentence)?;
 
-        Ok((word, sentence))
+        // 文節ごとの変換
+        send.write_all("CONVSEG\tきょうははれです\n".as_bytes())?;
+        let mut segments = String::new();
+        reader.read_line(&mut segments)?;
+
+        Ok((word, sentence, segments))
     })();
 
     server.kill().ok();
 
-    let (word, sentence) = result.expect("パイプ通信に失敗");
+    let (word, sentence, segments) = result.expect("パイプ通信に失敗");
     // 辞書候補 (コスト順) → カタカナ → ひらがな
     assert_eq!(word, "OK\t日本語\tニホンゴ\tにほんご\n");
     // 文変換 → カタカナ → ひらがな
     assert_eq!(sentence, "OK\t今日は晴れです\tキョウハハレデス\tきょうははれです\n");
+    // 文節: きょうは (今日+は) / はれです (晴れ+です)
+    assert_eq!(
+        segments,
+        "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\
+         \tはれです\x1f晴れです\x1fハレデス\x1fはれです\n"
+    );
 }

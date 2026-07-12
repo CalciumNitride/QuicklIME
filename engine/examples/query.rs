@@ -24,6 +24,22 @@ fn main() -> std::io::Result<()> {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         println!("{kana} -> {}", line.trim_end().replace('\t', " | "));
+
+        send.write_all(format!("CONVSEG\t{kana}\n").as_bytes())?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        // 文節区切りは [読み: 候補1 候補2 ...] の形で表示する
+        let pretty = line
+            .trim_end()
+            .trim_start_matches("OK\t")
+            .split('\t')
+            .map(|seg| {
+                let fields: Vec<&str> = seg.split('\x1f').collect();
+                format!("[{}: {}]", fields[0], fields[1..].join(" "))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("  文節: {pretty}");
     }
     Ok(())
 }

@@ -7,6 +7,7 @@
 mod convert;
 mod dict;
 mod matrix;
+mod pos;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -19,25 +20,34 @@ use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToN
 
 use dict::Dictionary;
 use matrix::ConnectionMatrix;
+use pos::FunctionalIds;
 
-/// named pipe の名前 (Windows では \\.\pipe\quicklime-engine になる)
-const PIPE_NAME: &str = "quicklime-engine";
+/// named pipe の既定名 (Windows では \\.\pipe\quicklime-engine になる)
+const DEFAULT_PIPE_NAME: &str = "quicklime-engine";
+
+/// パイプ名。テストで衝突しないよう環境変数 QUICKLIME_PIPE_NAME で上書きできる
+fn pipe_name() -> String {
+    std::env::var("QUICKLIME_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.to_string())
+}
 
 /// 変換に必要なデータ一式 (全接続スレッドで共有する)
 struct EngineData {
     dictionary: Dictionary,
     matrix: ConnectionMatrix,
+    functional: FunctionalIds,
 }
 
 fn main() -> std::io::Result<()> {
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
+        functional: load_functional_ids(),
     });
 
-    let name = PIPE_NAME.to_ns_name::<GenericNamespaced>()?;
+    let pipe = pipe_name();
+    let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new().name(name).create_sync()?;
-    eprintln!("quicklime-engine: \\\\.\\pipe\\{PIPE_NAME} で待機中");
+    eprintln!("quicklime-engine: \\\\.\\pipe\\{pipe} で待機中");
 
     // クライアント (アプリごとの TSF DLL) を1接続=1スレッドで処理する
     for conn in listener.incoming() {
@@ -112,6 +122,21 @@ fn load_matrix() -> ConnectionMatrix {
     }
 }
 
+/// 品詞ID表 (id.def) を読み込む。無くても単語=文節として動作を続行する
+fn load_functional_ids() -> FunctionalIds {
+    let Some(dir) = dictionary_dir() else {
+        return FunctionalIds::empty();
+    };
+    let path = dir.join("id.def");
+    match FunctionalIds::load(&path) {
+        Ok(ids) => ids,
+        Err(e) => {
+            eprintln!("品詞ID表の読み込みに失敗しました ({e})。単語単位の文節になります");
+            FunctionalIds::empty()
+        }
+    }
+}
+
 /// 1つのクライアント接続を処理する。切断されるまで要求に応答し続ける
 fn handle_client(stream: Stream, data: &EngineData) {
     let (recv, mut send) = stream.split();
@@ -128,6 +153,9 @@ fn handle_client(stream: Stream, data: &EngineData) {
     }
 }
 
+/// CONVSEG 応答で文節内のフィールドを区切る文字 (ASCII Unit Separator)
+const FIELD_SEPARATOR: char = '\x1f';
+
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
     let mut fields = line.split('\t');
@@ -136,6 +164,27 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             Some(kana) if !kana.is_empty() => {
                 let candidates = convert::candidates(kana, &data.dictionary, &data.matrix);
                 format!("OK\t{}\n", candidates.join("\t"))
+            }
+            _ => "ERR\tかなが空です\n".to_string(),
+        },
+        Some("CONVSEG") => match fields.next() {
+            Some(kana) if !kana.is_empty() => {
+                let segments = convert::convert_segments(
+                    kana,
+                    &data.dictionary,
+                    &data.matrix,
+                    &data.functional,
+                );
+                let body = segments
+                    .iter()
+                    .map(|s| {
+                        let mut fields = vec![s.reading.as_str()];
+                        fields.extend(s.candidates.iter().map(String::as_str));
+                        fields.join(&FIELD_SEPARATOR.to_string())
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\t");
+                format!("OK\t{body}\n")
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
@@ -148,7 +197,20 @@ mod tests {
     use super::*;
 
     fn empty_data() -> EngineData {
-        EngineData { dictionary: Dictionary::empty(), matrix: ConnectionMatrix::empty() }
+        EngineData {
+            dictionary: Dictionary::empty(),
+            matrix: ConnectionMatrix::empty(),
+            functional: FunctionalIds::empty(),
+        }
+    }
+
+    fn sample_data() -> EngineData {
+        let mut dictionary = Dictionary::empty();
+        dictionary
+            .load_from("きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\n".as_bytes())
+            .unwrap();
+        let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
+        EngineData { dictionary, matrix: ConnectionMatrix::empty(), functional }
     }
 
     #[test]
@@ -169,5 +231,15 @@ mod tests {
     #[test]
     fn 不明なコマンドはエラー() {
         assert!(handle_request("FOO\tbar", &empty_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convseg要求に文節列を返す() {
+        // 文節はタブ区切り、文節内は US (\x1f) 区切りで「読み 候補1 候補2...」
+        let response = handle_request("CONVSEG\tきょうは", &sample_data());
+        assert_eq!(
+            response,
+            "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\n"
+        );
     }
 }

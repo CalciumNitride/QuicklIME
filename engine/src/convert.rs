@@ -1,13 +1,15 @@
 // 変換候補の生成
 //
-// フェーズ4-2: ラティス + Viterbi による文単位のかな漢字変換。
-// 候補の並び: [文の変換結果] → [読み全体の辞書完全一致 (コスト順)] → カタカナ → ひらがな
+// フェーズ4-3: Viterbi の最小コスト経路を品詞情報で文節にまとめ、
+// 文節ごとの候補リストを返す。
+// 全文一括の候補 (candidates) も互換のため残している。
 
 use crate::dict::Dictionary;
 use crate::matrix::ConnectionMatrix;
+use crate::pos::FunctionalIds;
 
-/// 辞書由来の完全一致候補の最大数
-const MAX_DICT_CANDIDATES: usize = 5;
+/// 辞書由来の候補の最大数 (文全体・文節共通)
+const MAX_DICT_CANDIDATES: usize = 8;
 
 /// 辞書引きする読みの最大文字数 (ラティス構築時)
 const MAX_READING_CHARS: usize = 16;
@@ -19,7 +21,78 @@ const UNKNOWN_WORD_COST: i32 = 12000;
 /// 未知語ノードに与える文脈ID (Mozc 辞書の一般名詞相当。暫定)
 const UNKNOWN_WORD_ID: u16 = 1851;
 
-/// かな文字列に対する変換候補リストを返す
+/// 変換結果の1文節
+pub struct Segment {
+    /// この文節の読み (ひらがな)
+    pub reading: String,
+    /// 候補リスト (先頭が最良)
+    pub candidates: Vec<String>,
+}
+
+/// Viterbi 経路上の1単語
+struct PathWord {
+    reading: String,
+    surface: String,
+    left_id: u16,
+}
+
+/// かな文字列を文節列へ変換する
+pub fn convert_segments(
+    kana: &str,
+    dict: &Dictionary,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Vec<Segment> {
+    let Some(path) = viterbi_path(kana, dict, matrix) else {
+        return Vec::new();
+    };
+
+    // 付属語 (助詞・助動詞・接尾辞) を直前の自立語にまとめて文節を作る
+    let mut groups: Vec<(String, String)> = Vec::new(); // (読み, 表記)
+    for word in path {
+        if let Some(last) = groups.last_mut() {
+            if functional.is_functional(word.left_id) {
+                last.0.push_str(&word.reading);
+                last.1.push_str(&word.surface);
+                continue;
+            }
+        }
+        groups.push((word.reading, word.surface));
+    }
+
+    groups
+        .into_iter()
+        .map(|(reading, surface)| {
+            let candidates = segment_candidates(&reading, &surface, dict);
+            Segment { reading, candidates }
+        })
+        .collect()
+}
+
+/// 1文節の候補リスト: 経路上の表記 → 読み全体の辞書候補 → カタカナ → ひらがな
+fn segment_candidates(reading: &str, best_surface: &str, dict: &Dictionary) -> Vec<String> {
+    let mut result = vec![best_surface.to_string()];
+
+    let mut entries: Vec<_> = dict.lookup(reading).iter().collect();
+    entries.sort_by_key(|e| e.cost);
+    for entry in entries {
+        if result.len() >= MAX_DICT_CANDIDATES {
+            break;
+        }
+        if !result.contains(&entry.surface) {
+            result.push(entry.surface.clone());
+        }
+    }
+
+    for extra in [to_katakana(reading), reading.to_string()] {
+        if !result.contains(&extra) {
+            result.push(extra);
+        }
+    }
+    result
+}
+
+/// かな文字列に対する全文一括の変換候補リストを返す (クエリツール・互換用)
 pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
 
@@ -51,10 +124,17 @@ pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> V
     result
 }
 
+/// ラティスを構築して最小コスト経路の表記を返す
+pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Option<String> {
+    let path = viterbi_path(kana, dict, matrix)?;
+    Some(path.into_iter().map(|w| w.surface).collect())
+}
+
 /// Viterbi 用のラティスノード
 struct Node {
     /// 読みの開始位置 (文字単位)
     start: usize,
+    reading: String,
     left_id: u16,
     right_id: u16,
     word_cost: i32,
@@ -65,8 +145,8 @@ struct Node {
     best_prev: usize,
 }
 
-/// ラティスを構築して最小コスト経路の表記を返す
-pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Option<String> {
+/// ラティスを構築して最小コスト経路の単語列を返す
+fn viterbi_path(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Option<Vec<PathWord>> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -76,6 +156,7 @@ pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix
     // nodes[0] は BOS (文頭)。文脈IDは 0 (BOS/EOS)
     let mut nodes: Vec<Node> = vec![Node {
         start: 0,
+        reading: String::new(),
         left_id: 0,
         right_id: 0,
         word_cost: 0,
@@ -95,6 +176,7 @@ pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix
             for entry in dict.lookup(&reading) {
                 nodes.push(Node {
                     start,
+                    reading: reading.clone(),
                     left_id: entry.left_id,
                     right_id: entry.right_id,
                     word_cost: i32::from(entry.cost),
@@ -106,12 +188,14 @@ pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix
             }
         }
         // 未知語ノード (1文字をそのまま出力)。どんな入力でも経路が成立する保険
+        let ch = chars[start].to_string();
         nodes.push(Node {
             start,
+            reading: ch.clone(),
             left_id: UNKNOWN_WORD_ID,
             right_id: UNKNOWN_WORD_ID,
             word_cost: UNKNOWN_WORD_COST,
-            surface: chars[start].to_string(),
+            surface: ch,
             best_cost: i64::MAX,
             best_prev: 0,
         });
@@ -158,15 +242,24 @@ pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix
         }
     }
 
-    // 経路を逆順にたどって表記を連結する
-    let mut surfaces: Vec<&str> = Vec::new();
+    // 経路を逆順にたどって単語列を作る
+    let mut indices: Vec<usize> = Vec::new();
     let mut cursor = best_end?;
     while cursor != 0 {
-        surfaces.push(&nodes[cursor].surface);
+        indices.push(cursor);
         cursor = nodes[cursor].best_prev;
     }
-    surfaces.reverse();
-    Some(surfaces.concat())
+    indices.reverse();
+    Some(
+        indices
+            .into_iter()
+            .map(|i| PathWord {
+                reading: std::mem::take(&mut nodes[i].reading),
+                surface: std::mem::take(&mut nodes[i].surface),
+                left_id: nodes[i].left_id,
+            })
+            .collect(),
+    )
 }
 
 /// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
@@ -200,11 +293,58 @@ mod tests {
         dict
     }
 
+    fn sample_functional() -> FunctionalIds {
+        // id 2 = 助詞, id 3 = 助動詞
+        let data = "1 名詞,一般\n2 助詞,係助詞\n3 助動詞,特殊・デス\n";
+        FunctionalIds::load_from(data.as_bytes()).unwrap()
+    }
+
     #[test]
     fn 文を最小コストで変換する() {
         // 今日(2000) + は(500) + 晴れ(3000) + です(1000) が最小経路になる
         let result = convert_sentence("きょうははれです", &sample_dict(), &ConnectionMatrix::empty());
         assert_eq!(result.unwrap(), "今日は晴れです");
+    }
+
+    #[test]
+    fn 付属語が前の文節にまとまる() {
+        let segments = convert_segments(
+            "きょうははれです",
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["きょうは", "はれです"]);
+        assert_eq!(segments[0].candidates[0], "今日は");
+        assert_eq!(segments[1].candidates[0], "晴れです");
+    }
+
+    #[test]
+    fn 文節候補にカタカナとひらがなを含む() {
+        let segments = convert_segments(
+            "きょうは",
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+        );
+        assert_eq!(segments.len(), 1);
+        let c = &segments[0].candidates;
+        assert_eq!(c[0], "今日は");
+        assert!(c.contains(&"キョウハ".to_string()));
+        assert!(c.contains(&"きょうは".to_string()));
+    }
+
+    #[test]
+    fn 品詞表が無ければ単語ごとに文節になる() {
+        let segments = convert_segments(
+            "きょうは",
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &FunctionalIds::empty(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["きょう", "は"]);
     }
 
     #[test]
@@ -236,6 +376,13 @@ mod tests {
     #[test]
     fn 空文字列は文変換しない() {
         assert!(convert_sentence("", &Dictionary::empty(), &ConnectionMatrix::empty()).is_none());
+        assert!(convert_segments(
+            "",
+            &Dictionary::empty(),
+            &ConnectionMatrix::empty(),
+            &FunctionalIds::empty()
+        )
+        .is_empty());
     }
 
     #[test]
