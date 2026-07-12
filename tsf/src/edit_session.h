@@ -62,6 +62,21 @@ private:
     TfGuidAtom displayAttribute_;
 };
 
+// composition の画面上の矩形 (スクリーン座標) を取得する (候補ウィンドウの位置決め用)
+class GetTextExtentEditSession : public EditSessionBase {
+public:
+    GetTextExtentEditSession(ITfContext* context, ITfComposition* composition, RECT* rectOut,
+                             bool* succeededOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    ~GetTextExtentEditSession() override;
+
+    ITfComposition* composition_;
+    RECT* rectOut_;
+    bool* succeededOut_;
+};
+
 // composition を確定文字列で置き換えて終了する (空文字列なら取消)
 class EndCompositionEditSession : public EditSessionBase {
 public:

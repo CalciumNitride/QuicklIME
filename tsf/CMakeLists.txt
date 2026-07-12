@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.21)
 project(quicklime_tsf LANGUAGES CXX)
 
 add_library(quicklime_tsf SHARED
+    src/candidate_window.cpp
     src/dll_main.cpp
     src/display_attribute.cpp
     src/edit_session.cpp

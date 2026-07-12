@@ -33,3 +33,6 @@ private:
     std::wstring kana_;    // 確定済みのかな
     std::wstring pending_; // 未変換のローマ字
 };
+
+// ひらがなをカタカナに変換する (対象外の文字はそのまま)
+std::wstring ToKatakana(const std::wstring& kana);

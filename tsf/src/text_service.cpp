@@ -32,7 +32,9 @@ TextService::TextService()
       threadMgr_(nullptr),
       clientId_(TF_CLIENTID_NULL),
       composition_(nullptr),
-      inputAttribute_(TF_INVALID_GUIDATOM)
+      inputAttribute_(TF_INVALID_GUIDATOM),
+      converting_(false),
+      candidateIndex_(0)
 {
     globals::DllAddRef();
 }
@@ -127,6 +129,9 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
 STDMETHODIMP TextService::Deactivate()
 {
+    candidateWindow_.Hide();
+    converting_ = false;
+    candidates_.clear();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -170,6 +175,10 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_BACK:
         case VK_SPACE:
             return true;
+        case VK_UP:
+        case VK_DOWN:
+            // 候補選択中のみ矢印キーを使う
+            return converting_;
         default:
             break;
         }
@@ -258,6 +267,10 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     UNREFERENCED_PARAMETER(composition);
 
     // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
+    candidateWindow_.Hide();
+    converting_ = false;
+    candidates_.clear();
+    candidateIndex_ = 0;
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -302,8 +315,14 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 {
-    // 英字: ローマ字入力を進める
+    // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)
     if (IsLetterKey(wparam)) {
+        if (converting_) {
+            HRESULT hr = EndComposition(context, candidates_[candidateIndex_]);
+            if (FAILED(hr)) {
+                return hr;
+            }
+        }
         const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
         composer_.Push(c);
         if (!Composing()) {
@@ -313,14 +332,21 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 return hr;
             }
         }
-        return UpdateComposition(context);
+        return UpdateCompositionText(context, composer_.Display());
     }
 
     // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
     if (const wchar_t* kana = SymbolKeyToKana(wparam)) {
+        if (converting_) {
+            HRESULT hr = EndComposition(context, candidates_[candidateIndex_]);
+            if (FAILED(hr)) {
+                return hr;
+            }
+            return InsertText(context, kana);
+        }
         if (Composing()) {
             composer_.PushKana(kana);
-            return UpdateComposition(context);
+            return UpdateCompositionText(context, composer_.Display());
         }
         return InsertText(context, kana);
     }
@@ -328,33 +354,110 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 以下は composition 中のみ食べているキー
     switch (wparam) {
     case VK_RETURN:
-        return EndComposition(context, composer_.Commit());
+        return EndComposition(context,
+                              converting_ ? candidates_[candidateIndex_] : composer_.Commit());
     case VK_ESCAPE:
-        return EndComposition(context, L"");
+        // 候補選択中は変換を取り消してかな表示に戻る。それ以外は全消去
+        return converting_ ? CancelConversion(context) : EndComposition(context, L"");
     case VK_BACK:
+        if (converting_) {
+            return CancelConversion(context);
+        }
         composer_.Backspace();
         if (composer_.Empty()) {
             return EndComposition(context, L"");
         }
-        return UpdateComposition(context);
+        return UpdateCompositionText(context, composer_.Display());
     case VK_SPACE:
-        // TODO(フェーズ2b): かな漢字変換の開始に置き換える。今はそのまま確定する
-        return EndComposition(context, composer_.Commit());
+        return converting_ ? CycleCandidate(context, +1) : StartConversion(context);
+    case VK_DOWN:
+        return converting_ ? CycleCandidate(context, +1) : S_OK;
+    case VK_UP:
+        return converting_ ? CycleCandidate(context, -1) : S_OK;
     default:
         return S_OK;
     }
 }
 
+// ---- 変換 (候補選択) ----
+
+HRESULT TextService::StartConversion(ITfContext* context)
+{
+    if (!Composing()) {
+        return E_UNEXPECTED;
+    }
+
+    // 暫定候補: カタカナ / ひらがな (フェーズ4でエンジンの変換候補に差し替える)
+    const std::wstring kana = composer_.Commit();
+    candidates_.clear();
+    candidates_.push_back(ToKatakana(kana));
+    candidates_.push_back(kana);
+    candidateIndex_ = 0;
+    converting_ = true;
+
+    HRESULT hr = UpdateCompositionText(context, candidates_[candidateIndex_]);
+    ShowCandidateWindow(context);
+    return hr;
+}
+
+HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
+{
+    if (!converting_ || candidates_.empty()) {
+        return E_UNEXPECTED;
+    }
+    const size_t count = candidates_.size();
+    candidateIndex_ = (candidateIndex_ + count + delta) % count;
+    candidateWindow_.SetSelection(candidateIndex_);
+    return UpdateCompositionText(context, candidates_[candidateIndex_]);
+}
+
+HRESULT TextService::CancelConversion(ITfContext* context)
+{
+    candidateWindow_.Hide();
+    converting_ = false;
+    candidates_.clear();
+    candidateIndex_ = 0;
+    return UpdateCompositionText(context, composer_.Display());
+}
+
+void TextService::ShowCandidateWindow(ITfContext* context)
+{
+    // composition の矩形を取得して候補ウィンドウの位置を決める
+    RECT rect = {};
+    bool succeeded = false;
+    if (Composing()) {
+        RequestSync(context,
+                    new (std::nothrow) GetTextExtentEditSession(context, composition_, &rect,
+                                                                &succeeded),
+                    TF_ES_SYNC | TF_ES_READ);
+    }
+
+    if (!succeeded) {
+        // 取得できないアプリではキャレット位置、それも無ければマウス位置へフォールバック
+        GUITHREADINFO info = {};
+        info.cbSize = sizeof(info);
+        if (GetGUIThreadInfo(0, &info) && info.hwndCaret != nullptr) {
+            rect = info.rcCaret;
+            MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(&rect), 2);
+        } else {
+            POINT pt = {};
+            GetCursorPos(&pt);
+            rect = {pt.x, pt.y, pt.x, pt.y};
+        }
+    }
+
+    candidateWindow_.Show(rect, candidates_, candidateIndex_);
+}
+
 // ---- composition 操作 ----
 
-HRESULT TextService::RequestSync(ITfContext* context, ITfEditSession* session)
+HRESULT TextService::RequestSync(ITfContext* context, ITfEditSession* session, DWORD flags)
 {
     if (session == nullptr) {
         return E_OUTOFMEMORY;
     }
     HRESULT hrSession = S_OK;
-    HRESULT hr = context->RequestEditSession(clientId_, session, TF_ES_SYNC | TF_ES_READWRITE,
-                                             &hrSession);
+    HRESULT hr = context->RequestEditSession(clientId_, session, flags, &hrSession);
     session->Release();
     return FAILED(hr) ? hr : hrSession;
 }
@@ -364,19 +467,21 @@ HRESULT TextService::StartComposition(ITfContext* context)
     if (Composing() || context == nullptr) {
         return E_UNEXPECTED;
     }
-    return RequestSync(context, new (std::nothrow) StartCompositionEditSession(
-                                    context, static_cast<ITfCompositionSink*>(this),
-                                    &composition_));
+    return RequestSync(context,
+                       new (std::nothrow) StartCompositionEditSession(
+                           context, static_cast<ITfCompositionSink*>(this), &composition_),
+                       TF_ES_SYNC | TF_ES_READWRITE);
 }
 
-HRESULT TextService::UpdateComposition(ITfContext* context)
+HRESULT TextService::UpdateCompositionText(ITfContext* context, const std::wstring& text)
 {
     if (!Composing() || context == nullptr) {
         return E_UNEXPECTED;
     }
-    return RequestSync(context, new (std::nothrow) UpdateCompositionEditSession(
-                                    context, composition_, composer_.Display(),
-                                    inputAttribute_));
+    return RequestSync(context,
+                       new (std::nothrow) UpdateCompositionEditSession(context, composition_,
+                                                                       text, inputAttribute_),
+                       TF_ES_SYNC | TF_ES_READWRITE);
 }
 
 HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& commitText)
@@ -384,8 +489,20 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     if (!Composing() || context == nullptr) {
         return E_UNEXPECTED;
     }
+
+    // commitText は candidates_ の要素への参照であることがあるため、
+    // 変換状態を後始末する前に必ずコピーを取る
+    const std::wstring text = commitText;
+
+    // 変換状態と候補ウィンドウの後始末
+    candidateWindow_.Hide();
+    converting_ = false;
+    candidates_.clear();
+    candidateIndex_ = 0;
+
     HRESULT hr = RequestSync(
-        context, new (std::nothrow) EndCompositionEditSession(context, composition_, commitText));
+        context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),
+        TF_ES_SYNC | TF_ES_READWRITE);
     composition_->Release();
     composition_ = nullptr;
     composer_.Clear();
@@ -400,5 +517,6 @@ HRESULT TextService::InsertText(ITfContext* context, const std::wstring& text)
     if (context == nullptr) {
         return E_INVALIDARG;
     }
-    return RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text));
+    return RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text),
+                       TF_ES_SYNC | TF_ES_READWRITE);
 }

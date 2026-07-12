@@ -183,6 +183,45 @@ STDMETHODIMP UpdateCompositionEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
+// ---- GetTextExtentEditSession ----
+
+GetTextExtentEditSession::GetTextExtentEditSession(ITfContext* context,
+                                                   ITfComposition* composition, RECT* rectOut,
+                                                   bool* succeededOut)
+    : EditSessionBase(context),
+      composition_(composition),
+      rectOut_(rectOut),
+      succeededOut_(succeededOut)
+{
+    composition_->AddRef();
+    *succeededOut_ = false;
+}
+
+GetTextExtentEditSession::~GetTextExtentEditSession()
+{
+    composition_->Release();
+}
+
+STDMETHODIMP GetTextExtentEditSession::DoEditSession(TfEditCookie ec)
+{
+    ITfRange* range = nullptr;
+    HRESULT hr = composition_->GetRange(&range);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    ITfContextView* view = nullptr;
+    hr = context_->GetActiveView(&view);
+    if (SUCCEEDED(hr)) {
+        BOOL clipped = FALSE;
+        hr = view->GetTextExt(ec, range, rectOut_, &clipped);
+        *succeededOut_ = SUCCEEDED(hr) && (rectOut_->right != 0 || rectOut_->bottom != 0);
+        view->Release();
+    }
+    range->Release();
+    return hr;
+}
+
 // ---- EndCompositionEditSession ----
 
 EndCompositionEditSession::EndCompositionEditSession(ITfContext* context,
