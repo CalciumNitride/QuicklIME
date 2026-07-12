@@ -26,6 +26,10 @@ public:
     // エンジンに接続できない・応答が不正な場合は false を返す (呼び出し側でフォールバック)
     bool ConvertSegments(const std::wstring& kana, std::vector<ConversionSegment>* segments);
 
+    // 文節境界 (各文節の文字数) を固定して再変換する (Shift+←→ の文節伸縮用)
+    bool ConvertSegmentsFixed(const std::wstring& kana, const std::vector<size_t>& lengths,
+                              std::vector<ConversionSegment>* segments);
+
     // 文節ごとの確定結果 (読み, 表記) をエンジンに記録する (LEARN)。
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs);
@@ -39,6 +43,8 @@ private:
     void Disconnect();
     // 1行の要求を送り、1行の応答を受け取る
     bool Transact(const std::string& request, std::string* response);
+    // CONVSEG 系の要求を送って応答を segments にパースする
+    bool RequestSegments(const std::string& request, std::vector<ConversionSegment>* segments);
 
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     ULONGLONG lastLaunchTick_ = 0; // 最後にエンジン起動を試みた時刻 (連続起動の抑止)

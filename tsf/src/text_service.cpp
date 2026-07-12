@@ -10,12 +10,22 @@ namespace {
 
 // 記号キー (仮想キーコード) → 入力するかな
 // 日本語キーボード配列の想定 (フェーズ5で配列設定に対応する)
-const wchar_t* SymbolKeyToKana(WPARAM wparam)
+const wchar_t* SymbolKeyToKana(WPARAM wparam, bool shifted)
 {
+    if (shifted) {
+        switch (wparam) {
+        case '1':       return L"！";
+        case VK_OEM_2:  return L"？"; // Shift + /
+        default:        return nullptr;
+        }
+    }
     switch (wparam) {
     case VK_OEM_COMMA:  return L"、";
     case VK_OEM_PERIOD: return L"。";
     case VK_OEM_MINUS:  return L"ー";
+    case VK_OEM_2:      return L"・"; // /
+    case VK_OEM_4:      return L"「"; // [
+    case VK_OEM_6:      return L"」"; // ]
     default:            return nullptr;
     }
 }
@@ -23,6 +33,16 @@ const wchar_t* SymbolKeyToKana(WPARAM wparam)
 bool IsLetterKey(WPARAM wparam)
 {
     return wparam >= 'A' && wparam <= 'Z';
+}
+
+bool IsDigitKey(WPARAM wparam)
+{
+    return wparam >= '0' && wparam <= '9';
+}
+
+bool IsShiftPressed()
+{
+    return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
 } // namespace
@@ -166,6 +186,7 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0) {
         return false;
     }
+    const bool shifted = IsShiftPressed();
 
     if (Composing()) {
         // composition 中は編集キーも IME が処理する
@@ -179,18 +200,22 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_DOWN:
         case VK_LEFT:
         case VK_RIGHT:
-            // 候補選択中のみ矢印キーを使う (↑↓=候補移動, ←→=文節移動)
+            // 候補選択中のみ矢印キーを使う (↑↓=候補, ←→=文節移動, Shift+←→=文節伸縮)
             return converting_;
         default:
             break;
         }
+        // composition 中は英字 (Shift併用含む)・数字・記号も IME が処理し、
+        // 未確定文字列の外へ文字が漏れないようにする
+        return IsLetterKey(wparam) || IsDigitKey(wparam) ||
+               SymbolKeyToKana(wparam, shifted) != nullptr;
     }
 
-    // Shift 併用 (大文字入力など) は今はアプリへ素通しする
-    if ((GetKeyState(VK_SHIFT) & 0x8000) != 0) {
-        return false;
+    // composition が無いとき: Shift 併用は ！？ などの記号のみ扱う
+    if (shifted) {
+        return SymbolKeyToKana(wparam, true) != nullptr;
     }
-    return IsLetterKey(wparam) || SymbolKeyToKana(wparam) != nullptr;
+    return IsLetterKey(wparam) || SymbolKeyToKana(wparam, false) != nullptr;
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -306,6 +331,26 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 {
+    const bool shifted = IsShiftPressed();
+
+    // Shift+英字: ローマ字変換に回さず、大文字の半角英字をそのまま確定済みかな列へ入れる
+    // (数字キーと同様、未変換ローマ字があれば先に確定してから追加される)
+    if (shifted && IsLetterKey(wparam)) {
+        const std::wstring upper(1, static_cast<wchar_t>(wparam));
+        if (converting_) {
+            HRESULT hr = CommitConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+            return InsertText(context, upper);
+        }
+        if (Composing()) {
+            composer_.PushKana(upper);
+            return UpdateCompositionText(context, composer_.Display());
+        }
+        return InsertText(context, upper);
+    }
+
     // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)
     if (IsLetterKey(wparam)) {
         if (converting_) {
@@ -327,7 +372,8 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     }
 
     // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
-    if (const wchar_t* kana = SymbolKeyToKana(wparam)) {
+    // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
+    if (const wchar_t* kana = SymbolKeyToKana(wparam, shifted)) {
         if (converting_) {
             HRESULT hr = CommitConversion(context);
             if (FAILED(hr)) {
@@ -340,6 +386,20 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return UpdateCompositionText(context, composer_.Display());
         }
         return InsertText(context, kana);
+    }
+
+    // 数字: composition 中のみここへ来る (composition が無ければ食べていない)
+    if (IsDigitKey(wparam)) {
+        const std::wstring digit(1, static_cast<wchar_t>(wparam));
+        if (converting_) {
+            HRESULT hr = CommitConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+            return InsertText(context, digit);
+        }
+        composer_.PushKana(digit);
+        return UpdateCompositionText(context, composer_.Display());
     }
 
     // 以下は composition 中のみ食べているキー
@@ -366,9 +426,17 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     case VK_UP:
         return converting_ ? CycleCandidate(context, -1) : S_OK;
     case VK_LEFT:
-        return converting_ ? MoveSegment(context, -1) : S_OK;
+        // Shift+← は現在文節を1文字縮める、← は文節移動
+        if (!converting_) {
+            return S_OK;
+        }
+        return shifted ? ResizeSegment(context, -1) : MoveSegment(context, -1);
     case VK_RIGHT:
-        return converting_ ? MoveSegment(context, +1) : S_OK;
+        // Shift+→ は現在文節を1文字伸ばす、→ は文節移動
+        if (!converting_) {
+            return S_OK;
+        }
+        return shifted ? ResizeSegment(context, +1) : MoveSegment(context, +1);
     default:
         return S_OK;
     }
@@ -421,6 +489,70 @@ HRESULT TextService::MoveSegment(ITfContext* context, int delta)
     segmentIndex_ = (segmentIndex_ + count + delta) % count;
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context); // 候補一覧を現在文節のものに差し替える
+    return hr;
+}
+
+HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
+{
+    if (!converting_ || segments_.empty()) {
+        return E_UNEXPECTED;
+    }
+
+    // 文節 i より前はそのまま残し、文節 i を新しい長さに固定し、
+    // それより後ろは境界を固定せず自然な区切りに再変換する。
+    // (後ろを固定長のまま引き継ぐと、Shift+→→の直後に Shift+← で戻したときに
+    //  元の区切りに戻らず不自然な文節に割れてしまうため)
+    const size_t i = segmentIndex_;
+
+    std::wstring kana;
+    size_t prefixLen = 0;
+    for (size_t k = 0; k < segments_.size(); ++k) {
+        if (k < i) {
+            prefixLen += segments_[k].reading.size();
+        }
+        kana += segments_[k].reading;
+    }
+
+    const size_t currentLen = segments_[i].reading.size();
+    size_t newLen;
+    if (delta > 0) {
+        if (prefixLen + currentLen >= kana.size()) {
+            return S_OK; // これ以上伸ばせる文字が残っていない
+        }
+        newLen = currentLen + 1;
+    } else {
+        if (currentLen <= 1) {
+            return S_OK; // 1文字の文節はこれ以上縮められない
+        }
+        newLen = currentLen - 1;
+    }
+
+    // 文節 i を新しい長さで固定変換する
+    const std::wstring segmentKana = kana.substr(prefixLen, newLen);
+    std::vector<ConversionSegment> fixedResult;
+    if (!engine_.ConvertSegmentsFixed(segmentKana, {newLen}, &fixedResult) ||
+        fixedResult.empty()) {
+        return S_OK; // エンジン不調時は現状維持
+    }
+
+    // 残りは境界を固定せず自由に再変換する
+    std::vector<ConversionSegment> tailResult;
+    const std::wstring tailKana = kana.substr(prefixLen + newLen);
+    if (!tailKana.empty() &&
+        (!engine_.ConvertSegments(tailKana, &tailResult) || tailResult.empty())) {
+        return S_OK; // エンジン不調時は現状維持
+    }
+
+    segments_.resize(i);
+    segments_.push_back(std::move(fixedResult[0]));
+    for (ConversionSegment& segment : tailResult) {
+        segments_.push_back(std::move(segment));
+    }
+    selected_.resize(i);
+    selected_.resize(segments_.size(), 0);
+
+    HRESULT hr = UpdateConvertingDisplay(context);
+    ShowCandidateWindow(context);
     return hr;
 }
 

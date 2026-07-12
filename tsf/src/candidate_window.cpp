@@ -7,6 +7,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"QuicklIMECandidateWindow";
 constexpr int kPadding = 4;       // ウィンドウ内側の余白
 constexpr int kLinePadding = 2;   // 行間の余白
+constexpr size_t kPageSize = 9;   // 1ページに表示する候補数
 
 // ウィンドウクラスを一度だけ登録する
 bool EnsureWindowClass()
@@ -72,7 +73,8 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
 
     int maxWidth = 0;
     for (size_t i = 0; i < items_.size(); ++i) {
-        const std::wstring line = LineText(i, items_[i]);
+        // 番号はページ内相対 (1〜9) なので幅の計算にはどれでも同じ1桁を使う
+        const std::wstring line = LineText(i % kPageSize, items_[i]);
         SIZE size = {};
         GetTextExtentPoint32W(hdc, line.c_str(), static_cast<int>(line.size()), &size);
         maxWidth = max(maxWidth, static_cast<int>(size.cx));
@@ -80,8 +82,12 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
     SelectObject(hdc, oldFont);
     ReleaseDC(nullptr, hdc);
 
+    // 1ページ分の行 + ページ位置表示 (候補が1ページに収まる場合は省略)
+    const size_t rows = min(items_.size(), kPageSize);
+    const bool showPageIndicator = items_.size() > kPageSize;
     const int width = maxWidth + kPadding * 2;
-    const int height = static_cast<int>(items_.size()) * lineHeight_ + kPadding * 2;
+    const int height =
+        static_cast<int>(rows + (showPageIndicator ? 1 : 0)) * lineHeight_ + kPadding * 2;
     const int x = anchor.left;
     const int y = anchor.bottom + 2;
 
@@ -156,9 +162,15 @@ void CandidateWindow::Paint(HDC hdc)
     RECT client = {};
     GetClientRect(hwnd_, &client);
 
-    for (size_t i = 0; i < items_.size(); ++i) {
-        RECT lineRect = {client.left, kPadding + static_cast<LONG>(i) * lineHeight_,
-                         client.right, kPadding + static_cast<LONG>(i + 1) * lineHeight_};
+    // 選択位置が含まれるページだけを描画する
+    const size_t page = selection_ / kPageSize;
+    const size_t begin = page * kPageSize;
+    const size_t end = min(begin + kPageSize, items_.size());
+
+    for (size_t i = begin; i < end; ++i) {
+        const size_t row = i - begin;
+        RECT lineRect = {client.left, kPadding + static_cast<LONG>(row) * lineHeight_,
+                         client.right, kPadding + static_cast<LONG>(row + 1) * lineHeight_};
 
         if (i == selection_) {
             FillRect(hdc, &lineRect, GetSysColorBrush(COLOR_HIGHLIGHT));
@@ -167,9 +179,19 @@ void CandidateWindow::Paint(HDC hdc)
             SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
         }
 
-        const std::wstring line = LineText(i, items_[i]);
+        const std::wstring line = LineText(row, items_[i]);
         TextOutW(hdc, kPadding, lineRect.top + kLinePadding, line.c_str(),
                  static_cast<int>(line.size()));
+    }
+
+    // ページ位置表示 (例: "12/24" = 全24候補中の12番目を選択中)
+    if (items_.size() > kPageSize) {
+        SetTextColor(hdc, GetSysColor(COLOR_GRAYTEXT));
+        const std::wstring indicator =
+            std::to_wstring(selection_ + 1) + L"/" + std::to_wstring(items_.size());
+        TextOutW(hdc, kPadding,
+                 kPadding + static_cast<LONG>(end - begin) * lineHeight_ + kLinePadding,
+                 indicator.c_str(), static_cast<int>(indicator.size()));
     }
 
     SelectObject(hdc, oldFont);

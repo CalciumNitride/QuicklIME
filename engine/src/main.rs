@@ -183,13 +183,30 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         Some("CONVSEG") => match fields.next() {
             Some(kana) if !kana.is_empty() => {
                 let learning = data.learning.lock().expect("learning lock");
-                let segments = convert::convert_segments(
-                    kana,
-                    &data.dictionary,
-                    &data.matrix,
-                    &data.functional,
-                    &learning,
-                );
+                // 3番目のフィールドは文節長 (カンマ区切り、文節伸縮時の境界固定用)
+                let segments = if let Some(lengths_field) = fields.next() {
+                    let lengths: Vec<usize> =
+                        lengths_field.split(',').filter_map(|t| t.parse().ok()).collect();
+                    let segments = convert::convert_segments_fixed(
+                        kana,
+                        &lengths,
+                        &data.dictionary,
+                        &data.matrix,
+                        &learning,
+                    );
+                    if segments.is_empty() {
+                        return "ERR\t文節長が不正です\n".to_string();
+                    }
+                    segments
+                } else {
+                    convert::convert_segments(
+                        kana,
+                        &data.dictionary,
+                        &data.matrix,
+                        &data.functional,
+                        &learning,
+                    )
+                };
                 let body = segments
                     .iter()
                     .map(|s| {
@@ -278,6 +295,19 @@ mod tests {
             response,
             "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\n"
         );
+    }
+
+    #[test]
+    fn convsegで文節長を指定できる() {
+        // 「きょう / は」に固定 (通常の文節分割なら「きょうは」1文節)
+        let response = handle_request("CONVSEG\tきょうは\t3,1", &sample_data());
+        assert_eq!(
+            response,
+            "OK\tきょう\x1f今日\x1fキョウ\x1fきょう\tは\x1fは\x1fハ\n"
+        );
+
+        // 長さの合計が合わない場合はエラー
+        assert!(handle_request("CONVSEG\tきょうは\t9,9", &sample_data()).starts_with("ERR\t"));
     }
 
     #[test]

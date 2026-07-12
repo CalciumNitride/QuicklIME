@@ -231,9 +231,32 @@ bool EngineClient::ConvertSegments(const std::wstring& kana,
     if (segments == nullptr || kana.empty()) {
         return false;
     }
+    return RequestSegments("CONVSEG\t" + WideToUtf8(kana) + "\n", segments);
+}
 
+bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
+                                        const std::vector<size_t>& lengths,
+                                        std::vector<ConversionSegment>* segments)
+{
+    if (segments == nullptr || kana.empty() || lengths.empty()) {
+        return false;
+    }
+    std::string lengthsField;
+    for (size_t length : lengths) {
+        if (!lengthsField.empty()) {
+            lengthsField += ",";
+        }
+        lengthsField += std::to_string(length);
+    }
+    return RequestSegments("CONVSEG\t" + WideToUtf8(kana) + "\t" + lengthsField + "\n",
+                           segments);
+}
+
+bool EngineClient::RequestSegments(const std::string& request,
+                                   std::vector<ConversionSegment>* segments)
+{
     std::string response;
-    if (!Transact("CONVSEG\t" + WideToUtf8(kana) + "\n", &response)) {
+    if (!Transact(request, &response)) {
         return false;
     }
 

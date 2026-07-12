@@ -72,6 +72,8 @@ private:
     HRESULT StartConversion(ITfContext* context);
     HRESULT CycleCandidate(ITfContext* context, int delta);
     HRESULT MoveSegment(ITfContext* context, int delta);
+    // 現在文節の境界を delta 文字ぶん伸縮し、境界固定で再変換する
+    HRESULT ResizeSegment(ITfContext* context, int delta);
     HRESULT CancelConversion(ITfContext* context);
 
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)

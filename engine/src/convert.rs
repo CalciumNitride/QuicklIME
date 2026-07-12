@@ -9,8 +9,10 @@ use crate::learn::LearningStore;
 use crate::matrix::ConnectionMatrix;
 use crate::pos::FunctionalIds;
 
-/// 辞書由来の候補の最大数 (文全体・文節共通)
-const MAX_DICT_CANDIDATES: usize = 8;
+/// 辞書由来の候補の最大数 (文全体・文節共通)。
+/// かなの同音異義語は多い (例:「きょう」は約50語) ため、ある程度大きくしておく。
+/// TSF 側の候補ウィンドウはページ表示で対応する
+const MAX_DICT_CANDIDATES: usize = 24;
 
 /// 辞書引きする読みの最大文字数 (ラティス構築時)
 const MAX_READING_CHARS: usize = 16;
@@ -50,60 +52,103 @@ pub fn convert_segments(
     };
 
     // 付属語 (助詞・助動詞・接尾辞) を直前の自立語にまとめて文節を作る
-    let mut groups: Vec<(String, String)> = Vec::new(); // (読み, 表記)
+    let mut groups: Vec<Vec<PathWord>> = Vec::new();
     for word in path {
-        if let Some(last) = groups.last_mut() {
-            if functional.is_functional(word.left_id) {
-                last.0.push_str(&word.reading);
-                last.1.push_str(&word.surface);
-                continue;
-            }
+        if !groups.is_empty() && functional.is_functional(word.left_id) {
+            groups.last_mut().unwrap().push(word);
+        } else {
+            groups.push(vec![word]);
         }
-        groups.push((word.reading, word.surface));
     }
 
     groups
-        .into_iter()
-        .map(|(reading, surface)| {
-            let candidates = segment_candidates(&reading, &surface, dict, learning);
-            Segment { reading, candidates }
-        })
+        .iter()
+        .map(|group| segment_from_group(group, dict, learning))
         .collect()
 }
 
-/// 1文節の候補リスト: 経路上の表記 → 読み全体の辞書候補 → カタカナ → ひらがな。
-/// 学習済みの表記があれば先頭へ移動する
-fn segment_candidates(
-    reading: &str,
-    best_surface: &str,
+/// 文節境界 (文字数) を指定してかな文字列を変換する (Shift+←→ での文節伸縮用)。
+/// lengths の合計が入力の文字数と一致しない場合は空を返す
+pub fn convert_segments_fixed(
+    kana: &str,
+    lengths: &[usize],
     dict: &Dictionary,
+    matrix: &ConnectionMatrix,
     learning: &LearningStore,
-) -> Vec<String> {
-    let mut result = vec![best_surface.to_string()];
+) -> Vec<Segment> {
+    let chars: Vec<char> = kana.chars().collect();
+    if lengths.is_empty() || lengths.iter().sum::<usize>() != chars.len()
+        || lengths.contains(&0)
+    {
+        return Vec::new();
+    }
 
-    let mut entries: Vec<_> = dict.lookup(reading).iter().collect();
+    let mut segments = Vec::new();
+    let mut begin = 0;
+    for &length in lengths {
+        let reading: String = chars[begin..begin + length].iter().collect();
+        begin += length;
+
+        // 文節の範囲内だけで最小コスト経路を求める
+        let group = viterbi_path(&reading, dict, matrix).unwrap_or_else(|| {
+            vec![PathWord {
+                reading: reading.clone(),
+                surface: reading.clone(),
+                left_id: UNKNOWN_WORD_ID,
+            }]
+        });
+        segments.push(segment_from_group(&group, dict, learning));
+    }
+    segments
+}
+
+/// 単語列 (1文節分) から候補リスト付きの Segment を作る。
+/// 候補: 経路上の表記 → 先頭語を入れ替えた表記 → 読み全体の辞書候補
+///       → カタカナ → ひらがな。学習済みの表記があれば先頭へ移動する
+fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &LearningStore) -> Segment {
+    let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
+    let best: String = group.iter().map(|w| w.surface.as_str()).collect();
+    let mut result = vec![best];
+
+    // 先頭の自立語を入れ替えた候補 (例: 今日+は -> 京は, 教は...)。
+    // 読みと同じ表記 (ひらがなのまま) は末尾で必ず追加するのでここでは除く
+    let rest: String = group[1..].iter().map(|w| w.surface.as_str()).collect();
+    let mut firsts: Vec<_> = dict.lookup(&group[0].reading).iter().collect();
+    firsts.sort_by_key(|e| e.cost);
+    for entry in firsts {
+        if result.len() >= MAX_DICT_CANDIDATES {
+            break;
+        }
+        let candidate = entry.surface.clone() + &rest;
+        if candidate != reading && !result.contains(&candidate) {
+            result.push(candidate);
+        }
+    }
+
+    // 読み全体の完全一致候補 (単語をまたぐ表記など)
+    let mut entries: Vec<_> = dict.lookup(&reading).iter().collect();
     entries.sort_by_key(|e| e.cost);
     for entry in entries {
         if result.len() >= MAX_DICT_CANDIDATES {
             break;
         }
-        if !result.contains(&entry.surface) {
+        if entry.surface != reading && !result.contains(&entry.surface) {
             result.push(entry.surface.clone());
         }
     }
 
-    for extra in [to_katakana(reading), reading.to_string()] {
+    for extra in [to_katakana(&reading), reading.clone()] {
         if !result.contains(&extra) {
             result.push(extra);
         }
     }
 
     // 学習済みの表記を先頭へ (候補に無ければ追加)
-    if let Some(learned) = learning.get(reading) {
+    if let Some(learned) = learning.get(&reading) {
         result.retain(|s| s != learned);
         result.insert(0, learned.to_string());
     }
-    result
+    Segment { reading, candidates: result }
 }
 
 /// かな文字列に対する全文一括の変換候補リストを返す (クエリツール・互換用)
@@ -401,6 +446,52 @@ mod tests {
             &LearningStore::in_memory()
         )
         .is_empty());
+    }
+
+    #[test]
+    fn 先頭語を入れ替えた文節候補が出る() {
+        let segments = convert_segments(
+            "きょうは",
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        // 経路は 今日+は。先頭語を 京 に入れ替えた「京は」も候補に入る
+        assert!(segments[0].candidates.contains(&"京は".to_string()));
+    }
+
+    #[test]
+    fn 文節境界を固定して変換できる() {
+        let dict = sample_dict();
+        let learning = LearningStore::in_memory();
+
+        // 4,4 なら通常の文節分割と同じ
+        let segments = convert_segments_fixed(
+            "きょうははれです", &[4, 4], &dict, &ConnectionMatrix::empty(), &learning);
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["きょうは", "はれです"]);
+        assert_eq!(segments[0].candidates[0], "今日は");
+
+        // 3,5 なら「きょう / ははれです」で各範囲内を再変換する
+        let segments = convert_segments_fixed(
+            "きょうははれです", &[3, 5], &dict, &ConnectionMatrix::empty(), &learning);
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["きょう", "ははれです"]);
+        assert_eq!(segments[0].candidates[0], "今日");
+        assert_eq!(segments[1].candidates[0], "は晴れです");
+    }
+
+    #[test]
+    fn 文節長の合計が合わなければ空を返す() {
+        let empty = convert_segments_fixed(
+            "きょうは",
+            &[3, 3],
+            &sample_dict(),
+            &ConnectionMatrix::empty(),
+            &LearningStore::in_memory(),
+        );
+        assert!(empty.is_empty());
     }
 
     #[test]
