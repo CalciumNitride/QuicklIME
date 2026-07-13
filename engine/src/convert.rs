@@ -137,6 +137,15 @@ fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &Learning
         }
     }
 
+    // 記号候補 (「やじるし」→「→」など)。通常語より後ろに置きたいので
+    // 辞書候補の末尾に追記し、MAX_DICT_CANDIDATES の枠には数えない
+    // (数えると記号が多い読みで通常語が押し出されるため)
+    for symbol in dict.lookup_symbols(&reading) {
+        if !result.contains(symbol) {
+            result.push(symbol.clone());
+        }
+    }
+
     for extra in [to_katakana(&reading), reading.clone()] {
         if !result.contains(&extra) {
             result.push(extra);
@@ -171,6 +180,13 @@ pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> V
         }
         if !result.contains(&entry.surface) {
             result.push(entry.surface.clone());
+        }
+    }
+
+    // 記号候補 (文節候補と同様、通常語の後ろに追記する)
+    for symbol in dict.lookup_symbols(kana) {
+        if !result.contains(symbol) {
+            result.push(symbol.clone());
         }
     }
 
@@ -394,6 +410,28 @@ mod tests {
         assert_eq!(c[0], "今日は");
         assert!(c.contains(&"キョウハ".to_string()));
         assert!(c.contains(&"きょうは".to_string()));
+    }
+
+    #[test]
+    fn 記号が文節候補に入りカタカナより前に来る() {
+        let mut dict = sample_dict();
+        dict.load_symbols_from(
+            "記号\t↑\tきょう やじるし\t上矢印 (テスト用の読み)\n".as_bytes(),
+        )
+        .unwrap();
+        let segments = convert_segments(
+            "きょう",
+            &dict,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        let c = &segments[0].candidates;
+        let symbol = c.iter().position(|s| s == "↑").unwrap();
+        let katakana = c.iter().position(|s| s == "キョウ").unwrap();
+        assert!(c.iter().position(|s| s == "今日").unwrap() < symbol);
+        assert!(symbol < katakana);
     }
 
     #[test]

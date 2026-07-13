@@ -90,12 +90,24 @@ void RomajiComposer::Push(wchar_t c)
     Convert();
 }
 
-void RomajiComposer::PushKana(const std::wstring& kana)
+void RomajiComposer::PushKana(const std::wstring& kana, const std::wstring& raw)
 {
     // 未変換ローマ字が残っていたら確定と同じ規則で救済してから記号を足す
-    kana_ = Commit();
+    if (pending_ == L"n") {
+        AppendKana(L"ん", L"n");
+    } else if (!pending_.empty()) {
+        AppendKana(pending_, pending_);
+    }
     pending_.clear();
-    kana_ += kana;
+    AppendKana(kana, raw);
+}
+
+void RomajiComposer::AppendKana(const std::wstring& kana, const std::wstring& raw)
+{
+    for (size_t i = 0; i < kana.size(); ++i) {
+        kana_ += kana[i];
+        raw_.push_back(i == 0 ? raw : L"");
+    }
 }
 
 void RomajiComposer::Convert()
@@ -110,7 +122,7 @@ void RomajiComposer::Convert()
 
         // 完全一致: かなを確定
         if (auto it = table.find(pending_); it != table.end()) {
-            kana_ += it->second;
+            AppendKana(it->second, pending_);
             pending_.clear();
             return;
         }
@@ -123,19 +135,21 @@ void RomajiComposer::Convert()
         // 促音: 同じ子音の連続 ("kk" など。"nn" はテーブル側で ん になる)
         if (pending_.size() >= 2 && pending_[0] == pending_[1] && !IsVowel(pending_[0]) &&
             pending_[0] != L'n') {
-            kana_ += L"っ";
+            AppendKana(L"っ", pending_.substr(0, 1));
             pending_.erase(0, 1);
             continue;
         }
 
         // ん: "n" の後に変換を継続できない子音が来た場合
         if (pending_[0] == L'n' && pending_.size() >= 2) {
-            kana_ += L"ん";
+            AppendKana(L"ん", L"n");
             pending_.erase(0, 1);
             continue;
         }
 
-        // どの規則にも合わない先頭文字は打ち間違いとして捨てる
+        // どの規則にも合わない先頭文字はそのままかな列へ残す
+        // (MS-IME と同様。英単語の打鍵 "apple" の p などが見えるようにする)
+        AppendKana(pending_.substr(0, 1), pending_.substr(0, 1));
         pending_.erase(0, 1);
     }
 }
@@ -146,12 +160,14 @@ void RomajiComposer::Backspace()
         pending_.pop_back();
     } else if (!kana_.empty()) {
         kana_.pop_back();
+        raw_.pop_back();
     }
 }
 
 void RomajiComposer::Clear()
 {
     kana_.clear();
+    raw_.clear();
     pending_.clear();
 }
 
@@ -171,4 +187,13 @@ std::wstring RomajiComposer::Commit() const
         return kana_ + L"ん";
     }
     return kana_ + pending_;
+}
+
+std::wstring RomajiComposer::Raw() const
+{
+    std::wstring raw;
+    for (const auto& r : raw_) {
+        raw += r;
+    }
+    return raw + pending_;
 }

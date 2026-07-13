@@ -11,7 +11,7 @@ mod matrix;
 mod pos;
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -95,7 +95,7 @@ fn load_dictionary() -> Dictionary {
         return Dictionary::empty();
     };
     let started = Instant::now();
-    match Dictionary::load(&dir) {
+    let mut dict = match Dictionary::load(&dir) {
         Ok(dict) => {
             eprintln!(
                 "辞書を読み込みました: {} エントリ ({:.1}秒) [{}]",
@@ -109,6 +109,30 @@ fn load_dictionary() -> Dictionary {
             eprintln!("辞書の読み込みに失敗しました ({e})。辞書なしで起動します");
             Dictionary::empty()
         }
+    };
+    load_symbols(&mut dict, &dir);
+    dict
+}
+
+/// 記号辞書 (Mozc の symbol.tsv) を読み込む。無くても記号候補なしで続行する。
+/// 辞書ディレクトリ直下の symbol.tsv を優先し、無ければ Mozc の配置
+/// (dictionary_oss と並ぶ symbol/) から探す
+fn load_symbols(dict: &mut Dictionary, dictionary_dir: &Path) {
+    let candidates = [
+        dictionary_dir.join("symbol.tsv"),
+        dictionary_dir.parent().map(|p| p.join("symbol/symbol.tsv")).unwrap_or_default(),
+    ];
+    let Some(path) = candidates.iter().find(|p| p.is_file()) else {
+        eprintln!("記号辞書 (symbol.tsv) がありません。記号候補なしで動作します");
+        return;
+    };
+    match dict.load_symbols(path) {
+        Ok(()) => eprintln!(
+            "記号辞書を読み込みました: {} エントリ [{}]",
+            dict.symbol_count(),
+            path.display()
+        ),
+        Err(e) => eprintln!("記号辞書の読み込みに失敗しました ({e})。記号候補なしで動作します"),
     }
 }
 

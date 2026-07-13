@@ -1,5 +1,7 @@
 #include "text_service.h"
 
+#include <algorithm>
+#include <cwctype>
 #include <new>
 
 #include "display_attribute.h"
@@ -30,9 +32,63 @@ const wchar_t* SymbolKeyToKana(WPARAM wparam, bool shifted)
     }
 }
 
+// 記号キー → 打鍵文字そのもの (生ローマ字候補用。SymbolKeyToKana と対応)
+const wchar_t* SymbolKeyToRaw(WPARAM wparam, bool shifted)
+{
+    if (shifted) {
+        switch (wparam) {
+        case '1':       return L"!";
+        case VK_OEM_2:  return L"?"; // Shift + /
+        default:        return nullptr;
+        }
+    }
+    switch (wparam) {
+    case VK_OEM_COMMA:  return L",";
+    case VK_OEM_PERIOD: return L".";
+    case VK_OEM_MINUS:  return L"-";
+    case VK_OEM_2:      return L"/";
+    case VK_OEM_4:      return L"[";
+    case VK_OEM_6:      return L"]";
+    default:            return nullptr;
+    }
+}
+
 bool IsLetterKey(WPARAM wparam)
 {
     return wparam >= 'A' && wparam <= 'Z';
+}
+
+bool ContainsAsciiLetter(const std::wstring& text)
+{
+    for (wchar_t c : text) {
+        if ((c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z')) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 打鍵したローマ字そのものと大文字化した変種を候補に挿入する (英単語入力用)。
+// position は挿入開始位置。既にある候補 (学習済みなど) は動かさず挿入しない
+void InsertRawCandidates(ConversionSegment* segment, const std::wstring& raw, size_t position)
+{
+    if (raw.empty() || !ContainsAsciiLetter(raw)) {
+        return;
+    }
+    std::wstring capitalized = raw;
+    capitalized[0] = towupper(capitalized[0]);
+    std::wstring upper = raw;
+    for (wchar_t& c : upper) {
+        c = towupper(c);
+    }
+    auto& list = segment->candidates;
+    position = (std::min)(position, list.size());
+    for (const auto& candidate : {raw, capitalized, upper}) {
+        if (std::find(list.begin(), list.end(), candidate) == list.end()) {
+            list.insert(list.begin() + position, candidate);
+            ++position;
+        }
+    }
 }
 
 bool IsDigitKey(WPARAM wparam)
@@ -345,7 +401,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return InsertText(context, upper);
         }
         if (Composing()) {
-            composer_.PushKana(upper);
+            composer_.PushKana(upper, upper);
             return UpdateCompositionText(context, composer_.Display());
         }
         return InsertText(context, upper);
@@ -382,7 +438,8 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return InsertText(context, kana);
         }
         if (Composing()) {
-            composer_.PushKana(kana);
+            const wchar_t* raw = SymbolKeyToRaw(wparam, shifted);
+            composer_.PushKana(kana, raw != nullptr ? raw : kana);
             return UpdateCompositionText(context, composer_.Display());
         }
         return InsertText(context, kana);
@@ -398,7 +455,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             }
             return InsertText(context, digit);
         }
-        composer_.PushKana(digit);
+        composer_.PushKana(digit, digit);
         return UpdateCompositionText(context, composer_.Display());
     }
 
@@ -451,14 +508,28 @@ HRESULT TextService::StartConversion(ITfContext* context)
     }
 
     // 文節列をエンジンに問い合わせる。
-    // エンジンが起動していない場合はひらがな1文節のみで動作を継続する
+    // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
+    // 英字が残っている入力 (英単語の打鍵など) は文節分割しても意味を
+    // 成さないため、全体を1文節に固定して変換する
     const std::wstring kana = composer_.Commit();
-    if (!engine_.ConvertSegments(kana, &segments_) || segments_.empty()) {
+    const bool ok = ContainsAsciiLetter(kana)
+        ? engine_.ConvertSegmentsFixed(kana, {kana.size()}, &segments_)
+        : engine_.ConvertSegments(kana, &segments_);
+    if (!ok || segments_.empty()) {
         segments_.clear();
         ConversionSegment fallback;
         fallback.reading = kana;
         fallback.candidates.push_back(kana);
         segments_.push_back(std::move(fallback));
+    }
+    // 全体が1文節なら、打鍵したローマ字をそのまま半角候補として加える
+    // (「apple」と打って apple / Apple / APPLE を選べるようにする)。
+    // 英字を含む入力ではかな漢字候補が役に立たないため先頭候補の直後へ、
+    // 通常のかな入力では邪魔にならないよう末尾へ入れる
+    if (segments_.size() == 1) {
+        const size_t position =
+            ContainsAsciiLetter(kana) ? 1 : segments_[0].candidates.size();
+        InsertRawCandidates(&segments_[0], composer_.Raw(), position);
     }
     selected_.assign(segments_.size(), 0);
     segmentIndex_ = 0;

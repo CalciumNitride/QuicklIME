@@ -29,12 +29,21 @@ pub struct Entry {
 pub struct Dictionary {
     map: HashMap<String, Vec<Entry>>,
     entry_count: usize,
+    /// 記号辞書 (読み → 記号のリスト、symbol.tsv の記載順)。
+    /// 連接情報を持たないため Viterbi には載せず、文節候補の末尾に追記する
+    symbols: HashMap<String, Vec<String>>,
+    symbol_count: usize,
 }
 
 impl Dictionary {
     /// 空の辞書 (辞書ファイルが見つからない場合のフォールバック)
     pub fn empty() -> Self {
-        Dictionary { map: HashMap::new(), entry_count: 0 }
+        Dictionary {
+            map: HashMap::new(),
+            entry_count: 0,
+            symbols: HashMap::new(),
+            symbol_count: 0,
+        }
     }
 
     /// ディレクトリから dictionary00.txt 〜 dictionary09.txt を読み込む
@@ -88,13 +97,55 @@ impl Dictionary {
         Ok(())
     }
 
+    /// Mozc の symbol.tsv (記号辞書) を読み込む。
+    /// フォーマット: 品詞\t記号\t読み(空白区切りで複数)\t説明... (先頭行はヘッダ)
+    pub fn load_symbols(&mut self, path: &Path) -> io::Result<()> {
+        self.load_symbols_from(BufReader::new(File::open(path)?))
+    }
+
+    /// 1ファイル分の記号エントリを読み込む (テストからも使う)
+    pub fn load_symbols_from(&mut self, reader: impl BufRead) -> io::Result<()> {
+        for (i, line) in reader.lines().enumerate() {
+            let line = line?;
+            if i == 0 && line.starts_with("POS\t") {
+                continue; // ヘッダ行
+            }
+            let mut fields = line.split('\t');
+            let (Some(_pos), Some(symbol), Some(readings)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue; // 列が足りない行は無視
+            };
+            if symbol.is_empty() {
+                continue;
+            }
+            for reading in readings.split(' ').filter(|r| !r.is_empty()) {
+                let list = self.symbols.entry(reading.to_string()).or_default();
+                if !list.iter().any(|s| s == symbol) {
+                    list.push(symbol.to_string());
+                    self.symbol_count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 読みに完全一致するエントリ一覧を返す
     pub fn lookup(&self, reading: &str) -> &[Entry] {
         self.map.get(reading).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// 読みに対応する記号一覧を返す (symbol.tsv の記載順)
+    pub fn lookup_symbols(&self, reading: &str) -> &[String] {
+        self.symbols.get(reading).map(Vec::as_slice).unwrap_or(&[])
+    }
+
     pub fn entry_count(&self) -> usize {
         self.entry_count
+    }
+
+    pub fn symbol_count(&self) -> usize {
+        self.symbol_count
     }
 }
 
@@ -129,5 +180,31 @@ mod tests {
     #[test]
     fn 壊れた行は無視してカウントしない() {
         assert_eq!(sample().entry_count(), 3);
+    }
+
+    fn sample_symbols() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let data = "POS\tCHAR\tReading (space separated)\tdescription\n\
+                    記号\t→\tやじるし みぎ\t右矢印\n\
+                    記号\t←\tやじるし ひだり\t左矢印\n\
+                    記号\t→\tやじるし\t重複読みの行\n\
+                    記号\t\tよみ\t記号が空の行\n\
+                    壊れた行\n";
+        dict.load_symbols_from(data.as_bytes()).unwrap();
+        dict
+    }
+
+    #[test]
+    fn 記号を読みで引ける() {
+        let dict = sample_symbols();
+        assert_eq!(dict.lookup_symbols("やじるし"), ["→", "←"]);
+        assert_eq!(dict.lookup_symbols("みぎ"), ["→"]);
+        assert!(dict.lookup_symbols("ない").is_empty());
+    }
+
+    #[test]
+    fn 記号の重複と壊れた行はカウントしない() {
+        // → の2重登録・記号が空の行・列不足の行は数えず、有効なのは4件
+        assert_eq!(sample_symbols().symbol_count(), 4);
     }
 }
