@@ -1,6 +1,9 @@
 # 参考用に取得した外部リポジトリ (リポジトリには含めない)
 /references/
 
+# 中断時の申し送り用スクラッチファイル (履歴に残さない)
+/docs/handout.md
+
 # C++ / Visual Studio
 build/
 out/
