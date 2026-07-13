@@ -9,6 +9,7 @@ add_library(quicklime_tsf SHARED
     src/edit_session.cpp
     src/engine_client.cpp
     src/globals.cpp
+    src/kana_forms.cpp
     src/registry.cpp
     src/romaji.cpp
     src/text_service.cpp

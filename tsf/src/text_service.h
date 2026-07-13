@@ -68,6 +68,15 @@ private:
     // composition を使わない直接挿入 (composition が無いときの記号入力用)
     HRESULT InsertText(ITfContext* context, const std::wstring& text);
 
+    // ファンクションキーによる直接変換の文字種 (F6-F10)
+    enum class ConversionForm {
+        Hiragana,          // F6
+        Katakana,          // F7
+        HalfwidthKatakana, // F8
+        FullwidthAscii,    // F9
+        HalfwidthAscii,    // F10
+    };
+
     // 変換の開始 / 現在文節の候補移動 / 文節の移動 / 変換の取消 (かな表示に戻す)
     HRESULT StartConversion(ITfContext* context);
     HRESULT CycleCandidate(ITfContext* context, int delta);
@@ -75,6 +84,15 @@ private:
     // 現在文節の境界を delta 文字ぶん伸縮し、境界固定で再変換する
     HRESULT ResizeSegment(ITfContext* context, int delta);
     HRESULT CancelConversion(ITfContext* context);
+
+    // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する
+    HRESULT DirectConvert(ITfContext* context, ConversionForm form);
+    // F4: 現在文節 (未変換なら全文) を記号辞書の候補のみで変換する
+    HRESULT ConvertToSymbols(ITfContext* context);
+    // 未変換なら全文を1文節とした変換状態を作る (直接変換の下準備)
+    void EnsureConversionState();
+    // 現在文節を form で変換した文字列 (対応する打鍵が無いなどの場合は空)
+    std::wstring SegmentFormText(size_t index, ConversionForm form) const;
 
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);

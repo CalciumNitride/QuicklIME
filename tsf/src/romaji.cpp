@@ -197,3 +197,20 @@ std::wstring RomajiComposer::Raw() const
     }
     return raw + pending_;
 }
+
+std::wstring RomajiComposer::RawRange(size_t pos, size_t len) const
+{
+    // Commit() は kana_ + 未変換ローマ字 (pending_ == "n" のみ「ん」1文字に救済)。
+    // kana_ の各文字には raw_ が対応し、それ以降は pending_ の文字がそのまま並ぶ
+    std::wstring raw;
+    for (size_t i = pos; i < pos + len; ++i) {
+        if (i < raw_.size()) {
+            raw += raw_[i];
+        } else if (pending_ == L"n") {
+            raw += L"n";
+        } else if (i - raw_.size() < pending_.size()) {
+            raw += pending_[i - raw_.size()];
+        }
+    }
+    return raw;
+}

@@ -33,6 +33,10 @@ public:
     // 打鍵した文字列そのもの (生ローマ字候補用)
     std::wstring Raw() const;
 
+    // Commit() が返す文字列の [pos, pos+len) 区間に対応する打鍵列。
+    // 文節単位の英数変換 (F9/F10) 用
+    std::wstring RawRange(size_t pos, size_t len) const;
+
 private:
     // 未変換ローマ字の先頭を可能な限りかなへ変換する
     void Convert();

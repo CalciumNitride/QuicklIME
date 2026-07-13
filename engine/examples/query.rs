@@ -40,6 +40,11 @@ fn main() -> std::io::Result<()> {
             .collect::<Vec<_>>()
             .join(" ");
         println!("  文節: {pretty}");
+
+        send.write_all(format!("CONVSYM\t{kana}\n").as_bytes())?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        println!("  記号: {}", line.trim_end().replace('\t', " | "));
     }
     Ok(())
 }

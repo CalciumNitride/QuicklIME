@@ -29,7 +29,7 @@ fn エンジンにconvert要求を送ると候補が返る() {
     let mut server = spawn_engine(&pipe_name);
 
     // テスト本体はクロージャで実行し、失敗してもエンジンを必ず終了させる
-    let result = (|| -> std::io::Result<(String, String, String)> {
+    let result = (|| -> std::io::Result<(String, String, String, String)> {
         // エンジンの起動 (pipe 作成) を接続リトライで待つ
         let mut stream = None;
         for _ in 0..50 {
@@ -61,12 +61,17 @@ fn エンジンにconvert要求を送ると候補が返る() {
         let mut segments = String::new();
         reader.read_line(&mut segments)?;
 
-        Ok((word, sentence, segments))
+        // 記号のみの変換 (F4 用)
+        send.write_all("CONVSYM\tやじるし\n".as_bytes())?;
+        let mut symbols = String::new();
+        reader.read_line(&mut symbols)?;
+
+        Ok((word, sentence, segments, symbols))
     })();
 
     server.kill().ok();
 
-    let (word, sentence, segments) = result.expect("パイプ通信に失敗");
+    let (word, sentence, segments, symbols) = result.expect("パイプ通信に失敗");
     // 辞書候補 (コスト順) → カタカナ → ひらがな
     assert_eq!(word, "OK\t日本語\tニホンゴ\tにほんご\n");
     // 文変換 → カタカナ → ひらがな
@@ -78,6 +83,8 @@ fn エンジンにconvert要求を送ると候補が返る() {
         "OK\tきょうは\x1f今日は\x1f京は\x1fキョウハ\x1fきょうは\
          \tはれです\x1f晴れです\x1fハレデス\x1fはれです\n"
     );
+    // 記号辞書 (fixtures/symbol.tsv) の記載順
+    assert_eq!(symbols, "OK\t→\t←\n");
 }
 
 #[test]

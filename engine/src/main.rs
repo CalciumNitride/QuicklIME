@@ -244,6 +244,18 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("CONVSYM") => match fields.next() {
+            // 記号辞書のみから候補を返す (F4 の記号変換用)。該当なしは候補ゼロの OK
+            Some(kana) if !kana.is_empty() => {
+                let symbols = data.dictionary.lookup_symbols(kana);
+                if symbols.is_empty() {
+                    "OK\n".to_string()
+                } else {
+                    format!("OK\t{}\n", symbols.join("\t"))
+                }
+            }
+            _ => "ERR\tかなが空です\n".to_string(),
+        },
         Some("LEARN") => {
             // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する
             let mut learning = data.learning.lock().expect("learning lock");
@@ -332,6 +344,20 @@ mod tests {
 
         // 長さの合計が合わない場合はエラー
         assert!(handle_request("CONVSEG\tきょうは\t9,9", &sample_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convsym要求に記号候補のみを返す() {
+        let mut data = empty_data();
+        data.dictionary
+            .load_symbols_from(
+                "記号\t→\tやじるし みぎ\t右矢印\n記号\t←\tやじるし\t左矢印\n".as_bytes(),
+            )
+            .unwrap();
+        assert_eq!(handle_request("CONVSYM\tやじるし", &data), "OK\t→\t←\n");
+        // 記号辞書に無い読みは候補ゼロの OK (エラーにしない)
+        assert_eq!(handle_request("CONVSYM\tにほん", &data), "OK\n");
+        assert!(handle_request("CONVSYM\t", &data).starts_with("ERR\t"));
     }
 
     #[test]

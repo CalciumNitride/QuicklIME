@@ -7,6 +7,7 @@
 #include "display_attribute.h"
 #include "edit_session.h"
 #include "globals.h"
+#include "kana_forms.h"
 
 namespace {
 
@@ -258,6 +259,14 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_RIGHT:
             // 候補選択中のみ矢印キーを使う (↑↓=候補, ←→=文節移動, Shift+←→=文節伸縮)
             return converting_;
+        case VK_F4:
+        case VK_F6:
+        case VK_F7:
+        case VK_F8:
+        case VK_F9:
+        case VK_F10:
+            // ファンクションキー変換 (F4=記号, F6-F10=文字種の直接変換)
+            return true;
         default:
             break;
         }
@@ -494,6 +503,18 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return S_OK;
         }
         return shifted ? ResizeSegment(context, +1) : MoveSegment(context, +1);
+    case VK_F4:
+        return ConvertToSymbols(context);
+    case VK_F6:
+        return DirectConvert(context, ConversionForm::Hiragana);
+    case VK_F7:
+        return DirectConvert(context, ConversionForm::Katakana);
+    case VK_F8:
+        return DirectConvert(context, ConversionForm::HalfwidthKatakana);
+    case VK_F9:
+        return DirectConvert(context, ConversionForm::FullwidthAscii);
+    case VK_F10:
+        return DirectConvert(context, ConversionForm::HalfwidthAscii);
     default:
         return S_OK;
     }
@@ -621,6 +642,105 @@ HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
     }
     selected_.resize(i);
     selected_.resize(segments_.size(), 0);
+
+    HRESULT hr = UpdateConvertingDisplay(context);
+    ShowCandidateWindow(context);
+    return hr;
+}
+
+// ---- ファンクションキー変換 (F4, F6-F10) ----
+
+void TextService::EnsureConversionState()
+{
+    if (converting_) {
+        return;
+    }
+    ConversionSegment segment;
+    segment.reading = composer_.Commit();
+    segment.candidates.push_back(segment.reading);
+    segments_.clear();
+    segments_.push_back(std::move(segment));
+    selected_.assign(1, 0);
+    segmentIndex_ = 0;
+    converting_ = true;
+}
+
+std::wstring TextService::SegmentFormText(size_t index, ConversionForm form) const
+{
+    const std::wstring& reading = segments_[index].reading;
+    switch (form) {
+    case ConversionForm::Hiragana:
+        return reading;
+    case ConversionForm::Katakana:
+        return kana_forms::ToKatakana(reading);
+    case ConversionForm::HalfwidthKatakana:
+        return kana_forms::ToHalfwidth(reading);
+    case ConversionForm::FullwidthAscii:
+    case ConversionForm::HalfwidthAscii: {
+        // この文節の読みに対応する打鍵列を composer から切り出す
+        // (文節読みの連結 = composer_.Commit() であることを前提にできる)
+        size_t start = 0;
+        for (size_t i = 0; i < index; ++i) {
+            start += segments_[i].reading.size();
+        }
+        const std::wstring raw = composer_.RawRange(start, reading.size());
+        if (form == ConversionForm::HalfwidthAscii) {
+            return raw;
+        }
+        return kana_forms::ToFullwidthAscii(raw);
+    }
+    }
+    return {};
+}
+
+HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
+{
+    if (!Composing()) {
+        return E_UNEXPECTED;
+    }
+    EnsureConversionState();
+
+    const std::wstring converted = SegmentFormText(segmentIndex_, form);
+    if (converted.empty()) {
+        return S_OK; // 打鍵列を切り出せない場合などは何もしない
+    }
+
+    // 変換結果を候補に加えて (既にあればそれを) 選択状態にする
+    auto& candidates = segments_[segmentIndex_].candidates;
+    auto it = std::find(candidates.begin(), candidates.end(), converted);
+    if (it == candidates.end()) {
+        candidates.push_back(converted);
+        it = candidates.end() - 1;
+    }
+    selected_[segmentIndex_] = static_cast<size_t>(it - candidates.begin());
+
+    HRESULT hr = UpdateConvertingDisplay(context);
+    ShowCandidateWindow(context);
+    return hr;
+}
+
+HRESULT TextService::ConvertToSymbols(ITfContext* context)
+{
+    if (!Composing()) {
+        return E_UNEXPECTED;
+    }
+    const std::wstring reading =
+        converting_ ? segments_[segmentIndex_].reading : composer_.Commit();
+
+    std::vector<std::wstring> symbols;
+    if (!engine_.ConvertSymbols(reading, &symbols) || symbols.empty()) {
+        return S_OK; // 記号候補が無い読み (またはエンジン不調) なら何もしない
+    }
+
+    EnsureConversionState();
+
+    // 既にこの文節を記号候補のみで表示中なら、F4 の連打は ↓ と同じく次候補へ送る
+    auto& candidates = segments_[segmentIndex_].candidates;
+    if (candidates == symbols) {
+        return CycleCandidate(context, +1);
+    }
+    candidates = std::move(symbols);
+    selected_[segmentIndex_] = 0;
 
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);

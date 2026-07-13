@@ -30,6 +30,10 @@ public:
     bool ConvertSegmentsFixed(const std::wstring& kana, const std::vector<size_t>& lengths,
                               std::vector<ConversionSegment>* segments);
 
+    // 読みに対する記号候補のみを取得する (CONVSYM、F4 の記号変換用)。
+    // 通信に成功すれば true (記号が1つも無い場合も true で candidates は空)
+    bool ConvertSymbols(const std::wstring& kana, std::vector<std::wstring>* candidates);
+
     // 文節ごとの確定結果 (読み, 表記) をエンジンに記録する (LEARN)。
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs);
