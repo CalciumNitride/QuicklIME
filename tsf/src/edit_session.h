@@ -84,6 +84,18 @@ private:
     bool* succeededOut_;
 };
 
+// 確定アンドゥ用: キャレット直前のテキストが expectedText と一致する場合のみ
+// それを削除する (一致しなければ何もしない)。成功可否を succeededOut に返す
+class UndoCommitEditSession : public EditSessionBase {
+public:
+    UndoCommitEditSession(ITfContext* context, std::wstring expectedText, bool* succeededOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    std::wstring expectedText_;
+    bool* succeededOut_;
+};
+
 // composition を確定文字列で置き換えて終了する (空文字列なら取消)
 class EndCompositionEditSession : public EditSessionBase {
 public:

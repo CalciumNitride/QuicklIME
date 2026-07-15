@@ -356,10 +356,14 @@ STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 bool TextService::IsKeyEaten(WPARAM wparam) const
 {
     // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
-    // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除) だけは IME が処理する
+    // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除)、
+    // composition が無いときの Ctrl+Backspace (確定アンドゥ) だけは IME が処理する
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
+        if (ctrl && !alt && !Composing() && wparam == VK_BACK) {
+            return !lastCommitText_.empty();
+        }
         return ctrl && !alt && Composing() && (wparam == 'M' || wparam == 'H');
     }
     const bool shifted = IsShiftPressed();
@@ -388,7 +392,7 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_F8:
         case VK_F9:
         case VK_F10:
-            // ファンクションキー変換 (F4=記号, F6-F10=文字種の直接変換)
+            // ファンクションキー変換 (F4=特殊変換 (記号・日付), F6-F10=文字種の直接変換)
             return true;
         default:
             break;
@@ -526,8 +530,11 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         case 'H':
             wparam = VK_BACK;
             break;
+        case VK_BACK:
+            // Ctrl+Backspace: 確定アンドゥ (composition が無いときのみ食べている)
+            return UndoCommit(context);
         default:
-            return S_OK; // IsKeyEaten が食べる Ctrl 併用はこの2つのみ
+            return S_OK; // IsKeyEaten が食べる Ctrl 併用は上記のみ
         }
     }
 
@@ -1034,12 +1041,12 @@ HRESULT TextService::ConvertToSymbols(ITfContext* context)
 
     std::vector<std::wstring> symbols;
     if (!engine_.ConvertSymbols(reading, &symbols) || symbols.empty()) {
-        return S_OK; // 記号候補が無い読み (またはエンジン不調) なら何もしない
+        return S_OK; // 特殊変換の候補が無い読み (またはエンジン不調) なら何もしない
     }
 
     EnsureConversionState();
 
-    // 既にこの文節を記号候補のみで表示中なら、F4 の連打は ↓ と同じく次候補へ送る
+    // 既にこの文節を特殊変換の候補のみで表示中なら、F4 の連打は ↓ と同じく次候補へ送る
     auto& candidates = segments_[segmentIndex_].candidates;
     if (candidates == symbols) {
         return CycleCandidate(context, +1);
@@ -1069,6 +1076,36 @@ HRESULT TextService::CommitConversion(ITfContext* context)
     engine_.Learn(pairs);
 
     return EndComposition(context, ConvertedText());
+}
+
+HRESULT TextService::UndoCommit(ITfContext* context)
+{
+    // 一度きりの操作として、成否に関わらず記憶を消す
+    // (内容が一致しない = 確定後に別の編集があった場合に、以降の
+    //  Ctrl+Backspace を奪い続けないようにする)
+    const std::wstring commitText = lastCommitText_;
+    lastCommitText_.clear();
+    if (commitText.empty() || Composing()) {
+        return S_OK;
+    }
+
+    // キャレット直前が確定文字列と一致する場合のみ削除する
+    bool succeeded = false;
+    RequestSync(context,
+                new (std::nothrow) UndoCommitEditSession(context, commitText, &succeeded),
+                TF_ES_SYNC | TF_ES_READWRITE);
+    if (!succeeded) {
+        return S_OK;
+    }
+
+    // 確定前の読みを composition として復元する (そのまま再変換や F6-F10 が使える)
+    composer_ = lastComposer_;
+    HRESULT hr = StartComposition(context);
+    if (FAILED(hr)) {
+        composer_.Clear();
+        return hr;
+    }
+    return UpdateCompositionText(context, composer_.Display());
 }
 
 void TextService::ClearConversion()
@@ -1186,6 +1223,13 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     // commitText は変換状態の要素への参照であることがあるため、
     // 変換状態を後始末する前に必ずコピーを取る
     const std::wstring text = commitText;
+
+    // 確定アンドゥ (Ctrl+Backspace) 用に確定文字列と確定前のコンポーザを覚えておく
+    // (取消 = 空文字列の確定はアンドゥの対象にしない)
+    if (!text.empty()) {
+        lastCommitText_ = text;
+        lastComposer_ = composer_;
+    }
 
     // 変換状態と候補ウィンドウの後始末
     ClearConversion();

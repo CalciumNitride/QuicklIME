@@ -1,5 +1,7 @@
 #include "edit_session.h"
 
+#include <vector>
+
 namespace {
 
 // キャレットを range の末尾へ移動する
@@ -234,6 +236,53 @@ STDMETHODIMP GetTextExtentEditSession::DoEditSession(TfEditCookie ec)
         hr = view->GetTextExt(ec, range, rectOut_, &clipped);
         *succeededOut_ = SUCCEEDED(hr) && (rectOut_->right != 0 || rectOut_->bottom != 0);
         view->Release();
+    }
+    range->Release();
+    return hr;
+}
+
+// ---- UndoCommitEditSession ----
+
+UndoCommitEditSession::UndoCommitEditSession(ITfContext* context, std::wstring expectedText,
+                                             bool* succeededOut)
+    : EditSessionBase(context), expectedText_(std::move(expectedText)), succeededOut_(succeededOut)
+{
+    *succeededOut_ = false;
+}
+
+STDMETHODIMP UndoCommitEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+
+    // キャレット位置に潰し、確定文字列の長さぶんだけ開始を前へ広げる
+    range->Collapse(ec, TF_ANCHOR_START);
+    LONG shifted = 0;
+    const LONG length = static_cast<LONG>(expectedText_.size());
+    hr = range->ShiftStart(ec, -length, &shifted, nullptr);
+    if (SUCCEEDED(hr) && shifted == -length) {
+        // 内容が確定文字列と一致する場合のみ削除する
+        // (確定後にキャレット移動や他の編集があった場合は何もしない)
+        std::vector<WCHAR> buffer(expectedText_.size());
+        ULONG read = 0;
+        hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
+        if (SUCCEEDED(hr) && read == expectedText_.size() &&
+            expectedText_.compare(0, expectedText_.size(), buffer.data(), read) == 0) {
+            hr = range->SetText(ec, 0, L"", 0);
+            if (SUCCEEDED(hr)) {
+                TF_SELECTION caret = {};
+                caret.range = range;
+                caret.style.ase = TF_AE_NONE;
+                caret.style.fInterimChar = FALSE;
+                context_->SetSelection(ec, 1, &caret);
+                *succeededOut_ = true;
+            }
+        }
     }
     range->Release();
     return hr;

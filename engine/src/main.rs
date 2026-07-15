@@ -5,6 +5,7 @@
 // プロトコルの詳細は docs/protocol.md を参照。
 
 mod convert;
+mod datetime;
 mod dict;
 mod learn;
 mod matrix;
@@ -195,6 +196,9 @@ const FIELD_SEPARATOR: char = '\x1f';
 
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
+    // 日付・時刻の動的候補用の現在日時 (CONVSYM の候補生成と LEARN の除外判定に使う)
+    let now = chrono::Local::now().naive_local();
+
     let mut fields = line.split('\t');
     match fields.next() {
         Some("CONVERT") => match fields.next() {
@@ -245,13 +249,16 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("CONVSYM") => match fields.next() {
-            // 記号辞書のみから候補を返す (F4 の記号変換用)。該当なしは候補ゼロの OK
+            // 特殊変換 (F4 用): 記号辞書の候補と日付・時刻の動的候補を返す。
+            // 通常語は含めない。該当なしは候補ゼロの OK
             Some(kana) if !kana.is_empty() => {
-                let symbols = data.dictionary.lookup_symbols(kana);
-                if symbols.is_empty() {
+                let mut candidates: Vec<String> =
+                    data.dictionary.lookup_symbols(kana).to_vec();
+                candidates.extend(datetime::candidates_at(kana, now));
+                if candidates.is_empty() {
                     "OK\n".to_string()
                 } else {
-                    format!("OK\t{}\n", symbols.join("\t"))
+                    format!("OK\t{}\n", candidates.join("\t"))
                 }
             }
             _ => "ERR\tかなが空です\n".to_string(),
@@ -262,7 +269,11 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             let mut count = 0;
             for pair in fields {
                 if let Some((reading, surface)) = pair.split_once(FIELD_SEPARATOR) {
-                    learning.record(reading, surface);
+                    // 日付・時刻の動的候補は時間が経つと古くなるため学習しない
+                    // (学習すると翌日以降も昨日の日付が先頭に来てしまう)
+                    if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
+                        learning.record(reading, surface);
+                    }
                     count += 1;
                 }
             }
@@ -292,7 +303,10 @@ mod tests {
     fn sample_data() -> EngineData {
         let mut dictionary = Dictionary::empty();
         dictionary
-            .load_from("きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\n".as_bytes())
+            .load_from(
+                "きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\nはれ\t1\t1\t3000\t晴れ\n"
+                    .as_bytes(),
+            )
             .unwrap();
         let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
         EngineData {
@@ -335,15 +349,61 @@ mod tests {
 
     #[test]
     fn convsegで文節長を指定できる() {
-        // 「きょう / は」に固定 (通常の文節分割なら「きょうは」1文節)
-        let response = handle_request("CONVSEG\tきょうは\t3,1", &sample_data());
+        // 「はれ / は」に固定 (通常の文節分割なら「はれは」1文節)
+        let response = handle_request("CONVSEG\tはれは\t2,1", &sample_data());
         assert_eq!(
             response,
-            "OK\tきょう\x1f今日\x1fキョウ\x1fきょう\tは\x1fは\x1fハ\n"
+            "OK\tはれ\x1f晴れ\x1fハレ\x1fはれ\tは\x1fは\x1fハ\n"
         );
 
         // 長さの合計が合わない場合はエラー
-        assert!(handle_request("CONVSEG\tきょうは\t9,9", &sample_data()).starts_with("ERR\t"));
+        assert!(handle_request("CONVSEG\tはれは\t9,9", &sample_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convsymに日付候補が入る() {
+        // 「きょう」の特殊変換には現在日付の候補 (2026/07/15 形式など) が入る
+        let now = chrono::Local::now().naive_local();
+        let expected = datetime::candidates_at("きょう", now);
+        let response = handle_request("CONVSYM\tきょう", &sample_data());
+        assert!(response.starts_with("OK\t"));
+        for candidate in &expected {
+            assert!(response.contains(candidate.as_str()), "{candidate} が候補に無い: {response}");
+        }
+        // 通常変換 (CONVSEG) には日付候補は入らない
+        let response = handle_request("CONVSEG\tきょう", &sample_data());
+        assert!(!response.contains(&expected[0]), "CONVSEG に日付候補が入っている: {response}");
+    }
+
+    #[test]
+    fn convsymで記号と日付候補が両方出る() {
+        // 記号辞書に「きょう」の読みを持つエントリがあれば、記号 → 日付の順に並ぶ
+        let mut data = sample_data();
+        data.dictionary
+            .load_symbols_from("記号\t↑\tきょう\t上矢印 (テスト用の読み)\n".as_bytes())
+            .unwrap();
+        let now = chrono::Local::now().naive_local();
+        let date = datetime::candidates_at("きょう", now)[0].clone();
+        let response = handle_request("CONVSYM\tきょう", &data);
+        assert!(response.starts_with("OK\t↑\t"), "記号が先頭に無い: {response}");
+        assert!(response.contains(&date), "日付候補が無い: {response}");
+    }
+
+    #[test]
+    fn 日付候補は学習されない() {
+        let data = sample_data();
+        let now = chrono::Local::now().naive_local();
+        let date = datetime::candidates_at("きょう", now)[0].clone();
+
+        // 日付候補の確定は学習に記録されず、候補順は変わらない
+        assert_eq!(handle_request(&format!("LEARN\tきょう\x1f{date}"), &data), "OK\n");
+        let response = handle_request("CONVSEG\tきょう", &data);
+        assert!(response.starts_with("OK\tきょう\x1f今日\x1f"));
+
+        // 通常の表記は今まで通り学習される
+        assert_eq!(handle_request("LEARN\tきょう\x1fキョウ", &data), "OK\n");
+        let response = handle_request("CONVSEG\tきょう", &data);
+        assert!(response.starts_with("OK\tきょう\x1fキョウ\x1f今日\x1f"));
     }
 
     #[test]

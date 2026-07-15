@@ -92,7 +92,7 @@ private:
     // 元のまま → 先頭大文字 → 全部大文字 (→ 全部小文字) と循環する。
     // 候補ウィンドウは表示しない
     HRESULT DirectConvert(ITfContext* context, ConversionForm form);
-    // F4: 現在文節 (未変換なら全文) を記号辞書の候補のみで変換する
+    // F4: 現在文節 (未変換なら全文) を特殊変換 (記号辞書 + 日付・時刻) の候補のみで変換する
     HRESULT ConvertToSymbols(ITfContext* context);
     // 未変換なら全文を1文節とした変換状態を作る (直接変換の下準備)
     void EnsureConversionState();
@@ -108,6 +108,9 @@ private:
 
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);
+    // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
+    // composition に戻す。キャレット直前が確定文字列と一致するときのみ働く
+    HRESULT UndoCommit(ITfContext* context);
     // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
@@ -133,4 +136,7 @@ private:
     size_t segmentIndex_;                      // 操作対象の文節
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
+
+    std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
+    RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)
 };
