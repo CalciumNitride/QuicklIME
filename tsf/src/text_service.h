@@ -81,11 +81,16 @@ private:
     HRESULT StartConversion(ITfContext* context);
     HRESULT CycleCandidate(ITfContext* context, int delta);
     HRESULT MoveSegment(ITfContext* context, int delta);
+    // 指定した文節へ直接移動する (PgUp=先頭, PgDn=末尾)
+    HRESULT MoveSegmentTo(ITfContext* context, size_t index);
     // 現在文節の境界を delta 文字ぶん伸縮し、境界固定で再変換する
     HRESULT ResizeSegment(ITfContext* context, int delta);
     HRESULT CancelConversion(ITfContext* context);
 
-    // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する
+    // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する。
+    // F7/F8 は連打で後ろから1文字ずつひらがなに戻し、F9/F10 は連打で
+    // 元のまま → 先頭大文字 → 全部大文字 (→ 全部小文字) と循環する。
+    // 候補ウィンドウは表示しない
     HRESULT DirectConvert(ITfContext* context, ConversionForm form);
     // F4: 現在文節 (未変換なら全文) を記号辞書の候補のみで変換する
     HRESULT ConvertToSymbols(ITfContext* context);
@@ -96,6 +101,10 @@ private:
     void SyncPairedSegment(size_t index);
     // 現在文節を form で変換した文字列 (対応する打鍵が無いなどの場合は空)
     std::wstring SegmentFormText(size_t index, ConversionForm form) const;
+    // index の文節の読みに対応する打鍵列 (切り出せない場合は空)
+    std::wstring SegmentRawText(size_t index) const;
+    // F7-F10 連打用: 現在の選択候補から見て循環列の次の形
+    std::wstring NextFormText(size_t index, ConversionForm form) const;
 
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);

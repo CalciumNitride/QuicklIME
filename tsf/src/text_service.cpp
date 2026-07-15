@@ -142,22 +142,65 @@ bool ContainsAsciiLetter(const std::wstring& text)
     return false;
 }
 
-// 打鍵したローマ字そのものと大文字化した変種を候補に挿入する (英単語入力用)。
+// F9/F10 の連打で循環させる英字の変種列を作る。
+// 元の打鍵のまま → 先頭のみ大文字 → 全部大文字 → 全部小文字 の順。
+// 重複する形 (元が全部小文字なら「全部小文字」は元と同じ、など) は取り除く
+std::vector<std::wstring> CaseCycleVariants(const std::wstring& raw)
+{
+    std::wstring lower = raw;
+    for (wchar_t& c : lower) {
+        c = towlower(c);
+    }
+    std::wstring capitalized = lower;
+    for (wchar_t& c : capitalized) {
+        if (c >= L'a' && c <= L'z') {
+            c = towupper(c);
+            break;
+        }
+    }
+    std::wstring upper = raw;
+    for (wchar_t& c : upper) {
+        c = towupper(c);
+    }
+
+    std::vector<std::wstring> variants;
+    for (const auto& variant : {raw, capitalized, upper, lower}) {
+        if (std::find(variants.begin(), variants.end(), variant) == variants.end()) {
+            variants.push_back(variant);
+        }
+    }
+    return variants;
+}
+
+// F7/F8 の連打で循環させるカタカナの変種列を作る。
+// 全てカタカナ → 末尾1文字だけひらがな → 末尾2文字だけひらがな → ... と
+// 後ろから1文字ずつひらがなに戻していく (全体を一周すると先頭に戻る)。
+// 重複する形 (「ー」などカタカナに変換されない文字による) は取り除く
+std::vector<std::wstring> KatakanaCycleVariants(const std::wstring& reading, bool halfwidth)
+{
+    std::vector<std::wstring> variants;
+    for (size_t hiraganaCount = 0; hiraganaCount < reading.size(); ++hiraganaCount) {
+        const std::wstring prefix = reading.substr(0, reading.size() - hiraganaCount);
+        const std::wstring variant =
+            (halfwidth ? kana_forms::ToHalfwidth(prefix) : kana_forms::ToKatakana(prefix)) +
+            reading.substr(reading.size() - hiraganaCount);
+        if (std::find(variants.begin(), variants.end(), variant) == variants.end()) {
+            variants.push_back(variant);
+        }
+    }
+    return variants;
+}
+
+// 打鍵したローマ字そのものと大文字小文字の変種を候補に挿入する (英単語入力用)。
 // position は挿入開始位置。既にある候補 (学習済みなど) は動かさず挿入しない
 void InsertRawCandidates(ConversionSegment* segment, const std::wstring& raw, size_t position)
 {
     if (raw.empty() || !ContainsAsciiLetter(raw)) {
         return;
     }
-    std::wstring capitalized = raw;
-    capitalized[0] = towupper(capitalized[0]);
-    std::wstring upper = raw;
-    for (wchar_t& c : upper) {
-        c = towupper(c);
-    }
     auto& list = segment->candidates;
     position = (std::min)(position, list.size());
-    for (const auto& candidate : {raw, capitalized, upper}) {
+    for (const auto& candidate : CaseCycleVariants(raw)) {
         if (std::find(list.begin(), list.end(), candidate) == list.end()) {
             list.insert(list.begin() + position, candidate);
             ++position;
@@ -312,9 +355,12 @@ STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 
 bool TextService::IsKeyEaten(WPARAM wparam) const
 {
-    // Ctrl / Alt 併用時はアプリのショートカットなので手を出さない
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0) {
-        return false;
+    // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
+    // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除) だけは IME が処理する
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    if (ctrl || alt) {
+        return ctrl && !alt && Composing() && (wparam == 'M' || wparam == 'H');
     }
     const bool shifted = IsShiftPressed();
 
@@ -331,6 +377,10 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_LEFT:
         case VK_RIGHT:
             // 候補選択中のみ矢印キーを使う (↑↓=候補, ←→=文節移動, Shift+←→=文節伸縮)
+            return converting_;
+        case VK_PRIOR:
+        case VK_NEXT:
+            // 候補選択中のみ PgUp/PgDn で先頭/末尾の文節へ移動する
             return converting_;
         case VK_F4:
         case VK_F6:
@@ -466,6 +516,21 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 {
+    // Ctrl 併用ショートカット: Ctrl+M は Enter、Ctrl+H は BackSpace として扱う。
+    // (英字の打鍵と解釈されないよう、ここで読み替えてから通常の処理に流す)
+    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+        switch (wparam) {
+        case 'M':
+            wparam = VK_RETURN;
+            break;
+        case 'H':
+            wparam = VK_BACK;
+            break;
+        default:
+            return S_OK; // IsKeyEaten が食べる Ctrl 併用はこの2つのみ
+        }
+    }
+
     const bool shifted = IsShiftPressed();
 
     // Shift+英字: 大文字をそのまま未確定文字列へ入れ、英字モードに入る。
@@ -590,6 +655,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return S_OK;
         }
         return shifted ? ResizeSegment(context, +1) : MoveSegment(context, +1);
+    case VK_PRIOR:
+        // PgUp: 先頭の文節へ移動
+        return converting_ ? MoveSegmentTo(context, 0) : S_OK;
+    case VK_NEXT:
+        // PgDn: 末尾の文節へ移動
+        return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     case VK_F4:
         return ConvertToSymbols(context);
     case VK_F6:
@@ -744,8 +815,13 @@ HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
     const size_t count = segments_[segmentIndex_].candidates.size();
     selected_[segmentIndex_] = (selected_[segmentIndex_] + count + delta) % count;
     SyncPairedSegment(segmentIndex_);
-    candidateWindow_.SetSelection(selected_[segmentIndex_]);
-    return UpdateConvertingDisplay(context);
+    HRESULT hr = UpdateConvertingDisplay(context);
+    if (candidateWindow_.Visible()) {
+        candidateWindow_.SetSelection(selected_[segmentIndex_]);
+    } else {
+        ShowCandidateWindow(context); // F7-F10 で閉じた後の候補送りでは出し直す
+    }
+    return hr;
 }
 
 HRESULT TextService::MoveSegment(ITfContext* context, int delta)
@@ -754,7 +830,15 @@ HRESULT TextService::MoveSegment(ITfContext* context, int delta)
         return E_UNEXPECTED;
     }
     const size_t count = segments_.size();
-    segmentIndex_ = (segmentIndex_ + count + delta) % count;
+    return MoveSegmentTo(context, (segmentIndex_ + count + delta) % count);
+}
+
+HRESULT TextService::MoveSegmentTo(ITfContext* context, size_t index)
+{
+    if (!converting_ || index >= segments_.size()) {
+        return E_UNEXPECTED;
+    }
+    segmentIndex_ = index;
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context); // 候補一覧を現在文節のものに差し替える
     return hr;
@@ -841,6 +925,17 @@ void TextService::EnsureConversionState()
     converting_ = true;
 }
 
+std::wstring TextService::SegmentRawText(size_t index) const
+{
+    // この文節の読みに対応する打鍵列を composer から切り出す
+    // (文節読みの連結 = composer_.Commit() であることを前提にできる)
+    size_t start = 0;
+    for (size_t i = 0; i < index; ++i) {
+        start += segments_[i].reading.size();
+    }
+    return composer_.RawRange(start, segments_[index].reading.size());
+}
+
 std::wstring TextService::SegmentFormText(size_t index, ConversionForm form) const
 {
     const std::wstring& reading = segments_[index].reading;
@@ -852,21 +947,50 @@ std::wstring TextService::SegmentFormText(size_t index, ConversionForm form) con
     case ConversionForm::HalfwidthKatakana:
         return kana_forms::ToHalfwidth(reading);
     case ConversionForm::FullwidthAscii:
-    case ConversionForm::HalfwidthAscii: {
-        // この文節の読みに対応する打鍵列を composer から切り出す
-        // (文節読みの連結 = composer_.Commit() であることを前提にできる)
-        size_t start = 0;
-        for (size_t i = 0; i < index; ++i) {
-            start += segments_[i].reading.size();
-        }
-        const std::wstring raw = composer_.RawRange(start, reading.size());
-        if (form == ConversionForm::HalfwidthAscii) {
-            return raw;
-        }
-        return kana_forms::ToFullwidthAscii(raw);
-    }
+        return kana_forms::ToFullwidthAscii(SegmentRawText(index));
+    case ConversionForm::HalfwidthAscii:
+        return SegmentRawText(index);
     }
     return {};
+}
+
+std::wstring TextService::NextFormText(size_t index, ConversionForm form) const
+{
+    std::vector<std::wstring> variants;
+    switch (form) {
+    case ConversionForm::Hiragana:
+        return SegmentFormText(index, form); // 循環しない単一の形
+    case ConversionForm::Katakana:
+    case ConversionForm::HalfwidthKatakana:
+        variants = KatakanaCycleVariants(segments_[index].reading,
+                                         form == ConversionForm::HalfwidthKatakana);
+        break;
+    case ConversionForm::FullwidthAscii:
+    case ConversionForm::HalfwidthAscii: {
+        const std::wstring raw = SegmentRawText(index);
+        if (raw.empty()) {
+            return {};
+        }
+        variants = CaseCycleVariants(raw);
+        if (form == ConversionForm::FullwidthAscii) {
+            for (std::wstring& variant : variants) {
+                variant = kana_forms::ToFullwidthAscii(variant);
+            }
+        }
+        break;
+    }
+    }
+    if (variants.empty()) {
+        return {};
+    }
+
+    // 現在の選択が循環列のどれかなら次の形へ、そうでなければ先頭から
+    const std::wstring& current = segments_[index].candidates[selected_[index]];
+    auto it = std::find(variants.begin(), variants.end(), current);
+    if (it == variants.end()) {
+        return variants.front();
+    }
+    return variants[(static_cast<size_t>(it - variants.begin()) + 1) % variants.size()];
 }
 
 HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
@@ -876,7 +1000,9 @@ HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
     }
     EnsureConversionState();
 
-    const std::wstring converted = SegmentFormText(segmentIndex_, form);
+    // F7-F10 は連打で形を循環させる (F7/F8: 後ろから1文字ずつひらがなへ、
+    // F9/F10: 大文字小文字の切り替え)。F6 は単一の形 (ひらがな) を選ぶだけ
+    const std::wstring converted = NextFormText(segmentIndex_, form);
     if (converted.empty()) {
         return S_OK; // 打鍵列を切り出せない場合などは何もしない
     }
@@ -892,7 +1018,9 @@ HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
     SyncPairedSegment(segmentIndex_);
 
     HRESULT hr = UpdateConvertingDisplay(context);
-    ShowCandidateWindow(context);
+    // 直接変換は結果が一意 (または連打で循環) なので候補ウィンドウは出さない
+    // (表示中なら閉じる)
+    candidateWindow_.Hide();
     return hr;
 }
 

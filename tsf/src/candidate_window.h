@@ -20,6 +20,9 @@ public:
 
     void Hide();
 
+    // 表示中かどうか (Hide 済み・未表示なら false)
+    bool Visible() const { return hwnd_ != nullptr; }
+
     // ウィンドウクラス登録から参照するため public にしている
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
