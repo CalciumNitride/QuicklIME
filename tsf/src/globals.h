@@ -13,6 +13,18 @@ extern const CLSID kClsid;
 // {C0730986-A430-4595-8D18-A4103718C6C6}
 extern const GUID kProfileGuid;
 
+// IMEオン/オフをトグルする preserved key (半角/全角キー系) の GUID
+// {5C1B3F6E-9A2D-4E8B-B7C4-2F0D8A61E395}
+extern const GUID kPreservedKeyToggleGuid;
+
+// IMEオン専用キー (VK_IME_ON) の preserved key GUID
+// {8E4A70D2-06C3-4D5B-9F1A-C58B37A2D6E1}
+extern const GUID kPreservedKeyImeOnGuid;
+
+// IMEオフ専用キー (VK_IME_OFF) の preserved key GUID
+// {3B9D51C7-E842-4F06-A1B3-7D64F90C25A8}
+extern const GUID kPreservedKeyImeOffGuid;
+
 // 日本語
 inline constexpr LANGID kLangId = 0x0411;
 

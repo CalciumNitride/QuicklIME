@@ -218,6 +218,28 @@ bool IsShiftPressed()
     return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 }
 
+// IMEオン/オフ専用キー (新しめの日本語キーボードが送出する)。古い SDK には無い
+#ifndef VK_IME_ON
+#define VK_IME_ON 0x16
+#endif
+#ifndef VK_IME_OFF
+#define VK_IME_OFF 0x1A
+#endif
+
+// IMEオン/オフをトグルする preserved key。半角/全角キーは修飾キーや IME 状態に
+// よって VK_KANJI / VK_OEM_AUTO / VK_OEM_ENLW のいずれかで届くため全て登録する
+const TF_PRESERVEDKEY kToggleKeys[] = {
+    {VK_KANJI, TF_MOD_IGNORE_ALL_MODIFIER},    // Alt+半角/全角 (漢字キー)
+    {VK_OEM_AUTO, TF_MOD_IGNORE_ALL_MODIFIER}, // 半角/全角
+    {VK_OEM_ENLW, TF_MOD_IGNORE_ALL_MODIFIER}, // 全角/半角
+};
+const TF_PRESERVEDKEY kImeOnKey = {VK_IME_ON, TF_MOD_IGNORE_ALL_MODIFIER};
+const TF_PRESERVEDKEY kImeOffKey = {VK_IME_OFF, TF_MOD_IGNORE_ALL_MODIFIER};
+
+const wchar_t kToggleKeyDesc[] = L"IMEオン/オフ";
+const wchar_t kImeOnKeyDesc[] = L"IMEオン";
+const wchar_t kImeOffKeyDesc[] = L"IMEオフ";
+
 } // namespace
 
 TextService::TextService()
@@ -229,7 +251,8 @@ TextService::TextService()
       targetAttribute_(TF_INVALID_GUIDATOM),
       converting_(false),
       segmentIndex_(0),
-      predictionIndex_(-1)
+      predictionIndex_(-1),
+      openCloseCookie_(TF_INVALID_COOKIE)
 {
     globals::DllAddRef();
 }
@@ -253,6 +276,8 @@ STDMETHODIMP TextService::QueryInterface(REFIID riid, void** ppv)
         *ppv = static_cast<ITfKeyEventSink*>(this);
     } else if (IsEqualIID(riid, IID_ITfCompositionSink)) {
         *ppv = static_cast<ITfCompositionSink*>(this);
+    } else if (IsEqualIID(riid, IID_ITfCompartmentEventSink)) {
+        *ppv = static_cast<ITfCompartmentEventSink*>(this);
     } else if (IsEqualIID(riid, IID_ITfDisplayAttributeProvider)) {
         *ppv = static_cast<ITfDisplayAttributeProvider*>(this);
     } else {
@@ -315,10 +340,42 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
         return hr;
     }
     hr = keystrokeMgr->AdviseKeyEventSink(clientId_, static_cast<ITfKeyEventSink*>(this), TRUE);
-    keystrokeMgr->Release();
     if (FAILED(hr)) {
+        keystrokeMgr->Release();
         Deactivate();
         return hr;
+    }
+
+    // IMEオン/オフの切替キーを preserved key として登録する (失敗しても続行)
+    for (const TF_PRESERVEDKEY& key : kToggleKeys) {
+        keystrokeMgr->PreserveKey(clientId_, globals::kPreservedKeyToggleGuid, &key,
+                                  kToggleKeyDesc, ARRAYSIZE(kToggleKeyDesc) - 1);
+    }
+    keystrokeMgr->PreserveKey(clientId_, globals::kPreservedKeyImeOnGuid, &kImeOnKey,
+                              kImeOnKeyDesc, ARRAYSIZE(kImeOnKeyDesc) - 1);
+    keystrokeMgr->PreserveKey(clientId_, globals::kPreservedKeyImeOffGuid, &kImeOffKey,
+                              kImeOffKeyDesc, ARRAYSIZE(kImeOffKeyDesc) - 1);
+    keystrokeMgr->Release();
+
+    // IMEオン/オフ状態 (OPENCLOSE compartment) の変更監視。
+    // 未設定 (VT_I4 以外) なら初期状態はオンにする (従来の常時オン挙動の維持)
+    ITfCompartment* compartment = OpenCloseCompartment();
+    if (compartment != nullptr) {
+        ITfSource* source = nullptr;
+        if (SUCCEEDED(compartment->QueryInterface(IID_ITfSource,
+                                                  reinterpret_cast<void**>(&source)))) {
+            source->AdviseSink(IID_ITfCompartmentEventSink,
+                               static_cast<ITfCompartmentEventSink*>(this), &openCloseCookie_);
+            source->Release();
+        }
+        VARIANT value;
+        VariantInit(&value);
+        const bool unset = FAILED(compartment->GetValue(&value)) || value.vt != VT_I4;
+        VariantClear(&value);
+        compartment->Release();
+        if (unset) {
+            SetKeyboardOpen(true);
+        }
     }
     return S_OK;
 }
@@ -333,9 +390,27 @@ STDMETHODIMP TextService::Deactivate()
     }
 
     if (threadMgr_ != nullptr) {
+        if (openCloseCookie_ != TF_INVALID_COOKIE) {
+            ITfCompartment* compartment = OpenCloseCompartment();
+            if (compartment != nullptr) {
+                ITfSource* source = nullptr;
+                if (SUCCEEDED(compartment->QueryInterface(
+                        IID_ITfSource, reinterpret_cast<void**>(&source)))) {
+                    source->UnadviseSink(openCloseCookie_);
+                    source->Release();
+                }
+                compartment->Release();
+            }
+            openCloseCookie_ = TF_INVALID_COOKIE;
+        }
         ITfKeystrokeMgr* keystrokeMgr = nullptr;
         if (SUCCEEDED(threadMgr_->QueryInterface(IID_ITfKeystrokeMgr,
                                                  reinterpret_cast<void**>(&keystrokeMgr)))) {
+            for (const TF_PRESERVEDKEY& key : kToggleKeys) {
+                keystrokeMgr->UnpreserveKey(globals::kPreservedKeyToggleGuid, &key);
+            }
+            keystrokeMgr->UnpreserveKey(globals::kPreservedKeyImeOnGuid, &kImeOnKey);
+            keystrokeMgr->UnpreserveKey(globals::kPreservedKeyImeOffGuid, &kImeOffKey);
             keystrokeMgr->UnadviseKeyEventSink(clientId_);
             keystrokeMgr->Release();
         }
@@ -356,6 +431,12 @@ STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 
 bool TextService::IsKeyEaten(WPARAM wparam) const
 {
+    // IMEオフ中は何も食べない (半角/全角キーなどは preserved key として
+    // key event sink より先に処理されるため、ここには来ない)
+    if (!IsKeyboardOpen()) {
+        return false;
+    }
+
     // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
     // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除)、
     // composition が無いときの Ctrl+Backspace (確定アンドゥ) だけは IME が処理する
@@ -434,6 +515,11 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     if (*eaten == FALSE) {
         return S_OK;
     }
+    if (wparam < pendingKeyUps_.size()) {
+        // 対応する key-up も食べる (端末エミュレータは key-up もアプリへ転送し、
+        // 確定の Enter などが素通りすると入力の誤送信につながるため)
+        pendingKeyUps_.set(wparam);
+    }
     return HandleKey(context, wparam);
 }
 
@@ -441,38 +527,131 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* context, WPARAM wparam, LPARAM
                                       BOOL* eaten)
 {
     UNREFERENCED_PARAMETER(context);
-    UNREFERENCED_PARAMETER(wparam);
     UNREFERENCED_PARAMETER(lparam);
 
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
-    *eaten = FALSE;
+    *eaten = (wparam < pendingKeyUps_.size() && pendingKeyUps_.test(wparam)) ? TRUE : FALSE;
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnKeyUp(ITfContext* context, WPARAM wparam, LPARAM lparam, BOOL* eaten)
 {
     UNREFERENCED_PARAMETER(context);
-    UNREFERENCED_PARAMETER(wparam);
     UNREFERENCED_PARAMETER(lparam);
 
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
-    *eaten = FALSE;
+    if (wparam < pendingKeyUps_.size() && pendingKeyUps_.test(wparam)) {
+        pendingKeyUps_.reset(wparam);
+        *eaten = TRUE;
+    } else {
+        *eaten = FALSE;
+    }
     return S_OK;
 }
 
 STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOOL* eaten)
 {
-    UNREFERENCED_PARAMETER(context);
-    UNREFERENCED_PARAMETER(rguid);
-
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
-    *eaten = FALSE;
+
+    bool open;
+    if (IsEqualGUID(rguid, globals::kPreservedKeyToggleGuid)) {
+        open = !IsKeyboardOpen();
+    } else if (IsEqualGUID(rguid, globals::kPreservedKeyImeOnGuid)) {
+        open = true;
+    } else if (IsEqualGUID(rguid, globals::kPreservedKeyImeOffGuid)) {
+        open = false;
+    } else {
+        *eaten = FALSE;
+        return S_OK;
+    }
+    *eaten = TRUE;
+
+    if (!open && Composing()) {
+        // オフにする前に入力途中の文字列を確定する
+        CommitComposition(context);
+    }
+    SetKeyboardOpen(open);
+    return S_OK;
+}
+
+// ---- IMEオン/オフ (OPENCLOSE compartment) ----
+
+ITfCompartment* TextService::OpenCloseCompartment() const
+{
+    if (threadMgr_ == nullptr) {
+        return nullptr;
+    }
+    ITfCompartmentMgr* compartmentMgr = nullptr;
+    if (FAILED(threadMgr_->QueryInterface(IID_ITfCompartmentMgr,
+                                          reinterpret_cast<void**>(&compartmentMgr)))) {
+        return nullptr;
+    }
+    ITfCompartment* compartment = nullptr;
+    compartmentMgr->GetCompartment(GUID_COMPARTMENT_KEYBOARD_OPENCLOSE, &compartment);
+    compartmentMgr->Release();
+    return compartment;
+}
+
+bool TextService::IsKeyboardOpen() const
+{
+    ITfCompartment* compartment = OpenCloseCompartment();
+    if (compartment == nullptr) {
+        // 取得できない環境ではオン扱い (従来の常時オン挙動)
+        return true;
+    }
+    bool open = true;
+    VARIANT value;
+    VariantInit(&value);
+    if (SUCCEEDED(compartment->GetValue(&value)) && value.vt == VT_I4) {
+        open = value.lVal != 0;
+    }
+    VariantClear(&value);
+    compartment->Release();
+    return open;
+}
+
+void TextService::SetKeyboardOpen(bool open)
+{
+    ITfCompartment* compartment = OpenCloseCompartment();
+    if (compartment == nullptr) {
+        return;
+    }
+    VARIANT value;
+    VariantInit(&value);
+    value.vt = VT_I4;
+    value.lVal = open ? 1 : 0;
+    compartment->SetValue(clientId_, &value);
+    compartment->Release();
+}
+
+// ---- ITfCompartmentEventSink ----
+
+STDMETHODIMP TextService::OnChange(REFGUID rguid)
+{
+    if (!IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
+        return S_OK;
+    }
+    // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったら、
+    // 入力途中の文字列を確定して後始末する。自前の preserved key 経由では
+    // 確定済みなのでここでは何も起きない
+    if (!IsKeyboardOpen() && Composing()) {
+        ITfDocumentMgr* docMgr = nullptr;
+        if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) &&
+            docMgr != nullptr) {
+            ITfContext* context = nullptr;
+            if (SUCCEEDED(docMgr->GetTop(&context)) && context != nullptr) {
+                CommitComposition(context);
+                context->Release();
+            }
+            docMgr->Release();
+        }
+    }
     return S_OK;
 }
 
@@ -520,6 +699,28 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
 }
 
 // ---- 状態機械 ----
+
+HRESULT TextService::CommitComposition(ITfContext* context)
+{
+    if (!Composing()) {
+        return S_OK;
+    }
+    if (converting_) {
+        return CommitConversion(context);
+    }
+    if (predictionIndex_ >= 0) {
+        return CommitPrediction(context);
+    }
+    // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
+    // 予測サジェストの履歴に蓄積する。かなのみの無変換確定は学習しない
+    // (学習は変換候補の並び替えにも使われるため、「きょう→きょう」の記録が
+    //  入ると変換時にひらがな候補が先頭へ来てしまう)
+    const std::wstring kana = composer_.Commit();
+    if (ContainsAsciiLetter(kana)) {
+        engine_.Learn({{kana, kana}});
+    }
+    return EndComposition(context, kana);
+}
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 {
@@ -633,23 +834,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 以下は composition 中のみ食べているキー
     switch (wparam) {
     case VK_RETURN:
-        if (converting_) {
-            return CommitConversion(context);
-        }
-        if (predictionIndex_ >= 0) {
-            return CommitPrediction(context);
-        }
-        {
-            // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
-            // 予測サジェストの履歴に蓄積する。かなのみの無変換確定は学習しない
-            // (学習は変換候補の並び替えにも使われるため、「きょう→きょう」の記録が
-            //  入ると変換時にひらがな候補が先頭へ来てしまう)
-            const std::wstring kana = composer_.Commit();
-            if (ContainsAsciiLetter(kana)) {
-                engine_.Learn({{kana, kana}});
-            }
-            return EndComposition(context, kana);
-        }
+        return CommitComposition(context);
     case VK_ESCAPE:
         // 候補選択中は変換を取り消してかな表示に戻る。
         // サジェスト選択中は選択解除のみ (もう一度 Esc で全消去)。それ以外は全消去

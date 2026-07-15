@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <msctf.h>
 
+#include <bitset>
 #include <string>
 #include <vector>
 
@@ -17,6 +18,7 @@
 class TextService : public ITfTextInputProcessorEx,
                     public ITfKeyEventSink,
                     public ITfCompositionSink,
+                    public ITfCompartmentEventSink,
                     public ITfDisplayAttributeProvider {
 public:
     TextService();
@@ -44,6 +46,9 @@ public:
     // ITfCompositionSink (アプリ側が composition を強制終了したときに呼ばれる)
     STDMETHODIMP OnCompositionTerminated(TfEditCookie ecWrite, ITfComposition* composition) override;
 
+    // ITfCompartmentEventSink (IMEオン/オフ状態の変更通知)
+    STDMETHODIMP OnChange(REFGUID rguid) override;
+
     // ITfDisplayAttributeProvider
     STDMETHODIMP EnumDisplayAttributeInfo(IEnumTfDisplayAttributeInfo** enumInfo) override;
     STDMETHODIMP GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttributeInfo** info) override;
@@ -53,6 +58,12 @@ private:
 
     // このキー入力を IME が処理する (アプリに渡さない) かどうか
     bool IsKeyEaten(WPARAM wparam) const;
+
+    // ---- IMEオン/オフ (OPENCLOSE compartment) ----
+    // オン/オフ状態を保持する compartment (呼び出し側で Release する。失敗時 nullptr)
+    ITfCompartment* OpenCloseCompartment() const;
+    bool IsKeyboardOpen() const;
+    void SetKeyboardOpen(bool open);
 
     // 食べたキーを状態機械に従って処理する
     HRESULT HandleKey(ITfContext* context, WPARAM wparam);
@@ -120,6 +131,8 @@ private:
     // 選択中のサジェスト候補で確定する (候補の完全な読みで学習も送る)
     HRESULT CommitPrediction(ITfContext* context);
 
+    // 入力途中の内容を現在の状態のまま確定する (Enter と同じ処理)
+    HRESULT CommitComposition(ITfContext* context);
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
@@ -159,4 +172,9 @@ private:
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)
+
+    DWORD openCloseCookie_;         // OPENCLOSE compartment sink の cookie
+    // key-down を食べたキー。端末エミュレータは key-up もアプリへ転送するため、
+    // 食べたキーの key-up も食べて確定キーなどが漏れないようにする
+    std::bitset<256> pendingKeyUps_;
 };
