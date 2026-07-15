@@ -169,6 +169,7 @@ void RomajiComposer::Clear()
     kana_.clear();
     raw_.clear();
     pending_.clear();
+    asciiMode_ = false;
 }
 
 bool RomajiComposer::Empty() const

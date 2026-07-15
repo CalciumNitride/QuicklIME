@@ -11,47 +11,120 @@
 
 namespace {
 
-// 記号キー (仮想キーコード) → 入力するかな
+// 記号キー1つぶんの定義: 未確定文字列に入れるかな (全角形) と打鍵文字そのもの
+struct SymbolKey {
+    WPARAM vk;
+    const wchar_t* kana; // 未確定文字列へ入れる全角形
+    const wchar_t* raw;  // 打鍵文字 (生ローマ字候補・英字モード用)
+};
+
+// 記号キー (仮想キーコード) → かな/打鍵文字
 // 日本語キーボード配列の想定 (フェーズ5で配列設定に対応する)
-const wchar_t* SymbolKeyToKana(WPARAM wparam, bool shifted)
+const SymbolKey* FindSymbolKey(WPARAM wparam, bool shifted)
 {
-    if (shifted) {
-        switch (wparam) {
-        case '1':       return L"！";
-        case VK_OEM_2:  return L"？"; // Shift + /
-        default:        return nullptr;
+    static const SymbolKey plain[] = {
+        {VK_OEM_COMMA,  L"、", L","},
+        {VK_OEM_PERIOD, L"。", L"."},
+        {VK_OEM_MINUS,  L"ー", L"-"},
+        {VK_OEM_2,      L"・", L"/"},
+        {VK_OEM_4,      L"「", L"["},
+        {VK_OEM_6,      L"」", L"]"},
+        {VK_OEM_3,      L"＠", L"@"},
+        {VK_OEM_PLUS,   L"；", L";"},
+        {VK_OEM_1,      L"：", L":"},
+        {VK_OEM_7,      L"＾", L"^"},
+        {VK_OEM_5,      L"￥", L"\\"}, // ¥ キー
+        {VK_OEM_102,    L"＼", L"\\"}, // ろ キー
+    };
+    static const SymbolKey shift[] = {
+        {'1',           L"！", L"!"},
+        {'2',           L"”", L"\""},
+        {'3',           L"＃", L"#"},
+        {'4',           L"＄", L"$"},
+        {'5',           L"％", L"%"},
+        {'6',           L"＆", L"&"},
+        {'7',           L"’", L"'"},
+        {'8',           L"（", L"("},
+        {'9',           L"）", L")"},
+        {VK_OEM_MINUS,  L"＝", L"="},
+        {VK_OEM_2,      L"？", L"?"},
+        {VK_OEM_4,      L"｛", L"{"},
+        {VK_OEM_6,      L"｝", L"}"},
+        {VK_OEM_3,      L"｀", L"`"},
+        {VK_OEM_PLUS,   L"＋", L"+"},
+        {VK_OEM_1,      L"＊", L"*"},
+        {VK_OEM_COMMA,  L"＜", L"<"},
+        {VK_OEM_PERIOD, L"＞", L">"},
+        {VK_OEM_7,      L"～", L"~"},
+        {VK_OEM_5,      L"｜", L"|"},
+        {VK_OEM_102,    L"＿", L"_"},
+    };
+    const SymbolKey* keys = shifted ? shift : plain;
+    const size_t count = shifted ? ARRAYSIZE(shift) : ARRAYSIZE(plain);
+    for (size_t i = 0; i < count; ++i) {
+        if (keys[i].vk == wparam) {
+            return &keys[i];
         }
     }
-    switch (wparam) {
-    case VK_OEM_COMMA:  return L"、";
-    case VK_OEM_PERIOD: return L"。";
-    case VK_OEM_MINUS:  return L"ー";
-    case VK_OEM_2:      return L"・"; // /
-    case VK_OEM_4:      return L"「"; // [
-    case VK_OEM_6:      return L"」"; // ]
-    default:            return nullptr;
-    }
+    return nullptr;
 }
 
-// 記号キー → 打鍵文字そのもの (生ローマ字候補用。SymbolKeyToKana と対応)
-const wchar_t* SymbolKeyToRaw(WPARAM wparam, bool shifted)
+// 対で使う記号 (開き, 閉じ)。かっこを変換したとき両側を同期させるために使う
+struct SymbolPair {
+    const wchar_t* open;
+    const wchar_t* close;
+};
+
+const SymbolPair kSymbolPairs[] = {
+    {L"（", L"）"}, {L"〔", L"〕"}, {L"［", L"］"}, {L"〘", L"〙"}, {L"〚", L"〛"},
+    {L"｛", L"｝"}, {L"〈", L"〉"}, {L"‹", L"›"},  {L"《", L"》"}, {L"«", L"»"},
+    {L"「", L"」"}, {L"『", L"』"}, {L"【", L"】"}, {L"〝", L"〟"}, {L"⁽", L"⁾"},
+    {L"₍", L"₎"},  {L"(", L")"},  {L"[", L"]"},  {L"{", L"}"},  {L"“", L"”"},
+    {L"‘", L"’"},
+};
+
+// text の対になる形を返す (wantClose: 閉じ形が欲しいか)。
+// クオートなど左右同形の記号はそのまま返し、対記号でなければ nullptr
+const wchar_t* PartnerSymbolText(const std::wstring& text, bool wantClose)
 {
-    if (shifted) {
-        switch (wparam) {
-        case '1':       return L"!";
-        case VK_OEM_2:  return L"?"; // Shift + /
-        default:        return nullptr;
+    for (const SymbolPair& pair : kSymbolPairs) {
+        if (wantClose && text == pair.open) {
+            return pair.close;
+        }
+        if (!wantClose && text == pair.close) {
+            return pair.open;
         }
     }
-    switch (wparam) {
-    case VK_OEM_COMMA:  return L",";
-    case VK_OEM_PERIOD: return L".";
-    case VK_OEM_MINUS:  return L"-";
-    case VK_OEM_2:      return L"/";
-    case VK_OEM_4:      return L"[";
-    case VK_OEM_6:      return L"]";
-    default:            return nullptr;
+    static const wchar_t* kSymmetric[] = {L"”", L"’", L"″", L"′", L"\"", L"'", L"＂"};
+    for (const wchar_t* s : kSymmetric) {
+        if (text == s) {
+            return s;
+        }
     }
+    return nullptr;
+}
+
+// 打鍵で未確定文字列に入る対記号の読みの対応 (開き→閉じ / 閉じ→開き)。
+// 記号キーから入るのは （）｛｝「」 とクオート (”’ は左右同形) のみ
+const wchar_t* CloseReadingForOpen(const std::wstring& reading)
+{
+    if (reading == L"（") return L"）";
+    if (reading == L"｛") return L"｝";
+    if (reading == L"「") return L"」";
+    return nullptr;
+}
+
+const wchar_t* OpenReadingForClose(const std::wstring& reading)
+{
+    if (reading == L"）") return L"（";
+    if (reading == L"｝") return L"｛";
+    if (reading == L"」") return L"「";
+    return nullptr;
+}
+
+bool IsSymmetricQuoteReading(const std::wstring& reading)
+{
+    return reading == L"”" || reading == L"’";
 }
 
 bool IsLetterKey(WPARAM wparam)
@@ -273,14 +346,11 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         // composition 中は英字 (Shift併用含む)・数字・記号も IME が処理し、
         // 未確定文字列の外へ文字が漏れないようにする
         return IsLetterKey(wparam) || IsDigitKey(wparam) ||
-               SymbolKeyToKana(wparam, shifted) != nullptr;
+               FindSymbolKey(wparam, shifted) != nullptr;
     }
 
-    // composition が無いとき: Shift 併用は ！？ などの記号のみ扱う
-    if (shifted) {
-        return SymbolKeyToKana(wparam, true) != nullptr;
-    }
-    return IsLetterKey(wparam) || SymbolKeyToKana(wparam, false) != nullptr;
+    // composition が無いとき: 英字 (Shift併用含む) と記号キーで composition を開始する
+    return IsLetterKey(wparam) || FindSymbolKey(wparam, shifted) != nullptr;
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -398,34 +468,18 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 {
     const bool shifted = IsShiftPressed();
 
-    // Shift+英字: ローマ字変換に回さず、大文字の半角英字をそのまま確定済みかな列へ入れる
-    // (数字キーと同様、未変換ローマ字があれば先に確定してから追加される)
+    // Shift+英字: 大文字をそのまま未確定文字列へ入れ、英字モードに入る。
+    // 以降の英字はローマ字変換せずアルファベットのまま続く (既存IMEと同様)
     if (shifted && IsLetterKey(wparam)) {
+        if (converting_) {
+            HRESULT hr = CommitConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+        }
         const std::wstring upper(1, static_cast<wchar_t>(wparam));
-        if (converting_) {
-            HRESULT hr = CommitConversion(context);
-            if (FAILED(hr)) {
-                return hr;
-            }
-            return InsertText(context, upper);
-        }
-        if (Composing()) {
-            composer_.PushKana(upper, upper);
-            return UpdateCompositionText(context, composer_.Display());
-        }
-        return InsertText(context, upper);
-    }
-
-    // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)
-    if (IsLetterKey(wparam)) {
-        if (converting_) {
-            HRESULT hr = CommitConversion(context);
-            if (FAILED(hr)) {
-                return hr;
-            }
-        }
-        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
-        composer_.Push(c);
+        composer_.EnterAsciiMode();
+        composer_.PushKana(upper, upper);
         if (!Composing()) {
             HRESULT hr = StartComposition(context);
             if (FAILED(hr)) {
@@ -436,22 +490,55 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return UpdateCompositionText(context, composer_.Display());
     }
 
-    // 記号: composition 中なら未確定文字列へ、そうでなければ直接挿入
-    // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
-    if (const wchar_t* kana = SymbolKeyToKana(wparam, shifted)) {
+    // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)。
+    // 英字モード中は変換せず小文字のまま続ける
+    if (IsLetterKey(wparam)) {
         if (converting_) {
             HRESULT hr = CommitConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
-            return InsertText(context, kana);
         }
-        if (Composing()) {
-            const wchar_t* raw = SymbolKeyToRaw(wparam, shifted);
-            composer_.PushKana(kana, raw != nullptr ? raw : kana);
-            return UpdateCompositionText(context, composer_.Display());
+        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
+        if (composer_.AsciiMode()) {
+            const std::wstring letter(1, c);
+            composer_.PushKana(letter, letter);
+        } else {
+            composer_.Push(c);
         }
-        return InsertText(context, kana);
+        if (!Composing()) {
+            HRESULT hr = StartComposition(context);
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+        }
+        return UpdateCompositionText(context, composer_.Display());
+    }
+
+    // 記号: 全角形を未確定文字列へ入れる (composition が無ければ開始する)。
+    // 英字モード中は打鍵文字そのまま。
+    // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
+    if (const SymbolKey* symbol = FindSymbolKey(wparam, shifted)) {
+        if (converting_) {
+            HRESULT hr = CommitConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+        }
+        if (composer_.AsciiMode()) {
+            composer_.PushKana(symbol->raw, symbol->raw);
+        } else {
+            composer_.PushKana(symbol->kana, symbol->raw);
+        }
+        if (!Composing()) {
+            HRESULT hr = StartComposition(context);
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+        }
+        return UpdateCompositionText(context, composer_.Display());
     }
 
     // 数字: composition 中のみここへ来る (composition が無ければ食べていない)
@@ -556,9 +643,97 @@ HRESULT TextService::StartConversion(ITfContext* context)
     segmentIndex_ = 0;
     converting_ = true;
 
+    // 対記号の既定候補を両側で揃える (学習で片側だけ変わっている場合など)
+    for (size_t i = 0; i < segments_.size(); ++i) {
+        SyncPairedSegment(i);
+    }
+
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
     return hr;
+}
+
+void TextService::SyncPairedSegment(size_t index)
+{
+    const std::wstring& reading = segments_[index].reading;
+    size_t partner = segments_.size(); // 「見つからない」の印
+    bool wantClose = false;            // 相手の文節に閉じ形を入れるか
+
+    if (const wchar_t* closeReading = CloseReadingForOpen(reading)) {
+        // 開き記号: 同じ深さの閉じ記号を前方に探す
+        int depth = 0;
+        for (size_t j = index + 1; j < segments_.size(); ++j) {
+            if (segments_[j].reading == reading) {
+                ++depth;
+            } else if (segments_[j].reading == closeReading) {
+                if (depth == 0) {
+                    partner = j;
+                    break;
+                }
+                --depth;
+            }
+        }
+        wantClose = true;
+    } else if (const wchar_t* openReading = OpenReadingForClose(reading)) {
+        // 閉じ記号: 同じ深さの開き記号を後方に探す
+        int depth = 0;
+        for (size_t j = index; j-- > 0;) {
+            if (segments_[j].reading == reading) {
+                ++depth;
+            } else if (segments_[j].reading == openReading) {
+                if (depth == 0) {
+                    partner = j;
+                    break;
+                }
+                --depth;
+            }
+        }
+        wantClose = false;
+    } else if (IsSymmetricQuoteReading(reading)) {
+        // 左右同形のクオート: 同じ読みの文節が交互に開き/閉じでペアになる
+        size_t precedingCount = 0;
+        for (size_t j = 0; j < index; ++j) {
+            if (segments_[j].reading == reading) {
+                ++precedingCount;
+            }
+        }
+        if (precedingCount % 2 == 0) {
+            for (size_t j = index + 1; j < segments_.size(); ++j) {
+                if (segments_[j].reading == reading) {
+                    partner = j;
+                    break;
+                }
+            }
+            wantClose = true;
+        } else {
+            for (size_t j = index; j-- > 0;) {
+                if (segments_[j].reading == reading) {
+                    partner = j;
+                    break;
+                }
+            }
+            wantClose = false;
+        }
+    } else {
+        return; // 対記号の文節ではない
+    }
+
+    if (partner >= segments_.size()) {
+        return; // 対の相手が入力に無い (片側だけの入力)
+    }
+
+    const std::wstring& current = segments_[index].candidates[selected_[index]];
+    const wchar_t* partnerText = PartnerSymbolText(current, wantClose);
+    if (partnerText == nullptr) {
+        return;
+    }
+    auto& candidates = segments_[partner].candidates;
+    auto it = std::find(candidates.begin(), candidates.end(), partnerText);
+    if (it == candidates.end()) {
+        candidates.push_back(partnerText);
+        it = candidates.end() - 1;
+    }
+    selected_[partner] = static_cast<size_t>(it - candidates.begin());
 }
 
 HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
@@ -568,6 +743,7 @@ HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
     }
     const size_t count = segments_[segmentIndex_].candidates.size();
     selected_[segmentIndex_] = (selected_[segmentIndex_] + count + delta) % count;
+    SyncPairedSegment(segmentIndex_);
     candidateWindow_.SetSelection(selected_[segmentIndex_]);
     return UpdateConvertingDisplay(context);
 }
@@ -713,6 +889,7 @@ HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
         it = candidates.end() - 1;
     }
     selected_[segmentIndex_] = static_cast<size_t>(it - candidates.begin());
+    SyncPairedSegment(segmentIndex_);
 
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
@@ -741,6 +918,7 @@ HRESULT TextService::ConvertToSymbols(ITfContext* context)
     }
     candidates = std::move(symbols);
     selected_[segmentIndex_] = 0;
+    SyncPairedSegment(segmentIndex_);
 
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);

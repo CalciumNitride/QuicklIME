@@ -91,6 +91,9 @@ private:
     HRESULT ConvertToSymbols(ITfContext* context);
     // 未変換なら全文を1文節とした変換状態を作る (直接変換の下準備)
     void EnsureConversionState();
+    // index の文節の選択候補がかっこ・クオートなどの対記号なら、
+    // 対になる側の文節の選択も対応する記号に同期させる
+    void SyncPairedSegment(size_t index);
     // 現在文節を form で変換した文字列 (対応する打鍵が無いなどの場合は空)
     std::wstring SegmentFormText(size_t index, ConversionForm form) const;
 

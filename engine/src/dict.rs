@@ -135,9 +135,21 @@ impl Dictionary {
         self.map.get(reading).map(Vec::as_slice).unwrap_or(&[])
     }
 
-    /// 読みに対応する記号一覧を返す (symbol.tsv の記載順)
+    /// 読みに対応する記号一覧を返す (symbol.tsv の記載順)。
+    /// symbol.tsv の読みは半角形 ("(" など) で載っているため、完全一致で
+    /// 見つからない場合は全角英数記号を半角に正規化して引き直す
+    /// (「（」を変換すると ( ［ 〔 などが出る)
     pub fn lookup_symbols(&self, reading: &str) -> &[String] {
-        self.symbols.get(reading).map(Vec::as_slice).unwrap_or(&[])
+        if let Some(list) = self.symbols.get(reading) {
+            return list;
+        }
+        let normalized = normalize_symbol_reading(reading);
+        if normalized != reading {
+            if let Some(list) = self.symbols.get(&normalized) {
+                return list;
+            }
+        }
+        &[]
     }
 
     pub fn entry_count(&self) -> usize {
@@ -147,6 +159,26 @@ impl Dictionary {
     pub fn symbol_count(&self) -> usize {
         self.symbol_count
     }
+}
+
+/// 記号辞書を引くための読みの正規化: 全角英数記号を半角にする。
+/// TSF 層は記号キーを全角形 (「（」など) で未確定文字列に入れるが、
+/// symbol.tsv の読みは半角形で載っているため
+fn normalize_symbol_reading(reading: &str) -> String {
+    reading
+        .chars()
+        .map(|c| match c {
+            // 全角 ASCII (！ U+FF01 〜 ～ U+FF5E) → 半角
+            '\u{FF01}'..='\u{FF5E}' => {
+                char::from_u32(c as u32 - 0xFEE0).unwrap_or(c)
+            }
+            '　' => ' ',
+            '￥' => '\\',
+            '”' | '“' => '"',
+            '’' | '‘' => '\'',
+            _ => c,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -206,5 +238,21 @@ mod tests {
     fn 記号の重複と壊れた行はカウントしない() {
         // → の2重登録・記号が空の行・列不足の行は数えず、有効なのは4件
         assert_eq!(sample_symbols().symbol_count(), 4);
+    }
+
+    #[test]
+    fn 全角の読みは半角に正規化して記号を引ける() {
+        let mut dict = Dictionary::empty();
+        let data = "記号\t（\t( [\t始め丸括弧\n\
+                    記号\t［\t( [\t始め角括弧\n\
+                    記号\t”\t\"\t終わりダブルクォート\n";
+        dict.load_symbols_from(data.as_bytes()).unwrap();
+        // 完全一致 (半角) はそのまま
+        assert_eq!(dict.lookup_symbols("("), ["（", "［"]);
+        // 全角形は半角に正規化して一致する
+        assert_eq!(dict.lookup_symbols("（"), ["（", "［"]);
+        assert_eq!(dict.lookup_symbols("［"), ["（", "［"]);
+        assert_eq!(dict.lookup_symbols("”"), ["”"]);
+        assert!(dict.lookup_symbols("ない").is_empty());
     }
 }

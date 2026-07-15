@@ -18,6 +18,12 @@ public:
     // 未変換ローマ字が残っていれば先に確定処理をしてから追加する
     void PushKana(const std::wstring& kana, const std::wstring& raw);
 
+    // 英字モードに入る (Shift+英字での大文字入力時)。
+    // 以降の入力をローマ字変換せずアルファベットのまま続けるための状態で、
+    // Clear() (composition の終了) まで維持される
+    void EnterAsciiMode() { asciiMode_ = true; }
+    bool AsciiMode() const { return asciiMode_; }
+
     // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)
     void Backspace();
 
@@ -48,4 +54,5 @@ private:
     std::wstring kana_;             // 確定済みのかな
     std::vector<std::wstring> raw_; // kana_ の各文字に対応する打鍵列
     std::wstring pending_;          // 未変換のローマ字
+    bool asciiMode_ = false;        // 英字モード (Shift+英字以降はアルファベットのまま)
 };
