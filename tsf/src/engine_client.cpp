@@ -169,38 +169,39 @@ bool EngineClient::Transact(const std::string& request, std::string* response)
         if (!EnsureConnected()) {
             return false;
         }
-
-        DWORD written = 0;
-        if (!WriteFile(pipe_, request.data(), static_cast<DWORD>(request.size()), &written,
-                       nullptr) ||
-            written != request.size()) {
-            Disconnect();
-            continue;
+        if (SendReceive(request, response)) {
+            return true;
         }
-
-        // 改行が来るまで読む
-        response->clear();
-        char buffer[1024];
-        bool failed = false;
-        while (response->find('\n') == std::string::npos) {
-            DWORD read = 0;
-            if (!ReadFile(pipe_, buffer, sizeof(buffer), &read, nullptr) || read == 0) {
-                failed = true;
-                break;
-            }
-            response->append(buffer, read);
-            if (response->size() > kMaxResponseBytes) {
-                failed = true;
-                break;
-            }
-        }
-        if (failed) {
-            Disconnect();
-            continue;
-        }
-        return true;
     }
     return false;
+}
+
+bool EngineClient::SendReceive(const std::string& request, std::string* response)
+{
+    DWORD written = 0;
+    if (!WriteFile(pipe_, request.data(), static_cast<DWORD>(request.size()), &written,
+                   nullptr) ||
+        written != request.size()) {
+        Disconnect();
+        return false;
+    }
+
+    // 改行が来るまで読む
+    response->clear();
+    char buffer[1024];
+    while (response->find('\n') == std::string::npos) {
+        DWORD read = 0;
+        if (!ReadFile(pipe_, buffer, sizeof(buffer), &read, nullptr) || read == 0) {
+            Disconnect();
+            return false;
+        }
+        response->append(buffer, read);
+        if (response->size() > kMaxResponseBytes) {
+            Disconnect();
+            return false;
+        }
+    }
+    return true;
 }
 
 namespace {
@@ -308,6 +309,43 @@ bool EngineClient::ConvertSymbols(const std::wstring& kana,
     if (response.size() > 3) {
         for (const std::string& field : SplitFields(response.substr(3), '\t')) {
             candidates->push_back(Utf8ToWide(field));
+        }
+    }
+    return true;
+}
+
+bool EngineClient::Predict(const std::wstring& kana,
+                           std::vector<PredictionCandidate>* candidates)
+{
+    if (candidates == nullptr || kana.empty()) {
+        return false;
+    }
+    // 毎打鍵で呼ばれるため、エンジンの自動起動 (最大2秒のブロック) はしない。
+    // 未接続ならパイプを1回だけ開いてみて、開けなければ黙って諦める
+    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("PREDICT\t" + WideToUtf8(kana) + "\n", &response)) {
+        return false;
+    }
+
+    // 応答: "OK\t読み\x1F表記\t読み\x1F表記...\n" (候補なしなら "OK\n")
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK", 0) != 0) {
+        return false;
+    }
+    candidates->clear();
+    if (response.size() > 3) {
+        for (const std::string& field : SplitFields(response.substr(3), '\t')) {
+            const std::vector<std::string> parts = SplitFields(field, '\x1f');
+            if (parts.size() != 2) {
+                continue; // 読み+表記のペアでない候補は無視
+            }
+            candidates->push_back({Utf8ToWide(parts[0]), Utf8ToWide(parts[1])});
         }
     }
     return true;

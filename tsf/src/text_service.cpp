@@ -228,7 +228,8 @@ TextService::TextService()
       inputAttribute_(TF_INVALID_GUIDATOM),
       targetAttribute_(TF_INVALID_GUIDATOM),
       converting_(false),
-      segmentIndex_(0)
+      segmentIndex_(0),
+      predictionIndex_(-1)
 {
     globals::DllAddRef();
 }
@@ -376,16 +377,17 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         case VK_BACK:
         case VK_SPACE:
             return true;
+        case VK_TAB:
         case VK_UP:
         case VK_DOWN:
         case VK_LEFT:
         case VK_RIGHT:
-            // 候補選択中のみ矢印キーを使う (↑↓=候補, ←→=文節移動, Shift+←→=文節伸縮)
-            return converting_;
         case VK_PRIOR:
         case VK_NEXT:
-            // 候補選択中のみ PgUp/PgDn で先頭/末尾の文節へ移動する
-            return converting_;
+            // composition 中の Tab (サジェスト選択。変換中は変換を取り消して移行)・
+            // 矢印・PgUp/PgDn は常に食べる (アプリにキャレットやフォーカスを
+            // 動かさせない)。用途が無い状態では食べた上で何もしない
+            return true;
         case VK_F4:
         case VK_F6:
         case VK_F7:
@@ -484,6 +486,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
 
     // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
     ClearConversion();
+    ClearPrediction();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -559,7 +562,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 return hr;
             }
         }
-        return UpdateCompositionText(context, composer_.Display());
+        return UpdateCompositionAndPredict(context);
     }
 
     // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)。
@@ -585,7 +588,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 return hr;
             }
         }
-        return UpdateCompositionText(context, composer_.Display());
+        return UpdateCompositionAndPredict(context);
     }
 
     // 記号: 全角形を未確定文字列へ入れる (composition が無ければ開始する)。
@@ -610,7 +613,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 return hr;
             }
         }
-        return UpdateCompositionText(context, composer_.Display());
+        return UpdateCompositionAndPredict(context);
     }
 
     // 数字: composition 中のみここへ来る (composition が無ければ食べていない)
@@ -624,17 +627,39 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             return InsertText(context, digit);
         }
         composer_.PushKana(digit, digit);
-        return UpdateCompositionText(context, composer_.Display());
+        return UpdateCompositionAndPredict(context);
     }
 
     // 以下は composition 中のみ食べているキー
     switch (wparam) {
     case VK_RETURN:
-        return converting_ ? CommitConversion(context)
-                           : EndComposition(context, composer_.Commit());
+        if (converting_) {
+            return CommitConversion(context);
+        }
+        if (predictionIndex_ >= 0) {
+            return CommitPrediction(context);
+        }
+        {
+            // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
+            // 予測サジェストの履歴に蓄積する。かなのみの無変換確定は学習しない
+            // (学習は変換候補の並び替えにも使われるため、「きょう→きょう」の記録が
+            //  入ると変換時にひらがな候補が先頭へ来てしまう)
+            const std::wstring kana = composer_.Commit();
+            if (ContainsAsciiLetter(kana)) {
+                engine_.Learn({{kana, kana}});
+            }
+            return EndComposition(context, kana);
+        }
     case VK_ESCAPE:
-        // 候補選択中は変換を取り消してかな表示に戻る。それ以外は全消去
-        return converting_ ? CancelConversion(context) : EndComposition(context, L"");
+        // 候補選択中は変換を取り消してかな表示に戻る。
+        // サジェスト選択中は選択解除のみ (もう一度 Esc で全消去)。それ以外は全消去
+        if (converting_) {
+            return CancelConversion(context);
+        }
+        if (predictionIndex_ >= 0) {
+            return DeselectPrediction(context);
+        }
+        return EndComposition(context, L"");
     case VK_BACK:
         if (converting_) {
             return CancelConversion(context);
@@ -643,13 +668,26 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         if (composer_.Empty()) {
             return EndComposition(context, L"");
         }
-        return UpdateCompositionText(context, composer_.Display());
+        return UpdateCompositionAndPredict(context);
     case VK_SPACE:
         return converting_ ? CycleCandidate(context, +1) : StartConversion(context);
+    case VK_TAB:
+        // サジェスト選択。Shift+Tab は逆方向。
+        // 変換中は変換を取り消してサジェスト選択へ移行する (予測が無ければかな表示に戻るだけ)
+        if (converting_) {
+            HRESULT hr = CancelConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+            return MovePredictionSelection(context, +1);
+        }
+        return MovePredictionSelection(context, shifted ? -1 : +1);
     case VK_DOWN:
-        return converting_ ? CycleCandidate(context, +1) : S_OK;
+        return converting_ ? CycleCandidate(context, +1)
+                           : MovePredictionSelection(context, +1);
     case VK_UP:
-        return converting_ ? CycleCandidate(context, -1) : S_OK;
+        return converting_ ? CycleCandidate(context, -1)
+                           : MovePredictionSelection(context, -1);
     case VK_LEFT:
         // Shift+← は現在文節を1文字縮める、← は文節移動
         if (!converting_) {
@@ -692,6 +730,7 @@ HRESULT TextService::StartConversion(ITfContext* context)
     if (!Composing()) {
         return E_UNEXPECTED;
     }
+    ClearPrediction();
 
     // 文節列をエンジンに問い合わせる。
     // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
@@ -922,6 +961,7 @@ void TextService::EnsureConversionState()
     if (converting_) {
         return;
     }
+    ClearPrediction();
     ConversionSegment segment;
     segment.reading = composer_.Commit();
     segment.candidates.push_back(segment.reading);
@@ -1063,7 +1103,107 @@ HRESULT TextService::ConvertToSymbols(ITfContext* context)
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
     ClearConversion();
+    // かな入力に戻るので、サジェストも引き直して復活させる
+    return UpdateCompositionAndPredict(context);
+}
+
+// ---- 予測入力 (サジェスト) ----
+
+HRESULT TextService::UpdatePrediction(ITfContext* context)
+{
+    predictionIndex_ = -1;
+    if (!Composing() || converting_) {
+        ClearPrediction();
+        return S_OK;
+    }
+
+    // 短すぎる読みは予測しない (2文字の下限はエンジン側 PREDICT と同じで、
+    // 無駄な往復を省くだけ)。英字モードや英字が残る入力でも予測は行い、
+    // 英字読みの確定履歴 (英単語など) が前方一致すればサジェストする
+    // (辞書の読みはかなのみなので、英字入力では自然に履歴だけが対象になる)
+    const std::wstring kana = composer_.Commit();
+    if (kana.size() < 2) {
+        ClearPrediction();
+        return S_OK;
+    }
+
+    // エンジン未接続なら Predict は即 false を返す (自動起動で打鍵を止めない)
+    if (!engine_.Predict(kana, &predictions_) || predictions_.empty()) {
+        ClearPrediction();
+        return S_OK;
+    }
+
+    std::vector<std::wstring> items;
+    for (const PredictionCandidate& candidate : predictions_) {
+        items.push_back(candidate.surface);
+    }
+    // selection に範囲外 (items.size()) を渡し、どの行もハイライトしない表示にする
+    candidateWindow_.Show(CandidateAnchor(context), items, items.size());
+    return S_OK;
+}
+
+HRESULT TextService::UpdateCompositionAndPredict(ITfContext* context)
+{
+    HRESULT hr = UpdateCompositionText(context, composer_.Display());
+    if (FAILED(hr)) {
+        return hr;
+    }
+    UpdatePrediction(context);
+    return hr;
+}
+
+void TextService::ClearPrediction()
+{
+    predictions_.clear();
+    predictionIndex_ = -1;
+    // 変換中は候補ウィンドウを変換側が使っているので触らない
+    if (!converting_) {
+        candidateWindow_.Hide();
+    }
+}
+
+HRESULT TextService::MovePredictionSelection(ITfContext* context, int delta)
+{
+    if (converting_ || predictions_.empty()) {
+        return S_OK;
+    }
+    if (delta > 0) {
+        // 未選択 (-1) からは先頭へ、末尾からは先頭へ循環する
+        predictionIndex_ = (predictionIndex_ + 1) % static_cast<int>(predictions_.size());
+    } else if (predictionIndex_ < 0) {
+        return S_OK; // 未選択の↑は何もしない
+    } else if (predictionIndex_ == 0) {
+        // 先頭でさらに↑は選択解除してかな表示に戻す
+        return DeselectPrediction(context);
+    } else {
+        --predictionIndex_;
+    }
+    candidateWindow_.SetSelection(static_cast<size_t>(predictionIndex_));
+    return UpdateCompositionText(context,
+                                 predictions_[static_cast<size_t>(predictionIndex_)].surface);
+}
+
+HRESULT TextService::DeselectPrediction(ITfContext* context)
+{
+    predictionIndex_ = -1;
+    candidateWindow_.SetSelection(predictions_.size()); // 範囲外 = ハイライトなし
     return UpdateCompositionText(context, composer_.Display());
+}
+
+HRESULT TextService::CommitPrediction(ITfContext* context)
+{
+    if (predictionIndex_ < 0 ||
+        static_cast<size_t>(predictionIndex_) >= predictions_.size()) {
+        return E_UNEXPECTED;
+    }
+
+    // EndComposition が予測状態を後始末するため、先にコピーを取る
+    const PredictionCandidate candidate =
+        predictions_[static_cast<size_t>(predictionIndex_)];
+
+    // 採用結果を候補の完全な読みで学習させる (失敗しても確定は続行する)
+    engine_.Learn({{candidate.reading, candidate.surface}});
+    return EndComposition(context, candidate.surface);
 }
 
 HRESULT TextService::CommitConversion(ITfContext* context)
@@ -1105,7 +1245,7 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         composer_.Clear();
         return hr;
     }
-    return UpdateCompositionText(context, composer_.Display());
+    return UpdateCompositionAndPredict(context);
 }
 
 void TextService::ClearConversion()
@@ -1147,7 +1287,7 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
                        TF_ES_SYNC | TF_ES_READWRITE);
 }
 
-void TextService::ShowCandidateWindow(ITfContext* context)
+RECT TextService::CandidateAnchor(ITfContext* context)
 {
     // composition の矩形を取得して候補ウィンドウの位置を決める
     RECT rect = {};
@@ -1172,9 +1312,13 @@ void TextService::ShowCandidateWindow(ITfContext* context)
             rect = {pt.x, pt.y, pt.x, pt.y};
         }
     }
+    return rect;
+}
 
+void TextService::ShowCandidateWindow(ITfContext* context)
+{
     if (!segments_.empty()) {
-        candidateWindow_.Show(rect, segments_[segmentIndex_].candidates,
+        candidateWindow_.Show(CandidateAnchor(context), segments_[segmentIndex_].candidates,
                               selected_[segmentIndex_]);
     }
 }
@@ -1231,8 +1375,9 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         lastComposer_ = composer_;
     }
 
-    // 変換状態と候補ウィンドウの後始末
+    // 変換状態・予測状態と候補ウィンドウの後始末
     ClearConversion();
+    ClearPrediction();
 
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),

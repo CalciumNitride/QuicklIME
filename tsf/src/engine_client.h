@@ -12,6 +12,12 @@ struct ConversionSegment {
     std::vector<std::wstring> candidates;  // 候補リスト (先頭が最良)
 };
 
+// 予測入力の1候補
+struct PredictionCandidate {
+    std::wstring reading;  // 候補の完全な読み (採用時の LEARN に使う)
+    std::wstring surface;  // 表記
+};
+
 // 変換エンジン (quicklime-engine.exe) への named pipe クライアント。
 // プロトコルの詳細は docs/protocol.md を参照。
 class EngineClient {
@@ -38,6 +44,11 @@ public:
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs);
 
+    // 読みの前方一致で予測候補を取得する (PREDICT)。
+    // 毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
+    // 未接続なら即 false を返す (候補ゼロは true で candidates が空)
+    bool Predict(const std::wstring& kana, std::vector<PredictionCandidate>* candidates);
+
 private:
     bool EnsureConnected();
     // パイプを1回だけ開いてみる (起動待ちはしない)
@@ -45,8 +56,10 @@ private:
     // エンジン exe を探して起動する。クールダウン中や exe が無い場合は false
     bool TryLaunchEngine();
     void Disconnect();
-    // 1行の要求を送り、1行の応答を受け取る
+    // 1行の要求を送り、1行の応答を受け取る (未接続なら接続・エンジン起動も試みる)
     bool Transact(const std::string& request, std::string* response);
+    // 現在の接続で1往復だけ行う。失敗時は切断して false (接続の確立はしない)
+    bool SendReceive(const std::string& request, std::string* response);
     // CONVSEG 系の要求を送って応答を segments にパースする
     bool RequestSegments(const std::string& request, std::vector<ConversionSegment>* segments);
 

@@ -106,6 +106,20 @@ private:
     // F7-F10 連打用: 現在の選択候補から見て循環列の次の形
     std::wstring NextFormText(size_t index, ConversionForm form) const;
 
+    // ---- 予測入力 (サジェスト) ----
+    // 現在の読みで予測候補を引き直して表示する (条件を満たさなければ消す)
+    HRESULT UpdatePrediction(ITfContext* context);
+    // composition を Display() で更新し、続けて予測を引き直す (かな入力中の共通処理)
+    HRESULT UpdateCompositionAndPredict(ITfContext* context);
+    // 予測状態を破棄する (非変換中なら候補ウィンドウも隠す)
+    void ClearPrediction();
+    // サジェストの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)
+    HRESULT MovePredictionSelection(ITfContext* context, int delta);
+    // サジェストの選択を解除してかな表示に戻す (候補ウィンドウは表示のまま)
+    HRESULT DeselectPrediction(ITfContext* context);
+    // 選択中のサジェスト候補で確定する (候補の完全な読みで学習も送る)
+    HRESULT CommitPrediction(ITfContext* context);
+
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
@@ -117,6 +131,8 @@ private:
     std::wstring ConvertedText() const;
     // 現在文節の候補一覧で候補ウィンドウを表示する
     void ShowCandidateWindow(ITfContext* context);
+    // 候補ウィンドウの表示位置 (composition の矩形。取れなければキャレット/マウス位置)
+    RECT CandidateAnchor(ITfContext* context);
     // 変換状態を破棄する (composition は触らない)
     void ClearConversion();
 
@@ -136,6 +152,10 @@ private:
     size_t segmentIndex_;                      // 操作対象の文節
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
+
+    // 予測入力 (かな入力中のサジェスト)。候補ウィンドウは変換中と排他で共用する
+    std::vector<PredictionCandidate> predictions_;  // 予測候補 (空 = サジェスト非表示)
+    int predictionIndex_;                           // 選択中の候補 index (-1 = 未選択)
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)

@@ -45,6 +45,26 @@ fn main() -> std::io::Result<()> {
         let mut line = String::new();
         reader.read_line(&mut line)?;
         println!("  記号: {}", line.trim_end().replace('\t', " | "));
+
+        // 予測は毎打鍵で呼ばれるため、応答時間も表示する
+        let started = std::time::Instant::now();
+        send.write_all(format!("PREDICT\t{kana}\n").as_bytes())?;
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        let elapsed = started.elapsed();
+        let pretty = line
+            .trim_end()
+            .trim_start_matches("OK")
+            .trim_start_matches('\t')
+            .split('\t')
+            .filter(|f| !f.is_empty())
+            .map(|pair| {
+                let fields: Vec<&str> = pair.split('\x1f').collect();
+                format!("[{}: {}]", fields[0], fields.get(1).unwrap_or(&""))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("  予測 ({:.1}ms): {pretty}", elapsed.as_secs_f64() * 1000.0);
     }
     Ok(())
 }

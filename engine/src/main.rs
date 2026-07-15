@@ -10,6 +10,7 @@ mod dict;
 mod learn;
 mod matrix;
 mod pos;
+mod predict;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -263,6 +264,27 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("PREDICT") => match fields.next() {
+            // 予測入力: 読みの前方一致で履歴・辞書から候補を返す。
+            // 2文字未満・該当なしは候補ゼロの OK (エラーにしない)
+            Some(kana) if !kana.is_empty() => {
+                let learning = data.learning.lock().expect("learning lock");
+                let candidates = predict::predict(kana, &data.dictionary, &learning);
+                if candidates.is_empty() {
+                    "OK\n".to_string()
+                } else {
+                    let body = candidates
+                        .iter()
+                        .map(|(reading, surface)| {
+                            format!("{reading}{FIELD_SEPARATOR}{surface}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\t");
+                    format!("OK\t{body}\n")
+                }
+            }
+            _ => "ERR\tかなが空です\n".to_string(),
+        },
         Some("LEARN") => {
             // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する
             let mut learning = data.learning.lock().expect("learning lock");
@@ -308,6 +330,7 @@ mod tests {
                     .as_bytes(),
             )
             .unwrap();
+        dictionary.build_prediction_index();
         let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
         EngineData {
             dictionary,
@@ -435,5 +458,29 @@ mod tests {
     fn learnの内容が空ならエラー() {
         assert!(handle_request("LEARN", &empty_data()).starts_with("ERR\t"));
         assert!(handle_request("LEARN\t読みだけ", &empty_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn predict要求に前方一致の候補を返す() {
+        // sample_data の辞書には「きょう」(今日) がある
+        let response = handle_request("PREDICT\tきょ", &sample_data());
+        assert_eq!(response, "OK\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn predictはlearn後に履歴が先頭に来る() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        let response = handle_request("PREDICT\tきょ", &data);
+        assert_eq!(response, "OK\tきょうしつ\x1f教室\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn predictは2文字未満と該当なしで候補ゼロのok() {
+        let data = sample_data();
+        assert_eq!(handle_request("PREDICT\tき", &data), "OK\n");
+        assert_eq!(handle_request("PREDICT\tそんざいしない", &data), "OK\n");
+        assert!(handle_request("PREDICT\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("PREDICT", &data).starts_with("ERR\t"));
     }
 }
