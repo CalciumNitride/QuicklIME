@@ -1,13 +1,21 @@
 #include "romaji.h"
 
+#include <windows.h>
+
+#include <fstream>
 #include <map>
+#include <string>
 
 namespace {
 
-// ローマ字→かな変換テーブル (MS-IME 準拠の一般的なサブセット)
-const std::map<std::wstring, std::wstring>& Table()
-{
-    static const std::map<std::wstring, std::wstring> table = {
+// 既定のローマ字→かな変換テーブル (MS-IME 準拠の一般的なサブセット)。
+// ユーザ設定ファイル (UserTablePath() 参照) があれば、この上に追加・上書きされる
+struct TableEntry {
+    const wchar_t* key;
+    const wchar_t* kana;
+};
+
+constexpr TableEntry kDefaultTable[] = {
         // 母音
         {L"a", L"あ"}, {L"i", L"い"}, {L"u", L"う"}, {L"e", L"え"}, {L"o", L"お"},
         // か行
@@ -64,7 +72,114 @@ const std::map<std::wstring, std::wstring>& Table()
         {L"lya", L"ゃ"}, {L"lyu", L"ゅ"}, {L"lyo", L"ょ"},
         {L"xtu", L"っ"}, {L"ltu", L"っ"}, {L"ltsu", L"っ"},
         {L"xn", L"ん"},
-    };
+};
+
+// ユーザ設定ファイルのパス。優先順: QUICKLIME_ROMAJI_FILE > %APPDATA%\QuicklIME\romaji.tsv
+std::wstring UserTablePath()
+{
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetEnvironmentVariableW(L"QUICKLIME_ROMAJI_FILE", buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::wstring(buf, len);
+    }
+    len = GetEnvironmentVariableW(L"APPDATA", buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+        return std::wstring(buf, len) + L"\\QuicklIME\\romaji.tsv";
+    }
+    return {};
+}
+
+std::wstring Utf8ToWide(const std::string& utf8)
+{
+    if (utf8.empty()) {
+        return {};
+    }
+    const int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()),
+                                        nullptr, 0);
+    if (len <= 0) {
+        return {};
+    }
+    std::wstring wide(static_cast<size_t>(len), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), static_cast<int>(utf8.size()), wide.data(), len);
+    return wide;
+}
+
+// ユーザ設定ファイル (UTF-8 の TSV) を読み、既定テーブルへ追加・上書きする。
+// 書式: 1行1エントリ「ローマ字<TAB>かな」。# 始まりの行と空行は無視。
+// かな欄が空の行はそのエントリの削除 (既定テーブルのエントリを消せる)。
+// 3列目が空でない行 (Google 日本語入力形式の「次の入力」付き) は非対応のため無視する
+// (「kk<TAB>っ<TAB>k」を kk→っ と解釈すると促音の連打が壊れるので、取り込まない方が安全)
+void MergeUserTable(std::map<std::wstring, std::wstring>& table)
+{
+    const std::wstring path = UserTablePath();
+    if (path.empty()) {
+        return;
+    }
+    std::ifstream file(path.c_str(), std::ios::binary);
+    if (!file) {
+        return;
+    }
+    std::string line;
+    bool firstLine = true;
+    while (std::getline(file, line)) {
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        if (firstLine) {
+            firstLine = false;
+            if (line.rfind("\xEF\xBB\xBF", 0) == 0) { // UTF-8 BOM
+                line.erase(0, 3);
+            }
+        }
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        // タブで分割 (key, kana, 以降)
+        const size_t tab1 = line.find('\t');
+        const std::string keyU8 = line.substr(0, tab1);
+        std::string kanaU8;
+        if (tab1 != std::string::npos) {
+            const size_t tab2 = line.find('\t', tab1 + 1);
+            kanaU8 = line.substr(tab1 + 1,
+                                 tab2 == std::string::npos ? std::string::npos : tab2 - tab1 - 1);
+            if (tab2 != std::string::npos && tab2 + 1 < line.size()) {
+                continue; // 3列目あり: 非対応形式
+            }
+        }
+
+        std::wstring key = Utf8ToWide(keyU8);
+        if (key.empty()) {
+            continue;
+        }
+        // 打鍵は小文字で照合するため A-Z は小文字へ正規化
+        for (auto& c : key) {
+            if (c >= L'A' && c <= L'Z') {
+                c = c - L'A' + L'a';
+            }
+        }
+
+        const std::wstring kana = Utf8ToWide(kanaU8);
+        if (kana.empty()) {
+            table.erase(key);
+        } else {
+            table[key] = kana;
+        }
+    }
+}
+
+// 変換テーブル。既定テーブルにユーザ設定ファイルを重ねたもの。
+// プロセスごとに初回参照時に一度だけ構築する (ファイル変更の反映はアプリ再起動後)
+const std::map<std::wstring, std::wstring>& Table()
+{
+    static const std::map<std::wstring, std::wstring> table = [] {
+        std::map<std::wstring, std::wstring> merged;
+        for (const auto& entry : kDefaultTable) {
+            merged.emplace(entry.key, entry.kana);
+        }
+        MergeUserTable(merged);
+        return merged;
+    }();
     return table;
 }
 

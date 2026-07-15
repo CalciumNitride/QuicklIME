@@ -8,6 +8,7 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 |---|---|
 | `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL)。フェーズ1で作成 |
 | `engine/` | 変換エンジン (Rust / 常駐別プロセス) |
+| `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
 
@@ -35,6 +36,21 @@ regsvr32 /u tsf\build\Debug\QuicklIME.dll   # 解除
 ```
 
 登録後、Win+Space で「QuicklIME」を選択して使用する。
+
+## ローマ字テーブルのカスタマイズ
+
+`%APPDATA%\QuicklIME\romaji.tsv` (UTF-8) を置くと、既定のローマ字テーブルへ
+追加・上書きされる。書式は 1行1エントリ「ローマ字<TAB>かな」。`#` 始まりの行は
+コメント、かな欄が空の行は既定エントリの削除。反映は各アプリの再起動後。
+
+AZIK 風拡張 (撥音拡張「かん」=kz、二重母音拡張「こう」=kp など) のプリセットを
+[data/romaji-azik.tsv](data/romaji-azik.tsv) に用意している。使う場合はこれを
+`%APPDATA%\QuicklIME\romaji.tsv` へコピーする。
+
+```powershell
+# PowerShell の場合 (%APPDATA% は展開されないので $env:APPDATA を使う)
+copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
+```
 
 ## 注意
 
