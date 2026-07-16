@@ -1,7 +1,7 @@
 // 予測入力 (PREDICT) の候補生成
 //
-// 読みの前方一致で履歴 (確定履歴、新しい順) と辞書 (コスト順) を検索し、
-// 履歴 → 辞書の順に合成して返す。表記の重複は先勝ち (履歴優先) で除き、
+// 読みの前方一致で短縮よみ (ユーザ辞書、記載順) → 履歴 (確定履歴、新しい順) →
+// 辞書 (コスト順) を検索し、この順に合成して返す。表記の重複は先勝ちで除き、
 // 表記が入力かなそのままの候補は出しても意味が無いため除外する。
 // 完全一致で枠が埋まらないときは、タイプミス補正 (1かな誤りの曖昧一致) で補充する。
 
@@ -27,6 +27,10 @@ pub fn predict(kana: &str, dict: &Dictionary, learning: &LearningStore) -> Vec<(
     }
 
     let mut results: Vec<(String, String)> = Vec::new();
+    // 短縮よみはユーザが明示登録した定型なので履歴より先に出す
+    for (reading, surface) in dict.shortcut_prefix(kana, MAX_PREDICTIONS) {
+        push_unique(&mut results, kana, reading.to_string(), surface.to_string());
+    }
     for (reading, surface) in learning.predict_prefix(kana, MAX_PREDICTIONS) {
         push_unique(&mut results, kana, reading.to_string(), surface.to_string());
     }
@@ -127,6 +131,36 @@ mod tests {
     fn 二文字未満は候補を出さない() {
         assert!(predict("き", &sample_dict(), &LearningStore::in_memory()).is_empty());
         assert!(predict("", &sample_dict(), &LearningStore::in_memory()).is_empty());
+    }
+
+    #[test]
+    fn 短縮よみが履歴より先に出る() {
+        let mut dict = Dictionary::empty();
+        dict.load_from("めーるあどれす\t100\t100\t3000\tメールアドレス\n".as_bytes()).unwrap();
+        dict.finalize();
+        dict.load_shortcuts_from("めーる\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let mut learning = LearningStore::in_memory();
+        learning.record("めーるべん", "メール便");
+        assert_eq!(
+            predict("めーる", &dict, &learning),
+            vec![
+                ("めーる".to_string(), "mail@example.com".to_string()),
+                ("めーるべん".to_string(), "メール便".to_string()),
+                ("めーるあどれす".to_string(), "メールアドレス".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn 短縮よみと同じ表記の履歴は重複しない() {
+        let mut dict = Dictionary::empty();
+        dict.load_shortcuts_from("めーる\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let mut learning = LearningStore::in_memory();
+        learning.record("めーる", "mail@example.com");
+        assert_eq!(
+            predict("めーる", &dict, &learning),
+            vec![("めーる".to_string(), "mail@example.com".to_string())]
+        );
     }
 
     #[test]

@@ -113,7 +113,37 @@ fn load_dictionary() -> Dictionary {
         }
     };
     load_symbols(&mut dict, &dir);
+    load_user_shortcuts(&mut dict);
     dict
+}
+
+/// ユーザ辞書のパス。優先順: QUICKLIME_USER_DICT_FILE > %APPDATA%\QuicklIME\userdict.tsv
+fn user_dict_path() -> Option<PathBuf> {
+    if let Ok(path) = std::env::var("QUICKLIME_USER_DICT_FILE") {
+        return Some(PathBuf::from(path));
+    }
+    let appdata = std::env::var("APPDATA").ok()?;
+    Some(PathBuf::from(appdata).join("QuicklIME").join("userdict.tsv"))
+}
+
+/// ユーザ辞書 (短縮よみ) を読み込む。ファイルが無ければ短縮よみなしで続行する
+fn load_user_shortcuts(dict: &mut Dictionary) {
+    let Some(path) = user_dict_path() else {
+        return;
+    };
+    if !path.is_file() {
+        return; // 未作成は正常 (まだ何も登録していないだけ)
+    }
+    match dict.load_shortcuts(&path) {
+        Ok(()) => eprintln!(
+            "ユーザ辞書 (短縮よみ) を読み込みました: {} エントリ [{}]",
+            dict.shortcut_count(),
+            path.display()
+        ),
+        Err(e) => {
+            eprintln!("ユーザ辞書の読み込みに失敗しました ({e})。短縮よみなしで動作します")
+        }
+    }
 }
 
 /// 記号辞書 (Mozc の symbol.tsv) を読み込む。無くても記号候補なしで続行する。

@@ -214,6 +214,9 @@ pub struct Dictionary {
     /// 連接情報を持たないため Viterbi には載せず、文節候補の末尾に追記する
     symbols: HashMap<String, Vec<String>>,
     symbol_count: usize,
+    /// 短縮よみ (ユーザ辞書)。(読み, 表記) をファイル記載順に持つ。
+    /// ユーザ登録の規模 (高々数千件) なので線形走査で足りる
+    shortcuts: Vec<(String, String)>,
 }
 
 impl Dictionary {
@@ -226,6 +229,7 @@ impl Dictionary {
             entry_count: 0,
             symbols: HashMap::new(),
             symbol_count: 0,
+            shortcuts: Vec::new(),
         }
     }
 
@@ -347,6 +351,65 @@ impl Dictionary {
             }
         }
         Ok(())
+    }
+
+    /// ユーザ辞書から短縮よみを読み込む。
+    /// フォーマット: 読み\t表記\t品詞[\tコメント] (Mozc ユーザ辞書エクスポート互換 TSV)。
+    /// 品詞が「短縮よみ」の行だけを使い (品詞列が無い行も短縮よみとみなす)、
+    /// それ以外の品詞と # 始まりのコメント行は無視する
+    /// (他品詞への対応はフェーズ5のユーザ辞書登録で拡張する)
+    pub fn load_shortcuts(&mut self, path: &Path) -> io::Result<()> {
+        self.load_shortcuts_from(BufReader::new(File::open(path)?))
+    }
+
+    /// 1ファイル分の短縮よみを読み込む (テストからも使う)
+    pub fn load_shortcuts_from(&mut self, reader: impl BufRead) -> io::Result<()> {
+        for line in reader.lines() {
+            let line = line?;
+            if line.starts_with('#') {
+                continue; // コメント行
+            }
+            let mut fields = line.split('\t');
+            let (Some(reading), Some(surface)) = (fields.next(), fields.next()) else {
+                continue; // 列が足りない行は無視
+            };
+            if reading.is_empty() || surface.is_empty() {
+                continue;
+            }
+            if let Some(pos) = fields.next() {
+                if pos != "短縮よみ" {
+                    continue;
+                }
+            }
+            let pair = (reading.to_string(), surface.to_string());
+            if !self.shortcuts.contains(&pair) {
+                self.shortcuts.push(pair);
+            }
+        }
+        Ok(())
+    }
+
+    /// 読みに完全一致する短縮よみの表記一覧を返す (ファイル記載順)
+    pub fn lookup_shortcuts(&self, reading: &str) -> Vec<&str> {
+        self.shortcuts
+            .iter()
+            .filter(|(r, _)| r.as_str() == reading)
+            .map(|(_, s)| s.as_str())
+            .collect()
+    }
+
+    /// 読みが prefix で始まる短縮よみを記載順に limit 件まで返す (予測入力用)
+    pub fn shortcut_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
+        self.shortcuts
+            .iter()
+            .filter(|(r, _)| r.starts_with(prefix))
+            .take(limit)
+            .map(|(r, s)| (r.as_str(), s.as_str()))
+            .collect()
+    }
+
+    pub fn shortcut_count(&self) -> usize {
+        self.shortcuts.len()
     }
 
     /// 読みに完全一致するエントリ一覧を返す (finalize が未実行なら空)
@@ -652,6 +715,49 @@ mod tests {
             sample_for_fuzzy().fuzzy_predict_prefix("にほん", 8),
             vec![("にはん".to_string(), "二半".to_string())]
         );
+    }
+
+    fn sample_shortcuts() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let data = "# コメント行\n\
+                    めーる\tmail@example.com\t短縮よみ\t自宅メール\n\
+                    めーる\tsecond@example.jp\t短縮よみ\n\
+                    じゅうしょ\t東京都千代田区\t短縮よみ\n\
+                    かいしゃ\t株式会社Example\t名詞\n\
+                    ひんしなし\tじかに書いた行\n\
+                    よみだけ\n";
+        dict.load_shortcuts_from(data.as_bytes()).unwrap();
+        dict
+    }
+
+    #[test]
+    fn 短縮よみを読みで引ける() {
+        let dict = sample_shortcuts();
+        // 同じ読みの複数登録はファイル記載順
+        assert_eq!(dict.lookup_shortcuts("めーる"), ["mail@example.com", "second@example.jp"]);
+        assert_eq!(dict.lookup_shortcuts("じゅうしょ"), ["東京都千代田区"]);
+        assert!(dict.lookup_shortcuts("ない").is_empty());
+    }
+
+    #[test]
+    fn 短縮よみ以外の品詞と壊れた行は無視する() {
+        let dict = sample_shortcuts();
+        assert!(dict.lookup_shortcuts("かいしゃ").is_empty());
+        // 品詞列が無い行は短縮よみとみなす
+        assert_eq!(dict.lookup_shortcuts("ひんしなし"), ["じかに書いた行"]);
+        // 有効なのは めーる×2 + じゅうしょ + ひんしなし の4件
+        assert_eq!(dict.shortcut_count(), 4);
+    }
+
+    #[test]
+    fn 短縮よみの前方一致は記載順で上限つき() {
+        let dict = sample_shortcuts();
+        assert_eq!(
+            dict.shortcut_prefix("めー", 8),
+            vec![("めーる", "mail@example.com"), ("めーる", "second@example.jp")]
+        );
+        assert_eq!(dict.shortcut_prefix("めー", 1).len(), 1);
+        assert!(dict.shortcut_prefix("ない", 8).is_empty());
     }
 
     fn sample_symbols() -> Dictionary {

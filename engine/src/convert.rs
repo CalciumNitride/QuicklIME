@@ -110,6 +110,14 @@ fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &Learning
     let best: String = group.iter().map(|w| w.surface.as_str()).collect();
     let mut result = vec![best];
 
+    // 短縮よみ (ユーザ辞書) は経路表記の直後に置く (記載順)。
+    // 末尾の学習表記の先頭移動が最優先なのは変わらない
+    for shortcut in dict.lookup_shortcuts(&reading) {
+        if !result.iter().any(|s| s == shortcut) {
+            result.push(shortcut.to_string());
+        }
+    }
+
     // 先頭の自立語を入れ替えた候補 (例: 今日+は -> 京は, 教は...)。
     // 読みと同じ表記 (ひらがなのまま) は末尾で必ず追加するのでここでは除く
     let rest: String = group[1..].iter().map(|w| w.surface.as_str()).collect();
@@ -168,6 +176,13 @@ pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> V
     if let Some(sentence) = convert_sentence(kana, dict, matrix) {
         if sentence != kana {
             result.push(sentence);
+        }
+    }
+
+    // 短縮よみ (ユーザ辞書) は文変換候補の直後に置く (記載順)
+    for shortcut in dict.lookup_shortcuts(kana) {
+        if !result.iter().any(|s| s == shortcut) {
+            result.push(shortcut.to_string());
         }
     }
 
@@ -436,6 +451,50 @@ mod tests {
         let katakana = c.iter().position(|s| s == "キョウ").unwrap();
         assert!(c.iter().position(|s| s == "今日").unwrap() < symbol);
         assert!(symbol < katakana);
+    }
+
+    #[test]
+    fn 短縮よみが文節候補の2番目に入る() {
+        let mut dict = sample_dict();
+        dict.load_shortcuts_from("きょう\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let segments = convert_segments(
+            "きょう",
+            &dict,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        let c = &segments[0].candidates;
+        assert_eq!(c[0], "今日");
+        assert_eq!(c[1], "mail@example.com");
+    }
+
+    #[test]
+    fn 学習表記は短縮よみより前に出る() {
+        let mut dict = sample_dict();
+        dict.load_shortcuts_from("きょう\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let mut learning = LearningStore::in_memory();
+        learning.record("きょう", "京");
+        let segments = convert_segments(
+            "きょう",
+            &dict,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &learning,
+        );
+        let c = &segments[0].candidates;
+        assert_eq!(c[0], "京");
+        assert_eq!(c[1], "今日");
+        assert_eq!(c[2], "mail@example.com");
+    }
+
+    #[test]
+    fn 短縮よみが全文候補にも入る() {
+        let mut dict = sample_dict();
+        dict.load_shortcuts_from("にほんご\tNIHONGO\t短縮よみ\n".as_bytes()).unwrap();
+        let got = candidates("にほんご", &dict, &ConnectionMatrix::empty());
+        assert_eq!(got, vec!["日本語", "NIHONGO", "ニホンゴ", "にほんご"]);
     }
 
     #[test]
