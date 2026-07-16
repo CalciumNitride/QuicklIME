@@ -246,9 +246,12 @@ fn viterbi_path(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Opt
 
     // 辞書語ノードと未知語ノードを生成する
     for start in 0..n {
-        for end in (start + 1)..=n.min(start + MAX_READING_CHARS) {
+        // start から始まる登録語を1回のトライ走査でまとめて引く
+        // (一致文字数の短い順に返るため、ノード生成順は旧来の end 昇順と同じ)
+        for (len, entries) in dict.common_prefix_search(&chars[start..], MAX_READING_CHARS) {
+            let end = start + len;
             let reading: String = chars[start..end].iter().collect();
-            for entry in dict.lookup(&reading) {
+            for entry in entries {
                 nodes.push(Node {
                     start,
                     reading: reading.clone(),
@@ -365,6 +368,7 @@ mod tests {
                     にほんご\t1\t1\t3793\t日本語\n\
                     にほんご\t1\t1\t7869\tニホンゴ\n";
         dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
         dict
     }
 
@@ -458,6 +462,7 @@ mod tests {
         // 読み「あ」に同コストの2候補。BOS(右ID=0) からの連接コストで「阿」が勝つ
         let mut dict = Dictionary::empty();
         dict.load_from("あ\t1\t1\t100\t亜\nあ\t2\t2\t100\t阿\n".as_bytes()).unwrap();
+        dict.finalize();
         // 3x3 行列: get(0,1)=1000 (亜への接続が高い), get(0,2)=0
         let matrix = ConnectionMatrix::parse(
             "3\n0\n1000\n0\n0\n0\n0\n0\n0\n0\n",

@@ -56,7 +56,7 @@ mod tests {
                 .as_bytes(),
         )
         .unwrap();
-        dict.build_prediction_index();
+        dict.finalize();
         dict
     }
 
@@ -89,7 +89,7 @@ mod tests {
         let mut dict = Dictionary::empty();
         dict.load_from("きょう\t100\t100\t1000\tきょう\nきょう\t100\t100\t2000\t今日\n".as_bytes())
             .unwrap();
-        dict.build_prediction_index();
+        dict.finalize();
         assert_eq!(
             predict("きょう", &dict, &LearningStore::in_memory()),
             vec![("きょう".to_string(), "今日".to_string())]
@@ -121,7 +121,7 @@ mod tests {
             dict.load_from(format!("きょう{i:02}\t100\t100\t{}\t表記{i:02}\n", 1000 + i).as_bytes())
                 .unwrap();
         }
-        dict.build_prediction_index();
+        dict.finalize();
         let results = predict("きょう", &dict, &LearningStore::in_memory());
         assert_eq!(results.len(), MAX_PREDICTIONS);
     }

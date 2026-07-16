@@ -4,15 +4,19 @@
 // 辞書ファイル (dictionary00.txt 〜 dictionary09.txt) はリポジトリに含めず、
 // references/mozc/ (git 管理外) から読み込む。パスは main.rs を参照。
 //
-// 検索は HashMap による完全一致 (lookup) と、予測入力用の前方一致 (predict_prefix)。
-// 前方一致はソート済み読み配列 + 二分探索で実装している。読み文字列の複製で
-// メモリが数十MB増えるため、性能・メモリが問題になったら yada (ダブル配列) への
-// 置き換えを検討する。
+// 検索は fst (有限状態トランスデューサ) による。読みをキー、entries 内の
+// 位置を値とする fst::Map で、完全一致 (lookup) と予測入力用の前方一致
+// (predict_prefix) を同じ構造で捌く。キーの共通接頭辞・接尾辞が圧縮される
+// ため、HashMap + ソート済み読み配列だった旧実装よりメモリが数十MB少ない。
+// load_from でエントリを積み、finalize() で fst を構築すると検索可能になる。
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
+
+use fst::automaton::Str;
+use fst::{Automaton, IntoStreamer, Streamer};
 
 /// 辞書の1エントリ (読みは Dictionary のキー側に持つ)
 pub struct Entry {
@@ -32,26 +36,41 @@ pub struct Entry {
 /// 一致範囲を予測のたびに全走査しないための安全弁
 const MAX_PREFIX_SCAN: usize = 20_000;
 
+/// fst::Map の値に entries 内の位置を詰める ((開始index << 32) | 件数)
+fn pack(start: usize, len: usize) -> u64 {
+    debug_assert!(start < (1 << 32) && len < (1 << 32));
+    ((start as u64) << 32) | (len as u64)
+}
+
+fn unpack(packed: u64) -> (usize, usize) {
+    ((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize)
+}
+
 pub struct Dictionary {
-    map: HashMap<String, Vec<Entry>>,
+    /// 読み → entries 内の位置 (pack/unpack 参照)。finalize() で構築する
+    fst: fst::Map<Vec<u8>>,
+    /// 全エントリ本体。同じ読みのエントリは TSV 記載順で連続配置し、
+    /// fst の値でスライスを切り出す
+    entries: Vec<Entry>,
+    /// finalize 前の一時バッファ (読み, エントリ)。finalize で消費されて空になる
+    staging: Vec<(String, Entry)>,
     entry_count: usize,
     /// 記号辞書 (読み → 記号のリスト、symbol.tsv の記載順)。
     /// 連接情報を持たないため Viterbi には載せず、文節候補の末尾に追記する
     symbols: HashMap<String, Vec<String>>,
     symbol_count: usize,
-    /// 前方一致検索用にソートしたユニーク読みの配列 (build_prediction_index で構築)
-    readings_sorted: Vec<String>,
 }
 
 impl Dictionary {
     /// 空の辞書 (辞書ファイルが見つからない場合のフォールバック)
     pub fn empty() -> Self {
         Dictionary {
-            map: HashMap::new(),
+            fst: fst::MapBuilder::memory().into_map(),
+            entries: Vec::new(),
+            staging: Vec::new(),
             entry_count: 0,
             symbols: HashMap::new(),
             symbol_count: 0,
-            readings_sorted: Vec::new(),
         }
     }
 
@@ -73,15 +92,40 @@ impl Dictionary {
                 format!("辞書ファイルが見つかりません: {}", dir.display()),
             ));
         }
-        dict.build_prediction_index();
+        dict.finalize();
         Ok(dict)
     }
 
-    /// 前方一致検索用の読み配列を構築する。load_from を直接使う場合 (テスト等) は
-    /// 読み込み後に明示的に呼ぶ。未構築でも予測が空になるだけで他の検索には影響しない
-    pub fn build_prediction_index(&mut self) {
-        self.readings_sorted = self.map.keys().cloned().collect();
-        self.readings_sorted.sort_unstable();
+    /// 積まれたエントリから検索構造 (fst) を構築する。load_from を直接使う場合
+    /// (テスト等) は読み込み後に明示的に呼ぶ。これを呼ぶまで lookup も
+    /// predict_prefix も空を返す。staging を消費するため呼ぶのは一度きり
+    pub fn finalize(&mut self) {
+        // 安定ソート必須: 同じ読みのエントリは TSV 記載順 (挿入順) を保つ契約
+        self.staging.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut builder = fst::MapBuilder::memory();
+        let mut entries: Vec<Entry> = Vec::with_capacity(self.staging.len());
+        let mut run_start = 0usize;
+        let mut prev: Option<String> = None;
+        for (reading, entry) in self.staging.drain(..) {
+            if prev.as_deref() != Some(reading.as_str()) {
+                if let Some(key) = prev.take() {
+                    builder
+                        .insert(key, pack(run_start, entries.len() - run_start))
+                        .expect("読みはソート済みかつ一意");
+                }
+                run_start = entries.len();
+                prev = Some(reading);
+            }
+            entries.push(entry);
+        }
+        if let Some(key) = prev {
+            builder
+                .insert(key, pack(run_start, entries.len() - run_start))
+                .expect("読みはソート済みかつ一意");
+        }
+        self.entries = entries;
+        self.fst = builder.into_map();
     }
 
     /// 1ファイル分のエントリを読み込む (テストからも使う)
@@ -103,12 +147,15 @@ impl Dictionary {
             else {
                 continue; // 数値でない行は無視
             };
-            self.map.entry(reading.to_string()).or_default().push(Entry {
-                left_id,
-                right_id,
-                cost,
-                surface: surface.to_string(),
-            });
+            self.staging.push((
+                reading.to_string(),
+                Entry {
+                    left_id,
+                    right_id,
+                    cost,
+                    surface: surface.to_string(),
+                },
+            ));
             self.entry_count += 1;
         }
         Ok(())
@@ -147,32 +194,70 @@ impl Dictionary {
         Ok(())
     }
 
-    /// 読みに完全一致するエントリ一覧を返す
+    /// 読みに完全一致するエントリ一覧を返す (finalize が未実行なら空)
     pub fn lookup(&self, reading: &str) -> &[Entry] {
-        self.map.get(reading).map(Vec::as_slice).unwrap_or(&[])
+        match self.fst.get(reading) {
+            Some(packed) => {
+                let (start, len) = unpack(packed);
+                &self.entries[start..start + len]
+            }
+            None => &[],
+        }
+    }
+
+    /// 読みの並び suffix の先頭から始まる辞書語を短い順に返す (共通接頭辞検索)。
+    /// 戻り値は (一致した文字数, エントリ一覧)。max_chars 文字まで走査する。
+    /// Viterbi のラティス構築用で、fst のノードを1文字ずつたどるため
+    /// 部分文字列ごとに lookup するより速い (finalize が未実行なら空)
+    pub fn common_prefix_search(&self, suffix: &[char], max_chars: usize) -> Vec<(usize, &[Entry])> {
+        let fst = self.fst.as_fst();
+        let mut node = fst.root();
+        let mut out = fst::raw::Output::zero();
+        let mut results = Vec::new();
+        let mut buf = [0u8; 4];
+        for (i, &ch) in suffix.iter().take(max_chars).enumerate() {
+            for &b in ch.encode_utf8(&mut buf).as_bytes() {
+                let Some(t) = node.find_input(b) else {
+                    return results; // この先に一致する読みは無い
+                };
+                let tr = node.transition(t);
+                out = out.cat(tr.out);
+                node = fst.node(tr.addr);
+            }
+            // 読みは必ず文字境界で終わるので、判定は1文字分の遷移が済んでから
+            if node.is_final() {
+                let (start, len) = unpack(out.cat(node.final_output()).value());
+                results.push((i + 1, &self.entries[start..start + len]));
+            }
+        }
+        results
     }
 
     /// 読みが prefix で始まるエントリをコスト昇順で limit 件まで返す (予測入力用)。
-    /// 戻り値は (読み, 表記)。build_prediction_index が未実行なら空を返す
+    /// 戻り値は (読み, 表記)。finalize が未実行なら空を返す
     pub fn predict_prefix(&self, prefix: &str, limit: usize) -> Vec<(String, String)> {
         if prefix.is_empty() || limit == 0 {
             return Vec::new();
         }
-        let start = self.readings_sorted.partition_point(|r| r.as_str() < prefix);
-        let mut hits: Vec<(i16, &str, &str)> = Vec::new();
-        for reading in self.readings_sorted[start..].iter().take(MAX_PREFIX_SCAN) {
-            if !reading.starts_with(prefix) {
-                break; // ソート済みなので一致範囲はここで終わり
+        // fst はキーを辞書順に返すため、コストの安定ソート後の同点タイブレークが
+        // 「読みの辞書順 → 記載順」になる (旧実装のソート済み配列走査と同じ)
+        let mut stream = self.fst.search(Str::new(prefix).starts_with()).into_stream();
+        let mut readings: Vec<String> = Vec::new();
+        let mut hits: Vec<(i16, usize, &str)> = Vec::new();
+        while let Some((key, packed)) = stream.next() {
+            if readings.len() >= MAX_PREFIX_SCAN {
+                break; // 一致範囲が巨大でも全走査しない (安全弁)
             }
-            for entry in self.lookup(reading) {
-                hits.push((entry.cost, reading.as_str(), entry.surface.as_str()));
+            readings.push(String::from_utf8(key.to_vec()).expect("キーは読み文字列 (UTF-8)"));
+            let (start, len) = unpack(packed);
+            for entry in &self.entries[start..start + len] {
+                hits.push((entry.cost, readings.len() - 1, entry.surface.as_str()));
             }
         }
-        // 安定ソートでコスト同点は辞書の記載順を保つ
         hits.sort_by_key(|(cost, _, _)| *cost);
         hits.truncate(limit);
         hits.into_iter()
-            .map(|(_, reading, surface)| (reading.to_string(), surface.to_string()))
+            .map(|(_, idx, surface)| (readings[idx].clone(), surface.to_string()))
             .collect()
     }
 
@@ -233,6 +318,7 @@ mod tests {
                     かな\t100\t100\t5000\t仮名\n\
                     壊れた行\n";
         dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
         dict
     }
 
@@ -262,7 +348,7 @@ mod tests {
                     きょうかい\t100\t100\t4000\t教会\n\
                     きのう\t100\t100\t1000\t昨日\n";
         dict.load_from(data.as_bytes()).unwrap();
-        dict.build_prediction_index();
+        dict.finalize();
         dict
     }
 
@@ -289,9 +375,10 @@ mod tests {
     }
 
     #[test]
-    fn 索引未構築なら前方一致は空() {
+    fn finalize前は完全一致も前方一致も空() {
         let mut dict = Dictionary::empty();
         dict.load_from("きょう\t100\t100\t3000\t今日\n".as_bytes()).unwrap();
+        assert!(dict.lookup("きょう").is_empty());
         assert!(dict.predict_prefix("きょう", 8).is_empty());
     }
 

@@ -330,7 +330,7 @@ mod tests {
                     .as_bytes(),
             )
             .unwrap();
-        dictionary.build_prediction_index();
+        dictionary.finalize();
         let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
         EngineData {
             dictionary,
