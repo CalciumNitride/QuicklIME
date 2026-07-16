@@ -14,7 +14,10 @@ fn main() -> std::io::Result<()> {
         std::process::exit(1);
     }
 
-    let name = "quicklime-engine".to_ns_name::<GenericNamespaced>()?;
+    // エンジン (main.rs) と同じく QUICKLIME_PIPE_NAME でパイプ名を上書きできる
+    let pipe = std::env::var("QUICKLIME_PIPE_NAME")
+        .unwrap_or_else(|_| "quicklime-engine".to_string());
+    let name = pipe.to_ns_name::<GenericNamespaced>()?;
     let stream = Stream::connect(name)?;
     let (recv, mut send) = stream.split();
     let mut reader = BufReader::new(recv);

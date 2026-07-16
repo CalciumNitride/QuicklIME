@@ -16,6 +16,7 @@ use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
 use fst::automaton::Str;
+use fst::raw::Output;
 use fst::{Automaton, IntoStreamer, Streamer};
 
 /// 辞書の1エントリ (読みは Dictionary のキー側に持つ)
@@ -36,6 +37,10 @@ pub struct Entry {
 /// 一致範囲を予測のたびに全走査しないための安全弁
 const MAX_PREFIX_SCAN: usize = 20_000;
 
+/// タイプミス補正 (fuzzy_predict_prefix) で収集する読みの上限。
+/// 編集候補ごとの部分木の合計は大きくなりうるため早めに打ち切る安全弁
+const FUZZY_SCAN_LIMIT: usize = 5_000;
+
 /// fst::Map の値に entries 内の位置を詰める ((開始index << 32) | 件数)
 fn pack(start: usize, len: usize) -> u64 {
     debug_assert!(start < (1 << 32) && len < (1 << 32));
@@ -44,6 +49,156 @@ fn pack(start: usize, len: usize) -> u64 {
 
 fn unpack(packed: u64) -> (usize, usize) {
     ((packed >> 32) as usize, (packed & 0xFFFF_FFFF) as usize)
+}
+
+/// UTF-8 の先頭バイトから文字のバイト長を返す
+fn utf8_char_len(lead: u8) -> usize {
+    match lead {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        _ => 4,
+    }
+}
+
+/// fst のノードから1文字分 (UTF-8 バイト列) たどる。途中で遷移が無ければ None
+fn advance_char<'f>(
+    f: &'f fst::raw::Fst<Vec<u8>>,
+    mut node: fst::raw::Node<'f>,
+    mut out: Output,
+    ch: char,
+) -> Option<(fst::raw::Node<'f>, Output)> {
+    let mut buf = [0u8; 4];
+    for &b in ch.encode_utf8(&mut buf).as_bytes() {
+        let t = node.find_input(b)?;
+        let tr = node.transition(t);
+        out = out.cat(tr.out);
+        node = f.node(tr.addr);
+    }
+    Some((node, out))
+}
+
+/// ノードの子を1文字 (UTF-8 1文字分の遷移列) 単位で列挙する。
+/// コールバックは (文字, 文字を消費し終えたノード, 累積 Output) を受け取る
+fn for_each_child_char<'f>(
+    f: &'f fst::raw::Fst<Vec<u8>>,
+    node: fst::raw::Node<'f>,
+    out: Output,
+    cb: &mut impl FnMut(char, fst::raw::Node<'f>, Output),
+) {
+    fn rec<'f>(
+        f: &'f fst::raw::Fst<Vec<u8>>,
+        node: fst::raw::Node<'f>,
+        out: Output,
+        buf: &mut [u8; 4],
+        depth: usize,
+        need: usize,
+        cb: &mut impl FnMut(char, fst::raw::Node<'f>, Output),
+    ) {
+        for tr in node.transitions() {
+            buf[depth] = tr.inp;
+            let need = if depth == 0 { utf8_char_len(tr.inp) } else { need };
+            let next = f.node(tr.addr);
+            let out = out.cat(tr.out);
+            if depth + 1 == need {
+                // 辞書のキーは正しい UTF-8 なので、need バイト揃えば必ず1文字になる
+                if let Some(ch) = std::str::from_utf8(&buf[..need]).ok().and_then(|s| s.chars().next()) {
+                    cb(ch, next, out);
+                }
+            } else {
+                rec(f, next, out, buf, depth + 1, need, cb);
+            }
+        }
+    }
+    rec(f, node, out, &mut [0u8; 4], 0, 0, cb)
+}
+
+/// ノード以下の部分木から (読み, パック値) を集める。key は現在のパス (バイト列)
+fn collect_subtree(
+    f: &fst::raw::Fst<Vec<u8>>,
+    node: fst::raw::Node,
+    out: Output,
+    key: &mut Vec<u8>,
+    found: &mut Vec<(String, u64)>,
+) {
+    if found.len() >= FUZZY_SCAN_LIMIT {
+        return;
+    }
+    if node.is_final() {
+        let reading = String::from_utf8(key.clone()).expect("キーは読み文字列 (UTF-8)");
+        found.push((reading, out.cat(node.final_output()).value()));
+    }
+    for tr in node.transitions() {
+        key.push(tr.inp);
+        collect_subtree(f, f.node(tr.addr), out.cat(tr.out), key, found);
+        key.pop();
+    }
+}
+
+/// タイプミス補正の曖昧一致走査。chars[pos..] を「1箇所までの誤り」を許してたどり、
+/// 入力を消費し終えた地点の部分木から読みを収集する。
+/// 許す誤り (edited が false のとき1回だけ): 1かな置換 (隣接キーの打ち間違い相当)、
+/// 隣接かなの入れ替え、1かなの脱落 (「ん」抜け等)、1かなの余分 (二度打ち等)
+fn fuzzy_walk<'f>(
+    f: &'f fst::raw::Fst<Vec<u8>>,
+    node: fst::raw::Node<'f>,
+    out: Output,
+    chars: &[char],
+    pos: usize,
+    edited: bool,
+    key: &mut Vec<u8>,
+    found: &mut Vec<(String, u64)>,
+) {
+    if found.len() >= FUZZY_SCAN_LIMIT {
+        return;
+    }
+    if pos == chars.len() {
+        // 未編集でここに来た = ただの前方一致なので predict_prefix 側が拾う
+        if edited {
+            collect_subtree(f, node, out, key, found);
+        }
+        return;
+    }
+    let c = chars[pos];
+    // そのまま一致して先へ
+    if let Some((n2, o2)) = advance_char(f, node, out, c) {
+        let klen = key.len();
+        let mut buf = [0u8; 4];
+        key.extend(c.encode_utf8(&mut buf).as_bytes());
+        fuzzy_walk(f, n2, o2, chars, pos + 1, edited, key, found);
+        key.truncate(klen);
+    }
+    if edited {
+        return; // 誤りは1箇所まで
+    }
+    // 置換と脱落: 辞書側の子をすべて試す
+    for_each_child_char(f, node, out, &mut |d, n2, o2| {
+        let klen = key.len();
+        let mut buf = [0u8; 4];
+        key.extend(d.encode_utf8(&mut buf).as_bytes());
+        if d != c {
+            // 置換: 入力の c は d の打ち間違いとみなして入力も1文字進める
+            fuzzy_walk(f, n2, o2, chars, pos + 1, true, key, found);
+        }
+        // 脱落: 入力から d が抜けているとみなして入力位置は据え置き
+        fuzzy_walk(f, n2, o2, chars, pos, true, key, found);
+        key.truncate(klen);
+    });
+    // 隣接かなの入れ替え: c と次の文字を逆順にたどる
+    if pos + 1 < chars.len() && c != chars[pos + 1] {
+        if let Some((n2, o2)) = advance_char(f, node, out, chars[pos + 1]) {
+            if let Some((n3, o3)) = advance_char(f, n2, o2, c) {
+                let klen = key.len();
+                let mut buf = [0u8; 4];
+                key.extend(chars[pos + 1].encode_utf8(&mut buf).as_bytes());
+                key.extend(c.encode_utf8(&mut buf).as_bytes());
+                fuzzy_walk(f, n3, o3, chars, pos + 2, true, key, found);
+                key.truncate(klen);
+            }
+        }
+    }
+    // 余分: 入力の c が余計な1文字とみなして読み飛ばす (ノードは進めない)
+    fuzzy_walk(f, node, out, chars, pos + 1, true, key, found);
 }
 
 pub struct Dictionary {
@@ -261,6 +416,48 @@ impl Dictionary {
             .collect()
     }
 
+    /// タイプミス補正の曖昧前方一致 (予測入力の補充用)。
+    /// 読みの先頭が「prefix に1箇所までの誤り (1かな置換・隣接かな入れ替え・
+    /// 1かな脱落・1かな余分) を許した文字列」に一致するエントリを、
+    /// コスト昇順で limit 件まで返す。戻り値は (読み, 表記)。
+    /// 先頭のかなは打ち間違いが稀なうえ誤補正のノイズ源になるため編集対象にしない。
+    /// prefix にそのまま前方一致する読み (= predict_prefix が返すもの) は含めない
+    pub fn fuzzy_predict_prefix(&self, prefix: &str, limit: usize) -> Vec<(String, String)> {
+        let chars: Vec<char> = prefix.chars().collect();
+        // 先頭固定 + 編集1箇所には最低2文字必要
+        if chars.len() < 2 || limit == 0 {
+            return Vec::new();
+        }
+        let f = self.fst.as_fst();
+        let Some((node, out)) = advance_char(f, f.root(), Output::zero(), chars[0]) else {
+            return Vec::new();
+        };
+        let mut key: Vec<u8> = Vec::with_capacity(prefix.len() + 8);
+        let mut buf = [0u8; 4];
+        key.extend(chars[0].encode_utf8(&mut buf).as_bytes());
+        let mut found: Vec<(String, u64)> = Vec::new();
+        fuzzy_walk(f, node, out, &chars, 1, false, &mut key, &mut found);
+
+        // 完全一致側と重複する読みを除き、複数の編集経路で重複した読みをまとめる
+        found.retain(|(reading, _)| !reading.starts_with(prefix));
+        found.sort_by(|a, b| a.0.cmp(&b.0));
+        found.dedup_by(|a, b| a.0 == b.0);
+
+        let mut hits: Vec<(i16, usize, &str)> = Vec::new();
+        for (idx, (_, packed)) in found.iter().enumerate() {
+            let (start, len) = unpack(*packed);
+            for entry in &self.entries[start..start + len] {
+                hits.push((entry.cost, idx, entry.surface.as_str()));
+            }
+        }
+        // 安定ソートでコスト同点は読みの辞書順 → 記載順 (predict_prefix と同じ規則)
+        hits.sort_by_key(|(cost, _, _)| *cost);
+        hits.truncate(limit);
+        hits.into_iter()
+            .map(|(_, idx, surface)| (found[idx].0.clone(), surface.to_string()))
+            .collect()
+    }
+
     /// 読みに対応する記号一覧を返す (symbol.tsv の記載順)。
     /// symbol.tsv の読みは半角形 ("(" など) で載っているため、完全一致で
     /// 見つからない場合は全角英数記号を半角に正規化して引き直す
@@ -380,6 +577,81 @@ mod tests {
         dict.load_from("きょう\t100\t100\t3000\t今日\n".as_bytes()).unwrap();
         assert!(dict.lookup("きょう").is_empty());
         assert!(dict.predict_prefix("きょう", 8).is_empty());
+    }
+
+    fn sample_for_fuzzy() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let data = "にほんご\t100\t100\t3000\t日本語\n\
+                    にほん\t100\t100\t2000\t日本\n\
+                    にはん\t100\t100\t5000\t二半\n";
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 一かな置換を補正する() {
+        // にひんご = にほんご の「ほ→ひ」打ち間違い (o→i の隣接キーミス相当)
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にひんご", 8),
+            vec![("にほんご".to_string(), "日本語".to_string())]
+        );
+    }
+
+    #[test]
+    fn 隣接かなの入れ替えを補正する() {
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にんほご", 8),
+            vec![("にほんご".to_string(), "日本語".to_string())]
+        );
+    }
+
+    #[test]
+    fn 一かなの脱落を補正する() {
+        // にほご = にほんご の「ん」抜け。「にほん」も置換 (ご→ん) として一致する
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にほご", 8),
+            vec![
+                ("にほん".to_string(), "日本".to_string()),
+                ("にほんご".to_string(), "日本語".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn 一かな余分を補正する() {
+        // にほんごご = 「ご」の二度打ち
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にほんごご", 8),
+            vec![("にほんご".to_string(), "日本語".to_string())]
+        );
+    }
+
+    #[test]
+    fn 打ち間違い途中の入力でも補正して前方一致する() {
+        // にひん = にほん(ご) を打ち間違えている途中。には(ん) も1かな置換で一致
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にひん", 8),
+            vec![
+                ("にほん".to_string(), "日本".to_string()),
+                ("にほんご".to_string(), "日本語".to_string()),
+                ("にはん".to_string(), "二半".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn 先頭かなの誤りは補正しない() {
+        assert!(sample_for_fuzzy().fuzzy_predict_prefix("けほんご", 8).is_empty());
+    }
+
+    #[test]
+    fn 完全一致と同じ読みは補正候補に含めない() {
+        // 「にほん」への前方一致 (にほん・にほんご) は predict_prefix の担当なので出さない
+        assert_eq!(
+            sample_for_fuzzy().fuzzy_predict_prefix("にほん", 8),
+            vec![("にはん".to_string(), "二半".to_string())]
+        );
     }
 
     fn sample_symbols() -> Dictionary {

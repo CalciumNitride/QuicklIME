@@ -3,12 +3,17 @@
 // 読みの前方一致で履歴 (確定履歴、新しい順) と辞書 (コスト順) を検索し、
 // 履歴 → 辞書の順に合成して返す。表記の重複は先勝ち (履歴優先) で除き、
 // 表記が入力かなそのままの候補は出しても意味が無いため除外する。
+// 完全一致で枠が埋まらないときは、タイプミス補正 (1かな誤りの曖昧一致) で補充する。
 
 use crate::dict::Dictionary;
 use crate::learn::LearningStore;
 
 /// 予測を出す最小の読み文字数 (1文字では候補が広すぎて役に立たない)
 const MIN_PREFIX_CHARS: usize = 2;
+
+/// タイプミス補正 (曖昧一致) を使う最小の読み文字数。
+/// 短い読みは1かな違いの別語が多すぎて誤補正だらけになる
+const MIN_FUZZY_CHARS: usize = 3;
 
 /// 予測候補の最大数。TSF 層の候補ウィンドウが1ページ (9行) に収まり、
 /// かつ「選択なし」表示 (selection = 候補数) がページ計算で溢れない値にする
@@ -31,6 +36,16 @@ pub fn predict(kana: &str, dict: &Dictionary, learning: &LearningStore) -> Vec<(
             break;
         }
         push_unique(&mut results, kana, reading, surface);
+    }
+    // 完全一致で枠が埋まらないときだけタイプミス補正で補充する
+    // (埋まっていれば曖昧検索そのものを実行せず、通常時のコストをゼロにする)
+    if results.len() < MAX_PREDICTIONS && kana.chars().count() >= MIN_FUZZY_CHARS {
+        for (reading, surface) in dict.fuzzy_predict_prefix(kana, MAX_PREDICTIONS * 2 + 1) {
+            if results.len() >= MAX_PREDICTIONS {
+                break;
+            }
+            push_unique(&mut results, kana, reading, surface);
+        }
     }
     results.truncate(MAX_PREDICTIONS);
     results
@@ -112,6 +127,62 @@ mod tests {
     fn 二文字未満は候補を出さない() {
         assert!(predict("き", &sample_dict(), &LearningStore::in_memory()).is_empty());
         assert!(predict("", &sample_dict(), &LearningStore::in_memory()).is_empty());
+    }
+
+    #[test]
+    fn タイプミスでも補正候補が出る() {
+        // 「にほんご」を「にひんご」と打ち間違えても候補が出る
+        let mut dict = Dictionary::empty();
+        dict.load_from("にほんご\t100\t100\t3000\t日本語\n".as_bytes()).unwrap();
+        dict.finalize();
+        assert_eq!(
+            predict("にひんご", &dict, &LearningStore::in_memory()),
+            vec![("にほんご".to_string(), "日本語".to_string())]
+        );
+    }
+
+    #[test]
+    fn 三文字未満はタイプミス補正しない() {
+        let mut dict = Dictionary::empty();
+        dict.load_from("にほ\t100\t100\t3000\t二歩\n".as_bytes()).unwrap();
+        dict.finalize();
+        // 「にお」は「にほ」の1かな違いだが、2文字なので補正は発動しない
+        assert!(predict("にお", &dict, &LearningStore::in_memory()).is_empty());
+    }
+
+    #[test]
+    fn 完全一致が埋まっていればタイプミス補正しない() {
+        let mut dict = Dictionary::empty();
+        for i in 0..MAX_PREDICTIONS {
+            dict.load_from(
+                format!("きょうの{i}\t100\t100\t{}\t表記{i}\n", 1000 + i).as_bytes(),
+            )
+            .unwrap();
+        }
+        // きょうと は「きょうの」の1かな違い (低コスト) だが、完全一致8件で枠が埋まる
+        dict.load_from("きょうと\t100\t100\t100\t京都\n".as_bytes()).unwrap();
+        dict.finalize();
+        let results = predict("きょうの", &dict, &LearningStore::in_memory());
+        assert_eq!(results.len(), MAX_PREDICTIONS);
+        assert!(results.iter().all(|(_, s)| s != "京都"));
+    }
+
+    #[test]
+    fn 補正候補は完全一致の後に出る() {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "きょうの\t100\t100\t5000\t今日の\nきょうと\t100\t100\t100\t京都\n".as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        // 補正の「京都」の方が低コストでも、完全一致の「今日の」が先
+        assert_eq!(
+            predict("きょうの", &dict, &LearningStore::in_memory()),
+            vec![
+                ("きょうの".to_string(), "今日の".to_string()),
+                ("きょうと".to_string(), "京都".to_string()),
+            ]
+        );
     }
 
     #[test]
