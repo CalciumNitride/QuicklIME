@@ -273,7 +273,24 @@ void RomajiComposer::Backspace()
 {
     if (!pending_.empty()) {
         pending_.pop_back();
-    } else if (!kana_.empty()) {
+        return;
+    }
+    if (kana_.empty()) {
+        return;
+    }
+    kana_.pop_back();
+    raw_.pop_back();
+
+    // 削除で末尾に現れた未変換のままのローマ字 (「かsだ」→「かs」の s) を
+    // pending へ戻し、続く入力と結合して変換できるようにする
+    // (raw と一致する英小文字1文字 = Convert() でどの規則にも合わず素通しされた打鍵)。
+    // 英字モード中はアルファベットのまま入力を続ける状態なので戻さない
+    if (asciiMode_) {
+        return;
+    }
+    while (!kana_.empty() && kana_.back() >= L'a' && kana_.back() <= L'z' &&
+           raw_.back() == std::wstring(1, kana_.back())) {
+        pending_.insert(pending_.begin(), kana_.back());
         kana_.pop_back();
         raw_.pop_back();
     }
