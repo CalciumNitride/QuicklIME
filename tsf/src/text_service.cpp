@@ -470,12 +470,14 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
             // 動かさせない)。用途が無い状態では食べた上で何もしない
             return true;
         case VK_F4:
+        case VK_F5:
         case VK_F6:
         case VK_F7:
         case VK_F8:
         case VK_F9:
         case VK_F10:
-            // ファンクションキー変換 (F4=特殊変換 (記号・日付), F6-F10=文字種の直接変換)
+            // ファンクションキー変換 (F4=特殊変換 (記号・日付), F5=短縮よみ,
+            // F6-F10=文字種の直接変換)
             return true;
         default:
             break;
@@ -893,6 +895,8 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     case VK_F4:
         return ConvertToSymbols(context);
+    case VK_F5:
+        return ConvertToShortcuts(context);
     case VK_F6:
         return DirectConvert(context, ConversionForm::Hiragana);
     case VK_F7:
@@ -1277,6 +1281,35 @@ HRESULT TextService::ConvertToSymbols(ITfContext* context)
         return CycleCandidate(context, +1);
     }
     candidates = std::move(symbols);
+    selected_[segmentIndex_] = 0;
+    SyncPairedSegment(segmentIndex_);
+
+    HRESULT hr = UpdateConvertingDisplay(context);
+    ShowCandidateWindow(context);
+    return hr;
+}
+
+HRESULT TextService::ConvertToShortcuts(ITfContext* context)
+{
+    if (!Composing()) {
+        return E_UNEXPECTED;
+    }
+    const std::wstring reading =
+        converting_ ? segments_[segmentIndex_].reading : composer_.Commit();
+
+    std::vector<std::wstring> shortcuts;
+    if (!engine_.ConvertShortcuts(reading, &shortcuts) || shortcuts.empty()) {
+        return S_OK; // 短縮よみが無い読み (またはエンジン不調) なら何もしない
+    }
+
+    EnsureConversionState();
+
+    // 既にこの文節を短縮よみの候補のみで表示中なら、F5 の連打は ↓ と同じく次候補へ送る
+    auto& candidates = segments_[segmentIndex_].candidates;
+    if (candidates == shortcuts) {
+        return CycleCandidate(context, +1);
+    }
+    candidates = std::move(shortcuts);
     selected_[segmentIndex_] = 0;
     SyncPairedSegment(segmentIndex_);
 

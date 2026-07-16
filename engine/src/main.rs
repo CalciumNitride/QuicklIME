@@ -294,6 +294,19 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("CONVUSER") => match fields.next() {
+            // 短縮よみ変換 (F5 用): 読みに完全一致する短縮よみの候補のみを返す。
+            // 該当なしは候補ゼロの OK
+            Some(kana) if !kana.is_empty() => {
+                let candidates = data.dictionary.lookup_shortcuts(kana);
+                if candidates.is_empty() {
+                    "OK\n".to_string()
+                } else {
+                    format!("OK\t{}\n", candidates.join("\t"))
+                }
+            }
+            _ => "ERR\tかなが空です\n".to_string(),
+        },
         Some("PREDICT") => match fields.next() {
             // 予測入力: 読みの前方一致で履歴・辞書から候補を返す。
             // 2文字未満・該当なしは候補ゼロの OK (エラーにしない)
@@ -488,6 +501,24 @@ mod tests {
     fn learnの内容が空ならエラー() {
         assert!(handle_request("LEARN", &empty_data()).starts_with("ERR\t"));
         assert!(handle_request("LEARN\t読みだけ", &empty_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convuser要求に短縮よみのみを返す() {
+        let mut data = sample_data();
+        data.dictionary
+            .load_shortcuts_from(
+                "きょう\tmail@example.com\t短縮よみ\nきょう\tsecond@example.jp\t短縮よみ\n"
+                    .as_bytes(),
+            )
+            .unwrap();
+        // sample_data の辞書語 (今日など) は含めず、短縮よみだけを記載順で返す
+        assert_eq!(
+            handle_request("CONVUSER\tきょう", &data),
+            "OK\tmail@example.com\tsecond@example.jp\n"
+        );
+        assert_eq!(handle_request("CONVUSER\tそんざいしない", &data), "OK\n");
+        assert!(handle_request("CONVUSER\t", &data).starts_with("ERR\t"));
     }
 
     #[test]

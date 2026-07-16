@@ -314,6 +314,34 @@ bool EngineClient::ConvertSymbols(const std::wstring& kana,
     return true;
 }
 
+bool EngineClient::ConvertShortcuts(const std::wstring& kana,
+                                    std::vector<std::wstring>* candidates)
+{
+    if (candidates == nullptr || kana.empty()) {
+        return false;
+    }
+    std::string response;
+    if (!Transact("CONVUSER\t" + WideToUtf8(kana) + "\n", &response)) {
+        return false;
+    }
+
+    // 応答: "OK\t表記1\t表記2...\n" (候補なしなら "OK\n")
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK", 0) != 0) {
+        return false;
+    }
+    candidates->clear();
+    if (response.size() > 3) {
+        for (const std::string& field : SplitFields(response.substr(3), '\t')) {
+            candidates->push_back(Utf8ToWide(field));
+        }
+    }
+    return true;
+}
+
 bool EngineClient::Predict(const std::wstring& kana,
                            std::vector<PredictionCandidate>* candidates)
 {

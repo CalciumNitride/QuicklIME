@@ -40,6 +40,10 @@ public:
     // 通信に成功すれば true (記号が1つも無い場合も true で candidates は空)
     bool ConvertSymbols(const std::wstring& kana, std::vector<std::wstring>* candidates);
 
+    // 読みに対する短縮よみ (ユーザ辞書) の候補のみを取得する (CONVUSER、F5 用)。
+    // 通信に成功すれば true (候補が1つも無い場合も true で candidates は空)
+    bool ConvertShortcuts(const std::wstring& kana, std::vector<std::wstring>* candidates);
+
     // 文節ごとの確定結果 (読み, 表記) をエンジンに記録する (LEARN)。
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs);

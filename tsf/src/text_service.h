@@ -105,6 +105,8 @@ private:
     HRESULT DirectConvert(ITfContext* context, ConversionForm form);
     // F4: 現在文節 (未変換なら全文) を特殊変換 (記号辞書 + 日付・時刻) の候補のみで変換する
     HRESULT ConvertToSymbols(ITfContext* context);
+    // F5: 現在文節 (未変換なら全文) を短縮よみ (ユーザ辞書) の候補のみで変換する
+    HRESULT ConvertToShortcuts(ITfContext* context);
     // 未変換なら全文を1文節とした変換状態を作る (直接変換の下準備)
     void EnsureConversionState();
     // index の文節の選択候補がかっこ・クオートなどの対記号なら、
