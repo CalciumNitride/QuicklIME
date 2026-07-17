@@ -91,6 +91,11 @@ private:
     // 変換の開始 / 現在文節の候補移動 / 文節の移動 / 変換の取消 (かな表示に戻す)
     HRESULT StartConversion(ITfContext* context);
     HRESULT CycleCandidate(ITfContext* context, int delta);
+    // 数字キー 1〜9: 候補ウィンドウの表示中ページ内の番号 (0始まり) で
+    // 現在文節の候補を直接選択する (対応する候補が無ければ何もしない)
+    HRESULT SelectCandidateByNumber(ITfContext* context, size_t number);
+    // 現在文節の選択を index に変えて表示へ反映する共通処理
+    HRESULT ApplyCandidateSelection(ITfContext* context, size_t index);
     HRESULT MoveSegment(ITfContext* context, int delta);
     // 指定した文節へ直接移動する (PgUp=先頭, PgDn=末尾)
     HRESULT MoveSegmentTo(ITfContext* context, size_t index);
@@ -128,6 +133,9 @@ private:
     void ClearPrediction();
     // サジェストの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)
     HRESULT MovePredictionSelection(ITfContext* context, int delta);
+    // 数字キー 1〜9: サジェスト選択中に表示中ページ内の番号 (0始まり) で
+    // 候補を直接選択する (対応する候補が無ければ何もしない)
+    HRESULT SelectPredictionByNumber(ITfContext* context, size_t number);
     // サジェストの選択を解除してかな表示に戻す (候補ウィンドウは表示のまま)
     HRESULT DeselectPrediction(ITfContext* context);
     // 選択中のサジェスト候補で確定する (候補の完全な読みで学習も送る)
@@ -137,6 +145,18 @@ private:
     HRESULT CommitComposition(ITfContext* context);
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
     HRESULT CommitConversion(ITfContext* context);
+    // 変換確定の前half: エンジンへの学習送信のみ行い、確定文字列を返す
+    // (edit session は発行せず、状態も変えない)
+    std::wstring PrepareConversionCommit();
+    // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
+    // 確定アンドゥ情報を記憶し、変換・予測状態と composer_ を破棄する
+    void FinishConversionState(const std::wstring& commitText);
+    // 「確定 + 新しい composition の開始 + 未確定文字列の表示」を1つの
+    // edit session で行い、composition_ を新しいものに差し替える。
+    // 変換中に印字キーが来たときは必ずこれを使う (分割すると Word や
+    // CUAS 経由のアプリで新しい composition が生き残らない)
+    HRESULT RestartComposition(ITfContext* context, const std::wstring& commitText,
+                               const std::wstring& newText);
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
     // composition に戻す。キャレット直前が確定文字列と一致するときのみ働く
     HRESULT UndoCommit(ITfContext* context);

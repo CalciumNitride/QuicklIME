@@ -9,6 +9,10 @@
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する。
 class CandidateWindow {
 public:
+    // 1ページに表示する候補数。行頭の番号はページ内相対 (1〜kPageSize) で、
+    // 数字キーによる候補の直接選択もこのページ単位で対応付ける
+    static constexpr size_t kPageSize = 9;
+
     CandidateWindow();
     ~CandidateWindow();
 

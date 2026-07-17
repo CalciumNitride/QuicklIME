@@ -7,7 +7,7 @@ namespace {
 constexpr wchar_t kWindowClassName[] = L"QuicklIMECandidateWindow";
 constexpr int kPadding = 4;       // ウィンドウ内側の余白
 constexpr int kLinePadding = 2;   // 行間の余白
-constexpr size_t kPageSize = 9;   // 1ページに表示する候補数
+constexpr size_t kPageSize = CandidateWindow::kPageSize; // 1ページに表示する候補数
 
 // ウィンドウクラスを一度だけ登録する
 bool EnsureWindowClass()

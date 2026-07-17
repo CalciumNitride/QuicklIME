@@ -537,7 +537,11 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
         // 確定の Enter などが素通りすると入力の誤送信につながるため)
         pendingKeyUps_.set(wparam);
     }
-    return HandleKey(context, wparam);
+    // eaten=TRUE を立てた以上、HandleKey の失敗はホストへ返さない
+    // (失敗 HRESULT を返すと「未処理」とみなして打鍵文字をそのまま挿入する
+    //  ホストがあるため。内部の失敗はその打鍵が効かないだけに留める)
+    HandleKey(context, wparam);
+    return S_OK;
 }
 
 STDMETHODIMP TextService::OnTestKeyUp(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -784,13 +788,20 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // Shift+英字: 大文字をそのまま未確定文字列へ入れ、英字モードに入る。
     // 以降の英字はローマ字変換せずアルファベットのまま続く (既存IMEと同様)
     if (shifted && IsLetterKey(wparam)) {
+        const std::wstring upper(1, static_cast<wchar_t>(wparam));
         if (converting_) {
-            HRESULT hr = CommitConversion(context);
+            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う
+            const std::wstring commitText = PrepareConversionCommit();
+            FinishConversionState(commitText);
+            composer_.EnterAsciiMode();
+            composer_.PushKana(upper, upper);
+            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
             if (FAILED(hr)) {
+                composer_.Clear();
                 return hr;
             }
+            return UpdatePrediction(context);
         }
-        const std::wstring upper(1, static_cast<wchar_t>(wparam));
         composer_.EnterAsciiMode();
         composer_.PushKana(upper, upper);
         if (!Composing()) {
@@ -806,13 +817,20 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)。
     // 英字モード中は変換せず小文字のまま続ける
     if (IsLetterKey(wparam)) {
+        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
         if (converting_) {
-            HRESULT hr = CommitConversion(context);
+            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う。
+            // 確定で composer_ は空になっているので常にローマ字変換で開始する
+            const std::wstring commitText = PrepareConversionCommit();
+            FinishConversionState(commitText);
+            composer_.Push(c);
+            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
             if (FAILED(hr)) {
+                composer_.Clear();
                 return hr;
             }
+            return UpdatePrediction(context);
         }
-        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
         if (composer_.AsciiMode()) {
             const std::wstring letter(1, c);
             composer_.PushKana(letter, letter);
@@ -834,10 +852,17 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
     if (const SymbolKey* symbol = FindSymbolKey(wparam, shifted)) {
         if (converting_) {
-            HRESULT hr = CommitConversion(context);
+            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う。
+            // 確定で英字モードは解除されているので常に全角形を入れる
+            const std::wstring commitText = PrepareConversionCommit();
+            FinishConversionState(commitText);
+            composer_.PushKana(symbol->kana, symbol->raw);
+            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
             if (FAILED(hr)) {
+                composer_.Clear();
                 return hr;
             }
+            return UpdatePrediction(context);
         }
         if (composer_.AsciiMode()) {
             composer_.PushKana(symbol->raw, symbol->raw);
@@ -856,8 +881,18 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
 
     // 数字: composition 中のみここへ来る (composition が無ければ食べていない)
     if (IsDigitKey(wparam)) {
+        // 変換中・サジェスト選択中の 1〜9 は候補番号による直接選択
+        if (wparam >= '1' && wparam <= '9') {
+            if (converting_) {
+                return SelectCandidateByNumber(context, wparam - '1');
+            }
+            if (predictionIndex_ >= 0) {
+                return SelectPredictionByNumber(context, wparam - '1');
+            }
+        }
         const std::wstring digit(1, static_cast<wchar_t>(wparam));
         if (converting_) {
+            // 0 は従来どおり: 変換結果を確定して数字をそのまま挿入する
             HRESULT hr = CommitConversion(context);
             if (FAILED(hr)) {
                 return hr;
@@ -1083,7 +1118,28 @@ HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
         return E_UNEXPECTED;
     }
     const size_t count = segments_[segmentIndex_].candidates.size();
-    selected_[segmentIndex_] = (selected_[segmentIndex_] + count + delta) % count;
+    return ApplyCandidateSelection(context,
+                                   (selected_[segmentIndex_] + count + delta) % count);
+}
+
+HRESULT TextService::SelectCandidateByNumber(ITfContext* context, size_t number)
+{
+    if (!converting_ || segments_.empty()) {
+        return E_UNEXPECTED;
+    }
+    // 候補ウィンドウは選択位置を含むページを表示していて、行頭の番号は
+    // ページ内相対。番号もそのページ内の候補に対応付ける
+    const size_t page = selected_[segmentIndex_] / CandidateWindow::kPageSize;
+    const size_t index = page * CandidateWindow::kPageSize + number;
+    if (index >= segments_[segmentIndex_].candidates.size()) {
+        return S_OK; // 表示されていない番号は無視する
+    }
+    return ApplyCandidateSelection(context, index);
+}
+
+HRESULT TextService::ApplyCandidateSelection(ITfContext* context, size_t index)
+{
+    selected_[segmentIndex_] = index;
     SyncPairedSegment(segmentIndex_);
     HRESULT hr = UpdateConvertingDisplay(context);
     if (candidateWindow_.Visible()) {
@@ -1436,6 +1492,22 @@ HRESULT TextService::MovePredictionSelection(ITfContext* context, int delta)
                                  predictions_[static_cast<size_t>(predictionIndex_)].surface);
 }
 
+HRESULT TextService::SelectPredictionByNumber(ITfContext* context, size_t number)
+{
+    if (converting_ || predictions_.empty() || predictionIndex_ < 0) {
+        return E_UNEXPECTED; // サジェスト選択中のみ呼ばれる
+    }
+    // 候補ウィンドウの表示ページと番号の対応は変換候補と同じ
+    const size_t page = static_cast<size_t>(predictionIndex_) / CandidateWindow::kPageSize;
+    const size_t index = page * CandidateWindow::kPageSize + number;
+    if (index >= predictions_.size()) {
+        return S_OK; // 表示されていない番号は無視する
+    }
+    predictionIndex_ = static_cast<int>(index);
+    candidateWindow_.SetSelection(index);
+    return UpdateCompositionText(context, predictions_[index].surface);
+}
+
 HRESULT TextService::DeselectPrediction(ITfContext* context)
 {
     predictionIndex_ = -1;
@@ -1461,14 +1533,56 @@ HRESULT TextService::CommitPrediction(ITfContext* context)
 
 HRESULT TextService::CommitConversion(ITfContext* context)
 {
+    return EndComposition(context, PrepareConversionCommit());
+}
+
+std::wstring TextService::PrepareConversionCommit()
+{
     // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)
     std::vector<std::pair<std::wstring, std::wstring>> pairs;
     for (size_t i = 0; i < segments_.size(); ++i) {
         pairs.emplace_back(segments_[i].reading, segments_[i].candidates[selected_[i]]);
     }
     engine_.Learn(pairs);
+    return ConvertedText();
+}
 
-    return EndComposition(context, ConvertedText());
+void TextService::FinishConversionState(const std::wstring& commitText)
+{
+    // 確定アンドゥ (Ctrl+Backspace) 用に確定文字列と確定前のコンポーザを覚えておく
+    if (!commitText.empty()) {
+        lastCommitText_ = commitText;
+        lastComposer_ = composer_;
+    }
+    ClearConversion();
+    ClearPrediction();
+    composer_.Clear();
+}
+
+HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring& commitText,
+                                        const std::wstring& newText)
+{
+    if (!Composing() || context == nullptr) {
+        return E_UNEXPECTED;
+    }
+    // 確定と新 composition の開始を1つの edit session (1つのロック) で行う。
+    // EndComposition → StartComposition と別々の同期 session に分けると、
+    // ロックの合間にホストが確定処理を進めてしまい、Word では2つ目の session が
+    // 失敗して打鍵が素通りし、CUAS 経由のアプリ (WezTerm 等) では新しい
+    // composition の未確定文字列がそのまま確定されてしまう
+    ITfComposition* newComposition = nullptr;
+    HRESULT hr = RequestSync(context,
+                             new (std::nothrow) RestartCompositionEditSession(
+                                 context, composition_, commitText,
+                                 static_cast<ITfCompositionSink*>(this), newText,
+                                 inputAttribute_, &newComposition),
+                             TF_ES_SYNC | TF_ES_READWRITE);
+    composition_->Release();
+    composition_ = newComposition;
+    if (SUCCEEDED(hr) && composition_ == nullptr) {
+        hr = E_FAIL;
+    }
+    return hr;
 }
 
 HRESULT TextService::UndoCommit(ITfContext* context)

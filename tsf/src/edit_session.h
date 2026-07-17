@@ -120,3 +120,29 @@ private:
     ITfComposition* composition_;
     std::wstring commitText_;
 };
+
+// 「確定 + 新しい composition の開始」を1つの edit session (1つのドキュメント
+// ロック) 内で行う。変換中に印字キーが来たときの遷移用。
+// 旧 composition を commitText で置き換えて終了し、続けて確定文字列の直後で
+// 新しい composition を開始して newText を未確定文字列として表示する。
+// これを別々の edit session に分けると、ロックの合間にホストが確定処理を
+// 進めてしまい、2つ目の composition が生き残らない (Word や、CUAS 経由の
+// アプリ (WezTerm 等) では未確定文字列がそのまま確定されてしまう)
+class RestartCompositionEditSession : public EditSessionBase {
+public:
+    RestartCompositionEditSession(ITfContext* context, ITfComposition* oldComposition,
+                                  std::wstring commitText, ITfCompositionSink* sink,
+                                  std::wstring newText, TfGuidAtom displayAttribute,
+                                  ITfComposition** compositionOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    ~RestartCompositionEditSession() override;
+
+    ITfComposition* oldComposition_;
+    std::wstring commitText_;
+    ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
+    std::wstring newText_;
+    TfGuidAtom displayAttribute_;
+    ITfComposition** compositionOut_;  // 開始した composition の受け取り先
+};

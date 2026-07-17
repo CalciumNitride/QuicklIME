@@ -348,3 +348,85 @@ STDMETHODIMP EndCompositionEditSession::DoEditSession(TfEditCookie ec)
     composition_->EndComposition(ec);
     return hr;
 }
+
+// ---- RestartCompositionEditSession ----
+
+RestartCompositionEditSession::RestartCompositionEditSession(
+    ITfContext* context, ITfComposition* oldComposition, std::wstring commitText,
+    ITfCompositionSink* sink, std::wstring newText, TfGuidAtom displayAttribute,
+    ITfComposition** compositionOut)
+    : EditSessionBase(context),
+      oldComposition_(oldComposition),
+      commitText_(std::move(commitText)),
+      sink_(sink),
+      newText_(std::move(newText)),
+      displayAttribute_(displayAttribute),
+      compositionOut_(compositionOut)
+{
+    oldComposition_->AddRef();
+    *compositionOut_ = nullptr;
+}
+
+RestartCompositionEditSession::~RestartCompositionEditSession()
+{
+    oldComposition_->Release();
+}
+
+STDMETHODIMP RestartCompositionEditSession::DoEditSession(TfEditCookie ec)
+{
+    // 1) 旧 composition を確定文字列で置き換え、下線属性を外して終了する
+    //    (EndCompositionEditSession と同じ処理)
+    ITfRange* range = nullptr;
+    HRESULT hr = oldComposition_->GetRange(&range);
+    if (SUCCEEDED(hr)) {
+        hr = range->SetText(ec, 0, commitText_.c_str(), static_cast<LONG>(commitText_.size()));
+        if (SUCCEEDED(hr)) {
+            ApplyDisplayAttribute(ec, context_, range, TF_INVALID_GUIDATOM);
+            CollapseSelectionToEnd(ec, context_, range);
+        }
+        range->Release();
+    }
+    oldComposition_->EndComposition(ec);
+    if (FAILED(hr)) {
+        return hr; // 確定できていなければ新しい composition は開始しない
+    }
+
+    // 2) キャレット位置 (確定文字列の直後) で新しい composition を開始する
+    ITfInsertAtSelection* insertAtSelection = nullptr;
+    hr = context_->QueryInterface(IID_ITfInsertAtSelection,
+                                  reinterpret_cast<void**>(&insertAtSelection));
+    if (FAILED(hr)) {
+        return hr;
+    }
+    ITfRange* startRange = nullptr;
+    hr = insertAtSelection->InsertTextAtSelection(ec, TF_IAS_QUERYONLY, nullptr, 0, &startRange);
+    insertAtSelection->Release();
+    if (FAILED(hr)) {
+        return hr;
+    }
+    ITfContextComposition* contextComposition = nullptr;
+    hr = context_->QueryInterface(IID_ITfContextComposition,
+                                  reinterpret_cast<void**>(&contextComposition));
+    if (SUCCEEDED(hr)) {
+        hr = contextComposition->StartComposition(ec, startRange, sink_, compositionOut_);
+        contextComposition->Release();
+    }
+    startRange->Release();
+    if (FAILED(hr) || *compositionOut_ == nullptr) {
+        // StartComposition はアプリの拒否時に S_OK + nullptr を返すことがある
+        return FAILED(hr) ? hr : E_FAIL;
+    }
+
+    // 3) 新しい composition へ未確定文字列を表示する
+    ITfRange* newRange = nullptr;
+    hr = (*compositionOut_)->GetRange(&newRange);
+    if (SUCCEEDED(hr)) {
+        hr = newRange->SetText(ec, 0, newText_.c_str(), static_cast<LONG>(newText_.size()));
+        if (SUCCEEDED(hr)) {
+            ApplyDisplayAttribute(ec, context_, newRange, displayAttribute_);
+            CollapseSelectionToEnd(ec, context_, newRange);
+        }
+        newRange->Release();
+    }
+    return hr;
+}
