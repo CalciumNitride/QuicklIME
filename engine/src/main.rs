@@ -11,6 +11,7 @@ mod learn;
 mod matrix;
 mod pos;
 mod predict;
+mod userdict;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -25,6 +26,7 @@ use dict::Dictionary;
 use learn::LearningStore;
 use matrix::ConnectionMatrix;
 use pos::FunctionalIds;
+use userdict::UserDict;
 
 /// named pipe の既定名 (Windows では \\.\pipe\quicklime-engine になる)
 const DEFAULT_PIPE_NAME: &str = "quicklime-engine";
@@ -39,6 +41,8 @@ struct EngineData {
     dictionary: Dictionary,
     matrix: ConnectionMatrix,
     functional: FunctionalIds,
+    /// ユーザ辞書 (ADDWORD で書き込むため Mutex で保護)
+    user: Mutex<UserDict>,
     /// 学習データ (LEARN で書き込むため Mutex で保護)
     learning: Mutex<LearningStore>,
 }
@@ -53,10 +57,14 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
+    // ユーザ辞書の品詞名解決に品詞ID表を使うため、先に読み込んでおく
+    let functional = load_functional_ids();
+    let user = UserDict::load_default(&functional);
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
-        functional: load_functional_ids(),
+        functional,
+        user: Mutex::new(user),
         learning: Mutex::new(LearningStore::load_default()),
     });
 
@@ -113,37 +121,7 @@ fn load_dictionary() -> Dictionary {
         }
     };
     load_symbols(&mut dict, &dir);
-    load_user_shortcuts(&mut dict);
     dict
-}
-
-/// ユーザ辞書のパス。優先順: QUICKLIME_USER_DICT_FILE > %APPDATA%\QuicklIME\userdict.tsv
-fn user_dict_path() -> Option<PathBuf> {
-    if let Ok(path) = std::env::var("QUICKLIME_USER_DICT_FILE") {
-        return Some(PathBuf::from(path));
-    }
-    let appdata = std::env::var("APPDATA").ok()?;
-    Some(PathBuf::from(appdata).join("QuicklIME").join("userdict.tsv"))
-}
-
-/// ユーザ辞書 (短縮よみ) を読み込む。ファイルが無ければ短縮よみなしで続行する
-fn load_user_shortcuts(dict: &mut Dictionary) {
-    let Some(path) = user_dict_path() else {
-        return;
-    };
-    if !path.is_file() {
-        return; // 未作成は正常 (まだ何も登録していないだけ)
-    }
-    match dict.load_shortcuts(&path) {
-        Ok(()) => eprintln!(
-            "ユーザ辞書 (短縮よみ) を読み込みました: {} エントリ [{}]",
-            dict.shortcut_count(),
-            path.display()
-        ),
-        Err(e) => {
-            eprintln!("ユーザ辞書の読み込みに失敗しました ({e})。短縮よみなしで動作します")
-        }
-    }
 }
 
 /// 記号辞書 (Mozc の symbol.tsv) を読み込む。無くても記号候補なしで続行する。
@@ -234,13 +212,15 @@ fn handle_request(line: &str, data: &EngineData) -> String {
     match fields.next() {
         Some("CONVERT") => match fields.next() {
             Some(kana) if !kana.is_empty() => {
-                let candidates = convert::candidates(kana, &data.dictionary, &data.matrix);
+                let user = data.user.lock().expect("user lock");
+                let candidates = convert::candidates(kana, &data.dictionary, &user, &data.matrix);
                 format!("OK\t{}\n", candidates.join("\t"))
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("CONVSEG") => match fields.next() {
             Some(kana) if !kana.is_empty() => {
+                let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
                 // 3番目のフィールドは文節長 (カンマ区切り、文節伸縮時の境界固定用)
                 let segments = if let Some(lengths_field) = fields.next() {
@@ -250,6 +230,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                         kana,
                         &lengths,
                         &data.dictionary,
+                        &user,
                         &data.matrix,
                         &learning,
                     );
@@ -261,6 +242,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                     convert::convert_segments(
                         kana,
                         &data.dictionary,
+                        &user,
                         &data.matrix,
                         &data.functional,
                         &learning,
@@ -295,10 +277,17 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("CONVUSER") => match fields.next() {
-            // 短縮よみ変換 (F5 用): 読みに完全一致する短縮よみの候補のみを返す。
-            // 該当なしは候補ゼロの OK
+            // ユーザ辞書変換 (F5 用): 読みに完全一致するユーザ登録語
+            // (短縮よみ → 名詞系、記載順) のみを返す。該当なしは候補ゼロの OK
             Some(kana) if !kana.is_empty() => {
-                let candidates = data.dictionary.lookup_shortcuts(kana);
+                let user = data.user.lock().expect("user lock");
+                let mut candidates: Vec<String> =
+                    user.lookup_shortcuts(kana).into_iter().map(String::from).collect();
+                for word in user.lookup_words(kana) {
+                    if !candidates.iter().any(|s| *s == word.surface) {
+                        candidates.push(word.surface.clone());
+                    }
+                }
                 if candidates.is_empty() {
                     "OK\n".to_string()
                 } else {
@@ -308,11 +297,12 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("PREDICT") => match fields.next() {
-            // 予測入力: 読みの前方一致で履歴・辞書から候補を返す。
+            // 予測入力: 読みの前方一致でユーザ辞書・履歴・辞書から候補を返す。
             // 2文字未満・該当なしは候補ゼロの OK (エラーにしない)
             Some(kana) if !kana.is_empty() => {
+                let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
-                let candidates = predict::predict(kana, &data.dictionary, &learning);
+                let candidates = predict::predict(kana, &data.dictionary, &user, &learning);
                 if candidates.is_empty() {
                     "OK\n".to_string()
                 } else {
@@ -348,6 +338,31 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 "ERR\t記録する内容がありません\n".to_string()
             }
         }
+        Some("ADDWORD") => {
+            // ADDWORD\t読み\t表記\t品詞 : ユーザ辞書へ1件登録する
+            // (userdict.tsv へ追記し、メモリへ即時反映する)
+            let (Some(reading), Some(surface), Some(pos)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                return "ERR\t引数が足りません (読み・表記・品詞)\n".to_string();
+            };
+            let mut user = data.user.lock().expect("user lock");
+            match user.add(reading, surface, pos, &data.functional) {
+                Ok(()) => "OK\n".to_string(),
+                Err(e) => format!("ERR\t{e}\n"),
+            }
+        }
+        Some("RELOADUSER") => {
+            // ユーザ辞書ファイルを読み直す (手動編集の反映用)
+            let mut user = data.user.lock().expect("user lock");
+            user.reload(&data.functional);
+            eprintln!(
+                "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件",
+                user.shortcut_count(),
+                user.word_count()
+            );
+            "OK\n".to_string()
+        }
         _ => "ERR\t不明なコマンドです\n".to_string(),
     }
 }
@@ -361,6 +376,7 @@ mod tests {
             dictionary: Dictionary::empty(),
             matrix: ConnectionMatrix::empty(),
             functional: FunctionalIds::empty(),
+            user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
         }
     }
@@ -379,8 +395,17 @@ mod tests {
             dictionary,
             matrix: ConnectionMatrix::empty(),
             functional,
+            user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
         }
+    }
+
+    /// data のユーザ辞書に TSV の内容を読み込む
+    fn load_user(data: &EngineData, tsv: &str) {
+        data.user
+            .lock()
+            .unwrap()
+            .load_from(tsv.as_bytes(), &data.functional);
     }
 
     #[test]
@@ -504,21 +529,51 @@ mod tests {
     }
 
     #[test]
-    fn convuser要求に短縮よみのみを返す() {
-        let mut data = sample_data();
-        data.dictionary
-            .load_shortcuts_from(
-                "きょう\tmail@example.com\t短縮よみ\nきょう\tsecond@example.jp\t短縮よみ\n"
-                    .as_bytes(),
-            )
-            .unwrap();
-        // sample_data の辞書語 (今日など) は含めず、短縮よみだけを記載順で返す
+    fn convuser要求にユーザ登録語のみを返す() {
+        let data = sample_data();
+        load_user(
+            &data,
+            "きょう\tmail@example.com\t短縮よみ\nきょう\tsecond@example.jp\t短縮よみ\nきょう\t匡\t名\n",
+        );
+        // sample_data の辞書語 (今日など) は含めず、短縮よみ → 名詞系を記載順で返す
         assert_eq!(
             handle_request("CONVUSER\tきょう", &data),
-            "OK\tmail@example.com\tsecond@example.jp\n"
+            "OK\tmail@example.com\tsecond@example.jp\t匡\n"
         );
         assert_eq!(handle_request("CONVUSER\tそんざいしない", &data), "OK\n");
         assert!(handle_request("CONVUSER\t", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn addwordで登録した語がすぐ変換に出る() {
+        let data = sample_data();
+        // 登録前は変換されない (未知語としてそのまま)
+        let before = handle_request("CONVSEG\tかんべは", &data);
+        assert!(!before.contains("神戸"), "登録前から神戸が出ている: {before}");
+
+        assert_eq!(handle_request("ADDWORD\tかんべ\t神戸\t姓", &data), "OK\n");
+        let response = handle_request("CONVSEG\tかんべは", &data);
+        assert!(response.contains("神戸は"), "神戸は が候補に無い: {response}");
+        // 予測にも出る
+        let response = handle_request("PREDICT\tかん", &data);
+        assert!(response.contains("神戸"), "予測に神戸が無い: {response}");
+    }
+
+    #[test]
+    fn addwordの検証エラー() {
+        let data = sample_data();
+        assert!(handle_request("ADDWORD\tよみ\t表記", &data).starts_with("ERR\t"));
+        assert!(handle_request("ADDWORD\tよみ\t表記\t動詞", &data).starts_with("ERR\t"));
+        assert!(handle_request("ADDWORD\t\t表記\t名詞", &data).starts_with("ERR\t"));
+        // 重複はエラー
+        assert_eq!(handle_request("ADDWORD\tよみ\t表記\t名詞", &data), "OK\n");
+        assert!(handle_request("ADDWORD\tよみ\t表記\t名詞", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn reloaduserはメモリ上のみでもokを返す() {
+        // パスなし (テスト用) のユーザ辞書では何もせず OK
+        assert_eq!(handle_request("RELOADUSER", &sample_data()), "OK\n");
     }
 
     #[test]

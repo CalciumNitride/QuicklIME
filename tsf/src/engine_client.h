@@ -53,6 +53,10 @@ public:
     // 未接続なら即 false を返す (候補ゼロは true で candidates が空)
     bool Predict(const std::wstring& kana, std::vector<PredictionCandidate>* candidates);
 
+    // 同梱 exe (エンジン・単語登録ツール) のパスを探す。
+    // DLL と同じディレクトリ → 開発レイアウト (engine/target) の順。見つからなければ空
+    static std::wstring FindExePath(const wchar_t* exeName);
+
 private:
     bool EnsureConnected();
     // パイプを1回だけ開いてみる (起動待ちはしない)

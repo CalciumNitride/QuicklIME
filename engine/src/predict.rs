@@ -1,12 +1,13 @@
 // 予測入力 (PREDICT) の候補生成
 //
-// 読みの前方一致で短縮よみ (ユーザ辞書、記載順) → 履歴 (確定履歴、新しい順) →
-// 辞書 (コスト順) を検索し、この順に合成して返す。表記の重複は先勝ちで除き、
-// 表記が入力かなそのままの候補は出しても意味が無いため除外する。
+// 読みの前方一致でユーザ辞書 (短縮よみ → 名詞系、記載順) → 履歴 (確定履歴、
+// 新しい順) → 辞書 (コスト順) を検索し、この順に合成して返す。表記の重複は
+// 先勝ちで除き、表記が入力かなそのままの候補は出しても意味が無いため除外する。
 // 完全一致で枠が埋まらないときは、タイプミス補正 (1かな誤りの曖昧一致) で補充する。
 
 use crate::dict::Dictionary;
 use crate::learn::LearningStore;
+use crate::userdict::UserDict;
 
 /// 予測を出す最小の読み文字数 (1文字では候補が広すぎて役に立たない)
 const MIN_PREFIX_CHARS: usize = 2;
@@ -21,14 +22,22 @@ pub const MAX_PREDICTIONS: usize = 8;
 
 /// 読みの前方一致で予測候補 (読み, 表記) を返す。
 /// 読みは採用時の LEARN に使うため、入力の接頭辞ではなく候補の完全な読みを返す
-pub fn predict(kana: &str, dict: &Dictionary, learning: &LearningStore) -> Vec<(String, String)> {
+pub fn predict(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    learning: &LearningStore,
+) -> Vec<(String, String)> {
     if kana.chars().count() < MIN_PREFIX_CHARS {
         return Vec::new();
     }
 
     let mut results: Vec<(String, String)> = Vec::new();
-    // 短縮よみはユーザが明示登録した定型なので履歴より先に出す
-    for (reading, surface) in dict.shortcut_prefix(kana, MAX_PREDICTIONS) {
+    // ユーザ辞書 (短縮よみ → 名詞系) はユーザが明示登録した語なので履歴より先に出す
+    for (reading, surface) in user.shortcut_prefix(kana, MAX_PREDICTIONS) {
+        push_unique(&mut results, kana, reading.to_string(), surface.to_string());
+    }
+    for (reading, surface) in user.word_prefix(kana, MAX_PREDICTIONS) {
         push_unique(&mut results, kana, reading.to_string(), surface.to_string());
     }
     for (reading, surface) in learning.predict_prefix(kana, MAX_PREDICTIONS) {
@@ -65,6 +74,19 @@ fn push_unique(results: &mut Vec<(String, String)>, kana: &str, reading: String,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pos::FunctionalIds;
+
+    /// ユーザ辞書なし (空) の省略用
+    fn no_user() -> UserDict {
+        UserDict::empty()
+    }
+
+    /// TSV 文字列からユーザ辞書を作る
+    fn user_from(data: &str) -> UserDict {
+        let mut user = UserDict::empty();
+        user.load_from(data.as_bytes(), &FunctionalIds::empty());
+        user
+    }
 
     fn sample_dict() -> Dictionary {
         let mut dict = Dictionary::empty();
@@ -84,7 +106,7 @@ mod tests {
         let mut learning = LearningStore::in_memory();
         learning.record("きょうしつ", "教室");
         assert_eq!(
-            predict("きょう", &sample_dict(), &learning),
+            predict("きょう", &sample_dict(), &no_user(), &learning),
             vec![
                 ("きょうしつ".to_string(), "教室".to_string()),
                 ("きょうと".to_string(), "京都".to_string()),
@@ -98,7 +120,7 @@ mod tests {
     fn 履歴と同じ表記の辞書候補は重複しない() {
         let mut learning = LearningStore::in_memory();
         learning.record("きょうと", "京都");
-        let results = predict("きょう", &sample_dict(), &learning);
+        let results = predict("きょう", &sample_dict(), &no_user(), &learning);
         assert_eq!(results.iter().filter(|(_, s)| s == "京都").count(), 1);
         assert_eq!(results[0], ("きょうと".to_string(), "京都".to_string()));
     }
@@ -110,7 +132,7 @@ mod tests {
             .unwrap();
         dict.finalize();
         assert_eq!(
-            predict("きょう", &dict, &LearningStore::in_memory()),
+            predict("きょう", &dict, &no_user(), &LearningStore::in_memory()),
             vec![("きょう".to_string(), "今日".to_string())]
         );
     }
@@ -122,15 +144,15 @@ mod tests {
         let mut learning = LearningStore::in_memory();
         learning.record("apple", "Apple");
         assert_eq!(
-            predict("ap", &sample_dict(), &learning),
+            predict("ap", &sample_dict(), &no_user(), &learning),
             vec![("apple".to_string(), "Apple".to_string())]
         );
     }
 
     #[test]
     fn 二文字未満は候補を出さない() {
-        assert!(predict("き", &sample_dict(), &LearningStore::in_memory()).is_empty());
-        assert!(predict("", &sample_dict(), &LearningStore::in_memory()).is_empty());
+        assert!(predict("き", &sample_dict(), &no_user(), &LearningStore::in_memory()).is_empty());
+        assert!(predict("", &sample_dict(), &no_user(), &LearningStore::in_memory()).is_empty());
     }
 
     #[test]
@@ -138,11 +160,11 @@ mod tests {
         let mut dict = Dictionary::empty();
         dict.load_from("めーるあどれす\t100\t100\t3000\tメールアドレス\n".as_bytes()).unwrap();
         dict.finalize();
-        dict.load_shortcuts_from("めーる\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let user = user_from("めーる\tmail@example.com\t短縮よみ\n");
         let mut learning = LearningStore::in_memory();
         learning.record("めーるべん", "メール便");
         assert_eq!(
-            predict("めーる", &dict, &learning),
+            predict("めーる", &dict, &user, &learning),
             vec![
                 ("めーる".to_string(), "mail@example.com".to_string()),
                 ("めーるべん".to_string(), "メール便".to_string()),
@@ -152,13 +174,27 @@ mod tests {
     }
 
     #[test]
+    fn ユーザ登録の名詞が短縮よみの後で履歴より先に出る() {
+        let user = user_from("かんべ\tmail@example.com\t短縮よみ\nかんべ\t神戸\t姓\n");
+        let mut learning = LearningStore::in_memory();
+        learning.record("かんべい", "寛平");
+        assert_eq!(
+            predict("かんべ", &sample_dict(), &user, &learning),
+            vec![
+                ("かんべ".to_string(), "mail@example.com".to_string()),
+                ("かんべ".to_string(), "神戸".to_string()),
+                ("かんべい".to_string(), "寛平".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn 短縮よみと同じ表記の履歴は重複しない() {
-        let mut dict = Dictionary::empty();
-        dict.load_shortcuts_from("めーる\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
+        let user = user_from("めーる\tmail@example.com\t短縮よみ\n");
         let mut learning = LearningStore::in_memory();
         learning.record("めーる", "mail@example.com");
         assert_eq!(
-            predict("めーる", &dict, &learning),
+            predict("めーる", &Dictionary::empty(), &user, &learning),
             vec![("めーる".to_string(), "mail@example.com".to_string())]
         );
     }
@@ -170,7 +206,7 @@ mod tests {
         dict.load_from("にほんご\t100\t100\t3000\t日本語\n".as_bytes()).unwrap();
         dict.finalize();
         assert_eq!(
-            predict("にひんご", &dict, &LearningStore::in_memory()),
+            predict("にひんご", &dict, &no_user(), &LearningStore::in_memory()),
             vec![("にほんご".to_string(), "日本語".to_string())]
         );
     }
@@ -181,7 +217,7 @@ mod tests {
         dict.load_from("にほ\t100\t100\t3000\t二歩\n".as_bytes()).unwrap();
         dict.finalize();
         // 「にお」は「にほ」の1かな違いだが、2文字なので補正は発動しない
-        assert!(predict("にお", &dict, &LearningStore::in_memory()).is_empty());
+        assert!(predict("にお", &dict, &no_user(), &LearningStore::in_memory()).is_empty());
     }
 
     #[test]
@@ -196,7 +232,7 @@ mod tests {
         // きょうと は「きょうの」の1かな違い (低コスト) だが、完全一致8件で枠が埋まる
         dict.load_from("きょうと\t100\t100\t100\t京都\n".as_bytes()).unwrap();
         dict.finalize();
-        let results = predict("きょうの", &dict, &LearningStore::in_memory());
+        let results = predict("きょうの", &dict, &no_user(), &LearningStore::in_memory());
         assert_eq!(results.len(), MAX_PREDICTIONS);
         assert!(results.iter().all(|(_, s)| s != "京都"));
     }
@@ -211,7 +247,7 @@ mod tests {
         dict.finalize();
         // 補正の「京都」の方が低コストでも、完全一致の「今日の」が先
         assert_eq!(
-            predict("きょうの", &dict, &LearningStore::in_memory()),
+            predict("きょうの", &dict, &no_user(), &LearningStore::in_memory()),
             vec![
                 ("きょうの".to_string(), "今日の".to_string()),
                 ("きょうと".to_string(), "京都".to_string()),
@@ -227,7 +263,7 @@ mod tests {
                 .unwrap();
         }
         dict.finalize();
-        let results = predict("きょう", &dict, &LearningStore::in_memory());
+        let results = predict("きょう", &dict, &no_user(), &LearningStore::in_memory());
         assert_eq!(results.len(), MAX_PREDICTIONS);
     }
 }

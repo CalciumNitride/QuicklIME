@@ -16,37 +16,6 @@ constexpr ULONGLONG kLaunchCooldownMs = 10 * 1000;
 constexpr int kConnectRetryCount = 20;
 constexpr DWORD kConnectRetryIntervalMs = 100;
 
-// エンジン exe の探索候補を返す。
-// 1. DLL と同じディレクトリ (配布時のレイアウト)
-// 2. 開発レイアウト (tsf/build/Debug -> engine/target/{release,debug})
-std::wstring FindEngineExe()
-{
-    wchar_t dllPath[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(globals::dllInstance, dllPath, ARRAYSIZE(dllPath));
-    if (length == 0 || length >= ARRAYSIZE(dllPath)) {
-        return {};
-    }
-    std::wstring dir(dllPath);
-    const size_t lastSep = dir.find_last_of(L'\\');
-    if (lastSep == std::wstring::npos) {
-        return {};
-    }
-    dir.resize(lastSep);
-
-    const wchar_t* candidates[] = {
-        L"\\quicklime-engine.exe",
-        L"\\..\\..\\..\\engine\\target\\release\\quicklime-engine.exe",
-        L"\\..\\..\\..\\engine\\target\\debug\\quicklime-engine.exe",
-    };
-    for (const wchar_t* candidate : candidates) {
-        const std::wstring path = dir + candidate;
-        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            return path;
-        }
-    }
-    return {};
-}
-
 std::string WideToUtf8(const std::wstring& wide)
 {
     if (wide.empty()) {
@@ -103,6 +72,37 @@ bool EngineClient::TryOpenPipe()
     return false;
 }
 
+// 同梱 exe の探索候補を返す。
+// 1. DLL と同じディレクトリ (配布時のレイアウト)
+// 2. 開発レイアウト (tsf/build/Debug -> engine/target/{release,debug})
+std::wstring EngineClient::FindExePath(const wchar_t* exeName)
+{
+    wchar_t dllPath[MAX_PATH] = {};
+    const DWORD length = GetModuleFileNameW(globals::dllInstance, dllPath, ARRAYSIZE(dllPath));
+    if (length == 0 || length >= ARRAYSIZE(dllPath)) {
+        return {};
+    }
+    std::wstring dir(dllPath);
+    const size_t lastSep = dir.find_last_of(L'\\');
+    if (lastSep == std::wstring::npos) {
+        return {};
+    }
+    dir.resize(lastSep);
+
+    const wchar_t* candidates[] = {
+        L"\\",
+        L"\\..\\..\\..\\engine\\target\\release\\",
+        L"\\..\\..\\..\\engine\\target\\debug\\",
+    };
+    for (const wchar_t* candidate : candidates) {
+        const std::wstring path = dir + candidate + exeName;
+        if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+            return path;
+        }
+    }
+    return {};
+}
+
 bool EngineClient::TryLaunchEngine()
 {
     // 直前に起動を試みたばかりなら何もしない (起動失敗の連打防止)
@@ -112,7 +112,7 @@ bool EngineClient::TryLaunchEngine()
     }
     lastLaunchTick_ = now;
 
-    const std::wstring exePath = FindEngineExe();
+    const std::wstring exePath = FindExePath(L"quicklime-engine.exe");
     if (exePath.empty()) {
         return false;
     }

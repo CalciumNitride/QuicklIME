@@ -7,7 +7,8 @@
 use crate::dict::Dictionary;
 use crate::learn::LearningStore;
 use crate::matrix::ConnectionMatrix;
-use crate::pos::FunctionalIds;
+use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
+use crate::userdict::UserDict;
 
 /// 辞書由来の候補の最大数 (文全体・文節共通)。
 /// かなの同音異義語は多い (例:「きょう」は約50語) ため、ある程度大きくしておく。
@@ -20,9 +21,6 @@ const MAX_READING_CHARS: usize = 16;
 /// 未知語 (辞書に無い1文字) ノードの単語コスト。
 /// 辞書語の経路が常に優先されるよう十分大きくする
 const UNKNOWN_WORD_COST: i32 = 12000;
-
-/// 未知語ノードに与える文脈ID (Mozc 辞書の一般名詞相当。暫定)
-const UNKNOWN_WORD_ID: u16 = 1851;
 
 /// 変換結果の1文節
 pub struct Segment {
@@ -43,11 +41,12 @@ struct PathWord {
 pub fn convert_segments(
     kana: &str,
     dict: &Dictionary,
+    user: &UserDict,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Vec<Segment> {
-    let Some(path) = viterbi_path(kana, dict, matrix) else {
+    let Some(path) = viterbi_path(kana, dict, user, matrix) else {
         return Vec::new();
     };
 
@@ -63,7 +62,7 @@ pub fn convert_segments(
 
     groups
         .iter()
-        .map(|group| segment_from_group(group, dict, learning))
+        .map(|group| segment_from_group(group, dict, user, learning))
         .collect()
 }
 
@@ -73,6 +72,7 @@ pub fn convert_segments_fixed(
     kana: &str,
     lengths: &[usize],
     dict: &Dictionary,
+    user: &UserDict,
     matrix: &ConnectionMatrix,
     learning: &LearningStore,
 ) -> Vec<Segment> {
@@ -90,29 +90,51 @@ pub fn convert_segments_fixed(
         begin += length;
 
         // 文節の範囲内だけで最小コスト経路を求める
-        let group = viterbi_path(&reading, dict, matrix).unwrap_or_else(|| {
+        let group = viterbi_path(&reading, dict, user, matrix).unwrap_or_else(|| {
             vec![PathWord {
                 reading: reading.clone(),
                 surface: reading.clone(),
-                left_id: UNKNOWN_WORD_ID,
+                left_id: DEFAULT_NOUN_ID,
             }]
         });
-        segments.push(segment_from_group(&group, dict, learning));
+        segments.push(segment_from_group(&group, dict, user, learning));
     }
     segments
+}
+
+/// 読みに完全一致する候補を (コスト, 表記) で集める。
+/// システム辞書とユーザ登録の名詞系単語をまとめてコスト昇順に並べる
+fn exact_candidates<'a>(
+    reading: &str,
+    dict: &'a Dictionary,
+    user: &'a UserDict,
+) -> Vec<(i16, &'a str)> {
+    let mut hits: Vec<(i16, &str)> = dict
+        .lookup(reading)
+        .iter()
+        .map(|e| (e.cost, e.surface.as_str()))
+        .chain(user.lookup_words(reading).into_iter().map(|w| (w.cost, w.surface.as_str())))
+        .collect();
+    hits.sort_by_key(|(cost, _)| *cost);
+    hits
 }
 
 /// 単語列 (1文節分) から候補リスト付きの Segment を作る。
 /// 候補: 経路上の表記 → 先頭語を入れ替えた表記 → 読み全体の辞書候補
 ///       → カタカナ → ひらがな。学習済みの表記があれば先頭へ移動する
-fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &LearningStore) -> Segment {
+fn segment_from_group(
+    group: &[PathWord],
+    dict: &Dictionary,
+    user: &UserDict,
+    learning: &LearningStore,
+) -> Segment {
     let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
     let best: String = group.iter().map(|w| w.surface.as_str()).collect();
     let mut result = vec![best];
 
     // 短縮よみ (ユーザ辞書) は経路表記の直後に置く (記載順)。
     // 末尾の学習表記の先頭移動が最優先なのは変わらない
-    for shortcut in dict.lookup_shortcuts(&reading) {
+    for shortcut in user.lookup_shortcuts(&reading) {
         if !result.iter().any(|s| s == shortcut) {
             result.push(shortcut.to_string());
         }
@@ -121,27 +143,23 @@ fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &Learning
     // 先頭の自立語を入れ替えた候補 (例: 今日+は -> 京は, 教は...)。
     // 読みと同じ表記 (ひらがなのまま) は末尾で必ず追加するのでここでは除く
     let rest: String = group[1..].iter().map(|w| w.surface.as_str()).collect();
-    let mut firsts: Vec<_> = dict.lookup(&group[0].reading).iter().collect();
-    firsts.sort_by_key(|e| e.cost);
-    for entry in firsts {
+    for (_, surface) in exact_candidates(&group[0].reading, dict, user) {
         if result.len() >= MAX_DICT_CANDIDATES {
             break;
         }
-        let candidate = entry.surface.clone() + &rest;
+        let candidate = surface.to_string() + &rest;
         if candidate != reading && !result.contains(&candidate) {
             result.push(candidate);
         }
     }
 
     // 読み全体の完全一致候補 (単語をまたぐ表記など)
-    let mut entries: Vec<_> = dict.lookup(&reading).iter().collect();
-    entries.sort_by_key(|e| e.cost);
-    for entry in entries {
+    for (_, surface) in exact_candidates(&reading, dict, user) {
         if result.len() >= MAX_DICT_CANDIDATES {
             break;
         }
-        if entry.surface != reading && !result.contains(&entry.surface) {
-            result.push(entry.surface.clone());
+        if surface != reading && !result.iter().any(|s| s == surface) {
+            result.push(surface.to_string());
         }
     }
 
@@ -169,32 +187,35 @@ fn segment_from_group(group: &[PathWord], dict: &Dictionary, learning: &Learning
 }
 
 /// かな文字列に対する全文一括の変換候補リストを返す (クエリツール・互換用)
-pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Vec<String> {
+pub fn candidates(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
 
     // 文としての最小コスト変換 (入力と同じ = 変換できなかった場合は加えない)
-    if let Some(sentence) = convert_sentence(kana, dict, matrix) {
+    if let Some(sentence) = convert_sentence(kana, dict, user, matrix) {
         if sentence != kana {
             result.push(sentence);
         }
     }
 
     // 短縮よみ (ユーザ辞書) は文変換候補の直後に置く (記載順)
-    for shortcut in dict.lookup_shortcuts(kana) {
+    for shortcut in user.lookup_shortcuts(kana) {
         if !result.iter().any(|s| s == shortcut) {
             result.push(shortcut.to_string());
         }
     }
 
     // 読み全体の完全一致候補をコスト順に (同じ表記は除く)
-    let mut entries: Vec<_> = dict.lookup(kana).iter().collect();
-    entries.sort_by_key(|e| e.cost);
-    for entry in entries {
+    for (_, surface) in exact_candidates(kana, dict, user) {
         if result.len() >= MAX_DICT_CANDIDATES + 1 {
             break;
         }
-        if !result.contains(&entry.surface) {
-            result.push(entry.surface.clone());
+        if !result.iter().any(|s| s == surface) {
+            result.push(surface.to_string());
         }
     }
 
@@ -215,8 +236,13 @@ pub fn candidates(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> V
 }
 
 /// ラティスを構築して最小コスト経路の表記を返す
-pub fn convert_sentence(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Option<String> {
-    let path = viterbi_path(kana, dict, matrix)?;
+pub fn convert_sentence(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+) -> Option<String> {
+    let path = viterbi_path(kana, dict, user, matrix)?;
     Some(path.into_iter().map(|w| w.surface).collect())
 }
 
@@ -236,7 +262,12 @@ struct Node {
 }
 
 /// ラティスを構築して最小コスト経路の単語列を返す
-fn viterbi_path(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Option<Vec<PathWord>> {
+fn viterbi_path(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+) -> Option<Vec<PathWord>> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -280,13 +311,28 @@ fn viterbi_path(kana: &str, dict: &Dictionary, matrix: &ConnectionMatrix) -> Opt
                 ending_at[end].push(nodes.len() - 1);
             }
         }
+        // ユーザ登録の名詞系単語も通常の辞書語と同様にノードにする
+        for (len, word) in user.common_prefix_words(&chars[start..]) {
+            let end = start + len;
+            nodes.push(Node {
+                start,
+                reading: word.reading.clone(),
+                left_id: word.left_id,
+                right_id: word.right_id,
+                word_cost: i32::from(word.cost),
+                surface: word.surface.clone(),
+                best_cost: i64::MAX,
+                best_prev: 0,
+            });
+            ending_at[end].push(nodes.len() - 1);
+        }
         // 未知語ノード (1文字をそのまま出力)。どんな入力でも経路が成立する保険
         let ch = chars[start].to_string();
         nodes.push(Node {
             start,
             reading: ch.clone(),
-            left_id: UNKNOWN_WORD_ID,
-            right_id: UNKNOWN_WORD_ID,
+            left_id: DEFAULT_NOUN_ID,
+            right_id: DEFAULT_NOUN_ID,
             word_cost: UNKNOWN_WORD_COST,
             surface: ch,
             best_cost: i64::MAX,
@@ -393,10 +439,16 @@ mod tests {
         FunctionalIds::load_from(data.as_bytes()).unwrap()
     }
 
+    /// ユーザ辞書なし (空) の省略用
+    fn no_user() -> UserDict {
+        UserDict::empty()
+    }
+
     #[test]
     fn 文を最小コストで変換する() {
         // 今日(2000) + は(500) + 晴れ(3000) + です(1000) が最小経路になる
-        let result = convert_sentence("きょうははれです", &sample_dict(), &ConnectionMatrix::empty());
+        let result = convert_sentence(
+            "きょうははれです", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
         assert_eq!(result.unwrap(), "今日は晴れです");
     }
 
@@ -405,6 +457,7 @@ mod tests {
         let segments = convert_segments(
             "きょうははれです",
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
@@ -420,6 +473,7 @@ mod tests {
         let segments = convert_segments(
             "きょうは",
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
@@ -441,6 +495,7 @@ mod tests {
         let segments = convert_segments(
             "きょう",
             &dict,
+            &no_user(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
@@ -453,13 +508,22 @@ mod tests {
         assert!(symbol < katakana);
     }
 
+    /// 短縮よみだけを持つユーザ辞書を作る
+    fn user_with_shortcut(reading: &str, surface: &str) -> UserDict {
+        let mut user = UserDict::empty();
+        user.load_from(
+            format!("{reading}\t{surface}\t短縮よみ\n").as_bytes(),
+            &FunctionalIds::empty(),
+        );
+        user
+    }
+
     #[test]
     fn 短縮よみが文節候補の2番目に入る() {
-        let mut dict = sample_dict();
-        dict.load_shortcuts_from("きょう\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
         let segments = convert_segments(
             "きょう",
-            &dict,
+            &sample_dict(),
+            &user_with_shortcut("きょう", "mail@example.com"),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
@@ -472,13 +536,12 @@ mod tests {
 
     #[test]
     fn 学習表記は短縮よみより前に出る() {
-        let mut dict = sample_dict();
-        dict.load_shortcuts_from("きょう\tmail@example.com\t短縮よみ\n".as_bytes()).unwrap();
         let mut learning = LearningStore::in_memory();
         learning.record("きょう", "京");
         let segments = convert_segments(
             "きょう",
-            &dict,
+            &sample_dict(),
+            &user_with_shortcut("きょう", "mail@example.com"),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &learning,
@@ -491,10 +554,43 @@ mod tests {
 
     #[test]
     fn 短縮よみが全文候補にも入る() {
-        let mut dict = sample_dict();
-        dict.load_shortcuts_from("にほんご\tNIHONGO\t短縮よみ\n".as_bytes()).unwrap();
-        let got = candidates("にほんご", &dict, &ConnectionMatrix::empty());
+        let got = candidates(
+            "にほんご",
+            &sample_dict(),
+            &user_with_shortcut("にほんご", "NIHONGO"),
+            &ConnectionMatrix::empty(),
+        );
         assert_eq!(got, vec!["日本語", "NIHONGO", "ニホンゴ", "にほんご"]);
+    }
+
+    #[test]
+    fn ユーザ登録の名詞が文中で変換される() {
+        // 「かんべ」は辞書に無いが、ユーザ辞書の姓として登録されている
+        let mut user = UserDict::empty();
+        user.load_from("かんべ\t神戸\t姓\n".as_bytes(), &FunctionalIds::empty());
+        let result = convert_sentence(
+            "かんべです", &sample_dict(), &user, &ConnectionMatrix::empty());
+        assert_eq!(result.unwrap(), "神戸です");
+    }
+
+    #[test]
+    fn ユーザ登録の名詞が文節候補にも入る() {
+        // 「きょう」に同読みのユーザ語を登録すると、辞書候補とコスト順で混ざる
+        // (ユーザ語のコスト3000は 今日(2000) と 京(4000) の間)
+        let mut user = UserDict::empty();
+        user.load_from("きょう\t匡\t名\n".as_bytes(), &FunctionalIds::empty());
+        let segments = convert_segments(
+            "きょう",
+            &sample_dict(),
+            &user,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let c = &segments[0].candidates;
+        let user_word = c.iter().position(|s| s == "匡").unwrap();
+        assert!(c.iter().position(|s| s == "今日").unwrap() < user_word);
+        assert!(user_word < c.iter().position(|s| s == "京").unwrap());
     }
 
     #[test]
@@ -502,6 +598,7 @@ mod tests {
         let segments = convert_segments(
             "きょうは",
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &FunctionalIds::empty(),
             &LearningStore::in_memory(),
@@ -512,7 +609,8 @@ mod tests {
 
     #[test]
     fn 辞書に無い文字は未知語としてそのまま通す() {
-        let result = convert_sentence("きょうはx", &sample_dict(), &ConnectionMatrix::empty());
+        let result = convert_sentence(
+            "きょうはx", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
         assert_eq!(result.unwrap(), "今日はx");
     }
 
@@ -527,22 +625,24 @@ mod tests {
             "3\n0\n1000\n0\n0\n0\n0\n0\n0\n0\n",
         )
         .unwrap();
-        let result = convert_sentence("あ", &dict, &matrix);
+        let result = convert_sentence("あ", &dict, &no_user(), &matrix);
         assert_eq!(result.unwrap(), "阿");
     }
 
     #[test]
     fn 候補は文変換_完全一致_カタカナ_ひらがなの順() {
-        let got = candidates("にほんご", &sample_dict(), &ConnectionMatrix::empty());
+        let got = candidates("にほんご", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
         assert_eq!(got, vec!["日本語", "ニホンゴ", "にほんご"]);
     }
 
     #[test]
     fn 空文字列は文変換しない() {
-        assert!(convert_sentence("", &Dictionary::empty(), &ConnectionMatrix::empty()).is_none());
+        assert!(convert_sentence(
+            "", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty()).is_none());
         assert!(convert_segments(
             "",
             &Dictionary::empty(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &FunctionalIds::empty(),
             &LearningStore::in_memory()
@@ -555,6 +655,7 @@ mod tests {
         let segments = convert_segments(
             "きょうは",
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
@@ -570,14 +671,14 @@ mod tests {
 
         // 4,4 なら通常の文節分割と同じ
         let segments = convert_segments_fixed(
-            "きょうははれです", &[4, 4], &dict, &ConnectionMatrix::empty(), &learning);
+            "きょうははれです", &[4, 4], &dict, &no_user(), &ConnectionMatrix::empty(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "はれです"]);
         assert_eq!(segments[0].candidates[0], "今日は");
 
         // 3,5 なら「きょう / ははれです」で各範囲内を再変換する
         let segments = convert_segments_fixed(
-            "きょうははれです", &[3, 5], &dict, &ConnectionMatrix::empty(), &learning);
+            "きょうははれです", &[3, 5], &dict, &no_user(), &ConnectionMatrix::empty(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょう", "ははれです"]);
         assert_eq!(segments[0].candidates[0], "今日");
@@ -590,6 +691,7 @@ mod tests {
             "きょうは",
             &[3, 3],
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &LearningStore::in_memory(),
         );
@@ -603,6 +705,7 @@ mod tests {
         let segments = convert_segments(
             "きょうは",
             &sample_dict(),
+            &no_user(),
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &learning,
@@ -615,7 +718,7 @@ mod tests {
     #[test]
     fn 変換できない入力はカタカナとひらがなのみ() {
         // 空辞書では未知語経路が入力そのままを返すため、候補には加えない
-        let got = candidates("かな", &Dictionary::empty(), &ConnectionMatrix::empty());
+        let got = candidates("かな", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty());
         assert_eq!(got, vec!["カナ", "かな"]);
     }
 }

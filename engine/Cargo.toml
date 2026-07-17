@@ -10,3 +10,13 @@ interprocess = "2"
 chrono = "0.4"
 # 辞書の検索構造 (有限状態トランスデューサ)。完全一致・前方一致・共通接頭辞検索に使う
 fst = "0.4"
+# 単語登録ツール (src/bin/quicklime-regword.rs) の Win32 ダイアログ用
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Graphics_Gdi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Controls",
+] }

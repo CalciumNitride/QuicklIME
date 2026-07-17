@@ -439,12 +439,18 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
 
     // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
     // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除)、
-    // composition が無いときの Ctrl+Backspace (確定アンドゥ) だけは IME が処理する
+    // composition が無いときの Ctrl+Backspace (確定アンドゥ) と
+    // Ctrl+F7 (単語登録ツールの起動) だけは IME が処理する
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
-        if (ctrl && !alt && !Composing() && wparam == VK_BACK) {
-            return !lastCommitText_.empty();
+        if (ctrl && !alt && !Composing()) {
+            if (wparam == VK_BACK) {
+                return !lastCommitText_.empty();
+            }
+            if (wparam == VK_F7) {
+                return true;
+            }
         }
         return ctrl && !alt && Composing() && (wparam == 'M' || wparam == 'H');
     }
@@ -739,6 +745,9 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         case VK_BACK:
             // Ctrl+Backspace: 確定アンドゥ (composition が無いときのみ食べている)
             return UndoCommit(context);
+        case VK_F7:
+            // Ctrl+F7: 単語登録 (composition が無いときのみ食べている)
+            return LaunchWordRegister(context);
         default:
             return S_OK; // IsKeyEaten が食べる Ctrl 併用は上記のみ
         }
@@ -1464,6 +1473,41 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         return hr;
     }
     return UpdateCompositionAndPredict(context);
+}
+
+HRESULT TextService::LaunchWordRegister(ITfContext* context)
+{
+    // 選択テキストを単語欄の初期値として渡す (変換できなかった語を選択して登録する用途)
+    std::wstring selection;
+    if (context != nullptr) {
+        RequestSync(context, new (std::nothrow) GetSelectionTextEditSession(context, &selection),
+                    TF_ES_SYNC | TF_ES_READ);
+    }
+    // 複数行の選択は単語ではないので先頭行だけにし、引数に渡せない引用符は除く
+    const size_t newline = selection.find_first_of(L"\r\n");
+    if (newline != std::wstring::npos) {
+        selection.resize(newline);
+    }
+    selection.erase(std::remove(selection.begin(), selection.end(), L'"'), selection.end());
+
+    const std::wstring exePath = EngineClient::FindExePath(L"quicklime-regword.exe");
+    if (exePath.empty()) {
+        return S_OK; // ツールが見つからない場合は何もしない
+    }
+    std::wstring commandLine = L"\"" + exePath + L"\"";
+    if (!selection.empty()) {
+        commandLine += L" \"" + selection + L"\"";
+    }
+
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo = {};
+    if (CreateProcessW(exePath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       nullptr, &startupInfo, &processInfo)) {
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+    }
+    return S_OK;
 }
 
 void TextService::ClearConversion()

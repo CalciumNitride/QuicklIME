@@ -197,6 +197,7 @@ dependencies = [
  "chrono",
  "fst",
  "interprocess",
+ "windows-sys",
 ]
 
 [[package]]

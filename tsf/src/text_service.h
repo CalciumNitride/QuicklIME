@@ -140,6 +140,8 @@ private:
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
     // composition に戻す。キャレット直前が確定文字列と一致するときのみ働く
     HRESULT UndoCommit(ITfContext* context);
+    // 単語登録 (Ctrl+F7): 選択テキストを初期値にして登録ツールを起動する
+    HRESULT LaunchWordRegister(ITfContext* context);
     // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)

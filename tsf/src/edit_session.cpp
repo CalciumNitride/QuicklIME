@@ -241,6 +241,35 @@ STDMETHODIMP GetTextExtentEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
+// ---- GetSelectionTextEditSession ----
+
+GetSelectionTextEditSession::GetSelectionTextEditSession(ITfContext* context,
+                                                         std::wstring* textOut)
+    : EditSessionBase(context), textOut_(textOut)
+{
+    textOut_->clear();
+}
+
+STDMETHODIMP GetSelectionTextEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+
+    // 単語登録の初期値なので長い選択は先頭だけで十分
+    wchar_t buffer[128] = {};
+    ULONG copied = 0;
+    hr = selection.range->GetText(ec, 0, buffer, ARRAYSIZE(buffer), &copied);
+    if (SUCCEEDED(hr)) {
+        textOut_->assign(buffer, copied);
+    }
+    selection.range->Release();
+    return hr;
+}
+
 // ---- UndoCommitEditSession ----
 
 UndoCommitEditSession::UndoCommitEditSession(ITfContext* context, std::wstring expectedText,

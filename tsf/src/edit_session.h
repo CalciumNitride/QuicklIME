@@ -84,6 +84,17 @@ private:
     bool* succeededOut_;
 };
 
+// 現在の選択テキストを取得する (単語登録ダイアログの初期値用)。
+// 選択が無い・長すぎる場合は textOut を空のままにする
+class GetSelectionTextEditSession : public EditSessionBase {
+public:
+    GetSelectionTextEditSession(ITfContext* context, std::wstring* textOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    std::wstring* textOut_;
+};
+
 // 確定アンドゥ用: キャレット直前のテキストが expectedText と一致する場合のみ
 // それを削除する (一致しなければ何もしない)。成功可否を succeededOut に返す
 class UndoCommitEditSession : public EditSessionBase {
