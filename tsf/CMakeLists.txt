@@ -2,6 +2,10 @@
 cmake_minimum_required(VERSION 3.21)
 project(quicklime_tsf LANGUAGES CXX)
 
+# CRT は静的リンク (/MT)。IME DLL は全プロセスにロードされるため、
+# app-local な msvcp140.dll の配布では DLL 探索 (exe 基準) が効かない
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 add_library(quicklime_tsf SHARED
     src/candidate_window.cpp
     src/config.cpp

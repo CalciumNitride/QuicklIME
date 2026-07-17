@@ -92,13 +92,18 @@ fn main() -> std::io::Result<()> {
 
 /// 辞書ディレクトリの決定。優先順:
 /// 1. 環境変数 QUICKLIME_DICT_DIR
-/// 2. プロジェクトルートの references/mozc/src/data/dictionary_oss
+/// 2. exe と同じディレクトリの dict\ (インストール先のレイアウト。存在するときのみ)
+/// 3. プロジェクトルートの references/mozc/src/data/dictionary_oss
 ///    (exe が engine/target/{debug,release}/ にある前提で相対解決)
 fn dictionary_dir() -> Option<PathBuf> {
     if let Ok(dir) = std::env::var("QUICKLIME_DICT_DIR") {
         return Some(PathBuf::from(dir));
     }
     let exe = std::env::current_exe().ok()?;
+    let bundled = exe.parent()?.join("dict");
+    if bundled.is_dir() {
+        return Some(bundled);
+    }
     let project_root = exe.parent()?.parent()?.parent()?.parent()?;
     Some(project_root.join("references/mozc/src/data/dictionary_oss"))
 }

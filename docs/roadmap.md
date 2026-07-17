@@ -208,8 +208,17 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       送信。起動口は Ctrl+F12 (割当変更可) と、言語バー項目 (GUID_LBI_INPUTMODE、
       lang_bar.cpp。タスクバーの IME アイコンから左クリック=IMEオン/オフ、
       右クリック=設定・単語登録メニュー。CorvusSKK 方式)
-- [ ] インストーラ
-- [ ] 32bit版DLLの同梱
+- [x] インストーラ + 32bit版DLLの同梱 (2026-07-18 実装)。
+      Inno Setup (installer/installer.iss + build.ps1)。%ProgramFiles%\QuicklIME\ に
+      64bit DLL・エンジン/設定/単語登録 exe・辞書 dict\ (Mozc 辞書一式 + symbol.tsv、
+      LICENSE-mozc.txt 同梱)・presets\romaji-azik.tsv を配置し、32bit DLL は x86\ に
+      配置して Wow6432Node 側にも regserver 登録 (32bit アプリ対応)。
+      DLL 登録は regserver フラグで DllRegisterServer に委譲。
+      更新時は [Code] の taskkill で常駐エンジンを停止し、ロード中 DLL は
+      restartreplace で再起動時置換。アンインストールでは %APPDATA%\QuicklIME を残す。
+      対応するコード変更: FindExePath に親ディレクトリ候補 (x86\ DLL 用)、
+      dictionary_dir に exe 同階層 dict\ 候補、CRT 静的リンク化
+      (TSF は /MT、Rust は crt-static。全プロセスにロードされる DLL のため)
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点

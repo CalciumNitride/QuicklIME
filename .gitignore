@@ -6,6 +6,7 @@
 
 # C++ / Visual Studio
 build/
+build32/
 out/
 x64/
 Win32/
@@ -16,3 +17,7 @@ Release/
 
 # Rust
 target/
+
+# インストーラのビルド生成物
+/installer/staging/
+/installer/output/

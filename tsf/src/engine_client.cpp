@@ -74,7 +74,9 @@ bool EngineClient::TryOpenPipe()
 
 // 同梱 exe の探索候補を返す。
 // 1. DLL と同じディレクトリ (配布時のレイアウト)
-// 2. 開発レイアウト (tsf/build/Debug -> engine/target/{release,debug})
+// 2. 親ディレクトリ (配布時の 32bit DLL: <インストール先>\x86\QuicklIME.dll から
+//    親のインストールルートにある 64bit exe を探す)
+// 3. 開発レイアウト (tsf/build/Debug -> engine/target/{release,debug})
 std::wstring EngineClient::FindExePath(const wchar_t* exeName)
 {
     wchar_t dllPath[MAX_PATH] = {};
@@ -91,6 +93,7 @@ std::wstring EngineClient::FindExePath(const wchar_t* exeName)
 
     const wchar_t* candidates[] = {
         L"\\",
+        L"\\..\\",
         L"\\..\\..\\..\\engine\\target\\release\\",
         L"\\..\\..\\..\\engine\\target\\debug\\",
     };
