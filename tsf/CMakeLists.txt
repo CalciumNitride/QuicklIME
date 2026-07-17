@@ -4,12 +4,14 @@ project(quicklime_tsf LANGUAGES CXX)
 
 add_library(quicklime_tsf SHARED
     src/candidate_window.cpp
+    src/config.cpp
     src/dll_main.cpp
     src/display_attribute.cpp
     src/edit_session.cpp
     src/engine_client.cpp
     src/globals.cpp
     src/kana_forms.cpp
+    src/lang_bar.cpp
     src/registry.cpp
     src/romaji.cpp
     src/text_service.cpp

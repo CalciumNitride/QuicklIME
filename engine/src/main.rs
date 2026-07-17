@@ -4,6 +4,7 @@
 // 変換要求に候補リストを返す常駐サーバ。
 // プロトコルの詳細は docs/protocol.md を参照。
 
+mod config;
 mod convert;
 mod datetime;
 mod dict;
@@ -22,6 +23,7 @@ use std::time::Instant;
 use interprocess::local_socket::traits::{ListenerExt, Stream as _};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 
+use config::Config;
 use dict::Dictionary;
 use learn::LearningStore;
 use matrix::ConnectionMatrix;
@@ -45,6 +47,8 @@ struct EngineData {
     user: Mutex<UserDict>,
     /// 学習データ (LEARN で書き込むため Mutex で保護)
     learning: Mutex<LearningStore>,
+    /// 設定 (RELOADCONFIG で差し替えるため Mutex で保護)
+    config: Mutex<Config>,
 }
 
 fn main() -> std::io::Result<()> {
@@ -66,6 +70,7 @@ fn main() -> std::io::Result<()> {
         functional,
         user: Mutex::new(user),
         learning: Mutex::new(LearningStore::load_default()),
+        config: Mutex::new(Config::load_default()),
     });
 
     let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
@@ -298,11 +303,16 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         },
         Some("PREDICT") => match fields.next() {
             // 予測入力: 読みの前方一致でユーザ辞書・履歴・辞書から候補を返す。
-            // 2文字未満・該当なしは候補ゼロの OK (エラーにしない)
+            // 最小文字数未満・該当なし・サジェスト無効時は候補ゼロの OK (エラーにしない)
             Some(kana) if !kana.is_empty() => {
+                let cfg = *data.config.lock().expect("config lock");
+                if !cfg.suggest {
+                    return "OK\n".to_string();
+                }
                 let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
-                let candidates = predict::predict(kana, &data.dictionary, &user, &learning);
+                let candidates =
+                    predict::predict(kana, &data.dictionary, &user, &learning, &cfg);
                 if candidates.is_empty() {
                     "OK\n".to_string()
                 } else {
@@ -319,7 +329,11 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("LEARN") => {
-            // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する
+            // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する。
+            // 学習が無効なら記録せず OK を返す (既存の学習データは使い続ける)
+            if !data.config.lock().expect("config lock").learning {
+                return "OK\n".to_string();
+            }
             let mut learning = data.learning.lock().expect("learning lock");
             let mut count = 0;
             for pair in fields {
@@ -363,6 +377,12 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             );
             "OK\n".to_string()
         }
+        Some("RELOADCONFIG") => {
+            // 設定ファイルを読み直す (設定ツールの保存時に呼ばれる)
+            *data.config.lock().expect("config lock") = Config::load_default();
+            eprintln!("設定を再読込しました");
+            "OK\n".to_string()
+        }
         _ => "ERR\t不明なコマンドです\n".to_string(),
     }
 }
@@ -378,6 +398,7 @@ mod tests {
             functional: FunctionalIds::empty(),
             user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
+            config: Mutex::new(Config::default()),
         }
     }
 
@@ -397,6 +418,7 @@ mod tests {
             functional,
             user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
+            config: Mutex::new(Config::default()),
         }
     }
 
@@ -598,5 +620,26 @@ mod tests {
         assert_eq!(handle_request("PREDICT\tそんざいしない", &data), "OK\n");
         assert!(handle_request("PREDICT\t", &data).starts_with("ERR\t"));
         assert!(handle_request("PREDICT", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn サジェスト無効ならpredictは候補ゼロのok() {
+        let data = sample_data();
+        data.config.lock().unwrap().suggest = false;
+        assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\n");
+    }
+
+    #[test]
+    fn 学習無効ならlearnは記録しない() {
+        let data = sample_data();
+        data.config.lock().unwrap().learning = false;
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        // 記録されていないので履歴候補は出ない
+        assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn reloadconfigはokを返す() {
+        assert_eq!(handle_request("RELOADCONFIG", &sample_data()), "OK\n");
     }
 }

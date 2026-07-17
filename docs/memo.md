@@ -25,3 +25,7 @@ Start-Process -FilePath "D:\project\QuicklIME\engine\target\release\quicklime-en
 ```
 Get-Process quicklime-engine -ErrorAction SilentlyContinue | Select-Object Id, StartTime, Path
 ```
+
+
+# 旧ファイル
+tsf/build/Debug/QuicklIME.dll.old と engine/target/release/quicklime-engine.exe.old を削除する

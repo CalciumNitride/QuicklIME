@@ -22,6 +22,10 @@ public:
     // 選択中の候補を変えて再描画する
     void SetSelection(size_t selection);
 
+    // 描画フォントを差し替える (設定変更の反映用)。height は px 単位の文字高。
+    // 作成に失敗したときは現在のフォントを維持する
+    void SetFont(const std::wstring& face, int height);
+
     void Hide();
 
     // 表示中かどうか (Hide 済み・未表示なら false)

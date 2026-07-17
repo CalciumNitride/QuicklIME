@@ -42,9 +42,24 @@ std::wstring LineText(size_t index, const std::wstring& item)
 
 CandidateWindow::CandidateWindow() : hwnd_(nullptr), font_(nullptr), selection_(0), lineHeight_(0)
 {
-    font_ = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                        DEFAULT_PITCH | FF_DONTCARE, L"Yu Gothic UI");
+    SetFont(L"Yu Gothic UI", 18);
+}
+
+void CandidateWindow::SetFont(const std::wstring& face, int height)
+{
+    HFONT font = CreateFontW(-height, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, face.c_str());
+    if (font == nullptr) {
+        return;
+    }
+    if (font_ != nullptr) {
+        DeleteObject(font_);
+    }
+    font_ = font;
+    if (hwnd_ != nullptr) {
+        InvalidateRect(hwnd_, nullptr, TRUE);
+    }
 }
 
 CandidateWindow::~CandidateWindow()

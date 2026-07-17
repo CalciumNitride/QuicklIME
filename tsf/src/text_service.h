@@ -8,14 +8,18 @@
 #include <vector>
 
 #include "candidate_window.h"
+#include "config.h"
 #include "engine_client.h"
 #include "romaji.h"
+
+class LangBarButton;
 
 // TSF テキストサービス本体。
 // composition (下線付き未確定文字列) を管理し、スペースで変換候補を
 // 候補ウィンドウに表示する。候補は暫定で「カタカナ / ひらがな」のみ
 // (フェーズ4で Rust エンジンによるかな漢字変換候補に差し替える)。
 class TextService : public ITfTextInputProcessorEx,
+                    public ITfThreadMgrEventSink,
                     public ITfKeyEventSink,
                     public ITfCompositionSink,
                     public ITfCompartmentEventSink,
@@ -34,6 +38,14 @@ public:
 
     // ITfTextInputProcessorEx
     STDMETHODIMP ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientId, DWORD flags) override;
+
+    // ITfThreadMgrEventSink (ドキュメントフォーカスの変更通知。
+    // OnSetFocus を設定ファイルの変更反映のタイミングに使う)
+    STDMETHODIMP OnInitDocumentMgr(ITfDocumentMgr* docMgr) override;
+    STDMETHODIMP OnUninitDocumentMgr(ITfDocumentMgr* docMgr) override;
+    STDMETHODIMP OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prevFocus) override;
+    STDMETHODIMP OnPushContext(ITfContext* context) override;
+    STDMETHODIMP OnPopContext(ITfContext* context) override;
 
     // ITfKeyEventSink
     STDMETHODIMP OnSetFocus(BOOL foreground) override;
@@ -54,10 +66,17 @@ public:
     STDMETHODIMP GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttributeInfo** info) override;
 
 private:
+    // 言語バー項目からオン/オフ切替・ツール起動を呼ぶ
+    friend class LangBarButton;
+
     ~TextService();
 
     // このキー入力を IME が処理する (アプリに渡さない) かどうか
     bool IsKeyEaten(WPARAM wparam) const;
+
+    // 設定ファイルの変更を確認し、変わっていれば反映する
+    // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
+    void RefreshConfig();
 
     // ---- IMEオン/オフ (OPENCLOSE compartment) ----
     // オン/オフ状態を保持する compartment (呼び出し側で Release する。失敗時 nullptr)
@@ -160,8 +179,10 @@ private:
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
     // composition に戻す。キャレット直前が確定文字列と一致するときのみ働く
     HRESULT UndoCommit(ITfContext* context);
-    // 単語登録 (Ctrl+F7): 選択テキストを初期値にして登録ツールを起動する
+    // 単語登録 (既定 Ctrl+F7): 選択テキストを初期値にして登録ツールを起動する
     HRESULT LaunchWordRegister(ITfContext* context);
+    // 設定ツール (quicklime-config.exe) の起動 (既定 Ctrl+F12)
+    HRESULT LaunchConfigTool();
     // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
@@ -189,6 +210,7 @@ private:
     size_t segmentIndex_;                      // 操作対象の文節
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
+    ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
 
     // 予測入力 (かな入力中のサジェスト)。候補ウィンドウは変換中と排他で共用する
     std::vector<PredictionCandidate> predictions_;  // 予測候補 (空 = サジェスト非表示)
@@ -198,6 +220,8 @@ private:
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)
 
     DWORD openCloseCookie_;         // OPENCLOSE compartment sink の cookie
+    DWORD threadMgrEventCookie_;    // thread manager event sink の cookie
+    LangBarButton* langBarButton_;  // 言語バー項目 (登録失敗時は nullptr)
     // key-down を食べたキー。端末エミュレータは key-up もアプリへ転送するため、
     // 食べたキーの key-up も食べて確定キーなどが漏れないようにする
     std::bitset<256> pendingKeyUps_;

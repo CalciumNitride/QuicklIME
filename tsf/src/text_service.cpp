@@ -8,6 +8,7 @@
 #include "edit_session.h"
 #include "globals.h"
 #include "kana_forms.h"
+#include "lang_bar.h"
 
 namespace {
 
@@ -281,7 +282,9 @@ TextService::TextService()
       converting_(false),
       segmentIndex_(0),
       predictionIndex_(-1),
-      openCloseCookie_(TF_INVALID_COOKIE)
+      openCloseCookie_(TF_INVALID_COOKIE),
+      threadMgrEventCookie_(TF_INVALID_COOKIE),
+      langBarButton_(nullptr)
 {
     globals::DllAddRef();
 }
@@ -301,6 +304,8 @@ STDMETHODIMP TextService::QueryInterface(REFIID riid, void** ppv)
     if (IsEqualIID(riid, IID_IUnknown) || IsEqualIID(riid, IID_ITfTextInputProcessor) ||
         IsEqualIID(riid, IID_ITfTextInputProcessorEx)) {
         *ppv = static_cast<ITfTextInputProcessorEx*>(this);
+    } else if (IsEqualIID(riid, IID_ITfThreadMgrEventSink)) {
+        *ppv = static_cast<ITfThreadMgrEventSink*>(this);
     } else if (IsEqualIID(riid, IID_ITfKeyEventSink)) {
         *ppv = static_cast<ITfKeyEventSink*>(this);
     } else if (IsEqualIID(riid, IID_ITfCompositionSink)) {
@@ -408,6 +413,35 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
             SetKeyboardOpen(true);
         }
     }
+
+    // ドキュメントフォーカスの変更通知 (ITfThreadMgrEventSink) の購読 (失敗しても続行)。
+    // 設定ファイルの変更をフォーカス切替時に確実に拾うために使う
+    // (ITfKeyEventSink::OnSetFocus はアプリ切替で呼ばれないことがある)
+    {
+        ITfSource* source = nullptr;
+        if (SUCCEEDED(threadMgr_->QueryInterface(IID_ITfSource,
+                                                 reinterpret_cast<void**>(&source)))) {
+            source->AdviseSink(IID_ITfThreadMgrEventSink,
+                               static_cast<ITfThreadMgrEventSink*>(this),
+                               &threadMgrEventCookie_);
+            source->Release();
+        }
+    }
+
+    // 言語バー項目 (タスクバーの IME アイコン) の登録 (失敗しても続行)
+    ITfLangBarItemMgr* langBarMgr = nullptr;
+    if (SUCCEEDED(threadMgr_->QueryInterface(IID_ITfLangBarItemMgr,
+                                             reinterpret_cast<void**>(&langBarMgr)))) {
+        langBarButton_ = new (std::nothrow) LangBarButton(this);
+        if (langBarButton_ != nullptr && FAILED(langBarMgr->AddItem(langBarButton_))) {
+            langBarButton_->Release();
+            langBarButton_ = nullptr;
+        }
+        langBarMgr->Release();
+    }
+
+    // ユーザ設定の初回読み込み (以後はフォーカス切替・IMEオン時に変更を確認する)
+    RefreshConfig();
     return S_OK;
 }
 
@@ -421,6 +455,25 @@ STDMETHODIMP TextService::Deactivate()
     }
 
     if (threadMgr_ != nullptr) {
+        if (threadMgrEventCookie_ != TF_INVALID_COOKIE) {
+            ITfSource* source = nullptr;
+            if (SUCCEEDED(threadMgr_->QueryInterface(IID_ITfSource,
+                                                     reinterpret_cast<void**>(&source)))) {
+                source->UnadviseSink(threadMgrEventCookie_);
+                source->Release();
+            }
+            threadMgrEventCookie_ = TF_INVALID_COOKIE;
+        }
+        if (langBarButton_ != nullptr) {
+            ITfLangBarItemMgr* langBarMgr = nullptr;
+            if (SUCCEEDED(threadMgr_->QueryInterface(IID_ITfLangBarItemMgr,
+                                                     reinterpret_cast<void**>(&langBarMgr)))) {
+                langBarMgr->RemoveItem(langBarButton_);
+                langBarMgr->Release();
+            }
+            langBarButton_->Release();
+            langBarButton_ = nullptr;
+        }
         if (openCloseCookie_ != TF_INVALID_COOKIE) {
             ITfCompartment* compartment = OpenCloseCompartment();
             if (compartment != nullptr) {
@@ -453,12 +506,55 @@ STDMETHODIMP TextService::Deactivate()
     return S_OK;
 }
 
+// ---- ITfThreadMgrEventSink ----
+
+STDMETHODIMP TextService::OnInitDocumentMgr(ITfDocumentMgr* docMgr)
+{
+    UNREFERENCED_PARAMETER(docMgr);
+    return S_OK;
+}
+
+STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* docMgr)
+{
+    UNREFERENCED_PARAMETER(docMgr);
+    return S_OK;
+}
+
+STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prevFocus)
+{
+    UNREFERENCED_PARAMETER(focus);
+    UNREFERENCED_PARAMETER(prevFocus);
+    // フォーカス切替は設定ファイルの変更を拾う機会にする (通常は更新時刻の比較のみ)。
+    // 設定ツールで保存してアプリに戻る操作自体がフォーカス切替なので、実質すぐ反映される
+    RefreshConfig();
+    return S_OK;
+}
+
+STDMETHODIMP TextService::OnPushContext(ITfContext* context)
+{
+    UNREFERENCED_PARAMETER(context);
+    return S_OK;
+}
+
+STDMETHODIMP TextService::OnPopContext(ITfContext* context)
+{
+    UNREFERENCED_PARAMETER(context);
+    return S_OK;
+}
+
 // ---- ITfKeyEventSink ----
 
 STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 {
     UNREFERENCED_PARAMETER(foreground);
     return S_OK;
+}
+
+void TextService::RefreshConfig()
+{
+    if (config_.Refresh()) {
+        candidateWindow_.SetFont(config_.Get().candidateFont, config_.Get().candidateFontSize);
+    }
 }
 
 bool TextService::IsKeyEaten(WPARAM wparam) const
@@ -471,17 +567,20 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
 
     // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
     // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除)、
-    // composition が無いときの Ctrl+Backspace (確定アンドゥ) と
-    // Ctrl+F7 (単語登録ツールの起動) だけは IME が処理する
+    // composition が無いときの機能キー (既定: Ctrl+Backspace=確定アンドゥ、
+    // Ctrl+F7=単語登録、Ctrl+F12=設定。割当は変更可) だけは IME が処理する
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
         if (ctrl && !alt && !Composing()) {
-            if (wparam == VK_BACK) {
+            switch (config_.Get().FindCtrlFunc(wparam)) {
+            case KeyFunc::UndoCommit:
                 return !lastCommitText_.empty();
-            }
-            if (wparam == VK_F7) {
+            case KeyFunc::RegisterWord:
+            case KeyFunc::OpenConfig:
                 return true;
+            default:
+                break;
             }
         }
         return ctrl && !alt && Composing() && (wparam == 'M' || wparam == 'H');
@@ -507,18 +606,13 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
             // 矢印・PgUp/PgDn は常に食べる (アプリにキャレットやフォーカスを
             // 動かさせない)。用途が無い状態では食べた上で何もしない
             return true;
-        case VK_F4:
-        case VK_F5:
-        case VK_F6:
-        case VK_F7:
-        case VK_F8:
-        case VK_F9:
-        case VK_F10:
-            // ファンクションキー変換 (F4=特殊変換 (記号・日付), F5=短縮よみ,
-            // F6-F10=文字種の直接変換)
-            return true;
         default:
             break;
+        }
+        // ファンクションキー変換 (既定: F4=特殊変換 (記号・日付), F5=短縮よみ,
+        // F6-F10=文字種の直接変換。割当は変更可)。割当のあるキーだけ食べる
+        if (wparam >= VK_F1 && wparam <= VK_F12) {
+            return config_.Get().FindPlainFunc(wparam) != KeyFunc::None;
         }
         // composition 中は英字 (Shift併用含む)・数字・記号・テンキーも IME が
         // 処理し、未確定文字列の外へ文字が漏れないようにする
@@ -529,10 +623,11 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
     // composition が無いとき: 英字 (Shift併用含む)・記号キー・数字・テンキーで
     // composition を開始する (数字とテンキーは助数詞など数字を含む表現の
     // サジェスト・変換につなげるため、常に未変換状態で入れる)。
-    // Space は全角スペースの直接挿入 (Shift+Space は食べずに半角のまま通す)
+    // Space は全角スペースの直接挿入 (Shift+Space は食べずに半角のまま通す。
+    // 設定 space=half のときは Space も食べずに半角のまま通す)
     return IsLetterKey(wparam) || FindSymbolKey(wparam, shifted) != nullptr ||
            IsDigitKey(wparam) || NumpadChar(wparam) != 0 ||
-           (wparam == VK_SPACE && !shifted);
+           (wparam == VK_SPACE && !shifted && config_.Get().spaceFullwidth);
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -609,7 +704,9 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     }
 
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
-        if (context != nullptr && Composing()) {
+        // F10 に機能の割当が無いとき (割当変更で外したとき) はアプリへ再送する
+        if (context != nullptr && Composing() &&
+            config_.Get().FindPlainFunc(VK_F10) != KeyFunc::None) {
             *eaten = TRUE;
             return HandleKey(context, VK_F10);
         }
@@ -703,6 +800,8 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     if (!IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
         return S_OK;
     }
+    // IMEオン/オフの切替も設定ファイルの変更を拾う機会にする
+    RefreshConfig();
     // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったら、
     // 入力途中の文字列を確定して後始末する。自前の preserved key 経由では
     // 確定済みなのでここでは何も起きない
@@ -793,6 +892,20 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // Ctrl 併用ショートカット: Ctrl+M は Enter、Ctrl+H は BackSpace として扱う。
     // (英字の打鍵と解釈されないよう、ここで読み替えてから通常の処理に流す)
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+        // composition が無いときの機能キー (既定: Ctrl+Backspace=確定アンドゥ、
+        // Ctrl+F7=単語登録、Ctrl+F12=設定。割当は変更可) を先に照合する
+        if (!Composing()) {
+            switch (config_.Get().FindCtrlFunc(wparam)) {
+            case KeyFunc::UndoCommit:
+                return UndoCommit(context);
+            case KeyFunc::RegisterWord:
+                return LaunchWordRegister(context);
+            case KeyFunc::OpenConfig:
+                return LaunchConfigTool();
+            default:
+                break;
+            }
+        }
         switch (wparam) {
         case 'M':
             wparam = VK_RETURN;
@@ -800,12 +913,6 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         case 'H':
             wparam = VK_BACK;
             break;
-        case VK_BACK:
-            // Ctrl+Backspace: 確定アンドゥ (composition が無いときのみ食べている)
-            return UndoCommit(context);
-        case VK_F7:
-            // Ctrl+F7: 単語登録 (composition が無いときのみ食べている)
-            return LaunchWordRegister(context);
         default:
             return S_OK; // IsKeyEaten が食べる Ctrl 併用は上記のみ
         }
@@ -879,12 +986,19 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // 英字モード中は打鍵文字そのまま。
     // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
     if (const SymbolKey* symbol = FindSymbolKey(wparam, shifted)) {
+        // 句読点は設定に従う (、。/，．などの組を config が持つ)
+        std::wstring kana = symbol->kana;
+        if (!shifted && wparam == VK_OEM_COMMA) {
+            kana = config_.Get().punctComma;
+        } else if (!shifted && wparam == VK_OEM_PERIOD) {
+            kana = config_.Get().punctPeriod;
+        }
         if (converting_) {
             // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う。
             // 確定で英字モードは解除されているので常に全角形を入れる
             const std::wstring commitText = PrepareConversionCommit();
             FinishConversionState(commitText);
-            composer_.PushKana(symbol->kana, symbol->raw);
+            composer_.PushKana(kana, symbol->raw);
             HRESULT hr = RestartComposition(context, commitText, composer_.Display());
             if (FAILED(hr)) {
                 composer_.Clear();
@@ -895,7 +1009,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         if (composer_.AsciiMode()) {
             composer_.PushKana(symbol->raw, symbol->raw);
         } else {
-            composer_.PushKana(symbol->kana, symbol->raw);
+            composer_.PushKana(kana, symbol->raw);
         }
         if (!Composing()) {
             HRESULT hr = StartComposition(context);
@@ -907,8 +1021,9 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return UpdateCompositionAndPredict(context);
     }
 
-    // 数字: 半角のまま未確定文字列へ入れる (composition が無ければ開始する。
-    // 助数詞など数字を含む表現のサジェスト・変換につなげるため直接挿入にはしない)
+    // 数字: 半角 (設定 digits=full なら全角) のまま未確定文字列へ入れる
+    // (composition が無ければ開始する。助数詞など数字を含む表現の
+    // サジェスト・変換につなげるため直接挿入にはしない)
     if (IsDigitKey(wparam)) {
         // 変換中・サジェスト選択中の 1〜9 は候補番号による直接選択
         if (wparam >= '1' && wparam <= '9') {
@@ -919,7 +1034,11 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 return SelectPredictionByNumber(context, wparam - '1');
             }
         }
-        const std::wstring digit(1, static_cast<wchar_t>(wparam));
+        wchar_t c = static_cast<wchar_t>(wparam);
+        if (config_.Get().digitsFullwidth) {
+            c = static_cast<wchar_t>(c - L'0' + L'０');
+        }
+        const std::wstring digit(1, c);
         if (converting_) {
             // 変換中の 0: 確定と新 composition の開始を1つの edit session で行う
             const std::wstring commitText = PrepareConversionCommit();
@@ -943,10 +1062,14 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return UpdateCompositionAndPredict(context);
     }
 
-    // テンキー: 数値入力用なので全角形にせず半角のまま未確定文字列へ入れる
+    // テンキー: 数値入力用なので半角のまま未確定文字列へ入れる
     // (composition が無ければ開始する。助数詞など数字を含む表現の
-    //  サジェスト・変換につなげるため、直接挿入にはしない)
-    if (const wchar_t numpad = NumpadChar(wparam)) {
+    //  サジェスト・変換につなげるため、直接挿入にはしない)。
+    // 設定 digits=full のときは数字のみ全角にする (演算記号は半角のまま)
+    if (wchar_t numpad = NumpadChar(wparam)) {
+        if (config_.Get().digitsFullwidth && numpad >= L'0' && numpad <= L'9') {
+            numpad = static_cast<wchar_t>(numpad - L'0' + L'０');
+        }
         const std::wstring text(1, numpad);
         if (converting_) {
             // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う
@@ -1036,21 +1159,29 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     case VK_NEXT:
         // PgDn: 末尾の文節へ移動
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
-    case VK_F4:
-        return ConvertToSymbols(context);
-    case VK_F5:
-        return ConvertToShortcuts(context);
-    case VK_F6:
-        return DirectConvert(context, ConversionForm::Hiragana);
-    case VK_F7:
-        return DirectConvert(context, ConversionForm::Katakana);
-    case VK_F8:
-        return DirectConvert(context, ConversionForm::HalfwidthKatakana);
-    case VK_F9:
-        return DirectConvert(context, ConversionForm::FullwidthAscii);
-    case VK_F10:
-        return DirectConvert(context, ConversionForm::HalfwidthAscii);
     default:
+        // ファンクションキー変換 (既定: F4=特殊変換, F5=短縮よみ, F6-F10=文字種の
+        // 直接変換。割当は変更可)。割当の無いキーはここに来ない (食べていない)
+        if (wparam >= VK_F1 && wparam <= VK_F12) {
+            switch (config_.Get().FindPlainFunc(wparam)) {
+            case KeyFunc::ConvertSymbol:
+                return ConvertToSymbols(context);
+            case KeyFunc::ConvertUser:
+                return ConvertToShortcuts(context);
+            case KeyFunc::ToHiragana:
+                return DirectConvert(context, ConversionForm::Hiragana);
+            case KeyFunc::ToKatakana:
+                return DirectConvert(context, ConversionForm::Katakana);
+            case KeyFunc::ToHalfKatakana:
+                return DirectConvert(context, ConversionForm::HalfwidthKatakana);
+            case KeyFunc::ToFullAscii:
+                return DirectConvert(context, ConversionForm::FullwidthAscii);
+            case KeyFunc::ToHalfAscii:
+                return DirectConvert(context, ConversionForm::HalfwidthAscii);
+            default:
+                break;
+            }
+        }
         return S_OK;
     }
 }
@@ -1710,6 +1841,26 @@ HRESULT TextService::LaunchWordRegister(ITfContext* context)
         commandLine += L" \"" + selection + L"\"";
     }
 
+    STARTUPINFOW startupInfo = {};
+    startupInfo.cb = sizeof(startupInfo);
+    PROCESS_INFORMATION processInfo = {};
+    if (CreateProcessW(exePath.c_str(), commandLine.data(), nullptr, nullptr, FALSE, 0, nullptr,
+                       nullptr, &startupInfo, &processInfo)) {
+        CloseHandle(processInfo.hThread);
+        CloseHandle(processInfo.hProcess);
+    }
+    return S_OK;
+}
+
+HRESULT TextService::LaunchConfigTool()
+{
+    const std::wstring exePath = EngineClient::FindExePath(L"quicklime-config.exe");
+    if (exePath.empty()) {
+        return S_OK; // ツールが見つからない場合は何もしない
+    }
+    // IME を持つプロセスから起動する設定ウィンドウが前面に出られるようにする
+    AllowSetForegroundWindow(ASFW_ANY);
+    std::wstring commandLine = L"\"" + exePath + L"\"";
     STARTUPINFOW startupInfo = {};
     startupInfo.cb = sizeof(startupInfo);
     PROCESS_INFORMATION processInfo = {};

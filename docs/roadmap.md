@@ -194,7 +194,20 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       Ctrl+F7 で TSF 層が起動し、選択テキストを単語欄の初期値として渡す
       (変換できなかった語を選択してそのまま登録する用途)。よみのカタカナは
       ひらがなへ正規化。エンジン未起動時は userdict.tsv へ直接追記にフォールバック
-- [ ] 設定UI
+- [x] 設定UI (2026-07-17 実装)。
+      統合設定ファイル %APPDATA%\QuicklIME\config.tsv (キー\t値 TSV、
+      QUICKLIME_CONFIG_FILE で上書き可) を新設し、エンジン (config.rs +
+      RELOADCONFIG コマンドで即時反映) と TSF 層 (config.cpp、フォーカス切替・
+      IMEオン時に更新時刻を見て再読込。アプリ再起動不要) が同じファイルを読む。
+      設定項目: 学習/サジェスト/タイプミス補正の ON/OFF・予測件数・サジェスト
+      開始文字数 (エンジン)、Space の全角/半角・句読点の形 (、。/，．/、．/，。)・
+      数字の全角/半角・候補ウィンドウのフォントとサイズ (TSF 層)、機能キー10個の
+      割当変更 (F4/F5/F6-F10・Ctrl+Backspace・Ctrl+F7・Ctrl+F12。コア操作は対象外)。
+      設定画面は Rust (windows-sys) の quicklime-config.exe (regword と同じ流儀の
+      2カラム Win32 ダイアログ)。保存で config.tsv へ全キー書き出し + RELOADCONFIG
+      送信。起動口は Ctrl+F12 (割当変更可) と、言語バー項目 (GUID_LBI_INPUTMODE、
+      lang_bar.cpp。タスクバーの IME アイコンから左クリック=IMEオン/オフ、
+      右クリック=設定・単語登録メニュー。CorvusSKK 方式)
 - [ ] インストーラ
 - [ ] 32bit版DLLの同梱
 - [ ] 自分で常用しながらの改善サイクルへ
