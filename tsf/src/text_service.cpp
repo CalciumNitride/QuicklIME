@@ -236,9 +236,15 @@ const TF_PRESERVEDKEY kToggleKeys[] = {
 const TF_PRESERVEDKEY kImeOnKey = {VK_IME_ON, TF_MOD_IGNORE_ALL_MODIFIER};
 const TF_PRESERVEDKEY kImeOffKey = {VK_IME_OFF, TF_MOD_IGNORE_ALL_MODIFIER};
 
+// F10 (修飾キーなし) は WM_SYSKEYDOWN で届く唯一のファンクションキーで、
+// 非 TSF アプリ (WezTerm 等) では OnKeyDown まで届かないことがある。
+// Mozc と同様に preserved key として登録し、メッセージ配送前に受け取る
+const TF_PRESERVEDKEY kF10Key = {VK_F10, 0};
+
 const wchar_t kToggleKeyDesc[] = L"IMEオン/オフ";
 const wchar_t kImeOnKeyDesc[] = L"IMEオン";
 const wchar_t kImeOffKeyDesc[] = L"IMEオフ";
+const wchar_t kF10KeyDesc[] = L"半角英字変換 (F10)";
 
 } // namespace
 
@@ -355,6 +361,8 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
                               kImeOnKeyDesc, ARRAYSIZE(kImeOnKeyDesc) - 1);
     keystrokeMgr->PreserveKey(clientId_, globals::kPreservedKeyImeOffGuid, &kImeOffKey,
                               kImeOffKeyDesc, ARRAYSIZE(kImeOffKeyDesc) - 1);
+    keystrokeMgr->PreserveKey(clientId_, globals::kPreservedKeyF10Guid, &kF10Key,
+                              kF10KeyDesc, ARRAYSIZE(kF10KeyDesc) - 1);
     keystrokeMgr->Release();
 
     // IMEオン/オフ状態 (OPENCLOSE compartment) の変更監視。
@@ -411,6 +419,7 @@ STDMETHODIMP TextService::Deactivate()
             }
             keystrokeMgr->UnpreserveKey(globals::kPreservedKeyImeOnGuid, &kImeOnKey);
             keystrokeMgr->UnpreserveKey(globals::kPreservedKeyImeOffGuid, &kImeOffKey);
+            keystrokeMgr->UnpreserveKey(globals::kPreservedKeyF10Guid, &kF10Key);
             keystrokeMgr->UnadviseKeyEventSink(clientId_);
             keystrokeMgr->Release();
         }
@@ -565,6 +574,23 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
 {
     if (eaten == nullptr) {
         return E_INVALIDARG;
+    }
+
+    if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
+        if (context != nullptr && Composing()) {
+            *eaten = TRUE;
+            return HandleKey(context, VK_F10);
+        }
+        // IME が使わないときは eaten=FALSE だけではアプリに F10 が届かないため、
+        // Mozc と同様に WM_SYSKEYDOWN を合成してアプリ本来の F10 動作を再現する
+        *eaten = FALSE;
+        HWND focus = GetFocus();
+        if (focus != nullptr) {
+            const LPARAM lparam =
+                (static_cast<LPARAM>(MapVirtualKeyW(VK_F10, MAPVK_VK_TO_VSC)) << 16) | 1;
+            PostMessageW(focus, WM_SYSKEYDOWN, VK_F10, lparam);
+        }
+        return S_OK;
     }
 
     bool open;

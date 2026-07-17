@@ -25,6 +25,12 @@ extern const GUID kPreservedKeyImeOnGuid;
 // {3B9D51C7-E842-4F06-A1B3-7D64F90C25A8}
 extern const GUID kPreservedKeyImeOffGuid;
 
+// F10 (半角英字変換) の preserved key GUID。F10 は Windows 仕様で WM_SYSKEYDOWN と
+// なり、非 TSF アプリ (WezTerm 等) では通常のキーイベント経路 (OnKeyDown) に
+// 届かないことがあるため、preserved key として配送前に受け取る
+// {94E1D5A3-7B26-4A0C-B05E-1F836CD9427A}
+extern const GUID kPreservedKeyF10Guid;
+
 // 日本語
 inline constexpr LANGID kLangId = 0x0411;
 
