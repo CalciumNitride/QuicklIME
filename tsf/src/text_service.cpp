@@ -213,6 +213,29 @@ bool IsDigitKey(WPARAM wparam)
     return wparam >= '0' && wparam <= '9';
 }
 
+// テンキーの打鍵文字 (NumLock オンの数字と演算記号)。対応しないキーは 0。
+// テンキーは数値入力用なので、全角形にせず半角のまま未確定文字列へ入れる
+wchar_t NumpadChar(WPARAM wparam)
+{
+    if (wparam >= VK_NUMPAD0 && wparam <= VK_NUMPAD9) {
+        return static_cast<wchar_t>(L'0' + (wparam - VK_NUMPAD0));
+    }
+    switch (wparam) {
+    case VK_MULTIPLY:
+        return L'*';
+    case VK_ADD:
+        return L'+';
+    case VK_SUBTRACT:
+        return L'-';
+    case VK_DECIMAL:
+        return L'.';
+    case VK_DIVIDE:
+        return L'/';
+    default:
+        return 0;
+    }
+}
+
 bool IsShiftPressed()
 {
     return (GetKeyState(VK_SHIFT) & 0x8000) != 0;
@@ -497,14 +520,19 @@ bool TextService::IsKeyEaten(WPARAM wparam) const
         default:
             break;
         }
-        // composition 中は英字 (Shift併用含む)・数字・記号も IME が処理し、
-        // 未確定文字列の外へ文字が漏れないようにする
+        // composition 中は英字 (Shift併用含む)・数字・記号・テンキーも IME が
+        // 処理し、未確定文字列の外へ文字が漏れないようにする
         return IsLetterKey(wparam) || IsDigitKey(wparam) ||
-               FindSymbolKey(wparam, shifted) != nullptr;
+               FindSymbolKey(wparam, shifted) != nullptr || NumpadChar(wparam) != 0;
     }
 
-    // composition が無いとき: 英字 (Shift併用含む) と記号キーで composition を開始する
-    return IsLetterKey(wparam) || FindSymbolKey(wparam, shifted) != nullptr;
+    // composition が無いとき: 英字 (Shift併用含む)・記号キー・数字・テンキーで
+    // composition を開始する (数字とテンキーは助数詞など数字を含む表現の
+    // サジェスト・変換につなげるため、常に未変換状態で入れる)。
+    // Space は全角スペースの直接挿入 (Shift+Space は食べずに半角のまま通す)
+    return IsLetterKey(wparam) || FindSymbolKey(wparam, shifted) != nullptr ||
+           IsDigitKey(wparam) || NumpadChar(wparam) != 0 ||
+           (wparam == VK_SPACE && !shifted);
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -879,7 +907,8 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         return UpdateCompositionAndPredict(context);
     }
 
-    // 数字: composition 中のみここへ来る (composition が無ければ食べていない)
+    // 数字: 半角のまま未確定文字列へ入れる (composition が無ければ開始する。
+    // 助数詞など数字を含む表現のサジェスト・変換につなげるため直接挿入にはしない)
     if (IsDigitKey(wparam)) {
         // 変換中・サジェスト選択中の 1〜9 は候補番号による直接選択
         if (wparam >= '1' && wparam <= '9') {
@@ -892,18 +921,57 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         }
         const std::wstring digit(1, static_cast<wchar_t>(wparam));
         if (converting_) {
-            // 0 は従来どおり: 変換結果を確定して数字をそのまま挿入する
-            HRESULT hr = CommitConversion(context);
+            // 変換中の 0: 確定と新 composition の開始を1つの edit session で行う
+            const std::wstring commitText = PrepareConversionCommit();
+            FinishConversionState(commitText);
+            composer_.PushKana(digit, digit);
+            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
             if (FAILED(hr)) {
+                composer_.Clear();
                 return hr;
             }
-            return InsertText(context, digit);
+            return UpdatePrediction(context);
         }
         composer_.PushKana(digit, digit);
+        if (!Composing()) {
+            HRESULT hr = StartComposition(context);
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+        }
         return UpdateCompositionAndPredict(context);
     }
 
-    // 以下は composition 中のみ食べているキー
+    // テンキー: 数値入力用なので全角形にせず半角のまま未確定文字列へ入れる
+    // (composition が無ければ開始する。助数詞など数字を含む表現の
+    //  サジェスト・変換につなげるため、直接挿入にはしない)
+    if (const wchar_t numpad = NumpadChar(wparam)) {
+        const std::wstring text(1, numpad);
+        if (converting_) {
+            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う
+            const std::wstring commitText = PrepareConversionCommit();
+            FinishConversionState(commitText);
+            composer_.PushKana(text, text);
+            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+            return UpdatePrediction(context);
+        }
+        composer_.PushKana(text, text);
+        if (!Composing()) {
+            HRESULT hr = StartComposition(context);
+            if (FAILED(hr)) {
+                composer_.Clear();
+                return hr;
+            }
+        }
+        return UpdateCompositionAndPredict(context);
+    }
+
+    // 以下は composition 中のみ食べているキー (composition が無い Space を除く)
     switch (wparam) {
     case VK_RETURN:
         return CommitComposition(context);
@@ -927,6 +995,11 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
         }
         return UpdateCompositionAndPredict(context);
     case VK_SPACE:
+        // composition が無い Space は全角スペースの直接挿入
+        // (Shift+Space は食べていないので半角スペースがアプリに入る)
+        if (!Composing()) {
+            return InsertText(context, L"　");
+        }
         return converting_ ? CycleCandidate(context, +1) : StartConversion(context);
     case VK_TAB:
         // サジェスト選択。Shift+Tab は逆方向。
