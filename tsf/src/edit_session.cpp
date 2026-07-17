@@ -273,9 +273,18 @@ STDMETHODIMP GetSelectionTextEditSession::DoEditSession(TfEditCookie ec)
 // ---- UndoCommitEditSession ----
 
 UndoCommitEditSession::UndoCommitEditSession(ITfContext* context, std::wstring expectedText,
-                                             bool* succeededOut)
-    : EditSessionBase(context), expectedText_(std::move(expectedText)), succeededOut_(succeededOut)
+                                             ITfCompositionSink* sink, std::wstring newText,
+                                             TfGuidAtom displayAttribute,
+                                             ITfComposition** compositionOut, bool* succeededOut)
+    : EditSessionBase(context),
+      expectedText_(std::move(expectedText)),
+      sink_(sink),
+      newText_(std::move(newText)),
+      displayAttribute_(displayAttribute),
+      compositionOut_(compositionOut),
+      succeededOut_(succeededOut)
 {
+    *compositionOut_ = nullptr;
     *succeededOut_ = false;
 }
 
@@ -295,21 +304,36 @@ STDMETHODIMP UndoCommitEditSession::DoEditSession(TfEditCookie ec)
     const LONG length = static_cast<LONG>(expectedText_.size());
     hr = range->ShiftStart(ec, -length, &shifted, nullptr);
     if (SUCCEEDED(hr) && shifted == -length) {
-        // 内容が確定文字列と一致する場合のみ削除する
+        // 内容が確定文字列と一致する場合のみ復元する
         // (確定後にキャレット移動や他の編集があった場合は何もしない)
         std::vector<WCHAR> buffer(expectedText_.size());
         ULONG read = 0;
         hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
         if (SUCCEEDED(hr) && read == expectedText_.size() &&
             expectedText_.compare(0, expectedText_.size(), buffer.data(), read) == 0) {
-            hr = range->SetText(ec, 0, L"", 0);
+            // 確定文字列を覆う範囲で composition を開始し、確定前の読みに置き換える
+            // (削除と復元を同一 session 内で済ませる)
+            ITfContextComposition* contextComposition = nullptr;
+            hr = context_->QueryInterface(IID_ITfContextComposition,
+                                          reinterpret_cast<void**>(&contextComposition));
             if (SUCCEEDED(hr)) {
-                TF_SELECTION caret = {};
-                caret.range = range;
-                caret.style.ase = TF_AE_NONE;
-                caret.style.fInterimChar = FALSE;
-                context_->SetSelection(ec, 1, &caret);
+                hr = contextComposition->StartComposition(ec, range, sink_, compositionOut_);
+                contextComposition->Release();
+            }
+            if (SUCCEEDED(hr) && *compositionOut_ != nullptr) {
+                // composition が開始できた時点で成功扱いにする (以降の表示更新の
+                // 失敗は、読みが composition に入らないだけで Esc 等で回復できる)
                 *succeededOut_ = true;
+                ITfRange* compRange = nullptr;
+                if (SUCCEEDED((*compositionOut_)->GetRange(&compRange))) {
+                    hr = compRange->SetText(ec, 0, newText_.c_str(),
+                                            static_cast<LONG>(newText_.size()));
+                    if (SUCCEEDED(hr)) {
+                        ApplyDisplayAttribute(ec, context_, compRange, displayAttribute_);
+                        CollapseSelectionToEnd(ec, context_, compRange);
+                    }
+                    compRange->Release();
+                }
             }
         }
     }

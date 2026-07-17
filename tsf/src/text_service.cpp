@@ -1596,23 +1596,21 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         return S_OK;
     }
 
-    // キャレット直前が確定文字列と一致する場合のみ削除する
-    bool succeeded = false;
-    RequestSync(context,
-                new (std::nothrow) UndoCommitEditSession(context, commitText, &succeeded),
-                TF_ES_SYNC | TF_ES_READWRITE);
-    if (!succeeded) {
-        return S_OK;
-    }
-
-    // 確定前の読みを composition として復元する (そのまま再変換や F6-F10 が使える)
+    // キャレット直前が確定文字列と一致する場合のみ、確定前の読みの composition に
+    // 復元する (そのまま再変換や F6-F10 が使える)。削除と復元は1つの edit session で
+    // 行う (別々に分けると Word 等で2つ目の session が失敗する。RestartComposition 参照)
     composer_ = lastComposer_;
-    HRESULT hr = StartComposition(context);
-    if (FAILED(hr)) {
+    bool succeeded = false;
+    HRESULT hr = RequestSync(context,
+                             new (std::nothrow) UndoCommitEditSession(
+                                 context, commitText, static_cast<ITfCompositionSink*>(this),
+                                 composer_.Display(), inputAttribute_, &composition_, &succeeded),
+                             TF_ES_SYNC | TF_ES_READWRITE);
+    if (!succeeded) {
         composer_.Clear();
         return hr;
     }
-    return UpdateCompositionAndPredict(context);
+    return UpdatePrediction(context);
 }
 
 HRESULT TextService::LaunchWordRegister(ITfContext* context)

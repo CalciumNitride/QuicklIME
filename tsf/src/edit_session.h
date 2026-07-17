@@ -95,15 +95,25 @@ private:
     std::wstring* textOut_;
 };
 
-// 確定アンドゥ用: キャレット直前のテキストが expectedText と一致する場合のみ
-// それを削除する (一致しなければ何もしない)。成功可否を succeededOut に返す
+// 確定アンドゥ用: キャレット直前のテキストが expectedText と一致する場合のみ、
+// その範囲を覆う composition を開始して newText (確定前の読み) に置き換える
+// (一致しなければ何もしない)。成功可否を succeededOut に返す。
+// 削除 → composition 開始 → 表示を別々の edit session に分けると、
+// RestartCompositionEditSession と同じ理由で Word 等では復元できない
 class UndoCommitEditSession : public EditSessionBase {
 public:
-    UndoCommitEditSession(ITfContext* context, std::wstring expectedText, bool* succeededOut);
+    UndoCommitEditSession(ITfContext* context, std::wstring expectedText,
+                          ITfCompositionSink* sink, std::wstring newText,
+                          TfGuidAtom displayAttribute, ITfComposition** compositionOut,
+                          bool* succeededOut);
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
 private:
     std::wstring expectedText_;
+    ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
+    std::wstring newText_;
+    TfGuidAtom displayAttribute_;
+    ITfComposition** compositionOut_;  // 開始した composition の受け取り先
     bool* succeededOut_;
 };
 
