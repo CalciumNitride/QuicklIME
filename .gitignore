@@ -18,6 +18,9 @@ Release/
 # Rust
 target/
 
+# Adobe Illustrator の一時ファイル
+~ai-*
+
 # インストーラのビルド生成物
 /installer/staging/
 /installer/output/
