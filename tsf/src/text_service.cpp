@@ -802,6 +802,9 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     }
     // IMEオン/オフの切替も設定ファイルの変更を拾う機会にする
     RefreshConfig();
+    if (langBarButton_ != nullptr) {
+        langBarButton_->NotifyUpdate();
+    }
     // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったら、
     // 入力途中の文字列を確定して後始末する。自前の preserved key 経由では
     // 確定済みなのでここでは何も起きない

@@ -20,6 +20,7 @@ add_library(quicklime_tsf SHARED
     src/romaji.cpp
     src/text_service.cpp
     src/exports.def
+    src/QuicklIME.rc
 )
 
 # 出力ファイル名は QuicklIME.dll

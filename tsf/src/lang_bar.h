@@ -39,6 +39,9 @@ public:
     STDMETHODIMP AdviseSink(REFIID riid, IUnknown* unknown, DWORD* cookie) override;
     STDMETHODIMP UnadviseSink(DWORD cookie) override;
 
+    // IME オン/オフ切替時にアイコンの再取得を促す
+    void NotifyUpdate();
+
 private:
     ~LangBarButton();
 

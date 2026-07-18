@@ -55,7 +55,7 @@ fn main() {
             cbClsExtra: 0,
             cbWndExtra: 0,
             hInstance: instance,
-            hIcon: null_mut(),
+            hIcon: LoadIconW(instance, 1 as *const u16),
             hCursor: LoadCursorW(null_mut(), IDC_ARROW),
             hbrBackground: (COLOR_BTNFACE + 1) as usize as _,
             lpszMenuName: null(),

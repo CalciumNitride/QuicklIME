@@ -12,9 +12,9 @@ constexpr DWORD kSinkCookie = 0x714c4d45; // 'qLME'
 constexpr UINT kMenuIdConfig = 1;
 constexpr UINT kMenuIdRegisterWord = 2;
 
-// タスクバー用のアイコンを動的に作る (リソースを持たず黒地に白の「Q」を描く)。
+// 入力モードの文字アイコンを動的に作る (IME ON → 「あ」、OFF → 「A」)。
 // 返した HICON は呼び出し側 (TSF) が破棄する
-HICON CreateLangBarIcon()
+HICON CreateModeIcon(bool open)
 {
     HDC screen = GetDC(nullptr);
     if (screen == nullptr) {
@@ -25,19 +25,21 @@ HICON CreateLangBarIcon()
     HICON icon = nullptr;
     HDC memDc = CreateCompatibleDC(screen);
     HBITMAP color = CreateCompatibleBitmap(screen, size, size);
-    // マスクは全ビット0 (全域不透明) で作る
     HBITMAP mask = CreateBitmap(size, size, 1, 1, nullptr);
     if (memDc != nullptr && color != nullptr && mask != nullptr) {
         HGDIOBJ oldBitmap = SelectObject(memDc, color);
         RECT rect = {0, 0, size, size};
         FillRect(memDc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+
+        const wchar_t* text = open ? L"あ" : L"A";
+        BYTE charset = open ? SHIFTJIS_CHARSET : DEFAULT_CHARSET;
         HFONT font = CreateFontW(-(size - 2), 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
-                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                 charset, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Yu Gothic UI");
         HGDIOBJ oldFont = SelectObject(memDc, font);
         SetBkMode(memDc, TRANSPARENT);
         SetTextColor(memDc, RGB(255, 255, 255));
-        DrawTextW(memDc, L"Q", 1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        DrawTextW(memDc, text, 1, &rect, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
         SelectObject(memDc, oldFont);
         if (font != nullptr) {
             DeleteObject(font);
@@ -221,7 +223,7 @@ STDMETHODIMP LangBarButton::GetIcon(HICON* icon)
     if (icon == nullptr) {
         return E_INVALIDARG;
     }
-    *icon = CreateLangBarIcon();
+    *icon = CreateModeIcon(service_->IsKeyboardOpen());
     return *icon != nullptr ? S_OK : E_FAIL;
 }
 
@@ -264,4 +266,11 @@ STDMETHODIMP LangBarButton::UnadviseSink(DWORD cookie)
     sink_->Release();
     sink_ = nullptr;
     return S_OK;
+}
+
+void LangBarButton::NotifyUpdate()
+{
+    if (sink_ != nullptr) {
+        sink_->OnUpdate(TF_LBI_ICON);
+    }
 }

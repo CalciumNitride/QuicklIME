@@ -37,6 +37,8 @@ SolidCompression=yes
 CloseApplications=no
 RestartApplications=no
 SetupLogging=yes
+SetupIconFile=QuicklIME.ico
+UninstallDisplayIcon={app}\quicklime-config.exe,0
 
 [Languages]
 Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
@@ -51,6 +53,9 @@ Source: "{#Staging}\quicklime-regword.exe"; DestDir: "{app}"; Flags: {#CommonFil
 Source: "{#Staging}\dict\*"; DestDir: "{app}\dict"; Flags: ignoreversion
 Source: "{#Staging}\presets\*"; DestDir: "{app}\presets"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozc.txt"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{autoprograms}\QuicklIME 設定"; Filename: "{app}\quicklime-config.exe"
 
 [Code]
 // 常駐エンジンと各ツールを止める (更新時の exe ロック解除・アンインストール準備)。

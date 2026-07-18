@@ -113,10 +113,18 @@ BOOL RegisterProfile()
         return FALSE;
     }
 
-    // アイコンは未実装のため指定しない (フェーズ5で追加予定)
+    wchar_t dllPath[MAX_PATH] = {};
+    DWORD pathLen = GetModuleFileNameW(globals::dllInstance, dllPath, ARRAYSIZE(dllPath));
+    if (pathLen == 0 || pathLen >= ARRAYSIZE(dllPath)) {
+        pathLen = 0;
+    }
+
     hr = profileMgr->RegisterProfile(
         globals::kClsid, globals::kLangId, globals::kProfileGuid, globals::kDescription,
-        static_cast<ULONG>(wcslen(globals::kDescription)), nullptr, 0, 0, nullptr, 0, TRUE, 0);
+        static_cast<ULONG>(wcslen(globals::kDescription)),
+        pathLen > 0 ? dllPath : nullptr,
+        pathLen > 0 ? static_cast<ULONG>(wcslen(dllPath)) : 0,
+        0, nullptr, 0, TRUE, 0);
 
     profileMgr->Release();
     return SUCCEEDED(hr);
