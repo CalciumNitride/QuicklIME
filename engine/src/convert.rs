@@ -22,6 +22,12 @@ const MAX_READING_CHARS: usize = 16;
 /// 辞書語の経路が常に優先されるよう十分大きくする
 const UNKNOWN_WORD_COST: i32 = 12000;
 
+/// 文節境界ペナルティ。自立語 (付属語でない語) ごとに Viterbi のコストへ加算する。
+/// 辞書にはコスト0の短いかな語が多く、素のコストでは「き+き+無+れ」のような
+/// 細切れ経路が複合語 (聞き慣れ) より安くなるため、文節数が少ない経路を優先させる。
+/// 値は実辞書の回帰コーパスで調整した (「ききなれない」は自立語1語差で約800必要)
+const SEGMENT_PENALTY: i32 = 1000;
+
 /// 変換結果の1文節
 pub struct Segment {
     /// この文節の読み (ひらがな)
@@ -46,11 +52,13 @@ pub fn convert_segments(
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Vec<Segment> {
-    let Some(path) = viterbi_path(kana, dict, user, matrix) else {
+    let Some(path) = viterbi_path(kana, dict, user, matrix, functional) else {
         return Vec::new();
     };
+    // 辞書の数字は1桁単位のため、連続する数字を1語にまとめてから文節を作る
+    let path = merge_digit_runs(path);
 
-    // 付属語 (助詞・助動詞・接尾辞) を直前の自立語にまとめて文節を作る
+    // 付属語 (助詞・助動詞・接尾語) を直前の自立語にまとめて文節を作る
     let mut groups: Vec<Vec<PathWord>> = Vec::new();
     for word in path {
         if !groups.is_empty() && functional.is_functional(word.left_id) {
@@ -66,6 +74,29 @@ pub fn convert_segments(
         .collect()
 }
 
+/// 数字 (半角・全角) かどうか
+fn is_digit_char(c: char) -> bool {
+    c.is_ascii_digit() || ('０'..='９').contains(&c)
+}
+
+/// 経路上で隣接する数字語 (読みがすべて数字) を1語に結合する。
+/// 辞書の数字エントリは1桁単位のため、そのままでは「12」が桁ごとの文節に割れる。
+/// 全角数字は辞書に無く未知語1文字ノードになるが、読みベースの判定で同様にまとまる
+fn merge_digit_runs(path: Vec<PathWord>) -> Vec<PathWord> {
+    let mut result: Vec<PathWord> = Vec::new();
+    for word in path {
+        let is_digits = word.reading.chars().all(is_digit_char);
+        match result.last_mut() {
+            Some(last) if is_digits && last.reading.chars().all(is_digit_char) => {
+                last.reading.push_str(&word.reading);
+                last.surface.push_str(&word.surface);
+            }
+            _ => result.push(word),
+        }
+    }
+    result
+}
+
 /// 文節境界 (文字数) を指定してかな文字列を変換する (Shift+←→ での文節伸縮用)。
 /// lengths の合計が入力の文字数と一致しない場合は空を返す
 pub fn convert_segments_fixed(
@@ -74,6 +105,7 @@ pub fn convert_segments_fixed(
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Vec<Segment> {
     let chars: Vec<char> = kana.chars().collect();
@@ -90,7 +122,7 @@ pub fn convert_segments_fixed(
         begin += length;
 
         // 文節の範囲内だけで最小コスト経路を求める
-        let group = viterbi_path(&reading, dict, user, matrix).unwrap_or_else(|| {
+        let group = viterbi_path(&reading, dict, user, matrix, functional).unwrap_or_else(|| {
             vec![PathWord {
                 reading: reading.clone(),
                 surface: reading.clone(),
@@ -166,6 +198,22 @@ fn segment_from_group(
         }
     }
 
+    // 数字で始まる文節 (「10じ」など) は、数字部分の読み全体が辞書に無いため
+    // 上の完全一致・先頭語入れ替えが働かない。代わりに数字に続く部分 (助数詞など) を
+    // 入れ替えた候補を積む (「10次」しか出ず「10時」が選べなくなるのを防ぐ)
+    if group.len() >= 2 && group[0].reading.chars().all(is_digit_char) {
+        let tail_reading: String = group[1..].iter().map(|w| w.reading.as_str()).collect();
+        for (_, surface) in exact_candidates(&tail_reading, dict, user) {
+            if result.len() >= MAX_DICT_CANDIDATES {
+                break;
+            }
+            let candidate = group[0].surface.clone() + surface;
+            if candidate != reading && !result.contains(&candidate) {
+                result.push(candidate);
+            }
+        }
+    }
+
     // 記号候補 (「やじるし」→「→」など)。通常語より後ろに置きたいので
     // 辞書候補の末尾に追記し、MAX_DICT_CANDIDATES の枠には数えない
     // (数えると記号が多い読みで通常語が押し出されるため)
@@ -195,11 +243,12 @@ pub fn candidates(
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
 ) -> Vec<String> {
     let mut result: Vec<String> = Vec::new();
 
     // 文としての最小コスト変換 (入力と同じ = 変換できなかった場合は加えない)
-    if let Some(sentence) = convert_sentence(kana, dict, user, matrix) {
+    if let Some(sentence) = convert_sentence(kana, dict, user, matrix, functional) {
         if sentence != kana {
             result.push(sentence);
         }
@@ -244,8 +293,9 @@ pub fn convert_sentence(
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
 ) -> Option<String> {
-    let path = viterbi_path(kana, dict, user, matrix)?;
+    let path = viterbi_path(kana, dict, user, matrix, functional)?;
     Some(path.into_iter().map(|w| w.surface).collect())
 }
 
@@ -270,6 +320,7 @@ fn viterbi_path(
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
 ) -> Option<Vec<PathWord>> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
@@ -352,6 +403,13 @@ fn viterbi_path(
         idx
     };
     for i in order {
+        // 自立語の開始 = 文節の開始とみなしてペナルティを加算する
+        // (付属語は前の文節に吸収されるため対象外)
+        let penalty = if functional.is_functional(nodes[i].left_id) {
+            0
+        } else {
+            i64::from(SEGMENT_PENALTY)
+        };
         let mut best_cost = i64::MAX;
         let mut best_prev = 0;
         for &p in &ending_at[nodes[i].start] {
@@ -360,7 +418,8 @@ fn viterbi_path(
             }
             let cost = nodes[p].best_cost
                 + i64::from(matrix.get(nodes[p].right_id, nodes[i].left_id))
-                + i64::from(nodes[i].word_cost);
+                + i64::from(nodes[i].word_cost)
+                + penalty;
             if cost < best_cost {
                 best_cost = cost;
                 best_prev = p;
@@ -437,8 +496,12 @@ mod tests {
     }
 
     fn sample_functional() -> FunctionalIds {
-        // id 2 = 助詞, id 3 = 助動詞
-        let data = "1 名詞,一般\n2 助詞,係助詞\n3 助動詞,特殊・デス\n";
+        // id 2 = 助詞, id 3 = 助動詞, id 4 = 数詞, id 5 = 助数詞
+        let data = "1 名詞,一般\n\
+                    2 助詞,係助詞\n\
+                    3 助動詞,特殊・デス\n\
+                    4 名詞,数,アラビア数字\n\
+                    5 名詞,接尾,助数詞\n";
         FunctionalIds::load_from(data.as_bytes()).unwrap()
     }
 
@@ -451,7 +514,12 @@ mod tests {
     fn 文を最小コストで変換する() {
         // 今日(2000) + は(500) + 晴れ(3000) + です(1000) が最小経路になる
         let result = convert_sentence(
-            "きょうははれです", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
+            "きょうははれです",
+            &sample_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+        );
         assert_eq!(result.unwrap(), "今日は晴れです");
     }
 
@@ -562,6 +630,7 @@ mod tests {
             &sample_dict(),
             &user_with_shortcut("にほんご", "NIHONGO"),
             &ConnectionMatrix::empty(),
+            &sample_functional(),
         );
         assert_eq!(got, vec!["日本語", "NIHONGO", "ニホンゴ", "にほんご"]);
     }
@@ -572,7 +641,7 @@ mod tests {
         let mut user = UserDict::empty();
         user.load_from("かんべ\t神戸\t姓\n".as_bytes(), &FunctionalIds::empty());
         let result = convert_sentence(
-            "かんべです", &sample_dict(), &user, &ConnectionMatrix::empty());
+            "かんべです", &sample_dict(), &user, &ConnectionMatrix::empty(), &sample_functional());
         assert_eq!(result.unwrap(), "神戸です");
     }
 
@@ -613,7 +682,8 @@ mod tests {
     #[test]
     fn 辞書に無い文字は未知語としてそのまま通す() {
         let result = convert_sentence(
-            "きょうはx", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
+            "きょうはx", &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional());
         assert_eq!(result.unwrap(), "今日はx");
     }
 
@@ -628,20 +698,24 @@ mod tests {
             "3\n0\n1000\n0\n0\n0\n0\n0\n0\n0\n",
         )
         .unwrap();
-        let result = convert_sentence("あ", &dict, &no_user(), &matrix);
+        // 品詞表は空 (ペナルティは両候補に等しく載り、連接コストだけで決まる)
+        let result = convert_sentence("あ", &dict, &no_user(), &matrix, &FunctionalIds::empty());
         assert_eq!(result.unwrap(), "阿");
     }
 
     #[test]
     fn 候補は文変換_完全一致_カタカナ_ひらがなの順() {
-        let got = candidates("にほんご", &sample_dict(), &no_user(), &ConnectionMatrix::empty());
+        let got = candidates(
+            "にほんご", &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional());
         assert_eq!(got, vec!["日本語", "ニホンゴ", "にほんご"]);
     }
 
     #[test]
     fn 空文字列は文変換しない() {
         assert!(convert_sentence(
-            "", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty()).is_none());
+            "", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty(),
+            &FunctionalIds::empty()).is_none());
         assert!(convert_segments(
             "",
             &Dictionary::empty(),
@@ -726,14 +800,16 @@ mod tests {
 
         // 4,4 なら通常の文節分割と同じ
         let segments = convert_segments_fixed(
-            "きょうははれです", &[4, 4], &dict, &no_user(), &ConnectionMatrix::empty(), &learning);
+            "きょうははれです", &[4, 4], &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "はれです"]);
         assert_eq!(segments[0].candidates[0], "今日は");
 
         // 3,5 なら「きょう / ははれです」で各範囲内を再変換する
         let segments = convert_segments_fixed(
-            "きょうははれです", &[3, 5], &dict, &no_user(), &ConnectionMatrix::empty(), &learning);
+            "きょうははれです", &[3, 5], &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょう", "ははれです"]);
         assert_eq!(segments[0].candidates[0], "今日");
@@ -748,6 +824,7 @@ mod tests {
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
+            &sample_functional(),
             &LearningStore::in_memory(),
         );
         assert!(empty.is_empty());
@@ -771,9 +848,117 @@ mod tests {
     }
 
     #[test]
+    fn 文節境界ペナルティで複合語が細切れに勝つ() {
+        // 素のコストでは き+き+無+れ (0+0+0+0) が 聞き慣れ (2000) より安いが、
+        // 自立語4語 (ペナルティ2800) vs 1語 (700) の差で複合語が選ばれる
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "き\t1\t1\t0\tき\n\
+             な\t1\t1\t0\t無\n\
+             れ\t1\t1\t0\tれ\n\
+             ききなれ\t1\t1\t2000\t聞き慣れ\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let result = convert_sentence(
+            "ききなれ", &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(result.unwrap(), "聞き慣れ");
+    }
+
+    /// 実辞書と同様に数字が1桁単位でしか入っていない辞書 (id 4 = 数詞, 5 = 助数詞)
+    fn digit_dict() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "1\t4\t4\t1900\t1\n\
+             2\t4\t4\t1900\t2\n\
+             じ\t5\t5\t18\t時\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 連続する数字が助数詞ごと1文節にまとまる() {
+        let segments = convert_segments(
+            "12じ",
+            &digit_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["12じ"]);
+        assert_eq!(segments[0].candidates[0], "12時");
+    }
+
+    #[test]
+    fn 数字文節では助数詞の入れ替え候補が出る() {
+        // 経路上の助数詞が「次」でも、読み「じ」の別候補「時」で入れ替えた 12時 が選べる
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "1\t4\t4\t1900\t1\n\
+             2\t4\t4\t1900\t2\n\
+             じ\t5\t5\t10\t次\n\
+             じ\t5\t5\t18\t時\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let segments = convert_segments(
+            "12じ",
+            &dict,
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let c = &segments[0].candidates;
+        assert_eq!(c[0], "12次");
+        assert!(c.contains(&"12時".to_string()));
+    }
+
+    #[test]
+    fn 全角数字も未知語のまま1文節にまとまる() {
+        // 全角数字は辞書に無く未知語1文字ノードになるが、読みベースの判定で結合される
+        let segments = convert_segments(
+            "１２じ",
+            &digit_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["１２じ"]);
+        assert_eq!(segments[0].candidates[0], "１２時");
+    }
+
+    #[test]
+    fn 文節境界を固定すれば数字も分かれる() {
+        // Shift+← などでユーザが数字を手動分割した場合はそのまま尊重する
+        let segments = convert_segments_fixed(
+            "12",
+            &[1, 1],
+            &digit_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["1", "2"]);
+    }
+
+    #[test]
     fn 変換できない入力はカタカナとひらがなのみ() {
         // 空辞書では未知語経路が入力そのままを返すため、候補には加えない
-        let got = candidates("かな", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty());
+        let got = candidates(
+            "かな", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty(),
+            &FunctionalIds::empty());
         assert_eq!(got, vec!["カナ", "かな"]);
     }
 }

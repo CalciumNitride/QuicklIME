@@ -223,7 +223,8 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         Some("CONVERT") => match fields.next() {
             Some(kana) if !kana.is_empty() => {
                 let user = data.user.lock().expect("user lock");
-                let candidates = convert::candidates(kana, &data.dictionary, &user, &data.matrix);
+                let candidates = convert::candidates(
+                    kana, &data.dictionary, &user, &data.matrix, &data.functional);
                 format!("OK\t{}\n", candidates.join("\t"))
             }
             _ => "ERR\tかなが空です\n".to_string(),
@@ -242,6 +243,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                         &data.dictionary,
                         &user,
                         &data.matrix,
+                        &data.functional,
                         &learning,
                     );
                     if segments.is_empty() {
