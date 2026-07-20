@@ -120,8 +120,11 @@ fn exact_candidates<'a>(
 }
 
 /// 単語列 (1文節分) から候補リスト付きの Segment を作る。
-/// 候補: 経路上の表記 → 先頭語を入れ替えた表記 → 読み全体の辞書候補
-///       → カタカナ → ひらがな。学習済みの表記があれば先頭へ移動する
+/// 候補: 経路上の表記 → 読み全体の辞書候補 → 先頭語を入れ替えた表記
+///       → カタカナ → ひらがな。学習済みの表記があれば先頭へ移動する。
+/// 読み全体の完全一致 (「した」→ 下) はユーザが求める同音異義語そのものなので、
+/// 先頭語入れ替え (し+た → 死た) より先に積む。逆順だと先頭語が1文字の読みの
+/// とき入れ替え候補だけで MAX_DICT_CANDIDATES を使い切り、完全一致が脱落する
 fn segment_from_group(
     group: &[PathWord],
     dict: &Dictionary,
@@ -140,6 +143,16 @@ fn segment_from_group(
         }
     }
 
+    // 読み全体の完全一致候補 (「した」→ 下 など)
+    for (_, surface) in exact_candidates(&reading, dict, user) {
+        if result.len() >= MAX_DICT_CANDIDATES {
+            break;
+        }
+        if surface != reading && !result.iter().any(|s| s == surface) {
+            result.push(surface.to_string());
+        }
+    }
+
     // 先頭の自立語を入れ替えた候補 (例: 今日+は -> 京は, 教は...)。
     // 読みと同じ表記 (ひらがなのまま) は末尾で必ず追加するのでここでは除く
     let rest: String = group[1..].iter().map(|w| w.surface.as_str()).collect();
@@ -150,16 +163,6 @@ fn segment_from_group(
         let candidate = surface.to_string() + &rest;
         if candidate != reading && !result.contains(&candidate) {
             result.push(candidate);
-        }
-    }
-
-    // 読み全体の完全一致候補 (単語をまたぐ表記など)
-    for (_, surface) in exact_candidates(&reading, dict, user) {
-        if result.len() >= MAX_DICT_CANDIDATES {
-            break;
-        }
-        if surface != reading && !result.iter().any(|s| s == surface) {
-            result.push(surface.to_string());
         }
     }
 
@@ -662,6 +665,58 @@ mod tests {
         );
         // 経路は 今日+は。先頭語を 京 に入れ替えた「京は」も候補に入る
         assert!(segments[0].candidates.contains(&"京は".to_string()));
+    }
+
+    /// 「した」→「し+た」のように、1文字の自立語 + 付属語に分解される読みの辞書。
+    /// 「し」の同音異義語を MAX_DICT_CANDIDATES 以上入れて、入れ替え候補が
+    /// 枠を使い切る状況を作る (実際の Mozc 辞書で起きる状況の縮小版)
+    fn dict_with_many_first_word_homophones() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let mut data = String::from(
+            "し\t1\t1\t0\tし\n\
+             た\t2\t2\t0\tた\n\
+             した\t1\t1\t100\t下\n",
+        );
+        for i in 0..MAX_DICT_CANDIDATES {
+            // 音読み「し」の漢字の代役としてダミー表記を積む
+            data.push_str(&format!("し\t1\t1\t{}\t死{}\n", 200 + i, i));
+        }
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 読み全体の完全一致が先頭語入れ替えより前に出る() {
+        // 経路は し+た (cost 0+0)。読み全体の完全一致「下」が
+        // 入れ替え候補 (死0た...) より前に来る
+        let segments = convert_segments(
+            "した",
+            &dict_with_many_first_word_homophones(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        let c = &segments[0].candidates;
+        let whole = c.iter().position(|s| s == "下").unwrap();
+        let swapped = c.iter().position(|s| s == "死0た").unwrap();
+        assert!(whole < swapped);
+    }
+
+    #[test]
+    fn 先頭語の同音異義語が多くても完全一致が候補から漏れない() {
+        // 「し」のエントリが MAX_DICT_CANDIDATES 以上あっても「下」が候補に残る
+        let segments = convert_segments(
+            "した",
+            &dict_with_many_first_word_homophones(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert!(segments[0].candidates.contains(&"下".to_string()));
     }
 
     #[test]
