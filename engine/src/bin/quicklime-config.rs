@@ -36,6 +36,7 @@ const ID_COMBO_PUNCT: i32 = 106;
 const ID_COMBO_DIGITS: i32 = 107;
 const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
+const ID_CHECK_LIVE: i32 = 110;
 const ID_COMBO_KEY_BASE: i32 = 120; // +0〜9 (KEY_ITEMS の並び順)
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
@@ -68,6 +69,7 @@ struct Config {
     space_full: bool,
     punctuation: String,
     digits_full: bool,
+    live_conversion: bool,
     candidate_font: String,
     candidate_font_size: u32, // 10-40
     keys: [String; 10],       // "F4" / "Ctrl+F7" / "none" (KEY_ITEMS の並び順)
@@ -84,6 +86,7 @@ impl Default for Config {
             space_full: true,
             punctuation: "、。".to_string(),
             digits_full: false,
+            live_conversion: false,
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
             keys: [
@@ -176,6 +179,7 @@ impl Config {
                 "half" => self.digits_full = false,
                 _ => {}
             },
+            "live_conversion" => parse_bool(&mut self.live_conversion),
             "punctuation" => {
                 if PUNCT_ITEMS.contains(&value) {
                     self.punctuation = value.to_string();
@@ -221,6 +225,7 @@ impl Config {
         text.push_str(&format!("space\t{}\n", if self.space_full { "full" } else { "half" }));
         text.push_str(&format!("punctuation\t{}\n", self.punctuation));
         text.push_str(&format!("digits\t{}\n", if self.digits_full { "full" } else { "half" }));
+        text.push_str(&format!("live_conversion\t{}\n", self.live_conversion as u32));
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
@@ -330,9 +335,9 @@ fn main() {
         let right_x = margin + left_w + col_gap;
         let right_w = label_w + row_gap + ctrl_w;
         let client_w = right_x + right_w + margin;
-        // 左カラム: 見出し3 + 項目10行 + 見出し前の隙間、右カラム: 見出し1 + 10行。
+        // 左カラム: 見出し3 + 項目11行 + 見出し前の隙間、右カラム: 見出し1 + 10行。
         // 高さは行数の多い左カラム基準
-        let left_rows = 13;
+        let left_rows = 14;
         let client_h =
             margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
 
@@ -486,6 +491,8 @@ fn main() {
             &["半角", "全角"],
             if config.digits_full { "全角" } else { "半角" },
         );
+        y += row_h + row_gap;
+        check("ライブ変換 (入力中に自動で変換する)", y, ID_CHECK_LIVE, config.live_conversion);
 
         y += row_h + row_gap + section_gap;
         create_control("STATIC", "候補ウィンドウ", label_style, 0, margin, y, left_w, row_h, 0);
@@ -694,6 +701,7 @@ fn collect(hwnd: HWND) -> Config {
         config.punctuation = punct;
     }
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
+    config.live_conversion = checked(ID_CHECK_LIVE);
     let font = combo_text(ID_COMBO_FONT);
     if !font.is_empty() && font.encode_utf16().count() < 32 {
         config.candidate_font = font;

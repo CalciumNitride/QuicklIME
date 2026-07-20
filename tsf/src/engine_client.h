@@ -36,6 +36,11 @@ public:
     bool ConvertSegmentsFixed(const std::wstring& kana, const std::vector<size_t>& lengths,
                               std::vector<ConversionSegment>* segments);
 
+    // かなを文節列に変換する (CONVSEG)。毎打鍵のライブ変換用に、エンジンの
+    // 自動起動や接続待ちはせず、未接続なら即 false を返す (Predict と同じ方式)
+    bool ConvertSegmentsLive(const std::wstring& kana,
+                             std::vector<ConversionSegment>* segments);
+
     // 読みに対する記号候補のみを取得する (CONVSYM、F4 の記号変換用)。
     // 通信に成功すれば true (記号が1つも無い場合も true で candidates は空)
     bool ConvertSymbols(const std::wstring& kana, std::vector<std::wstring>* candidates);
@@ -70,6 +75,8 @@ private:
     bool SendReceive(const std::string& request, std::string* response);
     // CONVSEG 系の要求を送って応答を segments にパースする
     bool RequestSegments(const std::string& request, std::vector<ConversionSegment>* segments);
+    // CONVSEG 系の応答1行を segments にパースする
+    bool ParseSegmentsResponse(std::string response, std::vector<ConversionSegment>* segments);
 
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     ULONGLONG lastLaunchTick_ = 0; // 最後にエンジン起動を試みた時刻 (連続起動の抑止)

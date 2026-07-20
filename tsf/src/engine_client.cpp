@@ -256,6 +256,24 @@ bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
                            segments);
 }
 
+bool EngineClient::ConvertSegmentsLive(const std::wstring& kana,
+                                       std::vector<ConversionSegment>* segments)
+{
+    if (segments == nullptr || kana.empty()) {
+        return false;
+    }
+    // 毎打鍵で呼ばれるため、エンジンの自動起動 (最大2秒のブロック) はしない。
+    // 未接続ならパイプを1回だけ開いてみて、開けなければ黙って諦める
+    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("CONVSEG\t" + WideToUtf8(kana) + "\n", &response)) {
+        return false;
+    }
+    return ParseSegmentsResponse(std::move(response), segments);
+}
+
 bool EngineClient::RequestSegments(const std::string& request,
                                    std::vector<ConversionSegment>* segments)
 {
@@ -263,7 +281,12 @@ bool EngineClient::RequestSegments(const std::string& request,
     if (!Transact(request, &response)) {
         return false;
     }
+    return ParseSegmentsResponse(std::move(response), segments);
+}
 
+bool EngineClient::ParseSegmentsResponse(std::string response,
+                                         std::vector<ConversionSegment>* segments)
+{
     // 応答: "OK\t読み\x1F候補1\x1F候補2...\t読み\x1F候補...\n"
     const size_t newline = response.find('\n');
     if (newline != std::string::npos) {

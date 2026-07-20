@@ -33,6 +33,9 @@ public:
     // composition 表示用: 確定済みかな + 未変換ローマ字
     std::wstring Display() const;
 
+    // 確定済みのかな (未変換ローマ字を含まない。ライブ変換の変換対象)
+    const std::wstring& ConfirmedKana() const { return kana_; }
+
     // 確定用文字列: 未変換ローマ字は "n" のみ「ん」へ救済し、残りはそのまま付ける
     std::wstring Commit() const;
 

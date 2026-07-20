@@ -170,6 +170,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
     } else if (key == L"candidate_font_size") {
         ParseClamped(value, 10, 40, config.candidateFontSize);
+    } else if (key == L"live_conversion") {
+        ParseBool(value, config.liveConversion);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

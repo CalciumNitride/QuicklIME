@@ -282,6 +282,7 @@ TextService::TextService()
       converting_(false),
       segmentIndex_(0),
       predictionIndex_(-1),
+      liveSuspended_(false),
       openCloseCookie_(TF_INVALID_COOKIE),
       threadMgrEventCookie_(TF_INVALID_COOKIE),
       langBarButton_(nullptr)
@@ -834,6 +835,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
     ClearConversion();
     ClearPrediction();
+    ClearLiveConversion();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -878,6 +880,19 @@ HRESULT TextService::CommitComposition(ITfContext* context)
     }
     if (predictionIndex_ >= 0) {
         return CommitPrediction(context);
+    }
+    if (!liveSegments_.empty()) {
+        // ライブ変換表示中の確定: 表示どおりの文字列で確定し、文節ごとに学習する
+        // (失敗しても確定は続行する)。末尾の未変換ローマ字は Commit() の
+        // 救済 ("n" のみ「ん」) を通した形で変換結果の後ろに付ける
+        std::vector<std::pair<std::wstring, std::wstring>> pairs;
+        for (const ConversionSegment& segment : liveSegments_) {
+            pairs.emplace_back(segment.reading, segment.candidates[0]);
+        }
+        engine_.Learn(pairs);
+        const std::wstring suffix =
+            composer_.Commit().substr(composer_.ConfirmedKana().size());
+        return EndComposition(context, LiveText() + suffix);
     }
     // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
     // 予測サジェストの履歴に蓄積する。かなのみの無変換確定は学習しない
@@ -938,7 +953,10 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 composer_.Clear();
                 return hr;
             }
-            return UpdatePrediction(context);
+            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
+            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
+            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
+                                           : UpdatePrediction(context);
         }
         composer_.EnterAsciiMode();
         composer_.PushKana(upper, upper);
@@ -967,7 +985,10 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 composer_.Clear();
                 return hr;
             }
-            return UpdatePrediction(context);
+            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
+            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
+            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
+                                           : UpdatePrediction(context);
         }
         if (composer_.AsciiMode()) {
             const std::wstring letter(1, c);
@@ -1007,7 +1028,10 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 composer_.Clear();
                 return hr;
             }
-            return UpdatePrediction(context);
+            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
+            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
+            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
+                                           : UpdatePrediction(context);
         }
         if (composer_.AsciiMode()) {
             composer_.PushKana(symbol->raw, symbol->raw);
@@ -1052,7 +1076,10 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 composer_.Clear();
                 return hr;
             }
-            return UpdatePrediction(context);
+            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
+            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
+            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
+                                           : UpdatePrediction(context);
         }
         composer_.PushKana(digit, digit);
         if (!Composing()) {
@@ -1084,7 +1111,10 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
                 composer_.Clear();
                 return hr;
             }
-            return UpdatePrediction(context);
+            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
+            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
+            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
+                                           : UpdatePrediction(context);
         }
         composer_.PushKana(text, text);
         if (!Composing()) {
@@ -1102,13 +1132,19 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     case VK_RETURN:
         return CommitComposition(context);
     case VK_ESCAPE:
-        // 候補選択中は変換を取り消してかな表示に戻る。
-        // サジェスト選択中は選択解除のみ (もう一度 Esc で全消去)。それ以外は全消去
+        // 候補選択中は変換を取り消してかな表示 (ライブ変換中はライブ表示) に戻る。
+        // サジェスト選択中は選択解除のみ (もう一度 Esc で全消去)。
+        // ライブ変換表示中はかな表示に戻し、この composition 中はライブ変換を止める
+        // (もう一度 Esc で全消去)。それ以外は全消去
         if (converting_) {
             return CancelConversion(context);
         }
         if (predictionIndex_ >= 0) {
             return DeselectPrediction(context);
+        }
+        if (!liveSegments_.empty()) {
+            liveSuspended_ = true;
+            return UpdateCompositionAndPredict(context);
         }
         return EndComposition(context, L"");
     case VK_BACK:
@@ -1197,6 +1233,8 @@ HRESULT TextService::StartConversion(ITfContext* context)
         return E_UNEXPECTED;
     }
     ClearPrediction();
+    // 変換モードへ移るのでライブ変換の表示状態は捨てる (Esc での停止は維持する)
+    liveSegments_.clear();
 
     // 文節列をエンジンに問い合わせる。
     // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
@@ -1449,6 +1487,8 @@ void TextService::EnsureConversionState()
         return;
     }
     ClearPrediction();
+    // 変換モードへ移るのでライブ変換の表示状態は捨てる (Esc での停止は維持する)
+    liveSegments_.clear();
     ConversionSegment segment;
     segment.reading = composer_.Commit();
     segment.candidates.push_back(segment.reading);
@@ -1628,7 +1668,9 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 HRESULT TextService::UpdatePrediction(ITfContext* context)
 {
     predictionIndex_ = -1;
-    if (!Composing() || converting_) {
+    // ライブ変換が有効な間はサジェストを出さない (Esc での停止中・英字モードも含む。
+    // RestartComposition 後や確定アンドゥなど直接呼ばれる経路もここで塞ぐ)
+    if (!Composing() || converting_ || LiveConversionEnabled()) {
         ClearPrediction();
         return S_OK;
     }
@@ -1660,12 +1702,50 @@ HRESULT TextService::UpdatePrediction(ITfContext* context)
 
 HRESULT TextService::UpdateCompositionAndPredict(ITfContext* context)
 {
+    if (LiveConversionActive()) {
+        return UpdateLiveConversion(context);
+    }
+    liveSegments_.clear(); // 非アクティブ時 (停止中・英字モード・設定OFF) は必ず空
     HRESULT hr = UpdateCompositionText(context, composer_.Display());
     if (FAILED(hr)) {
         return hr;
     }
     UpdatePrediction(context);
     return hr;
+}
+
+// ---- ライブ変換 ----
+
+HRESULT TextService::UpdateLiveConversion(ITfContext* context)
+{
+    ClearPrediction(); // ライブ変換中はサジェストを出さない (候補ウィンドウも閉じる)
+
+    // 変換するのは確定済みかなだけ。末尾の未変換ローマ字 (「きょうh」の h) は
+    // 変換対象にせず、そのまま後ろに表示する (macOS のライブ変換と同様)
+    const std::wstring& kana = composer_.ConfirmedKana();
+    if (kana.empty() || ContainsAsciiLetter(kana) ||
+        !engine_.ConvertSegmentsLive(kana, &liveSegments_) || liveSegments_.empty()) {
+        // かな未確定 (子音1文字など)・英字入力・エンジン未接続/失敗 → かな表示のまま
+        liveSegments_.clear();
+        return UpdateCompositionText(context, composer_.Display());
+    }
+    const std::wstring pending = composer_.Display().substr(kana.size());
+    return UpdateCompositionText(context, LiveText() + pending);
+}
+
+std::wstring TextService::LiveText() const
+{
+    std::wstring text;
+    for (const ConversionSegment& segment : liveSegments_) {
+        text += segment.candidates[0];
+    }
+    return text;
+}
+
+void TextService::ClearLiveConversion()
+{
+    liveSegments_.clear();
+    liveSuspended_ = false;
 }
 
 void TextService::ClearPrediction()
@@ -1763,6 +1843,7 @@ void TextService::FinishConversionState(const std::wstring& commitText)
     }
     ClearConversion();
     ClearPrediction();
+    ClearLiveConversion();
     composer_.Clear();
 }
 
@@ -1817,6 +1898,9 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         composer_.Clear();
         return hr;
     }
+    // 復元した読みを即ライブ再変換すると、直したいはずの誤変換へ戻ってしまうため、
+    // この composition 中はライブ変換を止めてかな表示を維持する
+    liveSuspended_ = true;
     return UpdatePrediction(context);
 }
 
@@ -2005,6 +2089,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     // 変換状態・予測状態と候補ウィンドウの後始末
     ClearConversion();
     ClearPrediction();
+    ClearLiveConversion();
 
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),

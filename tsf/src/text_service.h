@@ -160,6 +160,21 @@ private:
     // 選択中のサジェスト候補で確定する (候補の完全な読みで学習も送る)
     HRESULT CommitPrediction(ITfContext* context);
 
+    // ---- ライブ変換 (設定 live_conversion) ----
+    // ライブ変換が設定で有効か
+    bool LiveConversionEnabled() const { return config_.Get().liveConversion; }
+    // 今の打鍵でライブ変換すべきか (Esc で止めた composition・英字モードは除く)
+    bool LiveConversionActive() const {
+        return LiveConversionEnabled() && !liveSuspended_ && !composer_.AsciiMode();
+    }
+    // かな全体を変換して composition に表示する (毎打鍵の本体)。
+    // 変換できない場合はかな表示にフォールバックする
+    HRESULT UpdateLiveConversion(ITfContext* context);
+    // ライブ変換の表示文字列 (各文節の先頭候補の連結)
+    std::wstring LiveText() const;
+    // ライブ変換の状態を破棄する (composition の終了時)
+    void ClearLiveConversion();
+
     // 入力途中の内容を現在の状態のまま確定する (Enter と同じ処理)
     HRESULT CommitComposition(ITfContext* context);
     // 変換結果を確定する (エンジンへの学習送信 + composition 終了)
@@ -215,6 +230,11 @@ private:
     // 予測入力 (かな入力中のサジェスト)。候補ウィンドウは変換中と排他で共用する
     std::vector<PredictionCandidate> predictions_;  // 予測候補 (空 = サジェスト非表示)
     int predictionIndex_;                           // 選択中の候補 index (-1 = 未選択)
+
+    // ライブ変換。liveSegments_ が非空 ⇔ composition にライブ変換結果を表示中
+    // (かな表示へのフォールバック時・変換中 (converting_)・英字モード中は必ず空)
+    std::vector<ConversionSegment> liveSegments_;
+    bool liveSuspended_;  // Esc でこの composition 中はライブ変換を止めた
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)

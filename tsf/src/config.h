@@ -38,6 +38,7 @@ struct TsfConfig {
     std::wstring punctPeriod = L"。";  // 句点 (VK_OEM_PERIOD の非 Shift)
     std::wstring candidateFont = L"Yu Gothic UI";  // 候補ウィンドウのフォント名
     int candidateFontSize = 18;    // 候補ウィンドウのフォントの高さ (px)
+    bool liveConversion = false;   // ライブ変換 (入力中にかな全体を自動変換して表示)
 
     // 機能キーの割当 (KeyFunc の並び順)
     KeyBinding keys[kKeyFuncCount] = {
