@@ -449,6 +449,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 STDMETHODIMP TextService::Deactivate()
 {
     ClearConversion();
+    ClearContext();
     composer_.Clear();
     if (composition_ != nullptr) {
         composition_->Release();
@@ -528,6 +529,9 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // フォーカス切替は設定ファイルの変更を拾う機会にする (通常は更新時刻の比較のみ)。
     // 設定ツールで保存してアプリに戻る操作自体がフォーカス切替なので、実質すぐ反映される
     RefreshConfig();
+    // 別のドキュメント (アプリ・編集コントロール) に移った可能性があるため、
+    // 直前の確定文脈はここでは信用しない
+    ClearContext();
     return S_OK;
 }
 
@@ -803,6 +807,11 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     }
     // IMEオン/オフの切替も設定ファイルの変更を拾う機会にする
     RefreshConfig();
+    // オフの間にキャレットが動かされる可能性があるため、次にオンに戻ったときの
+    // 誤った文脈補正を避けるためオフになった時点で文脈を破棄する
+    if (!IsKeyboardOpen()) {
+        ClearContext();
+    }
     if (langBarButton_ != nullptr) {
         langBarButton_->NotifyUpdate();
     }
@@ -885,13 +894,24 @@ HRESULT TextService::CommitComposition(ITfContext* context)
         // ライブ変換表示中の確定: 表示どおりの文字列で確定し、文節ごとに学習する
         // (失敗しても確定は続行する)。末尾の未変換ローマ字は Commit() の
         // 救済 ("n" のみ「ん」) を通した形で変換結果の後ろに付ける
-        std::vector<std::pair<std::wstring, std::wstring>> pairs;
+        std::vector<LearnEntry> entries;
+        std::wstring prevSurface = contextSurface_;
         for (const ConversionSegment& segment : liveSegments_) {
-            pairs.emplace_back(segment.reading, segment.candidates[0]);
+            entries.push_back({segment.reading, segment.candidates[0], prevSurface});
+            prevSurface = segment.candidates[0];
         }
-        engine_.Learn(pairs);
+        engine_.Learn(entries);
         const std::wstring suffix =
             composer_.Commit().substr(composer_.ConfirmedKana().size());
+        if (suffix.empty()) {
+            // 末尾に未変換の生ローマ字が付かない = 確定文字列は文節どおりなので
+            // 最終文節を次の変換の文脈にできる
+            SetCommitContext(liveSegments_.back().reading, liveSegments_.back().candidates[0]);
+        } else {
+            // 生ローマ字が末尾に付くと確定文字列と文節表記が一致しないため、
+            // 誤った文脈を引きずらないようクリアする
+            ClearContext();
+        }
         return EndComposition(context, LiveText() + suffix);
     }
     // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
@@ -900,9 +920,27 @@ HRESULT TextService::CommitComposition(ITfContext* context)
     //  入ると変換時にひらがな候補が先頭へ来てしまう)
     const std::wstring kana = composer_.Commit();
     if (ContainsAsciiLetter(kana)) {
-        engine_.Learn({{kana, kana}});
+        engine_.Learn({{kana, kana, contextSurface_}});
     }
+    // 学習の可否に関わらず、確定したかな (助詞など) は次の変換の文脈として使える
+    SetCommitContext(kana, kana);
     return EndComposition(context, kana);
+}
+
+void TextService::SetCommitContext(const std::wstring& reading, const std::wstring& surface)
+{
+    if (reading.empty() || surface.empty()) {
+        ClearContext();
+        return;
+    }
+    contextReading_ = reading;
+    contextSurface_ = surface;
+}
+
+void TextService::ClearContext()
+{
+    contextReading_.clear();
+    contextSurface_.clear();
 }
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
@@ -948,15 +986,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             FinishConversionState(commitText);
             composer_.EnterAsciiMode();
             composer_.PushKana(upper, upper);
-            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            HRESULT hr = RestartComposition(context, commitText);
             if (FAILED(hr)) {
                 composer_.Clear();
                 return hr;
             }
-            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
-            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
-            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
-                                           : UpdatePrediction(context);
+            return UpdateCompositionAndPredict(context);
         }
         composer_.EnterAsciiMode();
         composer_.PushKana(upper, upper);
@@ -980,15 +1015,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             const std::wstring commitText = PrepareConversionCommit();
             FinishConversionState(commitText);
             composer_.Push(c);
-            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            HRESULT hr = RestartComposition(context, commitText);
             if (FAILED(hr)) {
                 composer_.Clear();
                 return hr;
             }
-            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
-            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
-            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
-                                           : UpdatePrediction(context);
+            return UpdateCompositionAndPredict(context);
         }
         if (composer_.AsciiMode()) {
             const std::wstring letter(1, c);
@@ -1023,15 +1055,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             const std::wstring commitText = PrepareConversionCommit();
             FinishConversionState(commitText);
             composer_.PushKana(kana, symbol->raw);
-            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            HRESULT hr = RestartComposition(context, commitText);
             if (FAILED(hr)) {
                 composer_.Clear();
                 return hr;
             }
-            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
-            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
-            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
-                                           : UpdatePrediction(context);
+            return UpdateCompositionAndPredict(context);
         }
         if (composer_.AsciiMode()) {
             composer_.PushKana(symbol->raw, symbol->raw);
@@ -1071,15 +1100,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             const std::wstring commitText = PrepareConversionCommit();
             FinishConversionState(commitText);
             composer_.PushKana(digit, digit);
-            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            HRESULT hr = RestartComposition(context, commitText);
             if (FAILED(hr)) {
                 composer_.Clear();
                 return hr;
             }
-            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
-            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
-            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
-                                           : UpdatePrediction(context);
+            return UpdateCompositionAndPredict(context);
         }
         composer_.PushKana(digit, digit);
         if (!Composing()) {
@@ -1106,15 +1132,12 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
             const std::wstring commitText = PrepareConversionCommit();
             FinishConversionState(commitText);
             composer_.PushKana(text, text);
-            HRESULT hr = RestartComposition(context, commitText, composer_.Display());
+            HRESULT hr = RestartComposition(context, commitText);
             if (FAILED(hr)) {
                 composer_.Clear();
                 return hr;
             }
-            // ライブ変換が有効なら、確定直後の1打鍵 (即かなが確定する記号など) も
-            // ライブ表示にする (表示の更新を含むため UpdateCompositionAndPredict)
-            return LiveConversionEnabled() ? UpdateCompositionAndPredict(context)
-                                           : UpdatePrediction(context);
+            return UpdateCompositionAndPredict(context);
         }
         composer_.PushKana(text, text);
         if (!Composing()) {
@@ -1242,8 +1265,8 @@ HRESULT TextService::StartConversion(ITfContext* context)
     // 成さないため、全体を1文節に固定して変換する
     const std::wstring kana = composer_.Commit();
     const bool ok = ContainsAsciiLetter(kana)
-        ? engine_.ConvertSegmentsFixed(kana, {kana.size()}, &segments_)
-        : engine_.ConvertSegments(kana, &segments_);
+        ? engine_.ConvertSegmentsFixed(kana, {kana.size()}, CurrentContext(), &segments_)
+        : engine_.ConvertSegments(kana, CurrentContext(), &segments_);
     if (!ok || segments_.empty()) {
         segments_.clear();
         ConversionSegment fallback;
@@ -1450,19 +1473,24 @@ HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
         newLen = currentLen - 1;
     }
 
-    // 文節 i を新しい長さで固定変換する
+    // 文節 i を新しい長さで固定変換する。文脈は i が先頭文節のときだけ外部文脈を渡す
+    // (2文節目以降はエンジン側で連鎖しないため、ここでは前の文節の表記を渡す)
+    const ConversionContext segmentContext =
+        i == 0 ? CurrentContext() : ConversionContext{segments_[i - 1].reading,
+                                                       segments_[i - 1].candidates[selected_[i - 1]]};
     const std::wstring segmentKana = kana.substr(prefixLen, newLen);
     std::vector<ConversionSegment> fixedResult;
-    if (!engine_.ConvertSegmentsFixed(segmentKana, {newLen}, &fixedResult) ||
+    if (!engine_.ConvertSegmentsFixed(segmentKana, {newLen}, segmentContext, &fixedResult) ||
         fixedResult.empty()) {
         return S_OK; // エンジン不調時は現状維持
     }
 
-    // 残りは境界を固定せず自由に再変換する
+    // 残りは境界を固定せず自由に再変換する (文脈は新しく固定した文節 i を渡す)
     std::vector<ConversionSegment> tailResult;
     const std::wstring tailKana = kana.substr(prefixLen + newLen);
+    const ConversionContext tailContext{fixedResult[0].reading, fixedResult[0].candidates[0]};
     if (!tailKana.empty() &&
-        (!engine_.ConvertSegments(tailKana, &tailResult) || tailResult.empty())) {
+        (!engine_.ConvertSegments(tailKana, tailContext, &tailResult) || tailResult.empty())) {
         return S_OK; // エンジン不調時は現状維持
     }
 
@@ -1724,7 +1752,8 @@ HRESULT TextService::UpdateLiveConversion(ITfContext* context)
     // 変換対象にせず、そのまま後ろに表示する (macOS のライブ変換と同様)
     const std::wstring& kana = composer_.ConfirmedKana();
     if (kana.empty() || ContainsAsciiLetter(kana) ||
-        !engine_.ConvertSegmentsLive(kana, &liveSegments_) || liveSegments_.empty()) {
+        !engine_.ConvertSegmentsLive(kana, CurrentContext(), &liveSegments_) ||
+        liveSegments_.empty()) {
         // かな未確定 (子音1文字など)・英字入力・エンジン未接続/失敗 → かな表示のまま
         liveSegments_.clear();
         return UpdateCompositionText(context, composer_.Display());
@@ -1814,7 +1843,8 @@ HRESULT TextService::CommitPrediction(ITfContext* context)
         predictions_[static_cast<size_t>(predictionIndex_)];
 
     // 採用結果を候補の完全な読みで学習させる (失敗しても確定は続行する)
-    engine_.Learn({{candidate.reading, candidate.surface}});
+    engine_.Learn({{candidate.reading, candidate.surface, contextSurface_}});
+    SetCommitContext(candidate.reading, candidate.surface);
     return EndComposition(context, candidate.surface);
 }
 
@@ -1825,12 +1855,19 @@ HRESULT TextService::CommitConversion(ITfContext* context)
 
 std::wstring TextService::PrepareConversionCommit()
 {
-    // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)
-    std::vector<std::pair<std::wstring, std::wstring>> pairs;
+    // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)。
+    // 各文節の文脈 = 先頭文節は外部文脈、以降は1つ前の文節で選んだ表記
+    std::vector<LearnEntry> entries;
+    std::wstring prevSurface = contextSurface_;
     for (size_t i = 0; i < segments_.size(); ++i) {
-        pairs.emplace_back(segments_[i].reading, segments_[i].candidates[selected_[i]]);
+        const std::wstring& surface = segments_[i].candidates[selected_[i]];
+        entries.push_back({segments_[i].reading, surface, prevSurface});
+        prevSurface = surface;
     }
-    engine_.Learn(pairs);
+    engine_.Learn(entries);
+    if (!segments_.empty()) {
+        SetCommitContext(segments_.back().reading, segments_.back().candidates[selected_.back()]);
+    }
     return ConvertedText();
 }
 
@@ -1847,8 +1884,7 @@ void TextService::FinishConversionState(const std::wstring& commitText)
     composer_.Clear();
 }
 
-HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring& commitText,
-                                        const std::wstring& newText)
+HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring& commitText)
 {
     if (!Composing() || context == nullptr) {
         return E_UNEXPECTED;
@@ -1857,13 +1893,16 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
     // EndComposition → StartComposition と別々の同期 session に分けると、
     // ロックの合間にホストが確定処理を進めてしまい、Word では2つ目の session が
     // 失敗して打鍵が素通りし、CUAS 経由のアプリ (WezTerm 等) では新しい
-    // composition の未確定文字列がそのまま確定されてしまう
+    // composition の未確定文字列がそのまま確定されてしまう。
+    // テキストの設定は別の edit session で行う。同じ session 内で
+    // EndComposition + StartComposition + SetText を行うと、CUAS が
+    // SetText の WM_IME_COMPOSITION を生成せず、WezTerm 等で
+    // 未確定文字列が表示されない問題が発生するため
     ITfComposition* newComposition = nullptr;
     HRESULT hr = RequestSync(context,
                              new (std::nothrow) RestartCompositionEditSession(
                                  context, composition_, commitText,
-                                 static_cast<ITfCompositionSink*>(this), newText,
-                                 inputAttribute_, &newComposition),
+                                 static_cast<ITfCompositionSink*>(this), &newComposition),
                              TF_ES_SYNC | TF_ES_READWRITE);
     composition_->Release();
     composition_ = newComposition;
@@ -1898,6 +1937,8 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         composer_.Clear();
         return hr;
     }
+    // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない
+    ClearContext();
     // 復元した読みを即ライブ再変換すると、直したいはずの誤変換へ戻ってしまうため、
     // この composition 中はライブ変換を止めてかな表示を維持する
     liveSuspended_ = true;
@@ -2052,10 +2093,23 @@ HRESULT TextService::StartComposition(ITfContext* context)
     if (Composing() || context == nullptr) {
         return E_UNEXPECTED;
     }
-    return RequestSync(context,
-                       new (std::nothrow) StartCompositionEditSession(
-                           context, static_cast<ITfCompositionSink*>(this), &composition_),
-                       TF_ES_SYNC | TF_ES_READWRITE);
+    // 文脈補正のハイブリッド照合: 内部履歴 (contextSurface_) があれば、
+    // composition 開始と同じ edit session でキャレット直前の実テキストを読み、
+    // 履歴と食い違っていれば (クリック等でキャレットが動いていれば) 文脈を破棄する。
+    // 読み取れないアプリでは precedingReadOk が false のままになり、内部履歴を信頼する
+    const ULONG precedingLength = static_cast<ULONG>(contextSurface_.size());
+    std::wstring precedingText;
+    bool precedingReadOk = false;
+    const HRESULT hr = RequestSync(
+        context,
+        new (std::nothrow) StartCompositionEditSession(
+            context, static_cast<ITfCompositionSink*>(this), &composition_, precedingLength,
+            &precedingText, &precedingReadOk),
+        TF_ES_SYNC | TF_ES_READWRITE);
+    if (precedingLength > 0 && precedingReadOk && precedingText != contextSurface_) {
+        ClearContext();
+    }
+    return hr;
 }
 
 HRESULT TextService::UpdateCompositionText(ITfContext* context, const std::wstring& text)

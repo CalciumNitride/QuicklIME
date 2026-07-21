@@ -35,16 +35,26 @@ private:
     std::wstring text_;
 };
 
-// カーソル位置で composition を開始する
+// カーソル位置で composition を開始する。
+// precedingLength > 0 のときは、開始前にキャレット直前の precedingLength 文字を
+// 読み取って precedingTextOut に返す (文脈補正のハイブリッド照合用。
+// UndoCommitEditSession と同じ ShiftStart(負方向) + GetText のパターンを
+// 読み取り専用で流用する)。読み取れた場合のみ precedingReadOkOut を true にする
+// (GetText 非対応のアプリでは false のままになり、呼び出し側は内部履歴を信頼する)
 class StartCompositionEditSession : public EditSessionBase {
 public:
     StartCompositionEditSession(ITfContext* context, ITfCompositionSink* sink,
-                                ITfComposition** compositionOut);
+                                ITfComposition** compositionOut, ULONG precedingLength = 0,
+                                std::wstring* precedingTextOut = nullptr,
+                                bool* precedingReadOkOut = nullptr);
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
 private:
     ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
     ITfComposition** compositionOut_;  // 開始した composition の受け取り先
+    ULONG precedingLength_;
+    std::wstring* precedingTextOut_;
+    bool* precedingReadOkOut_;
 };
 
 // composition のテキストを差し替え、表示属性を適用し、キャレットを末尾へ移動する。
@@ -134,15 +144,18 @@ private:
 // 「確定 + 新しい composition の開始」を1つの edit session (1つのドキュメント
 // ロック) 内で行う。変換中に印字キーが来たときの遷移用。
 // 旧 composition を commitText で置き換えて終了し、続けて確定文字列の直後で
-// 新しい composition を開始して newText を未確定文字列として表示する。
-// これを別々の edit session に分けると、ロックの合間にホストが確定処理を
-// 進めてしまい、2つ目の composition が生き残らない (Word や、CUAS 経由の
-// アプリ (WezTerm 等) では未確定文字列がそのまま確定されてしまう)
+// 新しい composition を開始する。未確定文字列の表示は行わない (呼び出し側が
+// 別の edit session で UpdateCompositionText を呼んで設定する)。
+// EndComposition と StartComposition を1つの edit session にまとめるのは、
+// 別々の edit session に分けるとロックの合間にホストが確定処理を進めてしまい、
+// 2つ目の composition が生き残らないため (Word や CUAS 経由のアプリ)。
+// 一方、テキストの設定まで同じ session で行うと、CUAS がテキスト設定の
+// WM_IME_COMPOSITION を生成しないアプリ (WezTerm 等) で未確定文字列が
+// 表示されない問題が起きるため、テキスト設定は別の session に分離する
 class RestartCompositionEditSession : public EditSessionBase {
 public:
     RestartCompositionEditSession(ITfContext* context, ITfComposition* oldComposition,
                                   std::wstring commitText, ITfCompositionSink* sink,
-                                  std::wstring newText, TfGuidAtom displayAttribute,
                                   ITfComposition** compositionOut);
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
@@ -152,7 +165,5 @@ private:
     ITfComposition* oldComposition_;
     std::wstring commitText_;
     ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
-    std::wstring newText_;
-    TfGuidAtom displayAttribute_;
     ITfComposition** compositionOut_;  // 開始した composition の受け取り先
 };

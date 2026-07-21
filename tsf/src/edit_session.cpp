@@ -116,9 +116,23 @@ STDMETHODIMP InsertTextEditSession::DoEditSession(TfEditCookie ec)
 
 StartCompositionEditSession::StartCompositionEditSession(ITfContext* context,
                                                          ITfCompositionSink* sink,
-                                                         ITfComposition** compositionOut)
-    : EditSessionBase(context), sink_(sink), compositionOut_(compositionOut)
+                                                         ITfComposition** compositionOut,
+                                                         ULONG precedingLength,
+                                                         std::wstring* precedingTextOut,
+                                                         bool* precedingReadOkOut)
+    : EditSessionBase(context),
+      sink_(sink),
+      compositionOut_(compositionOut),
+      precedingLength_(precedingLength),
+      precedingTextOut_(precedingTextOut),
+      precedingReadOkOut_(precedingReadOkOut)
 {
+    if (precedingTextOut_ != nullptr) {
+        precedingTextOut_->clear();
+    }
+    if (precedingReadOkOut_ != nullptr) {
+        *precedingReadOkOut_ = false;
+    }
 }
 
 STDMETHODIMP StartCompositionEditSession::DoEditSession(TfEditCookie ec)
@@ -136,6 +150,34 @@ STDMETHODIMP StartCompositionEditSession::DoEditSession(TfEditCookie ec)
     insertAtSelection->Release();
     if (FAILED(hr)) {
         return hr;
+    }
+
+    // 文脈補正のハイブリッド照合: composition を開始する前に、キャレット直前の
+    // precedingLength_ 文字を読み取っておく (呼び出し側が内部履歴の文脈と比較する)。
+    // 0 なら文脈なし・照合不要なので読み取らない。UndoCommitEditSession と同じ
+    // ShiftStart (負方向) + GetText のパターンを読み取り専用で使う
+    if (precedingLength_ > 0 && precedingTextOut_ != nullptr) {
+        ITfRange* preceding = nullptr;
+        if (SUCCEEDED(range->Clone(&preceding))) {
+            preceding->Collapse(ec, TF_ANCHOR_START);
+            LONG shifted = 0;
+            if (SUCCEEDED(preceding->ShiftStart(ec, -static_cast<LONG>(precedingLength_),
+                                                &shifted, nullptr))) {
+                std::vector<WCHAR> buffer(precedingLength_);
+                ULONG read = 0;
+                if (SUCCEEDED(preceding->GetText(ec, 0, buffer.data(),
+                                                 static_cast<ULONG>(buffer.size()), &read))) {
+                    // ドキュメント先頭などで precedingLength_ 文字ぶん取れなかった場合も
+                    // 読み取り自体は成功として扱う (短い文字列は文脈と一致せず、
+                    // 呼び出し側で正しく不一致判定される)
+                    precedingTextOut_->assign(buffer.data(), read);
+                    if (precedingReadOkOut_ != nullptr) {
+                        *precedingReadOkOut_ = true;
+                    }
+                }
+            }
+            preceding->Release();
+        }
     }
 
     ITfContextComposition* contextComposition = nullptr;
@@ -377,14 +419,11 @@ STDMETHODIMP EndCompositionEditSession::DoEditSession(TfEditCookie ec)
 
 RestartCompositionEditSession::RestartCompositionEditSession(
     ITfContext* context, ITfComposition* oldComposition, std::wstring commitText,
-    ITfCompositionSink* sink, std::wstring newText, TfGuidAtom displayAttribute,
-    ITfComposition** compositionOut)
+    ITfCompositionSink* sink, ITfComposition** compositionOut)
     : EditSessionBase(context),
       oldComposition_(oldComposition),
       commitText_(std::move(commitText)),
       sink_(sink),
-      newText_(std::move(newText)),
-      displayAttribute_(displayAttribute),
       compositionOut_(compositionOut)
 {
     oldComposition_->AddRef();
@@ -441,16 +480,9 @@ STDMETHODIMP RestartCompositionEditSession::DoEditSession(TfEditCookie ec)
         return FAILED(hr) ? hr : E_FAIL;
     }
 
-    // 3) 新しい composition へ未確定文字列を表示する
-    ITfRange* newRange = nullptr;
-    hr = (*compositionOut_)->GetRange(&newRange);
-    if (SUCCEEDED(hr)) {
-        hr = newRange->SetText(ec, 0, newText_.c_str(), static_cast<LONG>(newText_.size()));
-        if (SUCCEEDED(hr)) {
-            ApplyDisplayAttribute(ec, context_, newRange, displayAttribute_);
-            CollapseSelectionToEnd(ec, context_, newRange);
-        }
-        newRange->Release();
-    }
+    // テキストの設定はこの session では行わない。呼び出し側が別の edit session
+    // (UpdateCompositionText) で設定する。同じ session 内で EndComposition +
+    // StartComposition + SetText を行うと、CUAS が SetText の
+    // WM_IME_COMPOSITION を生成せず、WezTerm 等で未確定文字列が表示されない
     return hr;
 }

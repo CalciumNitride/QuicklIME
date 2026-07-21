@@ -185,12 +185,12 @@ private:
     // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
     // 確定アンドゥ情報を記憶し、変換・予測状態と composer_ を破棄する
     void FinishConversionState(const std::wstring& commitText);
-    // 「確定 + 新しい composition の開始 + 未確定文字列の表示」を1つの
-    // edit session で行い、composition_ を新しいものに差し替える。
+    // 「確定 + 新しい composition の開始」を1つの edit session で行い、
+    // composition_ を新しいものに差し替える。未確定文字列の表示は
+    // 呼び出し側が UpdateCompositionAndPredict で別途行う。
     // 変換中に印字キーが来たときは必ずこれを使う (分割すると Word や
     // CUAS 経由のアプリで新しい composition が生き残らない)
-    HRESULT RestartComposition(ITfContext* context, const std::wstring& commitText,
-                               const std::wstring& newText);
+    HRESULT RestartComposition(ITfContext* context, const std::wstring& commitText);
     // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を削除して読みの
     // composition に戻す。キャレット直前が確定文字列と一致するときのみ働く
     HRESULT UndoCommit(ITfContext* context);
@@ -208,6 +208,15 @@ private:
     RECT CandidateAnchor(ITfContext* context);
     // 変換状態を破棄する (composition は触らない)
     void ClearConversion();
+
+    // ---- 文脈補正 (直前確定文節の読み・表記を覚えておき、次の変換に渡す) ----
+    // 現在の文脈補正用コンテキストを取得する (未設定なら空)
+    ConversionContext CurrentContext() const { return {contextReading_, contextSurface_}; }
+    // 確定した文節の読み・表記を文脈として記憶する
+    void SetCommitContext(const std::wstring& reading, const std::wstring& surface);
+    // 文脈を破棄する (フォーカス移動・IMEオフ・確定アンドゥなど、直前の確定が
+    // 次の変換の左文脈として使えなくなったとき)
+    void ClearContext();
 
     bool Composing() const { return composition_ != nullptr; }
 
@@ -238,6 +247,11 @@ private:
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)
+
+    // 文脈補正用の確定履歴 (直前に確定した最終文節の読み・表記)。
+    // lastCommitText_ (確定アンドゥ用、使うと消える) とは寿命が異なるため別に持つ
+    std::wstring contextReading_;
+    std::wstring contextSurface_;
 
     DWORD openCloseCookie_;         // OPENCLOSE compartment sink の cookie
     DWORD threadMgrEventCookie_;    // thread manager event sink の cookie

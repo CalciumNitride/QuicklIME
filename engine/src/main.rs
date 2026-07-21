@@ -213,6 +213,75 @@ fn handle_client(stream: Stream, data: &EngineData) {
 /// CONVSEG 応答で文節内のフィールドを区切る文字 (ASCII Unit Separator)
 const FIELD_SEPARATOR: char = '\x1f';
 
+/// CONVCTX の前文脈フィールドの最大文字数 (読み・表記それぞれ)。
+/// 異常に長い文脈が送られてもビタビ復元の計算量を抑えるためのガード
+const MAX_CONTEXT_CHARS: usize = 64;
+
+/// CONVCTX の前文脈フィールド「読み\x1f表記」を解釈する。
+/// どちらかが空なら前文脈なし (None) として扱う
+fn parse_context(field: &str) -> Option<convert::Context> {
+    let (reading, surface) = field.split_once(FIELD_SEPARATOR)?;
+    if reading.is_empty() || surface.is_empty() {
+        return None;
+    }
+    // 長すぎる場合は末尾を残して切り詰める (文脈IDの復元に効くのは末尾)
+    let tail = |s: &str| -> String {
+        let chars: Vec<char> = s.chars().collect();
+        chars[chars.len().saturating_sub(MAX_CONTEXT_CHARS)..].iter().collect()
+    };
+    Some(convert::Context { reading: tail(reading), surface: tail(surface) })
+}
+
+/// CONVSEG / CONVCTX 共通の文節変換応答を作る。
+/// lengths_field は文節長 (カンマ区切り、文節伸縮時の境界固定用)、無ければ通常の文節分割
+fn segments_response(
+    kana: &str,
+    lengths_field: Option<&str>,
+    ctx: Option<&convert::Context>,
+    data: &EngineData,
+) -> String {
+    let user = data.user.lock().expect("user lock");
+    let learning = data.learning.lock().expect("learning lock");
+    let segments = if let Some(lengths_field) = lengths_field {
+        let lengths: Vec<usize> =
+            lengths_field.split(',').filter_map(|t| t.parse().ok()).collect();
+        let segments = convert::convert_segments_fixed(
+            kana,
+            &lengths,
+            ctx,
+            &data.dictionary,
+            &user,
+            &data.matrix,
+            &data.functional,
+            &learning,
+        );
+        if segments.is_empty() {
+            return "ERR\t文節長が不正です\n".to_string();
+        }
+        segments
+    } else {
+        convert::convert_segments(
+            kana,
+            ctx,
+            &data.dictionary,
+            &user,
+            &data.matrix,
+            &data.functional,
+            &learning,
+        )
+    };
+    let body = segments
+        .iter()
+        .map(|s| {
+            let mut fields = vec![s.reading.as_str()];
+            fields.extend(s.candidates.iter().map(String::as_str));
+            fields.join(&FIELD_SEPARATOR.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
+    format!("OK\t{body}\n")
+}
+
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
     // 日付・時刻の動的候補用の現在日時 (CONVSYM の候補生成と LEARN の除外判定に使う)
@@ -230,49 +299,20 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("CONVSEG") => match fields.next() {
-            Some(kana) if !kana.is_empty() => {
-                let user = data.user.lock().expect("user lock");
-                let learning = data.learning.lock().expect("learning lock");
-                // 3番目のフィールドは文節長 (カンマ区切り、文節伸縮時の境界固定用)
-                let segments = if let Some(lengths_field) = fields.next() {
-                    let lengths: Vec<usize> =
-                        lengths_field.split(',').filter_map(|t| t.parse().ok()).collect();
-                    let segments = convert::convert_segments_fixed(
-                        kana,
-                        &lengths,
-                        &data.dictionary,
-                        &user,
-                        &data.matrix,
-                        &data.functional,
-                        &learning,
-                    );
-                    if segments.is_empty() {
-                        return "ERR\t文節長が不正です\n".to_string();
-                    }
-                    segments
-                } else {
-                    convert::convert_segments(
-                        kana,
-                        &data.dictionary,
-                        &user,
-                        &data.matrix,
-                        &data.functional,
-                        &learning,
-                    )
-                };
-                let body = segments
-                    .iter()
-                    .map(|s| {
-                        let mut fields = vec![s.reading.as_str()];
-                        fields.extend(s.candidates.iter().map(String::as_str));
-                        fields.join(&FIELD_SEPARATOR.to_string())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\t");
-                format!("OK\t{body}\n")
-            }
+            Some(kana) if !kana.is_empty() => segments_response(kana, fields.next(), None, data),
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("CONVCTX") => {
+            // CONVCTX\t<文脈読み>\x1f<文脈表記>\t<かな>[\t<文節長>] :
+            // 前文脈 (直前確定の文節) 付きの文節変換。応答は CONVSEG と同一形式
+            let ctx = fields.next().and_then(parse_context);
+            match fields.next() {
+                Some(kana) if !kana.is_empty() => {
+                    segments_response(kana, fields.next(), ctx.as_ref(), data)
+                }
+                _ => "ERR\tかなが空です\n".to_string(),
+            }
+        }
         Some("CONVSYM") => match fields.next() {
             // 特殊変換 (F4 用): 記号辞書の候補と日付・時刻の動的候補を返す。
             // 通常語は含めない。該当なしは候補ゼロの OK
@@ -352,6 +392,38 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                     }
                     count += 1;
                 }
+            }
+            if count > 0 {
+                "OK\n".to_string()
+            } else {
+                "ERR\t記録する内容がありません\n".to_string()
+            }
+        }
+        Some("LEARN2") => {
+            // LEARN2\t読み\x1f表記\x1f文脈\t... : 前文脈付きの確定学習。
+            // 文脈 (直前文節の表記) が空の文節は従来の学習のみ記録する
+            if !data.config.lock().expect("config lock").learning {
+                return "OK\n".to_string();
+            }
+            let mut learning = data.learning.lock().expect("learning lock");
+            let mut count = 0;
+            for entry in fields {
+                let mut parts = entry.splitn(3, FIELD_SEPARATOR);
+                let (Some(reading), Some(surface)) = (parts.next(), parts.next()) else {
+                    continue;
+                };
+                if reading.is_empty() || surface.is_empty() {
+                    continue;
+                }
+                let context = parts.next().unwrap_or("");
+                // 日付・時刻の動的候補は時間が経つと古くなるため学習しない (LEARN と同様)
+                if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
+                    learning.record(reading, surface);
+                    if !context.is_empty() {
+                        learning.record_ctx(context, reading, surface);
+                    }
+                }
+                count += 1;
             }
             if count > 0 {
                 "OK\n".to_string()
@@ -478,6 +550,55 @@ mod tests {
 
         // 長さの合計が合わない場合はエラー
         assert!(handle_request("CONVSEG\tはれは\t9,9", &sample_data()).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convctxはconvsegと同一形式の応答を返す() {
+        // 前文脈が候補順に影響しない入力では CONVSEG と同じ応答になる
+        let data = sample_data();
+        let expected = handle_request("CONVSEG\tきょうは", &data);
+        assert_eq!(handle_request("CONVCTX\tはれ\x1f晴れ\tきょうは", &data), expected);
+        // 前文脈フィールドが空 (読み・表記なし) でも通常変換として動く
+        assert_eq!(handle_request("CONVCTX\t\tきょうは", &data), expected);
+        // 文節長指定も CONVSEG と同様に使える
+        let expected = handle_request("CONVSEG\tはれは\t2,1", &data);
+        assert_eq!(handle_request("CONVCTX\tきょう\x1f今日\tはれは\t2,1", &data), expected);
+    }
+
+    #[test]
+    fn learn2の文脈学習がconvctxで最優先になる() {
+        let data = sample_data();
+        // 文脈「晴れ」付きで「京は」を確定 → その後、文脈なしで「キョウハ」を確定
+        // (LEARN2 は文脈なし学習も併せて更新するため、この順で両者が分かれる)
+        assert_eq!(handle_request("LEARN2\tきょうは\x1f京は\x1f晴れ", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tきょうは\x1fキョウハ", &data), "OK\n");
+
+        // 文脈が一致すれば文脈学習の「京は」が最優先
+        let response = handle_request("CONVCTX\tはれ\x1f晴れ\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1f京は\x1fキョウハ\x1f"), "{response}");
+        // 文脈なしなら文脈なし学習の「キョウハ」が先頭
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1fキョウハ\x1f"), "{response}");
+    }
+
+    #[test]
+    fn learn2は文脈なしでも従来の学習になる() {
+        let data = sample_data();
+        // 文脈フィールドが空 (読み\x1f表記\x1f) は LEARN と同じ扱い
+        assert_eq!(handle_request("LEARN2\tきょうは\x1fキョウハ\x1f", &data), "OK\n");
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1fキョウハ\x1f"), "{response}");
+        // 内容が無ければエラー
+        assert!(handle_request("LEARN2", &data).starts_with("ERR\t"));
+        assert!(handle_request("LEARN2\t読みだけ", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convctxのかなが空ならエラー() {
+        let data = sample_data();
+        assert!(handle_request("CONVCTX\tはれ\x1f晴れ\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("CONVCTX\tはれ\x1f晴れ", &data).starts_with("ERR\t"));
+        assert!(handle_request("CONVCTX", &data).starts_with("ERR\t"));
     }
 
     #[test]

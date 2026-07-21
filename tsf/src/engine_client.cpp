@@ -229,17 +229,69 @@ std::vector<std::string> SplitFields(const std::string& text, char separator)
 
 } // namespace
 
-bool EngineClient::ConvertSegments(const std::wstring& kana,
+namespace {
+
+// 旧エンジンが新コマンド (CONVCTX/LEARN2) を拒否した応答か
+bool IsUnknownCommandError(const std::string& response)
+{
+    // main.rs の "ERR\t不明なコマンドです" (UTF-8)
+    return response.rfind("ERR\t\xE4\xB8\x8D\xE6\x98\x8E", 0) == 0;
+}
+
+} // namespace
+
+std::string EngineClient::BuildSegmentsRequest(const std::wstring& kana,
+                                               const ConversionContext& context,
+                                               const std::string& lengthsField) const
+{
+    std::string request;
+    if (context.Empty() || legacyEngine_) {
+        request = "CONVSEG\t" + WideToUtf8(kana);
+    } else {
+        request = "CONVCTX\t" + WideToUtf8(context.reading) + "\x1f" +
+                  WideToUtf8(context.surface) + "\t" + WideToUtf8(kana);
+    }
+    if (!lengthsField.empty()) {
+        request += "\t" + lengthsField;
+    }
+    return request + "\n";
+}
+
+bool EngineClient::TransactWithFallback(const std::string& request, const std::string& fallback,
+                                        bool live, std::string* response)
+{
+    // ライブ変換・予測は毎打鍵で呼ばれるため、エンジンの自動起動
+    // (最大2秒のブロック) はしない。未接続ならパイプを1回だけ開いてみる
+    if (live && pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return false;
+    }
+    const auto send = [&](const std::string& line) {
+        return live ? SendReceive(line, response) : Transact(line, response);
+    };
+    if (!send(request)) {
+        return false;
+    }
+    // 旧エンジンに新コマンドを拒否されたら、以後は旧コマンドだけを送る
+    if (request != fallback && IsUnknownCommandError(*response)) {
+        legacyEngine_ = true;
+        return send(fallback);
+    }
+    return true;
+}
+
+bool EngineClient::ConvertSegments(const std::wstring& kana, const ConversionContext& context,
                                    std::vector<ConversionSegment>* segments)
 {
     if (segments == nullptr || kana.empty()) {
         return false;
     }
-    return RequestSegments("CONVSEG\t" + WideToUtf8(kana) + "\n", segments);
+    return RequestSegments(BuildSegmentsRequest(kana, context, ""),
+                           "CONVSEG\t" + WideToUtf8(kana) + "\n", false, segments);
 }
 
 bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
                                         const std::vector<size_t>& lengths,
+                                        const ConversionContext& context,
                                         std::vector<ConversionSegment>* segments)
 {
     if (segments == nullptr || kana.empty() || lengths.empty()) {
@@ -252,33 +304,27 @@ bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
         }
         lengthsField += std::to_string(length);
     }
-    return RequestSegments("CONVSEG\t" + WideToUtf8(kana) + "\t" + lengthsField + "\n",
+    return RequestSegments(BuildSegmentsRequest(kana, context, lengthsField),
+                           "CONVSEG\t" + WideToUtf8(kana) + "\t" + lengthsField + "\n", false,
                            segments);
 }
 
 bool EngineClient::ConvertSegmentsLive(const std::wstring& kana,
+                                       const ConversionContext& context,
                                        std::vector<ConversionSegment>* segments)
 {
     if (segments == nullptr || kana.empty()) {
         return false;
     }
-    // 毎打鍵で呼ばれるため、エンジンの自動起動 (最大2秒のブロック) はしない。
-    // 未接続ならパイプを1回だけ開いてみて、開けなければ黙って諦める
-    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
-        return false;
-    }
-    std::string response;
-    if (!SendReceive("CONVSEG\t" + WideToUtf8(kana) + "\n", &response)) {
-        return false;
-    }
-    return ParseSegmentsResponse(std::move(response), segments);
+    return RequestSegments(BuildSegmentsRequest(kana, context, ""),
+                           "CONVSEG\t" + WideToUtf8(kana) + "\n", true, segments);
 }
 
-bool EngineClient::RequestSegments(const std::string& request,
-                                   std::vector<ConversionSegment>* segments)
+bool EngineClient::RequestSegments(const std::string& request, const std::string& fallback,
+                                   bool live, std::vector<ConversionSegment>* segments)
 {
     std::string response;
-    if (!Transact(request, &response)) {
+    if (!TransactWithFallback(request, fallback, live, &response)) {
         return false;
     }
     return ParseSegmentsResponse(std::move(response), segments);
@@ -405,22 +451,41 @@ bool EngineClient::Predict(const std::wstring& kana,
     return true;
 }
 
-bool EngineClient::Learn(const std::vector<std::pair<std::wstring, std::wstring>>& pairs)
+bool EngineClient::Learn(const std::vector<LearnEntry>& entries)
 {
-    std::string request = "LEARN";
+    // 文脈付きの文節が1つでもあれば LEARN2、無ければ従来の LEARN を送る
+    bool hasContext = false;
+    for (const LearnEntry& entry : entries) {
+        if (!entry.context.empty()) {
+            hasContext = true;
+            break;
+        }
+    }
+    const bool useContext = hasContext && !legacyEngine_;
+
+    std::string request = useContext ? "LEARN2" : "LEARN";
+    std::string fallback = "LEARN";
     size_t count = 0;
-    for (const auto& [reading, surface] : pairs) {
-        if (reading.empty() || surface.empty()) {
+    for (const LearnEntry& entry : entries) {
+        if (entry.reading.empty() || entry.surface.empty()) {
             continue;
         }
-        request += "\t" + WideToUtf8(reading) + "\x1f" + WideToUtf8(surface);
+        const std::string pair = "\t" + WideToUtf8(entry.reading) + "\x1f" +
+                                 WideToUtf8(entry.surface);
+        request += pair;
+        if (useContext) {
+            request += "\x1f" + WideToUtf8(entry.context);
+        }
+        fallback += pair;
         ++count;
     }
     if (count == 0) {
         return false;
     }
     request += "\n";
+    fallback += "\n";
 
     std::string response;
-    return Transact(request, &response) && response.rfind("OK", 0) == 0;
+    return TransactWithFallback(request, fallback, false, &response) &&
+           response.rfind("OK", 0) == 0;
 }

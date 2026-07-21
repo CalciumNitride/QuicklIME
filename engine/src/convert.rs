@@ -41,18 +41,75 @@ struct PathWord {
     reading: String,
     surface: String,
     left_id: u16,
+    right_id: u16,
 }
 
-/// かな文字列を文節列へ変換する
+/// 前文脈 (直前に確定した文節の読みと表記)。
+/// ビタビの文頭文脈IDの復元に使い、確定直後の変換で連接コストが働くようにする
+pub struct Context {
+    pub reading: String,
+    pub surface: String,
+}
+
+/// 前文脈から、ビタビの文頭に使う文脈ID (直前語の right_id) を復元する。
+/// 復元できなければ 0 (BOS = 前文脈なしの従来動作)
+pub fn resolve_context_id(
+    ctx: &Context,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> u16 {
+    if ctx.reading.is_empty() || ctx.surface.is_empty() {
+        return 0;
+    }
+    // 前文脈を変換し直し、経路の表記が確定表記と一致すれば末尾語の right_id を使う
+    if let Some(path) = viterbi_path(&ctx.reading, dict, user, matrix, functional, 0) {
+        let joined: String = path.iter().map(|w| w.surface.as_str()).collect();
+        if joined == ctx.surface {
+            return path.last().map_or(0, |w| w.right_id);
+        }
+    }
+    // 経路と違う表記が確定されていた場合: 読みの末尾を後方最長一致で辞書引きし、
+    // 確定表記の末尾とも一致する最小コストのエントリの right_id を使う
+    // (文節末尾は助詞・助動詞・活用語尾であることが多く、これでほぼ拾える)
+    let chars: Vec<char> = ctx.reading.chars().collect();
+    for len in (1..=chars.len().min(MAX_READING_CHARS)).rev() {
+        let tail: String = chars[chars.len() - len..].iter().collect();
+        let mut best: Option<(i16, u16)> = None;
+        let hits = dict
+            .lookup(&tail)
+            .iter()
+            .map(|e| (e.cost, e.surface.as_str(), e.right_id))
+            .chain(
+                user.lookup_words(&tail)
+                    .into_iter()
+                    .map(|w| (w.cost, w.surface.as_str(), w.right_id)),
+            );
+        for (cost, surface, right_id) in hits {
+            if ctx.surface.ends_with(surface) && best.is_none_or(|(c, _)| cost < c) {
+                best = Some((cost, right_id));
+            }
+        }
+        if let Some((_, right_id)) = best {
+            return right_id;
+        }
+    }
+    0
+}
+
+/// かな文字列を文節列へ変換する。ctx は直前に確定した文節 (無ければ None)
 pub fn convert_segments(
     kana: &str,
+    ctx: Option<&Context>,
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Vec<Segment> {
-    let Some(path) = viterbi_path(kana, dict, user, matrix, functional) else {
+    let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
+    let Some(path) = viterbi_path(kana, dict, user, matrix, functional, ctx_id) else {
         return Vec::new();
     };
     // 辞書の数字は1桁単位のため、連続する数字を1語にまとめてから文節を作る
@@ -68,10 +125,16 @@ pub fn convert_segments(
         }
     }
 
-    groups
-        .iter()
-        .map(|group| segment_from_group(group, dict, user, learning))
-        .collect()
+    // 文脈学習は「直前文節の表記」をキーに引く。先頭文節は前文脈の表記、
+    // 2文節目以降は直前文節の先頭候補 (既定のまま確定する流れと自己整合する)
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
+    for group in &groups {
+        let segment = segment_from_group(group, dict, user, learning, prev_surface.as_deref());
+        prev_surface = Some(segment.candidates[0].clone());
+        segments.push(segment);
+    }
+    segments
 }
 
 /// 数字 (半角・全角) かどうか
@@ -90,6 +153,7 @@ fn merge_digit_runs(path: Vec<PathWord>) -> Vec<PathWord> {
             Some(last) if is_digits && last.reading.chars().all(is_digit_char) => {
                 last.reading.push_str(&word.reading);
                 last.surface.push_str(&word.surface);
+                last.right_id = word.right_id;
             }
             _ => result.push(word),
         }
@@ -98,10 +162,13 @@ fn merge_digit_runs(path: Vec<PathWord>) -> Vec<PathWord> {
 }
 
 /// 文節境界 (文字数) を指定してかな文字列を変換する (Shift+←→ での文節伸縮用)。
-/// lengths の合計が入力の文字数と一致しない場合は空を返す
+/// lengths の合計が入力の文字数と一致しない場合は空を返す。
+/// ctx は直前に確定した文節。文節ごとに独立ビタビのため、2文節目以降は
+/// 直前文節の先頭候補を文脈として連鎖させる
 pub fn convert_segments_fixed(
     kana: &str,
     lengths: &[usize],
+    ctx: Option<&Context>,
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
@@ -115,6 +182,8 @@ pub fn convert_segments_fixed(
         return Vec::new();
     }
 
+    let mut ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
+    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
     let mut segments = Vec::new();
     let mut begin = 0;
     for &length in lengths {
@@ -122,14 +191,23 @@ pub fn convert_segments_fixed(
         begin += length;
 
         // 文節の範囲内だけで最小コスト経路を求める
-        let group = viterbi_path(&reading, dict, user, matrix, functional).unwrap_or_else(|| {
-            vec![PathWord {
-                reading: reading.clone(),
-                surface: reading.clone(),
-                left_id: DEFAULT_NOUN_ID,
-            }]
-        });
-        segments.push(segment_from_group(&group, dict, user, learning));
+        let group =
+            viterbi_path(&reading, dict, user, matrix, functional, ctx_id).unwrap_or_else(|| {
+                vec![PathWord {
+                    reading: reading.clone(),
+                    surface: reading.clone(),
+                    left_id: DEFAULT_NOUN_ID,
+                    right_id: DEFAULT_NOUN_ID,
+                }]
+            });
+        let segment = segment_from_group(&group, dict, user, learning, prev_surface.as_deref());
+        let next_ctx = Context {
+            reading: segment.reading.clone(),
+            surface: segment.candidates[0].clone(),
+        };
+        ctx_id = resolve_context_id(&next_ctx, dict, user, matrix, functional);
+        prev_surface = Some(next_ctx.surface);
+        segments.push(segment);
     }
     segments
 }
@@ -162,6 +240,7 @@ fn segment_from_group(
     dict: &Dictionary,
     user: &UserDict,
     learning: &LearningStore,
+    learn_ctx: Option<&str>,
 ) -> Segment {
     let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
     let best: String = group.iter().map(|w| w.surface.as_str()).collect();
@@ -234,6 +313,14 @@ fn segment_from_group(
         result.retain(|s| s != learned);
         result.insert(0, learned.to_string());
     }
+    // 前文脈に一致する文脈学習があればさらに先頭へ (最優先)。
+    // 「服を|着る」「紙を|切る」のような同音異義語の使い分けがここで効く
+    if let Some(ctx) = learn_ctx {
+        if let Some(learned) = learning.get_ctx(ctx, &reading) {
+            result.retain(|s| s != learned);
+            result.insert(0, learned.to_string());
+        }
+    }
     Segment { reading, candidates: result }
 }
 
@@ -295,7 +382,7 @@ pub fn convert_sentence(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
 ) -> Option<String> {
-    let path = viterbi_path(kana, dict, user, matrix, functional)?;
+    let path = viterbi_path(kana, dict, user, matrix, functional, 0)?;
     Some(path.into_iter().map(|w| w.surface).collect())
 }
 
@@ -314,13 +401,15 @@ struct Node {
     best_prev: usize,
 }
 
-/// ラティスを構築して最小コスト経路の単語列を返す
+/// ラティスを構築して最小コスト経路の単語列を返す。
+/// left_context_id は文頭の左文脈 (直前に確定した語の right_id)。0 = 前文脈なし (BOS)
 fn viterbi_path(
     kana: &str,
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
+    left_context_id: u16,
 ) -> Option<Vec<PathWord>> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
@@ -328,12 +417,13 @@ fn viterbi_path(
         return None;
     }
 
-    // nodes[0] は BOS (文頭)。文脈IDは 0 (BOS/EOS)
+    // nodes[0] は BOS (文頭)。right_id に前文脈の文脈IDを入れると、
+    // 先頭語への連接コストが「直前確定語 → 先頭語」の値になる
     let mut nodes: Vec<Node> = vec![Node {
         start: 0,
         reading: String::new(),
         left_id: 0,
-        right_id: 0,
+        right_id: left_context_id,
         word_cost: 0,
         surface: String::new(),
         best_cost: 0,
@@ -458,6 +548,7 @@ fn viterbi_path(
                 reading: std::mem::take(&mut nodes[i].reading),
                 surface: std::mem::take(&mut nodes[i].surface),
                 left_id: nodes[i].left_id,
+                right_id: nodes[i].right_id,
             })
             .collect(),
     )
@@ -527,6 +618,7 @@ mod tests {
     fn 付属語が前の文節にまとまる() {
         let segments = convert_segments(
             "きょうははれです",
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -543,6 +635,7 @@ mod tests {
     fn 文節候補にカタカナとひらがなを含む() {
         let segments = convert_segments(
             "きょうは",
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -565,6 +658,7 @@ mod tests {
         .unwrap();
         let segments = convert_segments(
             "きょう",
+            None,
             &dict,
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -593,6 +687,7 @@ mod tests {
     fn 短縮よみが文節候補の2番目に入る() {
         let segments = convert_segments(
             "きょう",
+            None,
             &sample_dict(),
             &user_with_shortcut("きょう", "mail@example.com"),
             &ConnectionMatrix::empty(),
@@ -611,6 +706,7 @@ mod tests {
         learning.record("きょう", "京");
         let segments = convert_segments(
             "きょう",
+            None,
             &sample_dict(),
             &user_with_shortcut("きょう", "mail@example.com"),
             &ConnectionMatrix::empty(),
@@ -653,6 +749,7 @@ mod tests {
         user.load_from("きょう\t匡\t名\n".as_bytes(), &FunctionalIds::empty());
         let segments = convert_segments(
             "きょう",
+            None,
             &sample_dict(),
             &user,
             &ConnectionMatrix::empty(),
@@ -669,6 +766,7 @@ mod tests {
     fn 品詞表が無ければ単語ごとに文節になる() {
         let segments = convert_segments(
             "きょうは",
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -718,6 +816,7 @@ mod tests {
             &FunctionalIds::empty()).is_none());
         assert!(convert_segments(
             "",
+            None,
             &Dictionary::empty(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -731,6 +830,7 @@ mod tests {
     fn 先頭語を入れ替えた文節候補が出る() {
         let segments = convert_segments(
             "きょうは",
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -766,6 +866,7 @@ mod tests {
         // 入れ替え候補 (死0た...) より前に来る
         let segments = convert_segments(
             "した",
+            None,
             &dict_with_many_first_word_homophones(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -784,6 +885,7 @@ mod tests {
         // 「し」のエントリが MAX_DICT_CANDIDATES 以上あっても「下」が候補に残る
         let segments = convert_segments(
             "した",
+            None,
             &dict_with_many_first_word_homophones(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -800,7 +902,7 @@ mod tests {
 
         // 4,4 なら通常の文節分割と同じ
         let segments = convert_segments_fixed(
-            "きょうははれです", &[4, 4], &dict, &no_user(), &ConnectionMatrix::empty(),
+            "きょうははれです", &[4, 4], None, &dict, &no_user(), &ConnectionMatrix::empty(),
             &sample_functional(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "はれです"]);
@@ -808,7 +910,7 @@ mod tests {
 
         // 3,5 なら「きょう / ははれです」で各範囲内を再変換する
         let segments = convert_segments_fixed(
-            "きょうははれです", &[3, 5], &dict, &no_user(), &ConnectionMatrix::empty(),
+            "きょうははれです", &[3, 5], None, &dict, &no_user(), &ConnectionMatrix::empty(),
             &sample_functional(), &learning);
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょう", "ははれです"]);
@@ -821,6 +923,7 @@ mod tests {
         let empty = convert_segments_fixed(
             "きょうは",
             &[3, 3],
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -836,6 +939,7 @@ mod tests {
         learning.record("きょうは", "京は");
         let segments = convert_segments(
             "きょうは",
+            None,
             &sample_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -884,6 +988,7 @@ mod tests {
     fn 連続する数字が助数詞ごと1文節にまとまる() {
         let segments = convert_segments(
             "12じ",
+            None,
             &digit_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -910,6 +1015,7 @@ mod tests {
         dict.finalize();
         let segments = convert_segments(
             "12じ",
+            None,
             &dict,
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -926,6 +1032,7 @@ mod tests {
         // 全角数字は辞書に無く未知語1文字ノードになるが、読みベースの判定で結合される
         let segments = convert_segments(
             "１２じ",
+            None,
             &digit_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -943,6 +1050,7 @@ mod tests {
         let segments = convert_segments_fixed(
             "12",
             &[1, 1],
+            None,
             &digit_dict(),
             &no_user(),
             &ConnectionMatrix::empty(),
@@ -951,6 +1059,121 @@ mod tests {
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["1", "2"]);
+    }
+
+    #[test]
+    fn 前文脈からビタビ一致で文脈idを復元する() {
+        // 「きょうは」→ 今日+は が経路と一致するので、末尾語「は」の right_id (2) が返る
+        let ctx = Context { reading: "きょうは".to_string(), surface: "今日は".to_string() };
+        let id = resolve_context_id(
+            &ctx, &sample_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(id, 2);
+    }
+
+    #[test]
+    fn 経路と違う表記でも後方最長一致で文脈idを復元する() {
+        // 「京は」は経路 (今日は) と一致しないが、末尾の「は」が辞書と表記一致する
+        let ctx = Context { reading: "きょうは".to_string(), surface: "京は".to_string() };
+        let id = resolve_context_id(
+            &ctx, &sample_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(id, 2);
+    }
+
+    #[test]
+    fn 復元できない前文脈は文脈id0になる() {
+        let ctx = Context { reading: "xyz".to_string(), surface: "XYZ".to_string() };
+        let id = resolve_context_id(
+            &ctx, &sample_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(id, 0);
+    }
+
+    /// 前文脈テスト用の辞書と連接行列。
+    /// 読み「あ」に同コストの2候補 (亜=id1, 阿=id2)、前文脈用に「を」(id3)
+    fn context_dict_and_matrix() -> (Dictionary, ConnectionMatrix) {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "あ\t1\t1\t100\t亜\nあ\t2\t2\t100\t阿\nを\t3\t3\t100\tを\n".as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        // 4x4 行列: BOS(右0) からは 亜(左1) が高い → 阿が勝つ。
+        // を(右3) からは 阿(左2) が高い → 亜が勝つ
+        let matrix = ConnectionMatrix::parse(
+            "4\n0\n1000\n0\n0\n\
+             0\n0\n0\n0\n\
+             0\n0\n0\n0\n\
+             0\n0\n1000\n0\n",
+        )
+        .unwrap();
+        (dict, matrix)
+    }
+
+    #[test]
+    fn 前文脈の連接コストで先頭語が入れ替わる() {
+        let (dict, matrix) = context_dict_and_matrix();
+        let learning = LearningStore::in_memory();
+
+        // 前文脈なし: BOS からの連接コストで「阿」
+        let segments = convert_segments(
+            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+        assert_eq!(segments[0].candidates[0], "阿");
+
+        // 前文脈「を」あり: を(右3) → 亜(左1) の連接が安く「亜」
+        let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
+        let segments = convert_segments(
+            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+        assert_eq!(segments[0].candidates[0], "亜");
+    }
+
+    #[test]
+    fn 文脈学習が文脈なし学習より優先される() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("きょう", "今日");
+        learning.record_ctx("晴れ", "きょう", "京");
+        let dict = sample_dict();
+
+        // 前文脈なし: 文脈なし学習の「今日」が先頭
+        let segments = convert_segments(
+            "きょう", None, &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(segments[0].candidates[0], "今日");
+
+        // 前文脈「晴れ」: 文脈学習の「京」が最優先
+        let ctx = Context { reading: "はれ".to_string(), surface: "晴れ".to_string() };
+        let segments = convert_segments(
+            "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(segments[0].candidates[0], "京");
+        assert_eq!(segments[0].candidates[1], "今日");
+
+        // 一致しない前文脈では文脈なし学習に戻る
+        let ctx = Context { reading: "です".to_string(), surface: "です".to_string() };
+        let segments = convert_segments(
+            "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(segments[0].candidates[0], "今日");
+    }
+
+    #[test]
+    fn 二文節目の文脈学習は直前文節の先頭候補で引く() {
+        // 「きょうは|はれです」の2文節目に、文脈「今日は」付きの学習を仕込む
+        let mut learning = LearningStore::in_memory();
+        learning.record_ctx("今日は", "はれです", "ハレです");
+        let segments = convert_segments(
+            "きょうははれです", None, &sample_dict(), &no_user(),
+            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+        assert_eq!(segments[0].candidates[0], "今日は");
+        assert_eq!(segments[1].candidates[0], "ハレです");
+    }
+
+    #[test]
+    fn 文節境界固定でも前文脈が効く() {
+        let (dict, matrix) = context_dict_and_matrix();
+        let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
+        let segments = convert_segments_fixed(
+            "あ", &[1], Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(),
+            &LearningStore::in_memory());
+        assert_eq!(segments[0].candidates[0], "亜");
     }
 
     #[test]
