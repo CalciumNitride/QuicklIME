@@ -47,22 +47,27 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 
 登録後、Win+Space で「QuicklIME」を選択して使用する。
 
-## 開発版の登録と解除 (要管理者権限)
+## 開発版 DLL の切替とインストール版の更新
 
 `scripts\dev-deploy.ps1` でビルドから反映までをまとめて実行できる。
 
 | コマンド | 動作 |
 |---|---|
 | `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー) |
-| `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 |
-| `scripts\dev-deploy.ps1 -Dll -Configuration Release` | DLL を Release ビルドで反映したい場合 |
-| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す |
+| `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 (要管理者権限) |
+| `scripts\dev-deploy.ps1 -Dll -Install` | エンジン反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (管理者権限・再起動とも不要) |
+| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限) |
 
-DLL は常用インストール版を直接上書きできない (ロード中のプロセスが多いため) ので、
-`-Dll` は開発版 (`tsf\build\<Configuration>\QuicklIME.dll`) への regsvr32 切替という形で
-反映する。確認が終わったら `-Restore` で必ずインストール版に戻すこと。
+DLL の反映方法は用途で使い分ける。
 
-手動で行う場合:
+- **`-Dll`** (開発版切替): `tsf\build\Debug\QuicklIME.dll` に regsvr32 で排他的に切り替える。
+  常用インストール版には触れない。確認が終わったら `-Restore` で必ず戻すこと
+- **`-Dll -Install`** (インストール版更新): 常用インストール版の DLL 自体を新しいビルドに
+  差し替える。ロード中の DLL を `.old-<日時>` にリネーム退避してから同じパスに新 DLL を
+  コピーするので、レジストリ再登録も PC 再起動も不要 (インストーラでの更新は
+  ロード中だと `restartreplace` により再起動待ちになる)。32bit 版 (`x86\QuicklIME.dll`) は対象外
+
+手動で行う場合 (開発版切替):
 
 ```
 regsvr32 tsf\build\Debug\QuicklIME.dll      # 登録

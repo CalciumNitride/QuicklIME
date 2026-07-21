@@ -6,11 +6,17 @@
 #   3. C:\Program Files\QuicklIME へコピー (常用インストール版を直接更新)
 #   4. 次の変換操作で TSF が自動起動
 #
-# -Dll 指定時: 上記に加えて TSF DLL (64bit) をビルドし、
-#              開発版 (tsf\build\<Configuration>\QuicklIME.dll) に regsvr32 で切り替える。
-#              常用インストール版の DLL 自体は直接上書きしない
-#              (ロード中のプロセスが多く、事実上上書きできないため)。
-#              要管理者権限。動作確認が終わったら -Restore でインストール版に戻すこと
+# -Dll 指定時: 上記に加えて TSF DLL (64bit) をビルドする。反映方法は2通り:
+#   - 既定 (Configuration Debug): 開発版 (tsf\build\Debug\QuicklIME.dll) に
+#     regsvr32 で排他的に切り替える。常用インストール版には触れない。
+#     要管理者権限。動作確認が終わったら -Restore でインストール版に戻すこと
+#   - -Install 併用時 (Configuration 既定 Release): 常用インストール版
+#     (%ProgramFiles%\QuicklIME\QuicklIME.dll) を直接更新する。regsvr32 は使わず、
+#     ロード中の DLL を .old-<日時> にリネーム退避してから同じパスに新 DLL を
+#     コピーする (パスは変わらないためレジストリ再登録は不要。インストーラの
+#     restartreplace と違い再起動不要)。管理者権限は不要
+#     (Program Files への書き込みが通常権限で成功する環境の場合)。
+#     32bit 版 (x86\QuicklIME.dll) はこのスクリプトの対象外
 #
 # -Restore 指定時: 開発版からインストール版 (Program Files) の DLL に regsvr32 で戻すだけ。
 #                   他の処理は行わない
@@ -21,8 +27,9 @@
 # 使用例:
 #   scripts\dev-deploy.ps1                       # エンジンのみ常用環境へ反映
 #   scripts\dev-deploy.ps1 -Dll                  # エンジン + DLL (Debug) を反映、DLL は開発版へ切替
+#   scripts\dev-deploy.ps1 -Dll -Install         # エンジン + DLL (Release) を常用インストール版へ直接反映
 #   scripts\dev-deploy.ps1 -Dll -Configuration Release
-#   scripts\dev-deploy.ps1 -Restore              # DLL をインストール版に戻す
+#   scripts\dev-deploy.ps1 -Restore              # 開発版からインストール版の DLL に戻す
 
 [CmdletBinding(DefaultParameterSetName = 'Deploy')]
 param(
@@ -30,14 +37,24 @@ param(
     [switch]$Dll,
 
     [Parameter(ParameterSetName = 'Deploy')]
+    [switch]$Install,
+
+    [Parameter(ParameterSetName = 'Deploy')]
     [ValidateSet('Debug', 'Release')]
-    [string]$Configuration = 'Debug',
+    [string]$Configuration,
 
     [Parameter(ParameterSetName = 'Restore', Mandatory)]
     [switch]$Restore
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($Install -and -not $Dll) {
+    throw '-Install は -Dll と併用してください (TSF DLL をビルドしないと反映できません)'
+}
+if (-not $Configuration) {
+    $Configuration = if ($Install) { 'Release' } else { 'Debug' }
+}
 
 $root = Split-Path -Parent $PSScriptRoot
 $installDir = "$env:ProgramFiles\QuicklIME"
@@ -61,8 +78,10 @@ if ($Restore) {
     exit 0
 }
 
-# -Dll を使うなら、時間のかかるビルドに入る前に権限を確認しておく
-if ($Dll -and -not (Test-Admin)) {
+# -Dll で regsvr32 を使う (開発版切替) 場合のみ、時間のかかるビルドに入る前に権限を
+# 確認しておく。-Install (常用インストール版への直接反映) は regsvr32 を使わないため
+# 管理者権限は不要
+if ($Dll -and -not $Install -and -not (Test-Admin)) {
     throw 'regsvr32 には管理者権限が必要です。管理者権限の PowerShell で実行し直してください'
 }
 
@@ -107,14 +126,35 @@ if ($Dll) {
         if ($LASTEXITCODE -ne 0) { throw 'DLL のビルドに失敗しました (退避後も失敗)' }
     }
 
-    Write-Host '=== 開発版 DLL に切替 (regsvr32)' -ForegroundColor Cyan
-    & regsvr32 /s $dllPath
-    if ($LASTEXITCODE -ne 0) { throw 'regsvr32 に失敗しました' }
+    if ($Install) {
+        # ---- 常用インストール版を直接更新 ----
+        # regsvr32 は使わない。InprocServer32 は既に $installDir\QuicklIME.dll を指して
+        # いるので、そのパスの実体を差し替えるだけで新規プロセスから新 DLL が有効になる
+        # (ロード中でもリネームは可能。.claude/CLAUDE.md 記載の対策と同じ原理)
+        Write-Host '=== インストール版 DLL を更新' -ForegroundColor Cyan
+        $installedDll = "$installDir\QuicklIME.dll"
+        if (Test-Path $installedDll) {
+            $backup = "$installedDll.old-$(Get-Date -Format 'yyyyMMddHHmmss')"
+            Move-Item $installedDll $backup -Force
+            Write-Host "旧 DLL を退避: $backup" -ForegroundColor DarkGray
+        }
+        Copy-Item $dllPath $installedDll -Force
 
-    Write-Host ''
-    Write-Host '開発版 DLL に切り替わりました。既に起動中のアプリには反映されません。' -ForegroundColor Green
-    Write-Host 'メモ帳などで確認する場合は taskkill /IM Notepad.exe /F してから開き直してください。' -ForegroundColor Green
-    Write-Host '確認が終わったら scripts\dev-deploy.ps1 -Restore でインストール版に戻してください。' -ForegroundColor Green
+        Write-Host ''
+        Write-Host 'インストール版 DLL を更新しました。既に起動中のアプリには反映されません。' -ForegroundColor Green
+        Write-Host 'メモ帳などで確認する場合は taskkill /IM Notepad.exe /F してから開き直してください。' -ForegroundColor Green
+        Write-Host '32bit 版 (x86\QuicklIME.dll) はこのスクリプトの対象外です。' -ForegroundColor DarkYellow
+    } else {
+        # ---- 開発版への regsvr32 切替 ----
+        Write-Host '=== 開発版 DLL に切替 (regsvr32)' -ForegroundColor Cyan
+        & regsvr32 /s $dllPath
+        if ($LASTEXITCODE -ne 0) { throw 'regsvr32 に失敗しました' }
+
+        Write-Host ''
+        Write-Host '開発版 DLL に切り替わりました。既に起動中のアプリには反映されません。' -ForegroundColor Green
+        Write-Host 'メモ帳などで確認する場合は taskkill /IM Notepad.exe /F してから開き直してください。' -ForegroundColor Green
+        Write-Host '確認が終わったら scripts\dev-deploy.ps1 -Restore でインストール版に戻してください。' -ForegroundColor Green
+    }
 }
 
 Write-Host ''
