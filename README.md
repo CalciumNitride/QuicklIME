@@ -11,7 +11,7 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](docs/protocol.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
-| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映) |
+| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除) |
 
 ## 開発環境
 
