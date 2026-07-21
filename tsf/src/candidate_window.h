@@ -23,6 +23,7 @@ public:
     void SetSelection(size_t selection);
 
     // 描画フォントを差し替える (設定変更の反映用)。height は px 単位の文字高。
+    // 候補番号用フォントは候補文字列より一回り小さいサイズで内部生成する。
     // 作成に失敗したときは現在のフォントを維持する
     void SetFont(const std::wstring& face, int height);
 
@@ -38,8 +39,11 @@ private:
     void Paint(HDC hdc);
 
     HWND hwnd_;
-    HFONT font_;
+    HFONT font_;        // 候補文字列用フォント
+    HFONT numberFont_;  // 候補番号用フォント (候補文字列より控えめな小さいサイズ)
     std::vector<std::wstring> items_;
     size_t selection_;
     int lineHeight_;
+    int numberColumnWidth_;  // 番号列の幅 (px)。kPageSize<=9 のため番号は常に1桁
+    int numberFontHeight_;   // 番号フォントの文字高 (px、行内の垂直中央揃えに使う)
 };
