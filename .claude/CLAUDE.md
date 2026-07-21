@@ -42,4 +42,16 @@
 ## エンジン検証の隔離
 - エンジン単体の動作検証は、環境変数で実ユーザのデータ・常用エンジンから隔離して行う:
   `QUICKLIME_PIPE_NAME` (パイプ名)、`QUICKLIME_DICT_DIR` (辞書)、
-  `QUICKLIME_LEARN_FILE` (学習)、`QUICKLIME_USER_DICT_FILE` (ユーザ辞書)
+  `QUICKLIME_LEARN_FILE` (学習)、`QUICKLIME_USER_DICT_FILE` (ユーザ辞書)、
+  `QUICKLIME_CONFIG_FILE` (設定。エンジンと TSF 層の両方が読む)、
+  `QUICKLIME_ROMAJI_FILE` (ローマ字テーブル。TSF 層のみ)
+
+## 開発版 DLL とインストール版 DLL の排他切替
+- `tsf/build/Debug/QuicklIME.dll` (開発版) と `%ProgramFiles%\QuicklIME\QuicklIME.dll`
+  (インストール版) は同じ CLSID で登録されている。DLL 自身のロード元パスを
+  `InprocServer32` に書き込む実装 (tsf/src/registry.cpp) のため、後から
+  `regsvr32` した方に排他的に切り替わる (両方が同時に有効にはならない)
+- 切替は新規に起動したプロセスにしか効かない。ロード済みのプロセスは切替前の DLL を
+  使い続ける (Windows 11 のメモ帳は `taskkill /IM Notepad.exe /F` で終了してから開き直す)
+- `scripts\dev-deploy.ps1` (`-Dll` で開発版へ切替、`-Restore` でインストール版へ戻す) で
+  ビルド〜切替をまとめて行える。詳細は README.md 「開発版の登録と解除」

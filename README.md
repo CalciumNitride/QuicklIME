@@ -9,8 +9,9 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 | `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL)。フェーズ1で作成 |
 | `engine/` | 変換エンジン (Rust / 常駐別プロセス) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
-| `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md) |
+| `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](docs/protocol.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
+| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映) |
 
 ## 開発環境
 
@@ -21,7 +22,12 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 ## ビルド
 
 - エンジン: `cd engine && cargo build`
-- TSF層 (VS付属のCMakeを使用):
+  (quicklime-engine.exe 本体に加え、`src/bin/` の quicklime-config.exe /
+  quicklime-regword.exe も一緒にビルドされる)
+- エンジンのテスト: `cd engine && cargo test`
+- エンジン単体の動作確認 (起動中のエンジンに接続して CONVERT/CONVSEG を試す):
+  `cargo run --example query -- <読み> [<読み>...]`
+- TSF層 (VS付属のCMakeを使用、64bit):
   ```
   cmake -S tsf -B tsf/build -G "Visual Studio 17 2022" -A x64
   cmake --build tsf/build --config Debug
@@ -42,6 +48,21 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 登録後、Win+Space で「QuicklIME」を選択して使用する。
 
 ## 開発版の登録と解除 (要管理者権限)
+
+`scripts\dev-deploy.ps1` でビルドから反映までをまとめて実行できる。
+
+| コマンド | 動作 |
+|---|---|
+| `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー) |
+| `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 |
+| `scripts\dev-deploy.ps1 -Dll -Configuration Release` | DLL を Release ビルドで反映したい場合 |
+| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す |
+
+DLL は常用インストール版を直接上書きできない (ロード中のプロセスが多いため) ので、
+`-Dll` は開発版 (`tsf\build\<Configuration>\QuicklIME.dll`) への regsvr32 切替という形で
+反映する。確認が終わったら `-Restore` で必ずインストール版に戻すこと。
+
+手動で行う場合:
 
 ```
 regsvr32 tsf\build\Debug\QuicklIME.dll      # 登録
