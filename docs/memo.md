@@ -1,10 +1,18 @@
 # 参考リンク
 azookey [text](https://azookey.com)
 
+# 常用時の確認ポイント
+5. 普段の文章をいくつか打って、これまで正しく分割されていた文が不自然に繋がっていないか確認 (もし過剰にまとまる例があれば SEGMENT_PENALTY=1000 を下げて調整できるので教えてください)
+
+## 気になった点
 
 # アイデア
 - アプリケーションごとの学習
 - モードレス入力
+- ローマ字テーブル編集を設定ウィンドウから
+- 選択ウィンドウのUI改善
+- 文脈予測
+- 
 
 # エンジン終了
 
@@ -45,3 +53,10 @@ regsvr32 "%ProgramFiles%\QuicklIME\QuicklIME.dll"
 エンジンの探索順 (FindExePath) は「DLL と同じフォルダ → 親 → engine/target/release →
 debug」なので、開発版 DLL でもインストール先ではなく開発ツリーのエンジンが起動する点に注意
 (逆にインストール版 DLL は %ProgramFiles% のエンジン + dict を使う)。
+
+# 常用環境への変更の適用
+ビルド後、
+## 常用エンジンを終了
+taskkill /IM quicklime-engine.exe /F
+## 新しいexeをコピー
+copy engine\target\release\quicklime-engine.exe "C:\Program Files\QuicklIME\"
