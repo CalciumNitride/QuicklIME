@@ -431,6 +431,27 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 "ERR\t記録する内容がありません\n".to_string()
             }
         }
+        Some("LEARNSEG") => {
+            // LEARNSEG\t読み\t読み... : 文節境界の学習。人が文節伸縮で分割を直して
+            // 確定したときだけ送られるため、届いた文節読みはそのまま境界として信頼する
+            if !data.config.lock().expect("config lock").learning {
+                return "OK\n".to_string();
+            }
+            let mut learning = data.learning.lock().expect("learning lock");
+            let mut count = 0;
+            for reading in fields {
+                if reading.is_empty() {
+                    continue;
+                }
+                learning.record_boundary(reading);
+                count += 1;
+            }
+            if count > 0 {
+                "OK\n".to_string()
+            } else {
+                "ERR\t記録する内容がありません\n".to_string()
+            }
+        }
         Some("ADDWORD") => {
             // ADDWORD\t読み\t表記\t品詞 : ユーザ辞書へ1件登録する
             // (userdict.tsv へ追記し、メモリへ即時反映する)
@@ -755,6 +776,30 @@ mod tests {
         let data = sample_data();
         data.config.lock().unwrap().suggest = false;
         assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\n");
+    }
+
+    #[test]
+    fn learnsegで文節境界を記録する() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARNSEG\tきょうは\tはれ", &data), "OK\n");
+        let learning = data.learning.lock().unwrap();
+        assert!(learning.is_boundary("きょうは"));
+        assert!(learning.is_boundary("はれ"));
+    }
+
+    #[test]
+    fn learnsegの内容が空ならエラー() {
+        let data = empty_data();
+        assert!(handle_request("LEARNSEG", &data).starts_with("ERR\t"));
+        assert!(handle_request("LEARNSEG\t", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn 学習無効ならlearnsegは記録しない() {
+        let data = empty_data();
+        data.config.lock().unwrap().learning = false;
+        assert_eq!(handle_request("LEARNSEG\tきょうは", &data), "OK\n");
+        assert!(!data.learning.lock().unwrap().is_boundary("きょうは"));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // 全文一括の候補 (candidates) も互換のため残している。
 
 use crate::dict::Dictionary;
-use crate::learn::LearningStore;
+use crate::learn::{LearningStore, MIN_BOUNDARY_CHARS};
 use crate::matrix::ConnectionMatrix;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
 use crate::userdict::UserDict;
@@ -27,6 +27,12 @@ const UNKNOWN_WORD_COST: i32 = 12000;
 /// 細切れ経路が複合語 (聞き慣れ) より安くなるため、文節数が少ない経路を優先させる。
 /// 値は実辞書の回帰コーパスで調整した (「ききなれない」は自立語1語差で約800必要)
 const SEGMENT_PENALTY: i32 = 1000;
+
+/// 学習済み文節境界による文節ペナルティの増減。
+/// 境界の開始位置では減らして切りやすく、境界の内部では増やして切りにくくする。
+/// SEGMENT_PENALTY より小さくして、辞書・連接コストを覆すほど強くしない
+/// (学習した境界と紛らわしい別の文が、常に学習側へ引きずられるのを避ける)
+const BOUNDARY_BONUS: i32 = 500;
 
 /// 変換結果の1文節
 pub struct Segment {
@@ -64,7 +70,7 @@ pub fn resolve_context_id(
         return 0;
     }
     // 前文脈を変換し直し、経路の表記が確定表記と一致すれば末尾語の right_id を使う
-    if let Some(path) = viterbi_path(&ctx.reading, dict, user, matrix, functional, 0) {
+    if let Some(path) = viterbi_path(&ctx.reading, dict, user, matrix, functional, 0, None) {
         let joined: String = path.iter().map(|w| w.surface.as_str()).collect();
         if joined == ctx.surface {
             return path.last().map_or(0, |w| w.right_id);
@@ -109,7 +115,8 @@ pub fn convert_segments(
     learning: &LearningStore,
 ) -> Vec<Segment> {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
-    let Some(path) = viterbi_path(kana, dict, user, matrix, functional, ctx_id) else {
+    let Some(path) = viterbi_path(kana, dict, user, matrix, functional, ctx_id, Some(learning))
+    else {
         return Vec::new();
     };
     // 辞書の数字は1桁単位のため、連続する数字を1語にまとめてから文節を作る
@@ -192,7 +199,7 @@ pub fn convert_segments_fixed(
 
         // 文節の範囲内だけで最小コスト経路を求める
         let group =
-            viterbi_path(&reading, dict, user, matrix, functional, ctx_id).unwrap_or_else(|| {
+            viterbi_path(&reading, dict, user, matrix, functional, ctx_id, None).unwrap_or_else(|| {
                 vec![PathWord {
                     reading: reading.clone(),
                     surface: reading.clone(),
@@ -382,7 +389,7 @@ pub fn convert_sentence(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
 ) -> Option<String> {
-    let path = viterbi_path(kana, dict, user, matrix, functional, 0)?;
+    let path = viterbi_path(kana, dict, user, matrix, functional, 0, None)?;
     Some(path.into_iter().map(|w| w.surface).collect())
 }
 
@@ -401,8 +408,54 @@ struct Node {
     best_prev: usize,
 }
 
+/// 学習済みの文節境界から、位置ごとの文節ペナルティ調整値を求める。
+/// 戻り値[p] は「位置 p から始まる自立語」のペナルティへの加算値で、
+/// 学習済み境界の開始位置では負 (切りやすい)、その内部では正 (切りにくい) になる。
+/// 境界学習が無ければ空を返し、呼び出し側では調整なしとして扱われる
+///
+/// 開始位置のボーナスだけでは「きょうは|いいてんき」を学習しても
+/// 「きょうはいい|てんき」のような跨いだ区切りを防げないため、内部にも罰則を置く
+fn boundary_adjust(kana: &str, chars: &[char], learning: &LearningStore) -> Vec<i64> {
+    let max = learning.max_boundary_chars();
+    let n = chars.len();
+    if max == 0 || n == 0 {
+        return Vec::new();
+    }
+    // 文字位置 → バイト位置。部分文字列を String に組み直さずに引くため
+    // (ライブ変換では毎打鍵で呼ばれる)
+    let mut offsets: Vec<usize> = Vec::with_capacity(n + 1);
+    let mut byte = 0;
+    for c in chars {
+        offsets.push(byte);
+        byte += c.len_utf8();
+    }
+    offsets.push(byte);
+
+    let mut is_start = vec![false; n + 1];
+    let mut inside = vec![false; n + 1];
+    for start in 0..n {
+        for len in MIN_BOUNDARY_CHARS..=max.min(n - start) {
+            if learning.is_boundary(&kana[offsets[start]..offsets[start + len]]) {
+                is_start[start] = true;
+                is_start[start + len] = true;
+                inside[start + 1..start + len].fill(true);
+            }
+        }
+    }
+    // 境界が重なったときは開始位置を優先する (内部の罰則で相殺しない)
+    (0..=n)
+        .map(|p| match (is_start[p], inside[p]) {
+            (true, _) => -i64::from(BOUNDARY_BONUS),
+            (false, true) => i64::from(BOUNDARY_BONUS),
+            _ => 0,
+        })
+        .collect()
+}
+
 /// ラティスを構築して最小コスト経路の単語列を返す。
-/// left_context_id は文頭の左文脈 (直前に確定した語の right_id)。0 = 前文脈なし (BOS)
+/// left_context_id は文頭の左文脈 (直前に確定した語の right_id)。0 = 前文脈なし (BOS)。
+/// learning を渡すと学習済みの文節境界を文節ペナルティに反映する
+/// (文節長を固定する変換や前文脈の復元では境界を動かしたくないため None を渡す)
 fn viterbi_path(
     kana: &str,
     dict: &Dictionary,
@@ -410,12 +463,14 @@ fn viterbi_path(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     left_context_id: u16,
+    learning: Option<&LearningStore>,
 ) -> Option<Vec<PathWord>> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
     if n == 0 {
         return None;
     }
+    let adjust = learning.map_or_else(Vec::new, |l| boundary_adjust(kana, &chars, l));
 
     // nodes[0] は BOS (文頭)。right_id に前文脈の文脈IDを入れると、
     // 先頭語への連接コストが「直前確定語 → 先頭語」の値になる
@@ -498,7 +553,7 @@ fn viterbi_path(
         let penalty = if functional.is_functional(nodes[i].left_id) {
             0
         } else {
-            i64::from(SEGMENT_PENALTY)
+            i64::from(SEGMENT_PENALTY) + adjust.get(nodes[i].start).copied().unwrap_or(0)
         };
         let mut best_cost = i64::MAX;
         let mut best_prev = 0;
@@ -1174,6 +1229,84 @@ mod tests {
             "あ", &[1], Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(),
             &LearningStore::in_memory());
         assert_eq!(segments[0].candidates[0], "亜");
+    }
+
+    /// 文節境界の学習テスト用の辞書。
+    /// 「きょうはいい」は既定では自立語2つの「きょう|はいい」(今日配意) が安くなる
+    fn boundary_dict() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let data = "きょう\t1\t1\t2000\t今日\n\
+                    は\t2\t2\t500\tは\n\
+                    いい\t1\t1\t2000\t良い\n\
+                    はいい\t1\t1\t1800\t配意\n";
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    fn readings_of(segments: &[Segment]) -> Vec<&str> {
+        segments.iter().map(|s| s.reading.as_str()).collect()
+    }
+
+    #[test]
+    fn 学習した文節境界で区切りが変わる() {
+        let dict = boundary_dict();
+        let segments = convert_segments(
+            "きょうはいい", None, &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory());
+        assert_eq!(readings_of(&segments), vec!["きょう", "はいい"]);
+
+        // 人が伸縮で直した「きょうは|いい」を学習すると、そちらへ寄る
+        let mut learning = LearningStore::in_memory();
+        learning.record_boundary("きょうは");
+        learning.record_boundary("いい");
+        let segments = convert_segments(
+            "きょうはいい", None, &dict, &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(readings_of(&segments), vec!["きょうは", "いい"]);
+        assert_eq!(segments[0].candidates[0], "今日は");
+        assert_eq!(segments[1].candidates[0], "良い");
+    }
+
+    #[test]
+    fn 学習した境界は入力途中でも効く() {
+        // ライブ変換は毎打鍵で読み全体を変換し直すため、部分一致でも効く必要がある
+        let mut learning = LearningStore::in_memory();
+        learning.record_boundary("きょうは");
+        learning.record_boundary("いい");
+        let segments = convert_segments(
+            "きょうはい", None, &boundary_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(readings_of(&segments)[0], "きょうは");
+    }
+
+    #[test]
+    fn 文節長固定の変換は学習した境界に動かされない() {
+        let mut learning = LearningStore::in_memory();
+        learning.record_boundary("きょうは");
+        learning.record_boundary("いい");
+        let segments = convert_segments_fixed(
+            "きょうはいい", &[3, 3], None, &boundary_dict(), &no_user(),
+            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+        assert_eq!(readings_of(&segments), vec!["きょう", "はいい"]);
+    }
+
+    #[test]
+    fn 境界の開始位置は下げ内部は上げる() {
+        let mut learning = LearningStore::in_memory();
+        learning.record_boundary("きょうは");
+        let chars: Vec<char> = "きょうはいい".chars().collect();
+        let b = i64::from(BOUNDARY_BONUS);
+        assert_eq!(
+            boundary_adjust("きょうはいい", &chars, &learning),
+            vec![-b, b, b, b, -b, 0, 0]
+        );
+    }
+
+    #[test]
+    fn 境界学習が無ければ調整しない() {
+        let chars: Vec<char> = "きょうは".chars().collect();
+        assert!(boundary_adjust("きょうは", &chars, &LearningStore::in_memory()).is_empty());
     }
 
     #[test]

@@ -232,6 +232,9 @@ private:
     std::vector<ConversionSegment> segments_;  // 変換結果の文節列
     std::vector<size_t> selected_;             // 文節ごとの選択中候補 index
     size_t segmentIndex_;                      // 操作対象の文節
+    // この composition で文節伸縮 (Shift+←→) を行ったか。
+    // 人が直した区切りだけを境界学習に送るための判定に使う
+    bool segmentsResized_;
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ

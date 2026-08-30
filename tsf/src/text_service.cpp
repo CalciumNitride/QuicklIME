@@ -281,6 +281,7 @@ TextService::TextService()
       targetAttribute_(TF_INVALID_GUIDATOM),
       converting_(false),
       segmentIndex_(0),
+      segmentsResized_(false),
       predictionIndex_(-1),
       liveSuspended_(false),
       openCloseCookie_(TF_INVALID_COOKIE),
@@ -1501,6 +1502,7 @@ HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
     }
     selected_.resize(i);
     selected_.resize(segments_.size(), 0);
+    segmentsResized_ = true;
 
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
@@ -1865,6 +1867,15 @@ std::wstring TextService::PrepareConversionCommit()
         prevSurface = surface;
     }
     engine_.Learn(entries);
+    // 人が文節を伸縮して分割を直したときだけ、その区切りを境界として学習させる
+    if (segmentsResized_) {
+        std::vector<std::wstring> readings;
+        readings.reserve(segments_.size());
+        for (const ConversionSegment& segment : segments_) {
+            readings.push_back(segment.reading);
+        }
+        engine_.LearnSegmentBoundaries(readings);
+    }
     if (!segments_.empty()) {
         SetCommitContext(segments_.back().reading, segments_.back().candidates[selected_.back()]);
     }
@@ -2007,6 +2018,7 @@ void TextService::ClearConversion()
     segments_.clear();
     selected_.clear();
     segmentIndex_ = 0;
+    segmentsResized_ = false;
 }
 
 std::wstring TextService::ConvertedText() const

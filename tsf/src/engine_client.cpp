@@ -489,3 +489,28 @@ bool EngineClient::Learn(const std::vector<LearnEntry>& entries)
     return TransactWithFallback(request, fallback, false, &response) &&
            response.rfind("OK", 0) == 0;
 }
+
+bool EngineClient::LearnSegmentBoundaries(const std::vector<std::wstring>& readings)
+{
+    if (legacyEngine_) {
+        return false; // 旧エンジンは LEARNSEG を知らない
+    }
+    std::string request = "LEARNSEG";
+    size_t count = 0;
+    for (const std::wstring& reading : readings) {
+        if (reading.empty()) {
+            continue;
+        }
+        request += "\t" + WideToUtf8(reading);
+        ++count;
+    }
+    if (count == 0) {
+        return false;
+    }
+    request += "\n";
+
+    // 境界学習だけを知らないエンジンもありうるが、拒否されても実害はないので
+    // legacyEngine_ は立てず、次回もそのまま送る
+    std::string response;
+    return Transact(request, &response) && response.rfind("OK", 0) == 0;
+}

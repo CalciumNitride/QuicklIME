@@ -74,6 +74,10 @@ public:
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<LearnEntry>& entries);
 
+    // 人が文節伸縮で直した分割の文節読みをエンジンに記録する (LEARNSEG)。
+    // 既定の分割のまま確定したものは送らない (誤った区切りまで境界として強化しないため)
+    bool LearnSegmentBoundaries(const std::vector<std::wstring>& readings);
+
     // 読みの前方一致で予測候補を取得する (PREDICT)。
     // 毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
     // 未接続なら即 false を返す (候補ゼロは true で candidates が空)
