@@ -38,9 +38,11 @@ constexpr TableEntry kDefaultTable[] = {
         {L"cha", L"ちゃ"}, {L"chi", L"ち"}, {L"chu", L"ちゅ"}, {L"che", L"ちぇ"}, {L"cho", L"ちょ"},
         {L"tsa", L"つぁ"}, {L"tsi", L"つぃ"}, {L"tsu", L"つ"}, {L"tse", L"つぇ"}, {L"tso", L"つぉ"},
         {L"tha", L"てゃ"}, {L"thi", L"てぃ"}, {L"thu", L"てゅ"}, {L"the", L"てぇ"}, {L"tho", L"てょ"},
+        {L"twu", L"とぅ"},
         {L"da", L"だ"}, {L"di", L"ぢ"}, {L"du", L"づ"}, {L"de", L"で"}, {L"do", L"ど"},
         {L"dya", L"ぢゃ"}, {L"dyi", L"ぢぃ"}, {L"dyu", L"ぢゅ"}, {L"dye", L"ぢぇ"}, {L"dyo", L"ぢょ"},
         {L"dha", L"でゃ"}, {L"dhi", L"でぃ"}, {L"dhu", L"でゅ"}, {L"dhe", L"でぇ"}, {L"dho", L"でょ"},
+        {L"dwu", L"どぅ"},
         // な行
         {L"na", L"な"}, {L"ni", L"に"}, {L"nu", L"ぬ"}, {L"ne", L"ね"}, {L"no", L"の"},
         {L"nya", L"にゃ"}, {L"nyi", L"にぃ"}, {L"nyu", L"にゅ"}, {L"nye", L"にぇ"}, {L"nyo", L"にょ"},
@@ -63,6 +65,7 @@ constexpr TableEntry kDefaultTable[] = {
         {L"rya", L"りゃ"}, {L"ryi", L"りぃ"}, {L"ryu", L"りゅ"}, {L"rye", L"りぇ"}, {L"ryo", L"りょ"},
         // わ行
         {L"wa", L"わ"}, {L"wi", L"うぃ"}, {L"wu", L"う"}, {L"we", L"うぇ"}, {L"wo", L"を"},
+        {L"wha", L"うぁ"}, {L"whi", L"うぃ"}, {L"whu", L"う"}, {L"whe", L"うぇ"}, {L"who", L"うぉ"},
         // ヴ
         {L"va", L"ゔぁ"}, {L"vi", L"ゔぃ"}, {L"vu", L"ゔ"}, {L"ve", L"ゔぇ"}, {L"vo", L"ゔぉ"},
         // 小書き文字
