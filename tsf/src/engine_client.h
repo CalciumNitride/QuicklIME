@@ -78,6 +78,10 @@ public:
     // 既定の分割のまま確定したものは送らない (誤った区切りまで境界として強化しないため)
     bool LearnSegmentBoundaries(const std::vector<std::wstring>& readings);
 
+    // 辞書に無い複合語を文節伸縮で割って (まとめて) 入力したとき、その範囲の
+    // (連結した読み, 連結した表記) を1語としてエンジンに記録する (LEARNWORD)
+    bool LearnWords(const std::vector<std::pair<std::wstring, std::wstring>>& words);
+
     // 読みの前方一致で予測候補を取得する (PREDICT)。
     // 毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
     // 未接続なら即 false を返す (候補ゼロは true で candidates が空)

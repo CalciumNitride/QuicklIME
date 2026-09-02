@@ -63,7 +63,7 @@ fn main() -> std::io::Result<()> {
 
     // ユーザ辞書の品詞名解決に品詞ID表を使うため、先に読み込んでおく
     let functional = load_functional_ids();
-    let user = UserDict::load_default(&functional);
+    let user = UserDict::load_default(&functional, learn::learned_word_path());
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
@@ -452,6 +452,35 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 "ERR\t記録する内容がありません\n".to_string()
             }
         }
+        Some("LEARNWORD") => {
+            // LEARNWORD\t読み\x1f表記\t... : 分割して確定した複合語を1語として学習する。
+            // 辞書に無い語を文節伸縮で割って入力したときだけ送られるため、そのまま
+            // ユーザ登録語と同じ重みでラティスに載せる
+            if !data.config.lock().expect("config lock").learning {
+                return "OK\n".to_string();
+            }
+            let mut user = data.user.lock().expect("user lock");
+            let mut learning = data.learning.lock().expect("learning lock");
+            let mut count = 0;
+            for pair in fields {
+                let Some((reading, surface)) = pair.split_once(FIELD_SEPARATOR) else {
+                    continue;
+                };
+                // 日付・時刻の動的候補は時間が経つと古くなるため学習しない (LEARN と同様)
+                if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
+                    // ラティスへ載せるのは辞書語で経路が作れない読みだけ (コストが高いため)。
+                    // 経路が作れる読みは「読み → 表記」の学習で候補の先頭に来る
+                    user.learn_word(reading, surface, &data.functional);
+                    learning.record(reading, surface);
+                }
+                count += 1;
+            }
+            if count > 0 {
+                "OK\n".to_string()
+            } else {
+                "ERR\t記録する内容がありません\n".to_string()
+            }
+        }
         Some("ADDWORD") => {
             // ADDWORD\t読み\t表記\t品詞 : ユーザ辞書へ1件登録する
             // (userdict.tsv へ追記し、メモリへ即時反映する)
@@ -471,9 +500,10 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             let mut user = data.user.lock().expect("user lock");
             user.reload(&data.functional);
             eprintln!(
-                "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件",
+                "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件・複合語 {} 件",
                 user.shortcut_count(),
-                user.word_count()
+                user.word_count(),
+                user.learned_count()
             );
             "OK\n".to_string()
         }
@@ -785,6 +815,31 @@ mod tests {
         let learning = data.learning.lock().unwrap();
         assert!(learning.is_boundary("きょうは"));
         assert!(learning.is_boundary("はれ"));
+    }
+
+    #[test]
+    fn learnwordで複合語を記録する() {
+        let data = sample_data();
+        let request = format!("LEARNWORD\tけいしょうか{FIELD_SEPARATOR}形象化");
+        assert_eq!(handle_request(&request, &data), "OK\n");
+        let user = data.user.lock().unwrap();
+        assert_eq!(user.lookup_words("けいしょうか")[0].surface, "形象化");
+    }
+
+    #[test]
+    fn learnwordの内容が空ならエラー() {
+        let data = empty_data();
+        assert!(handle_request("LEARNWORD", &data).starts_with("ERR\t"));
+        assert!(handle_request("LEARNWORD\t読みだけ", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn 学習無効ならlearnwordは記録しない() {
+        let data = empty_data();
+        data.config.lock().unwrap().learning = false;
+        let request = format!("LEARNWORD\tけいしょうか{FIELD_SEPARATOR}形象化");
+        assert_eq!(handle_request(&request, &data), "OK\n");
+        assert!(data.user.lock().unwrap().lookup_words("けいしょうか").is_empty());
     }
 
     #[test]

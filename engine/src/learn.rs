@@ -282,6 +282,12 @@ fn default_path() -> Option<PathBuf> {
     Some(dir.join("learning.tsv"))
 }
 
+/// 自動学習した複合語の保存先 (learning.tsv → learning_word.tsv)。
+/// ユーザ辞書ではなく学習データなので、学習ファイルと同じディレクトリに置く
+pub fn learned_word_path() -> Option<PathBuf> {
+    Some(sibling_path(&default_path()?, "_word"))
+}
+
 /// 学習ファイルパスから派生ファイルのパスを導出する
 /// (learning.tsv + "_context" → learning_context.tsv)。QUICKLIME_LEARN_FILE で
 /// 学習ファイルを差し替えたときも同じディレクトリに対で作られる

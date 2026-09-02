@@ -182,6 +182,8 @@ private:
     // 変換確定の前half: エンジンへの学習送信のみ行い、確定文字列を返す
     // (edit session は発行せず、状態も変えない)
     std::wstring PrepareConversionCommit();
+    // 文節伸縮で分割を直したまま確定したときの学習をエンジンへ送る
+    void LearnResizedSegments();
     // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
     // 確定アンドゥ情報を記憶し、変換・予測状態と composer_ を破棄する
     void FinishConversionState(const std::wstring& commitText);
@@ -235,6 +237,9 @@ private:
     // この composition で文節伸縮 (Shift+←→) を行ったか。
     // 人が直した区切りだけを境界学習に送るための判定に使う
     bool segmentsResized_;
+    // 最初の文節伸縮を行う直前の文節ごとの読みの長さ。
+    // 確定時に「区切り直し」と「複合語を割って入力した」を見分けるのに使う
+    std::vector<size_t> preResizeLengths_;
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ

@@ -12,6 +12,10 @@
 // 登録 (ADDWORD) の追記先ファイルとメモリ内容を一体で管理し、
 // エンジンの再起動なしで登録を反映する。
 // 保存先: %APPDATA%\QuicklIME\userdict.tsv (QUICKLIME_USER_DICT_FILE で上書き可)
+//
+// 自動学習した複合語 (LEARNWORD) も名詞系単語として同じラティス・候補生成に載せる。
+// 手動登録と混ざると誤学習だけを捨てられなくなるため、メモリ上もファイルも別に持つ
+// (保存先は learning_word.tsv。読み\t表記 の追記ログ)
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -25,6 +29,18 @@ pub const SHORTCUT_POS: &str = "短縮よみ";
 /// ユーザ登録した名詞系単語の単語コスト。
 /// 同じ読みの一般語より候補上位に来やすい中位の値 (並びは学習でさらに調整される)
 const USER_WORD_COST: i16 = 3000;
+
+/// 複合語学習に記録する読みの最小文字数。
+/// 1文字の語は文節を割った結果として意味を持たない
+const MIN_LEARNED_CHARS: usize = 2;
+
+/// 自動学習した複合語の単語コスト。手動登録よりずっと高くしてある。
+/// 辞書語の組み合わせで経路が作れる読み (「けいしょうか」= 継承+化) はそのままにし、
+/// 未知語まじりの経路しか無い読み (「まいぐらふぃ」) だけ1語にまとめるため。
+/// 前者を1語に置き換えると、先頭語を入れ替えた候補 (継承化・敬称化…) が
+/// 候補リストから消えてしまい、あとで別の表記を選べなくなる。
+/// 候補の並びは同時に記録される「読み → 表記」の学習が受け持つ
+const LEARNED_WORD_COST: i16 = 12000;
 
 /// ユーザ辞書の品詞名 → id.def の品詞パス (前方一致)。未対応の品詞は None
 fn noun_id_prefix(pos: &str) -> Option<&'static str> {
@@ -57,24 +73,34 @@ pub struct UserDict {
     shortcuts: Vec<(String, String)>,
     /// 名詞系の単語。ファイル記載順
     words: Vec<UserWord>,
+    /// 自動学習した複合語。読みごとに1件 (同じ読みは最後の確定で置き換える)
+    learned: Vec<UserWord>,
     /// 登録 (add) の追記先ファイル。None ならメモリ上のみ (テスト時)
     path: Option<PathBuf>,
+    /// 複合語学習 (learn_word) の追記先ファイル。None ならメモリ上のみ
+    learned_path: Option<PathBuf>,
 }
 
 impl UserDict {
     /// 空のユーザ辞書 (メモリ上のみ。テスト用)
     pub fn empty() -> Self {
-        UserDict { shortcuts: Vec::new(), words: Vec::new(), path: None }
+        UserDict {
+            shortcuts: Vec::new(),
+            words: Vec::new(),
+            learned: Vec::new(),
+            path: None,
+            learned_path: None,
+        }
     }
 
-    /// 既定のパスから読み込む。ファイルが無ければ空で始める (初回登録時に作られる)
-    pub fn load_default(functional: &FunctionalIds) -> Self {
+    /// 既定のパスから読み込む。ファイルが無ければ空で始める (初回登録時に作られる)。
+    /// learned_path は自動学習した複合語の保存先 (learn::learned_word_path)
+    pub fn load_default(functional: &FunctionalIds, learned_path: Option<PathBuf>) -> Self {
         let Some(path) = default_path() else {
             eprintln!("ユーザ辞書の保存先を特定できません。登録はこのセッション限りになります");
             return UserDict::empty();
         };
-        let mut dict =
-            UserDict { shortcuts: Vec::new(), words: Vec::new(), path: Some(path.clone()) };
+        let mut dict = UserDict { path: Some(path.clone()), learned_path, ..UserDict::empty() };
         if let Ok(file) = File::open(&path) {
             dict.load_from(BufReader::new(file), functional);
             eprintln!(
@@ -83,6 +109,10 @@ impl UserDict {
                 dict.word_count(),
                 path.display()
             );
+        }
+        dict.load_learned(functional);
+        if dict.learned_count() > 0 {
+            eprintln!("複合語の学習データを読み込みました: {} 件", dict.learned_count());
         }
         dict
     }
@@ -97,6 +127,30 @@ impl UserDict {
         self.words.clear();
         if let Ok(file) = File::open(&path) {
             self.load_from(BufReader::new(file), functional);
+        }
+        self.learned.clear();
+        self.load_learned(functional);
+    }
+
+    /// 複合語の学習ログ (読み\t表記) を読み込む
+    fn load_learned(&mut self, functional: &FunctionalIds) {
+        let Some(path) = self.learned_path.clone() else {
+            return;
+        };
+        if let Ok(file) = File::open(&path) {
+            self.load_learned_from(BufReader::new(file), functional);
+        }
+    }
+
+    /// 複合語の学習ログを読み込む (テストからも使う)。不正な行は無視する
+    pub fn load_learned_from(&mut self, reader: impl BufRead, functional: &FunctionalIds) {
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            if let Some((reading, surface)) = line.trim_end().split_once('\t') {
+                self.insert_learned(reading, surface, functional);
+            }
         }
     }
 
@@ -184,6 +238,61 @@ impl UserDict {
         Ok(())
     }
 
+    /// 分割して確定した複合語を1語として学習する: メモリへ反映し、
+    /// 複合語の学習ファイルへ追記する (LEARNWORD 用)。記録できたら true
+    pub fn learn_word(&mut self, reading: &str, surface: &str, functional: &FunctionalIds) -> bool {
+        if !self.insert_learned(reading, surface, functional) {
+            return false;
+        }
+        if let Some(path) = &self.learned_path {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            let result = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .and_then(|mut file| writeln!(file, "{reading}\t{surface}"));
+            if let Err(e) = result {
+                // メモリには反映済みなので学習自体は成立させる (このセッション限りになる)
+                eprintln!("複合語の学習ファイルへの書き込みに失敗しました ({e})");
+            }
+        }
+        true
+    }
+
+    /// 複合語をメモリへ追加する (ファイルには書かない)。新しく記録できたら true。
+    /// 同じ読みの古い学習は置き換える (「読み → 最後に確定した表記」の扱いを揃える)
+    fn insert_learned(
+        &mut self,
+        reading: &str,
+        surface: &str,
+        functional: &FunctionalIds,
+    ) -> bool {
+        // 表記が読みのままの語は、学習しても候補もラティスも増えない
+        if reading.chars().count() < MIN_LEARNED_CHARS || surface.is_empty() || surface == reading {
+            return false;
+        }
+        if let Some(i) = self.learned.iter().position(|w| w.reading == reading) {
+            if self.learned[i].surface == surface {
+                return false; // 既知。追記ログが際限なく伸びないよう書き込みを省く
+            }
+            self.learned.remove(i);
+        }
+        let id = noun_id_prefix("名詞")
+            .and_then(|prefix| functional.find_id(prefix))
+            .unwrap_or(DEFAULT_NOUN_ID);
+        self.learned.push(UserWord {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            pos: "名詞".to_string(),
+            left_id: id,
+            right_id: id,
+            cost: LEARNED_WORD_COST,
+        });
+        true
+    }
+
     /// 読みに完全一致する短縮よみの表記一覧を返す (ファイル記載順)
     pub fn lookup_shortcuts(&self, reading: &str) -> Vec<&str> {
         self.shortcuts
@@ -203,16 +312,20 @@ impl UserDict {
             .collect()
     }
 
-    /// 読みに完全一致する名詞系単語を返す (ファイル記載順)
+    /// 読みに完全一致する名詞系単語を返す (手動登録が先、自動学習した複合語が後)
     pub fn lookup_words(&self, reading: &str) -> Vec<&UserWord> {
-        self.words.iter().filter(|w| w.reading == reading).collect()
+        self.all_words().filter(|w| w.reading == reading).collect()
+    }
+
+    /// 手動登録の単語と自動学習した複合語をこの順に走査する
+    fn all_words(&self) -> impl Iterator<Item = &UserWord> {
+        self.words.iter().chain(self.learned.iter())
     }
 
     /// 読みの並び suffix の先頭から始まる名詞系単語を返す (Viterbi ラティス構築用)。
     /// 戻り値は (一致した文字数, 単語)。件数は高々数千なので線形走査で足りる
     pub fn common_prefix_words(&self, suffix: &[char]) -> Vec<(usize, &UserWord)> {
-        self.words
-            .iter()
+        self.all_words()
             .filter_map(|w| {
                 let mut len = 0;
                 for (i, rc) in w.reading.chars().enumerate() {
@@ -228,8 +341,7 @@ impl UserDict {
 
     /// 読みが prefix で始まる名詞系単語を記載順に limit 件まで返す (予測入力用)
     pub fn word_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
-        self.words
-            .iter()
+        self.all_words()
             .filter(|w| w.reading.starts_with(prefix))
             .take(limit)
             .map(|w| (w.reading.as_str(), w.surface.as_str()))
@@ -242,6 +354,10 @@ impl UserDict {
 
     pub fn word_count(&self) -> usize {
         self.words.len()
+    }
+
+    pub fn learned_count(&self) -> usize {
+        self.learned.len()
     }
 }
 
@@ -388,8 +504,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let functional = sample_functional();
 
-        let mut dict =
-            UserDict { shortcuts: Vec::new(), words: Vec::new(), path: Some(path.clone()) };
+        let mut dict = UserDict { path: Some(path.clone()), ..UserDict::empty() };
         dict.add("かんべ", "神戸", "姓", &functional).unwrap();
         dict.add("めーる", "mail@example.com", "短縮よみ", &functional).unwrap();
 
@@ -403,6 +518,81 @@ mod tests {
         assert_eq!(dict.lookup_shortcuts("めーる"), ["mail@example.com"]);
 
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn 学習した複合語をラティスと候補で引ける() {
+        let mut dict = UserDict::empty();
+        let functional = sample_functional();
+        assert!(dict.learn_word("けいしょうか", "形象化", &functional));
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+
+        let suffix: Vec<char> = "けいしょうかを".chars().collect();
+        let hits = dict.common_prefix_words(&suffix);
+        assert_eq!(hits.len(), 1);
+        assert_eq!((hits[0].0, hits[0].1.surface.as_str()), (6, "形象化"));
+        // 予測入力にも出る
+        assert_eq!(dict.word_prefix("けいしょう", 8), vec![("けいしょうか", "形象化")]);
+    }
+
+    #[test]
+    fn 同じ読みの複合語は最後の学習で置き換える() {
+        let mut dict = UserDict::empty();
+        let functional = sample_functional();
+        assert!(dict.learn_word("けいしょうか", "継承化", &functional));
+        assert!(dict.learn_word("けいしょうか", "形象化", &functional));
+        assert_eq!(dict.learned_count(), 1);
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+        // 同じ内容の再学習は記録しない (追記ログを伸ばさない)
+        assert!(!dict.learn_word("けいしょうか", "形象化", &functional));
+    }
+
+    #[test]
+    fn 短すぎる語と表記が読みのままの語は学習しない() {
+        let mut dict = UserDict::empty();
+        let functional = sample_functional();
+        assert!(!dict.learn_word("か", "化", &functional));
+        assert!(!dict.learn_word("ずあん", "ずあん", &functional));
+        assert!(!dict.learn_word("ずあん", "", &functional));
+        assert_eq!(dict.learned_count(), 0);
+    }
+
+    #[test]
+    fn 複合語の学習ログを読み込む() {
+        let mut dict = UserDict::empty();
+        let functional = sample_functional();
+        let log = "けいしょうか\t継承化\nまいぐらふぃ\tマイグラフィ\nけいしょうか\t形象化\nこわれた行\n";
+        dict.load_learned_from(log.as_bytes(), &functional);
+        // 同じ読みは後の行が勝つ
+        assert_eq!(dict.learned_count(), 2);
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+        assert_eq!(dict.lookup_words("まいぐらふぃ")[0].surface, "マイグラフィ");
+    }
+
+    #[test]
+    fn 複合語の学習がファイルへ追記され再読込で引ける() {
+        let dir = std::env::temp_dir().join(format!("quicklime-learnword-test-{}", std::process::id()));
+        let path = dir.join("userdict.tsv");
+        let learned_path = dir.join("learning_word.tsv");
+        let _ = std::fs::remove_file(&learned_path);
+        let functional = sample_functional();
+
+        let mut dict = UserDict {
+            path: Some(path.clone()),
+            learned_path: Some(learned_path.clone()),
+            ..UserDict::empty()
+        };
+        dict.learn_word("けいしょうか", "形象化", &functional);
+        dict.learn_word("まいぐらふぃ", "マイグラフィ", &functional);
+        let content = std::fs::read_to_string(&learned_path).unwrap();
+        assert_eq!(content, "けいしょうか\t形象化\nまいぐらふぃ\tマイグラフィ\n");
+
+        // 手動登録の再読込 (RELOADUSER) でも複合語は保たれる
+        dict.reload(&functional);
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+
+        let _ = std::fs::remove_file(&learned_path);
         let _ = std::fs::remove_dir(&dir);
     }
 }

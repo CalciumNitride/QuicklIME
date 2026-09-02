@@ -1445,6 +1445,16 @@ HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
         return E_UNEXPECTED;
     }
 
+    // 確定時に「区切り直し」と「複合語を割って入力した」を見分けるため、
+    // 人が触る前の分割を1度だけ覚えておく
+    if (!segmentsResized_) {
+        preResizeLengths_.clear();
+        preResizeLengths_.reserve(segments_.size());
+        for (const ConversionSegment& segment : segments_) {
+            preResizeLengths_.push_back(segment.reading.size());
+        }
+    }
+
     // 文節 i より前はそのまま残し、文節 i を新しい長さに固定し、
     // それより後ろは境界を固定せず自然な区切りに再変換する。
     // (後ろを固定長のまま引き継ぐと、Shift+→→の直後に Shift+← で戻したときに
@@ -1867,19 +1877,89 @@ std::wstring TextService::PrepareConversionCommit()
         prevSurface = surface;
     }
     engine_.Learn(entries);
-    // 人が文節を伸縮して分割を直したときだけ、その区切りを境界として学習させる
+    // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
     if (segmentsResized_) {
+        LearnResizedSegments();
+    }
+    if (!segments_.empty()) {
+        SetCommitContext(segments_.back().reading, segments_.back().candidates[selected_.back()]);
+    }
+    return ConvertedText();
+}
+
+void TextService::LearnResizedSegments()
+{
+    // 文節の読みの長さから、文頭からの区切り位置 (先頭と末尾は含めない) を作る
+    const auto boundaries = [](const auto& lengths) {
+        std::vector<size_t> offsets;
+        size_t sum = 0;
+        for (size_t i = 0; i + 1 < lengths.size(); ++i) {
+            sum += lengths[i];
+            offsets.push_back(sum);
+        }
+        return offsets;
+    };
+    std::vector<size_t> lengths;
+    lengths.reserve(segments_.size());
+    for (const ConversionSegment& segment : segments_) {
+        lengths.push_back(segment.reading.size());
+    }
+    const std::vector<size_t> before = boundaries(preResizeLengths_);
+    const std::vector<size_t> after = boundaries(lengths);
+    // 片方の区切りがもう片方をすべて含む = 1文節を割った / 複数文節をまとめただけで、
+    // 区切りの位置そのものは動いていない。辞書に無い語を入力しようとしたとみなす
+    const bool divided = std::includes(after.begin(), after.end(), before.begin(), before.end());
+    const bool merged = std::includes(before.begin(), before.end(), after.begin(), after.end());
+
+    // 区切りが動いていれば「区切り直し」。直した分割を境界として学習する
+    if (!divided && !merged) {
         std::vector<std::wstring> readings;
         readings.reserve(segments_.size());
         for (const ConversionSegment& segment : segments_) {
             readings.push_back(segment.reading);
         }
         engine_.LearnSegmentBoundaries(readings);
+        return;
     }
-    if (!segments_.empty()) {
-        SetCommitContext(segments_.back().reading, segments_.back().candidates[selected_.back()]);
+
+    // 割った (まとめた) 範囲を1語 (連結した読みと表記) として学習する。
+    // ここで境界を学習してしまうと、次回も同じ語が割れる方向に効いてしまう。
+    // 範囲の区切りは、伸縮の前後で共通して残っている側 (部分集合のほう)
+    std::vector<size_t> spanEnds = divided ? before : after;
+    size_t total = 0;
+    for (size_t length : lengths) {
+        total += length;
     }
-    return ConvertedText();
+    spanEnds.push_back(total);
+
+    std::vector<std::pair<std::wstring, std::wstring>> words;
+    size_t begin = 0;
+    size_t index = 0;   // 確定した文節の走査位置
+    size_t origin = 0;  // 伸縮前の文節の走査位置
+    for (size_t end : spanEnds) {
+        std::wstring reading;
+        std::wstring surface;
+        size_t count = 0;
+        while (index < segments_.size() && begin + reading.size() < end) {
+            reading += segments_[index].reading;
+            surface += segments_[index].candidates[selected_[index]];
+            ++index;
+            ++count;
+        }
+        size_t originCount = 0;
+        for (size_t pos = begin; origin < preResizeLengths_.size() && pos < end; ++origin) {
+            pos += preResizeLengths_[origin];
+            ++originCount;
+        }
+        // どちらか一方でも2文節に割れている範囲だけが「人が直した1語」
+        if (count >= 2 || originCount >= 2) {
+            words.push_back({reading, surface});
+        }
+        begin = end;
+    }
+    if (!words.empty()) {
+        engine_.LearnWords(words);
+    }
 }
 
 void TextService::FinishConversionState(const std::wstring& commitText)
@@ -2019,6 +2099,7 @@ void TextService::ClearConversion()
     selected_.clear();
     segmentIndex_ = 0;
     segmentsResized_ = false;
+    preResizeLengths_.clear();
 }
 
 std::wstring TextService::ConvertedText() const

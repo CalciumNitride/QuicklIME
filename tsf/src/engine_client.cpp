@@ -514,3 +514,28 @@ bool EngineClient::LearnSegmentBoundaries(const std::vector<std::wstring>& readi
     std::string response;
     return Transact(request, &response) && response.rfind("OK", 0) == 0;
 }
+
+bool EngineClient::LearnWords(const std::vector<std::pair<std::wstring, std::wstring>>& words)
+{
+    if (legacyEngine_) {
+        return false; // 旧エンジンは LEARNWORD を知らない
+    }
+    std::string request = "LEARNWORD";
+    size_t count = 0;
+    for (const auto& [reading, surface] : words) {
+        if (reading.empty() || surface.empty()) {
+            continue;
+        }
+        request += "\t" + WideToUtf8(reading) + "\x1f" + WideToUtf8(surface);
+        ++count;
+    }
+    if (count == 0) {
+        return false;
+    }
+    request += "\n";
+
+    // 複合語学習だけを知らないエンジンもありうるが、拒否されても実害はないので
+    // legacyEngine_ は立てず、次回もそのまま送る
+    std::string response;
+    return Transact(request, &response) && response.rfind("OK", 0) == 0;
+}
