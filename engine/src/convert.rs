@@ -149,21 +149,96 @@ fn is_digit_char(c: char) -> bool {
     c.is_ascii_digit() || ('０'..='９').contains(&c)
 }
 
+/// 数字列の区切りに使える記号かどうか。
+/// TSF 層は記号キーを全角かなにして未確定文字列へ入れるため (. → 。, , → 、,
+/// / → ・, - → ー)、記号本来の形だけでなくそれらのかな形も区切りとして受ける
+fn is_number_separator(c: char) -> bool {
+    matches!(
+        c,
+        '.' | ',' | '/' | ':' | '-'
+            | '．' | '，' | '／' | '：' | '－'
+            | '。' | '、' | '・' | 'ー'
+    )
+}
+
+/// 区切り記号の表記を記号本来の形へ直す (fullwidth なら全角形)。
+/// 数字に挟まれた「。」は句点ではなく小数点なので「0.12」と出す。
+/// 数字が続かない「。」は句点のままにしたいので、結合できたときだけ適用する
+fn normalized_separator(c: char, fullwidth: bool) -> char {
+    let (half, full) = match c {
+        '.' | '．' | '。' => ('.', '．'),
+        ',' | '，' | '、' => (',', '，'),
+        '/' | '／' | '・' => ('/', '／'),
+        ':' | '：' => (':', '：'),
+        '-' | '－' | 'ー' => ('-', '－'),
+        other => return other,
+    };
+    if fullwidth { full } else { half }
+}
+
+/// 数字列 (数字と区切り記号だけからなり、末尾が数字) かどうか。
+/// 結合済みの「0。1」にさらに桁や区切りを継げるかの判定に使う
+fn is_number_run(reading: &str) -> bool {
+    reading.chars().next_back().is_some_and(is_digit_char)
+        && reading.chars().all(|c| is_digit_char(c) || is_number_separator(c))
+}
+
+/// 読みが区切り記号1文字だけの語かどうか
+fn is_separator_word(reading: &str) -> bool {
+    let mut chars = reading.chars();
+    chars.next().is_some_and(is_number_separator) && chars.next().is_none()
+}
+
+/// word を last の末尾へ連結する (連接IDは結合後の右端のものになる)
+fn append_word(last: &mut PathWord, word: PathWord) {
+    last.reading.push_str(&word.reading);
+    last.surface.push_str(&word.surface);
+    last.right_id = word.right_id;
+}
+
 /// 経路上で隣接する数字語 (読みがすべて数字) を1語に結合する。
 /// 辞書の数字エントリは1桁単位のため、そのままでは「12」が桁ごとの文節に割れる。
+/// 数字に挟まれた区切り記号 (0.12, 1/2, 1,000, 12:30, 2026-09-08) も同じ語に取り込む。
+/// 読みは未確定文字列の文字位置と対応するので変えず、表記だけ記号本来の形へ直す。
 /// 全角数字は辞書に無く未知語1文字ノードになるが、読みベースの判定で同様にまとまる
 fn merge_digit_runs(path: Vec<PathWord>) -> Vec<PathWord> {
     let mut result: Vec<PathWord> = Vec::new();
+    // 数字列の直後に来た区切り記号。後ろに数字が続いたときだけ数字列へ取り込む
+    // (「1、みかん」の読点は区切りではないので、そのまま1語として切り出す)
+    let mut pending: Option<PathWord> = None;
     for word in path {
-        let is_digits = word.reading.chars().all(is_digit_char);
-        match result.last_mut() {
-            Some(last) if is_digits && last.reading.chars().all(is_digit_char) => {
-                last.reading.push_str(&word.reading);
-                last.surface.push_str(&word.surface);
-                last.right_id = word.right_id;
+        if is_number_run(&word.reading) {
+            if let Some(mut separator) = pending.take() {
+                let last = result.last_mut().unwrap();
+                let fullwidth = !last.surface.ends_with(|c: char| c.is_ascii_digit());
+                separator.surface = separator
+                    .surface
+                    .chars()
+                    .map(|c| normalized_separator(c, fullwidth))
+                    .collect();
+                append_word(last, separator);
+                append_word(last, word);
+                continue;
             }
-            _ => result.push(word),
+            match result.last_mut() {
+                Some(last) if is_number_run(&last.reading) => append_word(last, word),
+                _ => result.push(word),
+            }
+            continue;
         }
+        if let Some(separator) = pending.take() {
+            result.push(separator);
+        }
+        if is_separator_word(&word.reading)
+            && result.last().is_some_and(|last| is_number_run(&last.reading))
+        {
+            pending = Some(word);
+        } else {
+            result.push(word);
+        }
+    }
+    if let Some(separator) = pending {
+        result.push(separator);
     }
     result
 }
@@ -287,7 +362,7 @@ fn segment_from_group(
     // 数字で始まる文節 (「10じ」など) は、数字部分の読み全体が辞書に無いため
     // 上の完全一致・先頭語入れ替えが働かない。代わりに数字に続く部分 (助数詞など) を
     // 入れ替えた候補を積む (「10次」しか出ず「10時」が選べなくなるのを防ぐ)
-    if group.len() >= 2 && group[0].reading.chars().all(is_digit_char) {
+    if group.len() >= 2 && is_number_run(&group[0].reading) {
         let tail_reading: String = group[1..].iter().map(|w| w.reading.as_str()).collect();
         for (_, surface) in exact_candidates(&tail_reading, dict, user) {
             if result.len() >= MAX_DICT_CANDIDATES {
@@ -1029,8 +1104,10 @@ mod tests {
     fn digit_dict() -> Dictionary {
         let mut dict = Dictionary::empty();
         dict.load_from(
-            "1\t4\t4\t1900\t1\n\
+            "0\t4\t4\t1900\t0\n\
+             1\t4\t4\t1900\t1\n\
              2\t4\t4\t1900\t2\n\
+             9\t4\t4\t1900\t9\n\
              じ\t5\t5\t18\t時\n"
                 .as_bytes(),
         )
@@ -1097,6 +1174,67 @@ mod tests {
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["１２じ"]);
         assert_eq!(segments[0].candidates[0], "１２時");
+    }
+
+    /// digit_dict での convert_segments の省略用。(読み一覧, 先頭候補一覧) を返す
+    fn digit_segments(kana: &str) -> (Vec<String>, Vec<String>) {
+        let segments = convert_segments(
+            kana,
+            None,
+            &digit_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        (
+            segments.iter().map(|s| s.reading.clone()).collect(),
+            segments.iter().map(|s| s.candidates[0].clone()).collect(),
+        )
+    }
+
+    #[test]
+    fn 小数点を挟む数字が1文節にまとまる() {
+        // かな入力では「.」が「。」として入るので、数字に挟まれた分だけ小数点で表記する
+        let (readings, best) = digit_segments("0。12");
+        assert_eq!(readings, vec!["0。12"]);
+        assert_eq!(best, vec!["0.12"]);
+    }
+
+    #[test]
+    fn 分数と座標とハイフンつなぎが1文節にまとまる() {
+        // 「/」は「・」、「-」は「ー」として入る
+        assert_eq!(digit_segments("1・2").1, vec!["1/2"]);
+        assert_eq!(digit_segments("1、2").1, vec!["1,2"]);
+        assert_eq!(digit_segments("2029ー09ー01").1, vec!["2029-09-01"]);
+    }
+
+    #[test]
+    fn 座標の括弧は数字列とは別の文節になる() {
+        let (readings, best) = digit_segments("（0、1）");
+        assert_eq!(readings, vec!["（", "0、1", "）"]);
+        assert_eq!(best, vec!["（", "0,1", "）"]);
+    }
+
+    #[test]
+    fn 数字が続かない句読点は句点のまま残る() {
+        let (readings, best) = digit_segments("12。");
+        assert_eq!(readings, vec!["12", "。"]);
+        assert_eq!(best, vec!["12", "。"]);
+    }
+
+    #[test]
+    fn 全角数字では区切り記号も全角になる() {
+        let (readings, best) = digit_segments("１。２");
+        assert_eq!(readings, vec!["１。２"]);
+        assert_eq!(best, vec!["１．２"]);
+    }
+
+    #[test]
+    fn 区切りを挟む数字でも助数詞の入れ替え候補が出る() {
+        let (readings, best) = digit_segments("1。5じ");
+        assert_eq!(readings, vec!["1。5じ"]);
+        assert_eq!(best, vec!["1.5時"]);
     }
 
     #[test]
