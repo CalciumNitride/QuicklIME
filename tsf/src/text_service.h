@@ -13,6 +13,28 @@
 #include "romaji.h"
 
 class LangBarButton;
+enum class ReplaceRunResult;
+
+// キーの分類 (text_service.cpp と text_service_direct.cpp で共用。定義は text_service.cpp)
+namespace key_util {
+
+// 記号キー1つぶんの定義: 未確定文字列に入れるかな (全角形) と打鍵文字そのもの
+struct SymbolKey {
+    WPARAM vk;
+    const wchar_t* kana; // 未確定文字列へ入れる全角形
+    const wchar_t* raw;  // 打鍵文字 (生ローマ字候補・英字モード用)
+};
+
+// 記号キー (仮想キーコード) → かな/打鍵文字。該当しなければ nullptr
+const SymbolKey* FindSymbolKey(WPARAM wparam, bool shifted);
+bool IsLetterKey(WPARAM wparam);
+bool IsDigitKey(WPARAM wparam);
+// テンキーの打鍵文字 (NumLock オンの数字と演算記号)。対応しないキーは 0
+wchar_t NumpadChar(WPARAM wparam);
+bool IsShiftPressed();
+bool ContainsAsciiLetter(const std::wstring& text);
+
+} // namespace key_util
 
 // TSF テキストサービス本体。
 // composition (下線付き未確定文字列) を管理し、スペースで変換候補を
@@ -72,7 +94,11 @@ private:
     ~TextService();
 
     // このキー入力を IME が処理する (アプリに渡さない) かどうか
-    bool IsKeyEaten(WPARAM wparam) const;
+    // (context は direct 方式の後置再変換の判定で選択テキストを読むのに使う)
+    bool IsKeyEaten(ITfContext* context, WPARAM wparam) const;
+    // 押されているキーが設定の変換キー (key.convert: 無修飾 VK_CONVERT または
+    // Ctrl+Space) か。Shift の併用は問わない (Shift+変換キー = 前候補)
+    bool IsConvertKey(WPARAM wparam) const;
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
@@ -87,8 +113,11 @@ private:
     // 食べたキーを状態機械に従って処理する
     HRESULT HandleKey(ITfContext* context, WPARAM wparam);
 
+    // ファンクションキー変換 (F4-F10 に割り当てた機能) を実行する。割当の無い機能は何もしない
+    HRESULT ApplyFunctionKey(ITfContext* context, KeyFunc func);
+
     // 同期 edit session の実行 (session の所有権を受け取り、実行後に解放する)
-    HRESULT RequestSync(ITfContext* context, ITfEditSession* session, DWORD flags);
+    HRESULT RequestSync(ITfContext* context, ITfEditSession* session, DWORD flags) const;
 
     HRESULT StartComposition(ITfContext* context);
     // composition のテキストを任意の文字列に差し替える
@@ -109,6 +138,9 @@ private:
 
     // 変換の開始 / 現在文節の候補移動 / 文節の移動 / 変換の取消 (かな表示に戻す)
     HRESULT StartConversion(ITfContext* context);
+    // 変換の候補生成 (エンジン問い合わせ + 生ローマ字候補 + 対記号同期) で変換状態を作る。
+    // 表示は行わない (両方式で共用)
+    void BuildConversionSegments();
     HRESULT CycleCandidate(ITfContext* context, int delta);
     // 数字キー 1〜9: 候補ウィンドウの表示中ページ内の番号 (0始まり) で
     // 現在文節の候補を直接選択する (対応する候補が無ければ何もしない)
@@ -170,10 +202,24 @@ private:
     // かな全体を変換して composition に表示する (毎打鍵の本体)。
     // 変換できない場合はかな表示にフォールバックする
     HRESULT UpdateLiveConversion(ITfContext* context);
+    // かな全体をライブ変換して liveSegments_ を更新し、表示文字列 (変換結果 + 末尾の
+    // 未変換ローマ字) を返す。変換できない場合は liveSegments_ を空にしてかな表示を返す
+    std::wstring LiveDisplayText();
     // ライブ変換の表示文字列 (各文節の先頭候補の連結)
     std::wstring LiveText() const;
     // ライブ変換の状態を破棄する (composition の終了時)
     void ClearLiveConversion();
+
+    // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
+    // 無変換のまま確定する直前に、自動英字判定の判定ルール3 (末尾に残った
+    // 子音1文字で英字と判定する) を適用する。表示が既に変換結果になっている経路
+    // (候補選択中・サジェスト選択中・ライブ表示中) では読みを英字へ作り直せないため
+    // 何もしない。読みが英字へ変わると表示も変わるため、文書 (direct) や composition の
+    // 表示を同時に直せる経路からのみ呼ぶ (フォーカス移動などの run 終了では呼ばない)
+    void ApplyModelessCommitRule();
+    // composition / run が無いときに挿入するスペース。モードレス有効時のみ、直前の確定が
+    // ASCII 英数字だけなら英文の途中とみなして半角にし、それ以外は設定 space に従う
+    std::wstring StandaloneSpaceText() const;
 
     // 入力途中の内容を現在の状態のまま確定する (Enter と同じ処理)
     HRESULT CommitComposition(ITfContext* context);
@@ -200,8 +246,11 @@ private:
     HRESULT LaunchWordRegister(ITfContext* context);
     // 設定ツール (quicklime-config.exe) の起動 (既定 Ctrl+F12)
     HRESULT LaunchConfigTool();
-    // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
+    // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する。
+    // direct 方式では surface_ を置き換えて現在文節を選択状態にする
     HRESULT UpdateConvertingDisplay(ITfContext* context);
+    // 未確定文字列の表示を text にする (composition のテキスト、direct 方式では surface_ の置換)
+    HRESULT UpdateDisplayText(ITfContext* context, const std::wstring& text);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
     std::wstring ConvertedText() const;
     // 現在文節の候補一覧で候補ウィンドウを表示する
@@ -221,6 +270,79 @@ private:
     void ClearContext();
 
     bool Composing() const { return composition_ != nullptr; }
+
+    // ---- 直接入力方式 (設定 input_style=direct。実装は text_service_direct.cpp) ----
+    // 打鍵した文字を composition ではなく文書に直接入れ、IME が「自分が入れた文字列
+    // (surface_) とその読み (composer_)」= run を覚えておいて毎打鍵で置き換える。
+    // 文書の読み取り・置換ができないアプリでは文書単位で composition 方式に戻す
+    // (docs/design/direct-input.md)
+    enum class DirectCapability {
+        Unknown,      // 未判定 (run を始めるとき、周辺テキストが読めるかを確かめる)
+        Provisional,  // 直接挿入はできたが、別 session からの置換はまだ成功していない
+        Capable,
+        Incapable,    // この文書では composition 方式で動く
+    };
+    // direct 方式の1打鍵が composer_ に加える内容
+    struct DirectKey {
+        wchar_t romaji = 0;       // 0 以外ならローマ字として Push する (英字モード中は raw)
+        std::wstring kana;        // romaji が 0 のとき PushKana するかな (英字モード中は raw)
+        std::wstring raw;         // 打鍵文字そのもの
+        bool enterAscii = false;  // Shift+英字: 英字モードに入る
+    };
+    // この打鍵を direct 方式で扱うか (設定が direct で、この文書が不可判定でなく、
+    // composition が生きていない)
+    bool UsingDirectStyle() const;
+    bool InRun() const { return !surface_.empty(); }
+    bool IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const;
+    HRESULT HandleKeyDirect(ITfContext* context, WPARAM wparam);
+    // 食べずにアプリへ渡すキーのうち run を終えるもの (Enter・矢印・Ctrl 併用など) の
+    // 状態処理。OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
+    void EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam);
+    // 打鍵を分類する。印字キー (英字・記号・数字・テンキー) でなければ false
+    bool ClassifyDirectKey(WPARAM wparam, bool shifted, DirectKey* key) const;
+    void PushDirectKey(const DirectKey& key);
+    // 印字キー: run の開始または surface_ の置換 (不一致なら run を捨てて新規 run、
+    // 非対応なら composition 方式へフォールバック)
+    HRESULT TypeDirect(ITfContext* context, const DirectKey& key);
+    HRESULT BackspaceDirect(ITfContext* context);
+    HRESULT SpaceDirect(ITfContext* context, bool shifted);
+    // 変換キー: run 中は変換開始 / 次候補 (Shift で前候補)、run が無ければ後置再変換
+    HRESULT ConvertKeyDirect(ITfContext* context, bool shifted);
+    // 後置再変換: 選択テキスト (ひらがな・カタカナ・ー のみ) を読みとして run を作り変換開始
+    HRESULT ReconvertSelectionDirect(ITfContext* context);
+    // 現在の選択テキストが後置再変換の対象なら true (対象なら textOut に入れる)
+    bool ReadReconvertibleSelection(ITfContext* context, std::wstring* textOut) const;
+    // 候補選択中・サジェスト選択中の確定: 選択を末尾に潰して run を終える
+    HRESULT CommitRunDirect(ITfContext* context);
+    // run の表示をかな表示 (ライブ変換有効ならライブ表示) にしてサジェストを引き直す
+    // (composition 方式の UpdateCompositionAndPredict に相当)
+    HRESULT UpdateRunAndPredict(ITfContext* context);
+    // run の表示文字列: ライブ変換が働くならライブ表示、そうでなければ composer_.Display()
+    // (liveSegments_ も更新する)
+    std::wstring RunDisplayText();
+    // run を終えるときの確定文字列 (候補選択・サジェスト選択中は surface_ そのもの、
+    // ライブ表示中は変換結果 + 救済した未変換ローマ字、それ以外は composer_.Commit())
+    std::wstring RunCommitText() const;
+    // キャレット直前の expected を newText に置き換える (expected が空なら挿入)
+    ReplaceRunResult ReplaceRunText(ITfContext* context, const std::wstring& expected,
+                                    const std::wstring& newText);
+    // 選択開始が expected の caretOffset 文字目にあるとして expected を newText に置き換え、
+    // selectLength > 0 なら newText 内の範囲を選択する (候補選択中の置換用)
+    ReplaceRunResult ReplaceRunRange(ITfContext* context, const std::wstring& expected,
+                                     size_t caretOffset, const std::wstring& newText,
+                                     size_t selectOffset, size_t selectLength);
+    // surface_ を text に置き換えて run を続ける。失敗したら run を捨てる (文書は触らない)
+    HRESULT ReplaceRunDisplay(ITfContext* context, const std::wstring& text,
+                              size_t selectOffset = 0, size_t selectLength = 0);
+    // 置換が成功したときのフォールバック判定の更新。新規挿入 (newInsertion) は仮判定に
+    // 留め、別 session からの置換が通ってはじめて可にする
+    void NoteDirectSuccess(bool newInsertion);
+    // run を終えて忘れる (既存の確定処理と同じ学習送信・文脈更新・確定アンドゥ用の記憶)
+    void EndRun();
+    // run の状態を学習せずに捨てる (文書と食い違った run の後始末)
+    void DropRun();
+    // 確定アンドゥの direct 版: 直前の run の surface を読みのかな表示に戻して run を再開する
+    HRESULT UndoCommitDirect(ITfContext* context);
 
     LONG refCount_;
     ITfThreadMgr* threadMgr_;
@@ -252,6 +374,13 @@ private:
     // (かな表示へのフォールバック時・変換中 (converting_)・英字モード中は必ず空)
     std::vector<ConversionSegment> liveSegments_;
     bool liveSuspended_;  // Esc でこの composition 中はライブ変換を止めた
+
+    // direct 方式の run: 現在文書に入っている、この run 由来の文字列 (空 = run なし)
+    std::wstring surface_;
+    // 文書の選択開始が surface_ の何文字目にあるか (候補選択中は現在文節の先頭、
+    // それ以外は末尾)。置換 session の expected 照合の基点に使う
+    size_t surfaceCaret_;
+    DirectCapability directCapable_;  // フォーカス中の文書で direct 方式が使えるか
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)

@@ -24,6 +24,16 @@ public:
     void EnterAsciiMode() { asciiMode_ = true; }
     bool AsciiMode() const { return asciiMode_; }
 
+    // モードレス入力 (設定 modeless) の有効/無効。無効なら自動英字判定は一切働かない。
+    // 入力ごとに設定を渡し直さなくて済むよう、Clear() ではこのフラグを維持する
+    void SetModeless(bool enabled) { modeless_ = enabled; }
+
+    // 自動英字判定のうち、確定する直前にだけ効く判定 (判定ルール3):
+    // 未変換ローマ字として n 以外の英小文字が1文字残っていれば英字と判定する
+    // (「want」の t)。打ち途中で暴発しないよう、run / composition を無変換のまま
+    // 確定する経路からのみ呼ぶ
+    void FinishForCommit();
+
     // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)
     void Backspace();
 
@@ -54,8 +64,13 @@ private:
     // 2文字目以降には空を対応付ける (Backspace はかな1文字単位のため)
     void AppendKana(const std::wstring& kana, const std::wstring& raw);
 
+    // 自動英字判定の成立時: ここまでの打鍵列 (Raw()) を1文字ずつそのままかな列に
+    // 置き直して英字モードへ移る。以降は Shift+英字で入った英字モードと同じ扱い
+    void SwitchToAscii();
+
     std::wstring kana_;             // 確定済みのかな
     std::vector<std::wstring> raw_; // kana_ の各文字に対応する打鍵列
     std::wstring pending_;          // 未変換のローマ字
     bool asciiMode_ = false;        // 英字モード (Shift+英字以降はアルファベットのまま)
+    bool modeless_ = false;         // モードレス入力 (自動英字判定) が有効か
 };

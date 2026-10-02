@@ -37,7 +37,10 @@ const ID_COMBO_DIGITS: i32 = 107;
 const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
 const ID_CHECK_LIVE: i32 = 110;
+const ID_COMBO_INPUT_STYLE: i32 = 111;
+const ID_CHECK_MODELESS: i32 = 112;
 const ID_COMBO_KEY_BASE: i32 = 120; // +0〜9 (KEY_ITEMS の並び順)
+const ID_COMBO_KEY_CONVERT: i32 = 130;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 
@@ -59,6 +62,14 @@ const KEY_ITEMS: [(&str, &str, bool); 10] = [
 /// 句読点の選択肢 (設定値そのまま表示する)
 const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
 
+/// 変換キー (key.convert) の選択肢 (設定値そのまま表示する)。
+/// KEY_ITEMS の「無修飾 F1-F12 / Ctrl 併用」の枠に収まらない専用の2択
+const CONVERT_KEY_ITEMS: [&str; 2] = ["Convert", "Ctrl+Space"];
+
+/// 入力方式 (input_style) の選択肢: (設定値, 表示名)
+const INPUT_STYLE_ITEMS: [(&str, &str); 2] =
+    [("composition", "従来方式 (composition)"), ("direct", "直接入力 (direct)")];
+
 /// 設定ファイルの内容 (エンジン向け + TSF 層向けの全キー)
 struct Config {
     learning: bool,
@@ -66,13 +77,16 @@ struct Config {
     typo_correction: bool,
     max_predictions: u32,   // 1-8
     min_suggest_chars: u32, // 1-5
+    input_style: String,    // "composition" / "direct"
     space_full: bool,
     punctuation: String,
     digits_full: bool,
     live_conversion: bool,
+    modeless: bool,
     candidate_font: String,
     candidate_font_size: u32, // 10-40
     keys: [String; 10],       // "F4" / "Ctrl+F7" / "none" (KEY_ITEMS の並び順)
+    convert_key: String,      // "Convert" / "Ctrl+Space"
 }
 
 impl Default for Config {
@@ -83,10 +97,12 @@ impl Default for Config {
             typo_correction: true,
             max_predictions: 8,
             min_suggest_chars: 2,
+            input_style: "composition".to_string(),
             space_full: true,
             punctuation: "、。".to_string(),
             digits_full: false,
             live_conversion: false,
+            modeless: false,
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
             keys: [
@@ -94,8 +110,18 @@ impl Default for Config {
                 "Ctrl+F12",
             ]
             .map(String::from),
+            convert_key: "Convert".to_string(),
         }
     }
+}
+
+/// 入力方式の設定値に対応する表示名 (未知の値は既定の composition 扱い)
+fn input_style_label(value: &str) -> &'static str {
+    INPUT_STYLE_ITEMS
+        .iter()
+        .find(|(v, _)| *v == value)
+        .map(|(_, label)| *label)
+        .unwrap_or(INPUT_STYLE_ITEMS[0].1)
 }
 
 /// 設定ファイルのパス。優先順: QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv
@@ -169,6 +195,11 @@ impl Config {
                     self.min_suggest_chars = n.clamp(1, 5);
                 }
             }
+            "input_style" => {
+                if INPUT_STYLE_ITEMS.iter().any(|(v, _)| *v == value) {
+                    self.input_style = value.to_string();
+                }
+            }
             "space" => match value {
                 "full" => self.space_full = true,
                 "half" => self.space_full = false,
@@ -180,6 +211,7 @@ impl Config {
                 _ => {}
             },
             "live_conversion" => parse_bool(&mut self.live_conversion),
+            "modeless" => parse_bool(&mut self.modeless),
             "punctuation" => {
                 if PUNCT_ITEMS.contains(&value) {
                     self.punctuation = value.to_string();
@@ -194,6 +226,11 @@ impl Config {
             "candidate_font_size" => {
                 if let Ok(n) = value.parse::<u32>() {
                     self.candidate_font_size = n.clamp(10, 40);
+                }
+            }
+            "key.convert" => {
+                if CONVERT_KEY_ITEMS.contains(&value) {
+                    self.convert_key = value.to_string();
                 }
             }
             _ => {
@@ -222,10 +259,12 @@ impl Config {
         text.push_str(&format!("max_predictions\t{}\n", self.max_predictions));
         text.push_str(&format!("min_suggest_chars\t{}\n", self.min_suggest_chars));
         text.push_str("\n# 入力挙動\n");
+        text.push_str(&format!("input_style\t{}\n", self.input_style));
         text.push_str(&format!("space\t{}\n", if self.space_full { "full" } else { "half" }));
         text.push_str(&format!("punctuation\t{}\n", self.punctuation));
         text.push_str(&format!("digits\t{}\n", if self.digits_full { "full" } else { "half" }));
         text.push_str(&format!("live_conversion\t{}\n", self.live_conversion as u32));
+        text.push_str(&format!("modeless\t{}\n", self.modeless as u32));
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
@@ -233,6 +272,7 @@ impl Config {
         for (i, (name, _, _)) in KEY_ITEMS.iter().enumerate() {
             text.push_str(&format!("{}\t{}\n", name, self.keys[i]));
         }
+        text.push_str(&format!("key.convert\t{}\n", self.convert_key));
         std::fs::write(&path, text.as_bytes())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
 
@@ -335,9 +375,9 @@ fn main() {
         let right_x = margin + left_w + col_gap;
         let right_w = label_w + row_gap + ctrl_w;
         let client_w = right_x + right_w + margin;
-        // 左カラム: 見出し3 + 項目11行 + 見出し前の隙間、右カラム: 見出し1 + 10行。
+        // 左カラム: 見出し3 + 項目13行 + 見出し前の隙間、右カラム: 見出し1 + 11行。
         // 高さは行数の多い左カラム基準
-        let left_rows = 14;
+        let left_rows = 16;
         let client_h =
             margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
 
@@ -471,6 +511,10 @@ fn main() {
         y += row_h + row_gap + section_gap;
         create_control("STATIC", "入力", label_style, 0, margin, y, left_w, row_h, 0);
         y += row_h + row_gap;
+        create_control("STATIC", "入力方式:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        let style_labels: Vec<&str> = INPUT_STYLE_ITEMS.iter().map(|(_, label)| *label).collect();
+        add_combo(ctrl_x, y, ID_COMBO_INPUT_STYLE, &style_labels, input_style_label(&config.input_style));
+        y += row_h + row_gap;
         create_control("STATIC", "スペースキー:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
         add_combo(
             ctrl_x,
@@ -493,6 +537,13 @@ fn main() {
         );
         y += row_h + row_gap;
         check("ライブ変換 (入力中に自動で変換する)", y, ID_CHECK_LIVE, config.live_conversion);
+        y += row_h + row_gap;
+        check(
+            "モードレス入力 (英語の打鍵を自動で判定する)",
+            y,
+            ID_CHECK_MODELESS,
+            config.modeless,
+        );
 
         y += row_h + row_gap + section_gap;
         create_control("STATIC", "候補ウィンドウ", label_style, 0, margin, y, left_w, row_h, 0);
@@ -546,6 +597,9 @@ fn main() {
             let refs: Vec<&str> = items.iter().map(String::as_str).collect();
             add_combo(key_ctrl_x, y, ID_COMBO_KEY_BASE + i as i32, &refs, &config.keys[i]);
         }
+        y += row_h + row_gap;
+        create_control("STATIC", "変換キー:", label_style, 0, right_x, y + scale(3), label_w, row_h, 0);
+        add_combo(key_ctrl_x, y, ID_COMBO_KEY_CONVERT, &CONVERT_KEY_ITEMS, &config.convert_key);
 
         // ---- 下部ボタン (右寄せ) ----
         let button_y = client_h - margin - button_h;
@@ -695,6 +749,10 @@ fn collect(hwnd: HWND) -> Config {
     if let Ok(n) = combo_text(ID_COMBO_MIN_CHARS).parse::<u32>() {
         config.min_suggest_chars = n.clamp(1, 5);
     }
+    let style_label = combo_text(ID_COMBO_INPUT_STYLE);
+    if let Some((value, _)) = INPUT_STYLE_ITEMS.iter().find(|(_, label)| *label == style_label) {
+        config.input_style = value.to_string();
+    }
     config.space_full = combo_text(ID_COMBO_SPACE) == "全角スペース";
     let punct = combo_text(ID_COMBO_PUNCT);
     if PUNCT_ITEMS.contains(&punct.as_str()) {
@@ -702,6 +760,7 @@ fn collect(hwnd: HWND) -> Config {
     }
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
     config.live_conversion = checked(ID_CHECK_LIVE);
+    config.modeless = checked(ID_CHECK_MODELESS);
     let font = combo_text(ID_COMBO_FONT);
     if !font.is_empty() && font.encode_utf16().count() < 32 {
         config.candidate_font = font;
@@ -714,6 +773,10 @@ fn collect(hwnd: HWND) -> Config {
         if valid_key_notation(&value, *ctrl) {
             config.keys[i] = value;
         }
+    }
+    let convert_key = combo_text(ID_COMBO_KEY_CONVERT);
+    if CONVERT_KEY_ITEMS.contains(&convert_key.as_str()) {
+        config.convert_key = convert_key;
     }
     config
 }

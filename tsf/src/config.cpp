@@ -142,9 +142,34 @@ void ParseKeyBinding(const std::wstring& value, bool requireCtrl, KeyBinding& ou
     out = KeyBinding{ctrl, vk};
 }
 
+// 変換キーの値をパースする。"Convert" (VK_CONVERT) と "Ctrl+Space" の2択で、
+// それ以外は変更しない
+void ParseConvertKeyBinding(const std::wstring& value, KeyBinding& out)
+{
+    if (value == L"Convert") {
+        out = KeyBinding{false, VK_CONVERT};
+    } else if (value == L"Ctrl+Space") {
+        out = KeyBinding{true, VK_SPACE};
+    }
+}
+
+// "direct"/"composition" を入力方式にする。それ以外は変更しない
+void ParseInputStyle(const std::wstring& value, InputStyle& out)
+{
+    if (value == L"direct") {
+        out = InputStyle::Direct;
+    } else if (value == L"composition") {
+        out = InputStyle::Composition;
+    }
+}
+
 // 1行「キー\t値」を config へ反映する
 void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& config)
 {
+    if (key == L"key.convert") {
+        ParseConvertKeyBinding(value, config.keys[static_cast<size_t>(KeyFunc::Convert)]);
+        return;
+    }
     if (key.rfind(L"key.", 0) == 0) {
         for (const auto& entry : kKeyNames) {
             if (key == entry.name) {
@@ -157,7 +182,9 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
         return;
     }
-    if (key == L"space") {
+    if (key == L"input_style") {
+        ParseInputStyle(value, config.inputStyle);
+    } else if (key == L"space") {
         ParseWidth(value, config.spaceFullwidth);
     } else if (key == L"digits") {
         ParseWidth(value, config.digitsFullwidth);
@@ -172,6 +199,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseClamped(value, 10, 40, config.candidateFontSize);
     } else if (key == L"live_conversion") {
         ParseBool(value, config.liveConversion);
+    } else if (key == L"modeless") {
+        ParseBool(value, config.modeless);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

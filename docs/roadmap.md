@@ -226,6 +226,33 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       対応するコード変更: FindExePath に親ディレクトリ候補 (x86\ DLL 用)、
       dictionary_dir に exe 同階層 dict\ 候補、CRT 静的リンク化
       (TSF は /MT、Rust は crt-static。全プロセスにロードされる DLL のため)
+- [ ] 直接入力方式 (docs/design/direct-input.md)。設定 input_style (composition / direct、
+      既定 composition) で切り替える。direct は打鍵した文字を composition ではなく文書へ
+      直接入れ、IME が「自分が入れた文字列 (surface) と読み」= run を覚えて毎打鍵で
+      キャレット直前を置き換える (未確定文字列の挙動が不安定な Web フォーム対策)。
+      文書の読み取り・置換ができないアプリでは文書単位で composition 方式へフォールバック。
+      設定 key.convert (Convert = VK_CONVERT / Ctrl+Space) で変換キーを選べる。
+      設定項目は設定ツールの「入力方式」「変換キー」
+  - [x] 段階1 (2026-09-16 実装): かな・記号・数字の直接入力と置換、Backspace、
+        Space (run 終了 + スペース)、Enter/Esc/矢印/Tab の通過と run 終了、フォーカス移動・
+        IME オフでの run 終了、フォールバック判定、確定アンドゥの direct 版
+  - [x] 段階2 (2026-09-19 実装): 変換キーによる後置変換 (現在文節を選択で強調、候補
+        ウィンドウは選択範囲の直下)、候補選択中の Enter/Space/Esc/Backspace/印字キー、
+        run 終了時の学習・文脈更新、サジェスト (Tab/↑↓ で surface を候補に置換、Enter で確定)、
+        ライブ変換 (毎打鍵の置換文字列を変換結果にし、変換キーで候補選択へ)、
+        ひらがな・カタカナ・ー のみの選択範囲の後置再変換、composition 方式でも変換キーを
+        Space と同じ変換操作として扱う
+- [x] モードレス入力 (自動英字判定) (2026-10-02 実装、docs/design/modeless.md)。
+      設定 modeless (既定 OFF) で有効化する。英語の打鍵を RomajiComposer が判定して
+      英字モードへ自動で移し、打鍵列をそのままアルファベットで入れる
+      (判定ルール: ローマ字として成立しない英小文字の素通し (apple の pl)、
+      促音の直後の小書き母音 (hello の へっ+ぉ)、無変換確定時に n 以外の英小文字が
+      1文字残る (わんt → want))。判定は composition / direct の両方式で働く。
+      英字モード中 (Shift+英字で入った場合も含む) の Space は設定 space によらず半角で、
+      composition 方式では変換ではなく「半角スペースを付けた確定」になる
+      (英字の変換は変換キー)。composition / run が無いときの Space は直前の確定が
+      ASCII 英数字だけなら半角。ローマ字として成立する英単語 (sake、pen など) は
+      日本語優先で判定しない (生ローマ字候補か Shift 頭文字で入れる)
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点

@@ -167,3 +167,57 @@ private:
     ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
     ITfComposition** compositionOut_;  // 開始した composition の受け取り先
 };
+
+// direct 方式の置換結果
+enum class ReplaceRunResult {
+    Succeeded,
+    Mismatch,     // キャレット直前のテキストが expected と一致しない (run は捨てる)
+    Unsupported,  // 文書の読み取り・置換ができない (composition 方式へフォールバック)
+    // 選択位置の前後どちらにも文字が無く、この文書で周辺テキストが読めるか判定
+    // できない。文書には何も入れていない (この run だけ composition 方式で入力する)
+    NoSurroundingText,
+    // 置換しようとしたが run の範囲すら作れない (選択位置の前に文字が無い)。
+    // 周辺テキストが読めない文書 (CUAS 経由など) とみなす
+    Unreadable,
+};
+
+// direct 方式の run の挿入・置換・選択を1つの edit session で行う。
+// expected が空なら選択位置へ newText を挿入し (選択があればそれを置き換え)、
+// 挿入した文字列を同じ session 内で読み戻して一致すれば Succeeded、読めなければ
+// Unsupported (文字列は文書に入ったまま)。probeSurroundingText を立てると、挿入前に
+// 選択位置の前後に文字があるかを確かめ、どちらにも無ければ何も入れずに
+// NoSurroundingText を返す。expected が非空なら、選択開始から caretOffset 文字前〜
+// (expected.size() - caretOffset) 文字後の範囲を expected と比較し、一致したときだけ
+// newText に置き換える (範囲が全く作れなければ Unreadable、内容が違えば Mismatch、
+// GetText 自体が失敗すれば Unsupported)。置換後、selectLength > 0 なら newText 内の
+// [selectOffset, selectOffset + selectLength) を選択し、そうでなければ末尾に潰す
+class ReplaceRunEditSession : public EditSessionBase {
+public:
+    ReplaceRunEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
+                          std::wstring newText, size_t selectOffset, size_t selectLength,
+                          bool probeSurroundingText, ReplaceRunResult* resultOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    std::wstring expected_;
+    size_t caretOffset_;
+    std::wstring newText_;
+    size_t selectOffset_;
+    size_t selectLength_;
+    bool probeSurroundingText_;
+    ReplaceRunResult* resultOut_;
+};
+
+// 現在の選択範囲の画面上の矩形 (スクリーン座標) を取得する (direct 方式の候補
+// ウィンドウの位置決め用。composition が無いため選択範囲を基準にする)。
+// SetText 直後は同じロック内でレイアウトが更新されていないアプリがあるため、
+// GetTextExtentEditSession と同様に置換とは別の session で呼ぶ
+class GetSelectionExtentEditSession : public EditSessionBase {
+public:
+    GetSelectionExtentEditSession(ITfContext* context, RECT* rectOut, bool* succeededOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    RECT* rectOut_;
+    bool* succeededOut_;
+};

@@ -19,6 +19,7 @@ add_library(quicklime_tsf SHARED
     src/registry.cpp
     src/romaji.cpp
     src/text_service.cpp
+    src/text_service_direct.cpp
     src/exports.def
     src/QuicklIME.rc
 )

@@ -486,3 +486,177 @@ STDMETHODIMP RestartCompositionEditSession::DoEditSession(TfEditCookie ec)
     // WM_IME_COMPOSITION を生成せず、WezTerm 等で未確定文字列が表示されない
     return hr;
 }
+
+// ---- ReplaceRunEditSession ----
+
+ReplaceRunEditSession::ReplaceRunEditSession(ITfContext* context, std::wstring expected,
+                                             size_t caretOffset, std::wstring newText,
+                                             size_t selectOffset, size_t selectLength,
+                                             bool probeSurroundingText,
+                                             ReplaceRunResult* resultOut)
+    : EditSessionBase(context),
+      expected_(std::move(expected)),
+      caretOffset_(caretOffset),
+      newText_(std::move(newText)),
+      selectOffset_(selectOffset),
+      selectLength_(selectLength),
+      probeSurroundingText_(probeSurroundingText),
+      resultOut_(resultOut)
+{
+    *resultOut_ = ReplaceRunResult::Unsupported;
+}
+
+STDMETHODIMP ReplaceRunEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+    ReplaceRunResult result = ReplaceRunResult::Unsupported;
+
+    do {
+        if (!expected_.empty()) {
+            // 選択開始を基点に run の範囲を作り直し、内容が記憶と一致するか確かめる
+            // (キャレット移動やアプリ側の編集があれば一致しない)
+            range->Collapse(ec, TF_ANCHOR_START);
+            const LONG after = static_cast<LONG>(expected_.size() - caretOffset_);
+            const LONG before = static_cast<LONG>(caretOffset_);
+            LONG shifted = 0;
+            if (after > 0) {
+                hr = range->ShiftEnd(ec, after, &shifted, nullptr);
+                if (FAILED(hr)) {
+                    break;
+                }
+                if (shifted != after) {
+                    result = ReplaceRunResult::Mismatch;
+                    break;
+                }
+            }
+            if (before > 0) {
+                hr = range->ShiftStart(ec, -before, &shifted, nullptr);
+                if (FAILED(hr)) {
+                    break;
+                }
+                if (shifted == 0) {
+                    // 1文字も戻れない = 選択位置の前に文字が無い。キャレット移動による
+                    // 不一致 (範囲は作れて内容が違う) とは区別する
+                    result = ReplaceRunResult::Unreadable;
+                    break;
+                }
+                if (shifted != -before) {
+                    result = ReplaceRunResult::Mismatch;
+                    break;
+                }
+            }
+            std::vector<WCHAR> buffer(expected_.size());
+            ULONG read = 0;
+            hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
+            if (FAILED(hr)) {
+                break;
+            }
+            if (read != expected_.size() ||
+                expected_.compare(0, expected_.size(), buffer.data(), read) != 0) {
+                result = ReplaceRunResult::Mismatch;
+                break;
+            }
+        }
+
+        if (expected_.empty() && probeSurroundingText_) {
+            // 挿入前に、選択位置の周りに読める文字があるかを確かめる。CUAS 経由の文書は
+            // composition の外に文字を持てないため前後どちらへも範囲を伸ばせない
+            // (挿入直後の読み戻しは通ってしまうので、それでは判定できない)
+            ITfRange* probe = nullptr;
+            if (FAILED(range->Clone(&probe)) || probe == nullptr) {
+                break;
+            }
+            probe->Collapse(ec, TF_ANCHOR_START);
+            LONG shifted = 0;
+            bool readable =
+                SUCCEEDED(probe->ShiftStart(ec, -1, &shifted, nullptr)) && shifted != 0;
+            if (!readable) {
+                shifted = 0;
+                readable = SUCCEEDED(probe->ShiftEnd(ec, 1, &shifted, nullptr)) && shifted != 0;
+            }
+            probe->Release();
+            if (!readable) {
+                result = ReplaceRunResult::NoSurroundingText;
+                break;
+            }
+        }
+
+        hr = range->SetText(ec, 0, newText_.c_str(), static_cast<LONG>(newText_.size()));
+        if (FAILED(hr)) {
+            break;
+        }
+
+        if (expected_.empty() && !newText_.empty()) {
+            // 新規挿入では挿入した文字列を読み戻し、この文書で direct 方式
+            // (文書の読み取り) が使えるかを判定する。CUAS 経由のアプリでは
+            // composition の外の文字列が読めない
+            std::vector<WCHAR> buffer(newText_.size());
+            ULONG read = 0;
+            hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
+            if (FAILED(hr) || read != newText_.size() ||
+                newText_.compare(0, newText_.size(), buffer.data(), read) != 0) {
+                break;
+            }
+        }
+
+        if (selectLength_ > 0) {
+            ITfRange* target = nullptr;
+            if (SUCCEEDED(range->Clone(&target))) {
+                LONG shifted = 0;
+                target->Collapse(ec, TF_ANCHOR_START);
+                target->ShiftEnd(ec, static_cast<LONG>(selectOffset_ + selectLength_), &shifted,
+                                 nullptr);
+                target->ShiftStart(ec, static_cast<LONG>(selectOffset_), &shifted, nullptr);
+                TF_SELECTION newSelection = {};
+                newSelection.range = target;
+                newSelection.style.ase = TF_AE_NONE;
+                newSelection.style.fInterimChar = FALSE;
+                context_->SetSelection(ec, 1, &newSelection);
+                target->Release();
+            }
+        } else {
+            CollapseSelectionToEnd(ec, context_, range);
+        }
+        result = ReplaceRunResult::Succeeded;
+    } while (false);
+
+    *resultOut_ = result;
+    range->Release();
+    return hr;
+}
+
+// ---- GetSelectionExtentEditSession ----
+
+GetSelectionExtentEditSession::GetSelectionExtentEditSession(ITfContext* context, RECT* rectOut,
+                                                             bool* succeededOut)
+    : EditSessionBase(context), rectOut_(rectOut), succeededOut_(succeededOut)
+{
+    *succeededOut_ = false;
+}
+
+STDMETHODIMP GetSelectionExtentEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+
+    ITfContextView* view = nullptr;
+    hr = context_->GetActiveView(&view);
+    if (SUCCEEDED(hr)) {
+        BOOL clipped = FALSE;
+        hr = view->GetTextExt(ec, selection.range, rectOut_, &clipped);
+        *succeededOut_ = SUCCEEDED(hr) && (rectOut_->right != 0 || rectOut_->bottom != 0);
+        view->Release();
+    }
+    selection.range->Release();
+    return hr;
+}

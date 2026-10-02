@@ -191,6 +191,19 @@ bool IsVowel(wchar_t c)
     return c == L'a' || c == L'i' || c == L'u' || c == L'e' || c == L'o';
 }
 
+bool IsAsciiLower(wchar_t c)
+{
+    return c >= L'a' && c <= L'z';
+}
+
+// l/x 由来の小書き母音 (ぁぃぅぇぉ) 1文字か
+bool IsSmallVowelKana(const std::wstring& kana)
+{
+    return kana.size() == 1 &&
+           (kana[0] == L'ぁ' || kana[0] == L'ぃ' || kana[0] == L'ぅ' || kana[0] == L'ぇ' ||
+            kana[0] == L'ぉ');
+}
+
 // pending がテーブルのいずれかのキーの前方一致になっているか
 bool IsPrefixOfAnyKey(const std::wstring& pending)
 {
@@ -240,6 +253,13 @@ void RomajiComposer::Convert()
 
         // 完全一致: かなを確定
         if (auto it = table.find(pending_); it != table.end()) {
+            // 自動英字判定ルール2: 促音の直後に小書き母音が来る綴り (hello の
+            // 「へっ」+「ぉ」) は日本語の入力に現れないため英字と判定する
+            if (modeless_ && !asciiMode_ && !kana_.empty() && kana_.back() == L'っ' &&
+                IsSmallVowelKana(it->second)) {
+                SwitchToAscii();
+                return;
+            }
             AppendKana(it->second, pending_);
             pending_.clear();
             return;
@@ -265,11 +285,42 @@ void RomajiComposer::Convert()
             continue;
         }
 
+        // 自動英字判定ルール1: ローマ字として成立しない英小文字の素通しは
+        // 英語特有の子音連続 (apple の pl、str、th など) とみなして英字と判定する
+        if (modeless_ && !asciiMode_ && IsAsciiLower(pending_[0])) {
+            SwitchToAscii();
+            return;
+        }
+
         // どの規則にも合わない先頭文字はそのままかな列へ残す
         // (MS-IME と同様。英単語の打鍵 "apple" の p などが見えるようにする)
         AppendKana(pending_.substr(0, 1), pending_.substr(0, 1));
         pending_.erase(0, 1);
     }
+}
+
+void RomajiComposer::FinishForCommit()
+{
+    if (!modeless_ || asciiMode_ || pending_.size() != 1) {
+        return;
+    }
+    // "n" は確定時に「ん」へ救済される打鍵なので日本語のままにする
+    if (pending_[0] == L'n' || !IsAsciiLower(pending_[0])) {
+        return;
+    }
+    SwitchToAscii();
+}
+
+void RomajiComposer::SwitchToAscii()
+{
+    const std::wstring raw = Raw();
+    kana_.clear();
+    raw_.clear();
+    pending_.clear();
+    for (const wchar_t c : raw) {
+        AppendKana(std::wstring(1, c), std::wstring(1, c));
+    }
+    asciiMode_ = true;
 }
 
 void RomajiComposer::Backspace()
@@ -305,6 +356,7 @@ void RomajiComposer::Clear()
     raw_.clear();
     pending_.clear();
     asciiMode_ = false;
+    // modeless_ は設定由来のため維持する
 }
 
 bool RomajiComposer::Empty() const
