@@ -14,6 +14,7 @@ Debug/
 Release/
 *.user
 .vs/
+.vscode/
 
 # Rust
 target/
