@@ -487,19 +487,72 @@ STDMETHODIMP RestartCompositionEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
+// ---- run の照合 (ReplaceRunEditSession / SelectRunRangeEditSession 共通) ----
+
+namespace {
+
+// range (選択範囲) を選択開始に潰してから run の範囲へ広げ、内容が expected と
+// 一致するか確かめる。一致すれば Succeeded を返し、range は run 全体を指す。
+// キャレット移動やアプリ側の編集があれば一致しない。ShiftStart/ShiftEnd/GetText
+// 自体の失敗は Unsupported を返し、その HRESULT を *hrOut に入れる
+ReplaceRunResult MatchRunRange(TfEditCookie ec, ITfRange* range, const std::wstring& expected,
+                               size_t caretOffset, HRESULT* hrOut)
+{
+    range->Collapse(ec, TF_ANCHOR_START);
+    const LONG after = static_cast<LONG>(expected.size() - caretOffset);
+    const LONG before = static_cast<LONG>(caretOffset);
+    LONG shifted = 0;
+    HRESULT hr = S_OK;
+    if (after > 0) {
+        hr = range->ShiftEnd(ec, after, &shifted, nullptr);
+        if (FAILED(hr)) {
+            *hrOut = hr;
+            return ReplaceRunResult::Unsupported;
+        }
+        if (shifted != after) {
+            return ReplaceRunResult::Mismatch;
+        }
+    }
+    if (before > 0) {
+        hr = range->ShiftStart(ec, -before, &shifted, nullptr);
+        if (FAILED(hr)) {
+            *hrOut = hr;
+            return ReplaceRunResult::Unsupported;
+        }
+        if (shifted == 0) {
+            // 1文字も戻れない = 選択位置の前に文字が無い。キャレット移動による
+            // 不一致 (範囲は作れて内容が違う) とは区別する
+            return ReplaceRunResult::Unreadable;
+        }
+        if (shifted != -before) {
+            return ReplaceRunResult::Mismatch;
+        }
+    }
+    std::vector<WCHAR> buffer(expected.size());
+    ULONG read = 0;
+    hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
+    if (FAILED(hr)) {
+        *hrOut = hr;
+        return ReplaceRunResult::Unsupported;
+    }
+    if (read != expected.size() || expected.compare(0, expected.size(), buffer.data(), read) != 0) {
+        return ReplaceRunResult::Mismatch;
+    }
+    return ReplaceRunResult::Succeeded;
+}
+
+}  // namespace
+
 // ---- ReplaceRunEditSession ----
 
 ReplaceRunEditSession::ReplaceRunEditSession(ITfContext* context, std::wstring expected,
                                              size_t caretOffset, std::wstring newText,
-                                             size_t selectOffset, size_t selectLength,
                                              bool probeSurroundingText,
                                              ReplaceRunResult* resultOut)
     : EditSessionBase(context),
       expected_(std::move(expected)),
       caretOffset_(caretOffset),
       newText_(std::move(newText)),
-      selectOffset_(selectOffset),
-      selectLength_(selectLength),
       probeSurroundingText_(probeSurroundingText),
       resultOut_(resultOut)
 {
@@ -519,47 +572,10 @@ STDMETHODIMP ReplaceRunEditSession::DoEditSession(TfEditCookie ec)
 
     do {
         if (!expected_.empty()) {
-            // 選択開始を基点に run の範囲を作り直し、内容が記憶と一致するか確かめる
-            // (キャレット移動やアプリ側の編集があれば一致しない)
-            range->Collapse(ec, TF_ANCHOR_START);
-            const LONG after = static_cast<LONG>(expected_.size() - caretOffset_);
-            const LONG before = static_cast<LONG>(caretOffset_);
-            LONG shifted = 0;
-            if (after > 0) {
-                hr = range->ShiftEnd(ec, after, &shifted, nullptr);
-                if (FAILED(hr)) {
-                    break;
-                }
-                if (shifted != after) {
-                    result = ReplaceRunResult::Mismatch;
-                    break;
-                }
-            }
-            if (before > 0) {
-                hr = range->ShiftStart(ec, -before, &shifted, nullptr);
-                if (FAILED(hr)) {
-                    break;
-                }
-                if (shifted == 0) {
-                    // 1文字も戻れない = 選択位置の前に文字が無い。キャレット移動による
-                    // 不一致 (範囲は作れて内容が違う) とは区別する
-                    result = ReplaceRunResult::Unreadable;
-                    break;
-                }
-                if (shifted != -before) {
-                    result = ReplaceRunResult::Mismatch;
-                    break;
-                }
-            }
-            std::vector<WCHAR> buffer(expected_.size());
-            ULONG read = 0;
-            hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
-            if (FAILED(hr)) {
-                break;
-            }
-            if (read != expected_.size() ||
-                expected_.compare(0, expected_.size(), buffer.data(), read) != 0) {
-                result = ReplaceRunResult::Mismatch;
+            const ReplaceRunResult match =
+                MatchRunRange(ec, range, expected_, caretOffset_, &hr);
+            if (match != ReplaceRunResult::Succeeded) {
+                result = match;
                 break;
             }
         }
@@ -605,28 +621,130 @@ STDMETHODIMP ReplaceRunEditSession::DoEditSession(TfEditCookie ec)
             }
         }
 
-        if (selectLength_ > 0) {
-            ITfRange* target = nullptr;
-            if (SUCCEEDED(range->Clone(&target))) {
-                LONG shifted = 0;
-                target->Collapse(ec, TF_ANCHOR_START);
-                target->ShiftEnd(ec, static_cast<LONG>(selectOffset_ + selectLength_), &shifted,
-                                 nullptr);
-                target->ShiftStart(ec, static_cast<LONG>(selectOffset_), &shifted, nullptr);
-                TF_SELECTION newSelection = {};
-                newSelection.range = target;
-                newSelection.style.ase = TF_AE_NONE;
-                newSelection.style.fInterimChar = FALSE;
-                context_->SetSelection(ec, 1, &newSelection);
-                target->Release();
-            }
+        CollapseSelectionToEnd(ec, context_, range);
+        result = ReplaceRunResult::Succeeded;
+    } while (false);
+
+    *resultOut_ = result;
+    range->Release();
+    return hr;
+}
+
+// ---- SelectRunRangeEditSession ----
+
+SelectRunRangeEditSession::SelectRunRangeEditSession(ITfContext* context, std::wstring expected,
+                                                     size_t caretOffset, size_t selectOffset,
+                                                     size_t selectLength,
+                                                     ReplaceRunResult* resultOut)
+    : EditSessionBase(context),
+      expected_(std::move(expected)),
+      caretOffset_(caretOffset),
+      selectOffset_(selectOffset),
+      selectLength_(selectLength),
+      resultOut_(resultOut)
+{
+    *resultOut_ = ReplaceRunResult::Unsupported;
+}
+
+STDMETHODIMP SelectRunRangeEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+    ReplaceRunResult result = ReplaceRunResult::Unsupported;
+
+    do {
+        if (expected_.empty()) {
+            range->Collapse(ec, TF_ANCHOR_START);
         } else {
-            CollapseSelectionToEnd(ec, context_, range);
+            const ReplaceRunResult match =
+                MatchRunRange(ec, range, expected_, caretOffset_, &hr);
+            if (match != ReplaceRunResult::Succeeded) {
+                result = match;
+                break;
+            }
+        }
+
+        // range は run 全体。その先頭から [selectOffset, selectOffset + selectLength) を作る
+        // (長さ 0 なら selectOffset の位置に潰れた範囲になる)
+        LONG shifted = 0;
+        range->Collapse(ec, TF_ANCHOR_START);
+        range->ShiftEnd(ec, static_cast<LONG>(selectOffset_ + selectLength_), &shifted, nullptr);
+        range->ShiftStart(ec, static_cast<LONG>(selectOffset_), &shifted, nullptr);
+        TF_SELECTION newSelection = {};
+        newSelection.range = range;
+        newSelection.style.ase = TF_AE_NONE;
+        newSelection.style.fInterimChar = FALSE;
+        hr = context_->SetSelection(ec, 1, &newSelection);
+        if (FAILED(hr)) {
+            break;
         }
         result = ReplaceRunResult::Succeeded;
     } while (false);
 
     *resultOut_ = result;
+    range->Release();
+    return hr;
+}
+
+// ---- PromoteRunEditSession ----
+
+PromoteRunEditSession::PromoteRunEditSession(ITfContext* context, std::wstring expected,
+                                             size_t caretOffset, ITfCompositionSink* sink,
+                                             TfGuidAtom displayAttribute,
+                                             ITfComposition** compositionOut,
+                                             ReplaceRunResult* matchOut)
+    : EditSessionBase(context),
+      expected_(std::move(expected)),
+      caretOffset_(caretOffset),
+      sink_(sink),
+      displayAttribute_(displayAttribute),
+      compositionOut_(compositionOut),
+      matchOut_(matchOut)
+{
+    *compositionOut_ = nullptr;
+    *matchOut_ = ReplaceRunResult::Unsupported;
+}
+
+STDMETHODIMP PromoteRunEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+
+    const ReplaceRunResult match = MatchRunRange(ec, range, expected_, caretOffset_, &hr);
+    if (match == ReplaceRunResult::Succeeded) {
+        ITfContextComposition* contextComposition = nullptr;
+        hr = context_->QueryInterface(IID_ITfContextComposition,
+                                      reinterpret_cast<void**>(&contextComposition));
+        if (SUCCEEDED(hr)) {
+            hr = contextComposition->StartComposition(ec, range, sink_, compositionOut_);
+            contextComposition->Release();
+        }
+        if (FAILED(hr) && *compositionOut_ != nullptr) {
+            (*compositionOut_)->Release();
+            *compositionOut_ = nullptr;
+        }
+        // StartComposition はアプリの拒否時に S_OK + nullptr を返すことがある
+        if (*compositionOut_ != nullptr) {
+            ITfRange* compRange = nullptr;
+            if (SUCCEEDED((*compositionOut_)->GetRange(&compRange))) {
+                ApplyDisplayAttribute(ec, context_, compRange, displayAttribute_);
+                CollapseSelectionToEnd(ec, context_, compRange);
+                compRange->Release();
+            }
+        }
+    }
+
+    *matchOut_ = match;
     range->Release();
     return hr;
 }

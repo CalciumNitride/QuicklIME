@@ -217,11 +217,12 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
             }
             const std::wstring text = composer_.Display();
             if (text != before.Display()) {
-                const ReplaceRunResult result =
-                    ReplaceRunRange(context, surface_, surfaceCaret_, text, 0, 0);
+                const ReplaceRunResult result = ReplaceRunRange(
+                    context, surface_, surfaceCaret_, surfaceSelectLength_, text, 0, 0);
                 if (result == ReplaceRunResult::Succeeded) {
                     surface_ = text;
                     surfaceCaret_ = surface_.size();
+                    surfaceSelectLength_ = 0;
                     NoteDirectSuccess(false);
                 } else {
                     if (result == ReplaceRunResult::Unsupported ||
@@ -332,6 +333,11 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     default:
         if (InRun() && wparam >= VK_F1 && wparam <= VK_F12) {
+            // 変換状態に入るキーなので composition に昇格してから適用する。
+            // 昇格できない文書 (Refused) と既に候補選択中のフォールバックは direct のまま
+            if (!converting_ && PromoteRun(context) == PromoteResult::Dropped) {
+                return S_OK;
+            }
             return ApplyFunctionKey(context, config_.Get().FindPlainFunc(wparam));
         }
         return S_OK;
@@ -409,26 +415,63 @@ void TextService::PushDirectKey(const DirectKey& key)
 ReplaceRunResult TextService::ReplaceRunText(ITfContext* context, const std::wstring& expected,
                                              const std::wstring& newText)
 {
-    return ReplaceRunRange(context, expected, expected.size(), newText, 0, 0);
+    return ReplaceRunRange(context, expected, expected.size(), 0, newText, 0, 0);
 }
 
 ReplaceRunResult TextService::ReplaceRunRange(ITfContext* context, const std::wstring& expected,
-                                              size_t caretOffset, const std::wstring& newText,
-                                              size_t selectOffset, size_t selectLength)
+                                              size_t caretOffset, size_t currentSelectLength,
+                                              const std::wstring& newText, size_t selectOffset,
+                                              size_t selectLength, bool* selectedOut)
+{
+    if (selectedOut != nullptr) {
+        *selectedOut = false;
+    }
+    ReplaceRunResult result = ReplaceRunResult::Unsupported;
+    if (context == nullptr) {
+        return result;
+    }
+    if (caretOffset != expected.size() || currentSelectLength > 0) {
+        result = SelectRunRange(context, expected, caretOffset, expected.size(), 0);
+        if (result != ReplaceRunResult::Succeeded) {
+            return result;
+        }
+        caretOffset = expected.size();
+    }
+    // 未判定の文書での新規挿入だけ、挿入前に周辺テキストが読めるかを確かめる
+    const bool probe = expected.empty() && directCapable_ == DirectCapability::Unknown;
+    result = ReplaceRunResult::Unsupported;
+    RequestSync(context,
+                new (std::nothrow)
+                    ReplaceRunEditSession(context, expected, caretOffset, newText, probe, &result),
+                TF_ES_SYNC | TF_ES_READWRITE);
+    if (result == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
+        // 読める文書と分かっている以上、範囲が作れないのはキャレットが動いたため
+        result = ReplaceRunResult::Mismatch;
+    }
+    if (result == ReplaceRunResult::Succeeded && selectLength > 0) {
+        const ReplaceRunResult selected =
+            SelectRunRange(context, newText, newText.size(), selectOffset, selectLength);
+        if (selectedOut != nullptr) {
+            *selectedOut = selected == ReplaceRunResult::Succeeded;
+        }
+    }
+    return result;
+}
+
+ReplaceRunResult TextService::SelectRunRange(ITfContext* context, const std::wstring& expected,
+                                             size_t caretOffset, size_t selectOffset,
+                                             size_t selectLength)
 {
     ReplaceRunResult result = ReplaceRunResult::Unsupported;
     if (context == nullptr) {
         return result;
     }
-    // 未判定の文書での新規挿入だけ、挿入前に周辺テキストが読めるかを確かめる
-    const bool probe = expected.empty() && directCapable_ == DirectCapability::Unknown;
     RequestSync(context,
-                new (std::nothrow) ReplaceRunEditSession(context, expected, caretOffset, newText,
-                                                         selectOffset, selectLength, probe,
-                                                         &result),
+                new (std::nothrow) SelectRunRangeEditSession(context, expected, caretOffset,
+                                                             selectOffset, selectLength, &result),
                 TF_ES_SYNC | TF_ES_READWRITE);
     if (result == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
-        // 読める文書と分かっている以上、範囲が作れないのはキャレットが動いたため
+        // ReplaceRunRange と同じく、読める文書で範囲が作れないのはキャレットが動いたため
         result = ReplaceRunResult::Mismatch;
     }
     return result;
@@ -437,11 +480,15 @@ ReplaceRunResult TextService::ReplaceRunRange(ITfContext* context, const std::ws
 HRESULT TextService::ReplaceRunDisplay(ITfContext* context, const std::wstring& text,
                                        size_t selectOffset, size_t selectLength)
 {
-    const ReplaceRunResult result =
-        ReplaceRunRange(context, surface_, surfaceCaret_, text, selectOffset, selectLength);
+    bool selected = false;
+    const ReplaceRunResult result = ReplaceRunRange(context, surface_, surfaceCaret_,
+                                                    surfaceSelectLength_, text, selectOffset,
+                                                    selectLength, &selected);
     if (result == ReplaceRunResult::Succeeded) {
         surface_ = text;
-        surfaceCaret_ = selectLength > 0 ? selectOffset : surface_.size();
+        // 選択に失敗したときは置換 session が末尾に潰したままになっている
+        surfaceCaret_ = selected ? selectOffset : surface_.size();
+        surfaceSelectLength_ = selected ? selectLength : 0;
         NoteDirectSuccess(false);
         return S_OK;
     }
@@ -514,6 +561,7 @@ HRESULT TextService::TypeDirect(ITfContext* context, const DirectKey& key)
     if (result == ReplaceRunResult::Succeeded) {
         surface_ = text;
         surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
         NoteDirectSuccess(newInsertion);
         UpdatePrediction(context);
         return S_OK;
@@ -567,6 +615,7 @@ HRESULT TextService::BackspaceDirect(ITfContext* context)
     if (result == ReplaceRunResult::Succeeded) {
         surface_ = text;
         surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
         NoteDirectSuccess(false);
         if (surface_.empty()) {
             // 消し切った run に確定に相当するものは無い (学習・アンドゥ記憶なし)
@@ -604,12 +653,13 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
     const std::wstring text = RunCommitText() + space;
     const ReplaceRunResult result =
-        ReplaceRunRange(context, surface_, surfaceCaret_, text, 0, 0);
+        ReplaceRunRange(context, surface_, surfaceCaret_, surfaceSelectLength_, text, 0, 0);
     if (result == ReplaceRunResult::Succeeded) {
         // スペースまで含めて確定アンドゥの対象にする (Ctrl+Backspace でスペースごと
         // 読みに戻る)。学習・文脈は EndRun が変換状態と composer_ から求める
         surface_ = text;
         surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
         NoteDirectSuccess(false);
         EndRun();
         return S_OK;
@@ -631,6 +681,9 @@ HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool shifted)
     }
     if (converting_) {
         return CycleCandidate(context, shifted ? -1 : +1);
+    }
+    if (PromoteRun(context) == PromoteResult::Dropped) {
+        return S_OK;
     }
     return StartConversion(context);
 }
@@ -664,10 +717,14 @@ HRESULT TextService::ReconvertSelectionDirect(ITfContext* context)
         composer_.PushKana(std::wstring(1, KatakanaToHiragana(c)), std::wstring(1, c));
     }
     surface_ = selection;
-    // 選択の開始が基点なので、最初の置換は選択範囲そのものを expected と照合する
+    // ユーザの選択 = run 全体。最初の置換の前に選択を末尾へ潰す
     surfaceCaret_ = 0;
+    surfaceSelectLength_ = surface_.size();
     // 選択した文字列と直前の確定は無関係
     ClearContext();
+    if (PromoteRun(context) == PromoteResult::Dropped) {
+        return S_OK;
+    }
     return StartConversion(context);
 }
 
@@ -677,9 +734,9 @@ HRESULT TextService::CommitRunDirect(ITfContext* context)
         return S_OK;
     }
     if (converting_) {
-        // 現在文節の選択を末尾に潰す (文書の文字列は既に変換結果なので置換内容は同じ)
+        // 現在文節の選択を末尾に潰す (文書の文字列は既に変換結果)
         const ReplaceRunResult result =
-            ReplaceRunRange(context, surface_, surfaceCaret_, surface_, 0, 0);
+            SelectRunRange(context, surface_, surfaceCaret_, surface_.size(), 0);
         if (result != ReplaceRunResult::Succeeded) {
             if (result == ReplaceRunResult::Unsupported ||
                 result == ReplaceRunResult::Unreadable) {
@@ -690,6 +747,7 @@ HRESULT TextService::CommitRunDirect(ITfContext* context)
             return S_OK;
         }
         surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
         NoteDirectSuccess(false);
     }
     EndRun();
@@ -763,6 +821,7 @@ void TextService::DropRun()
     composer_.Clear();
     surface_.clear();
     surfaceCaret_ = 0;
+    surfaceSelectLength_ = 0;
 }
 
 HRESULT TextService::UndoCommitDirect(ITfContext* context)
@@ -784,10 +843,89 @@ HRESULT TextService::UndoCommitDirect(ITfContext* context)
     }
     surface_ = text;
     surfaceCaret_ = surface_.size();
+    surfaceSelectLength_ = 0;
     // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない
     ClearContext();
     // 復元した読みを即ライブ再変換すると、直したいはずの誤変換へ戻ってしまうため、
     // この run の間はライブ変換を止める
     liveSuspended_ = true;
     return S_OK;
+}
+
+TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
+{
+    ReplaceRunResult match = ReplaceRunResult::Unsupported;
+    ITfComposition* composition = nullptr;
+    RequestSync(context,
+                new (std::nothrow) PromoteRunEditSession(context, surface_, surfaceCaret_,
+                                                         static_cast<ITfCompositionSink*>(this),
+                                                         inputAttribute_, &composition, &match),
+                TF_ES_SYNC | TF_ES_READWRITE);
+    if (match == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
+        // ReplaceRunRange と同じく、読める文書で範囲が作れないのはキャレットが動いたため
+        match = ReplaceRunResult::Mismatch;
+    }
+    if (match != ReplaceRunResult::Succeeded) {
+        if (match == ReplaceRunResult::Unsupported || match == ReplaceRunResult::Unreadable) {
+            directCapable_ = DirectCapability::Incapable;
+        }
+        // 置換の不一致と同じく、文書と食い違った run は文書を触らずに捨てる
+        DropRun();
+        ClearContext();
+        return PromoteResult::Dropped;
+    }
+    if (composition == nullptr) {
+        return PromoteResult::Refused;
+    }
+    composition_ = composition;
+    promoted_ = true;
+    // 文書上の位置は以後 composition が持つ。composer_・ライブ変換の状態・文脈は
+    // そのまま composition 方式へ引き継ぐ (確定ではないので学習・確定アンドゥの記憶はしない)
+    surface_.clear();
+    surfaceCaret_ = 0;
+    surfaceSelectLength_ = 0;
+    ClearPrediction();
+    return PromoteResult::Promoted;
+}
+
+void TextService::DemoteIfLeftConversion(ITfContext* context)
+{
+    if (!promoted_) {
+        return;
+    }
+    if (!Composing()) {
+        promoted_ = false;
+        return;
+    }
+    if (converting_) {
+        return;
+    }
+    // composition に今表示している文字列 (UpdateCompositionAndPredict・サジェスト選択の
+    // 表示と同じ求め方)。これを確定せずにそのまま run の surface にする
+    std::wstring text;
+    if (predictionIndex_ >= 0 && static_cast<size_t>(predictionIndex_) < predictions_.size()) {
+        text = predictions_[static_cast<size_t>(predictionIndex_)].surface;
+    } else if (!liveSegments_.empty()) {
+        text = LiveText() + composer_.Display().substr(composer_.ConfirmedKana().size());
+    } else {
+        text = composer_.Display();
+    }
+    HRESULT hr = E_UNEXPECTED;
+    if (context != nullptr) {
+        hr = RequestSync(context,
+                         new (std::nothrow) EndCompositionEditSession(context, composition_, text),
+                         TF_ES_SYNC | TF_ES_READWRITE);
+    }
+    composition_->Release();
+    composition_ = nullptr;
+    promoted_ = false;
+    if (FAILED(hr) || text.empty()) {
+        DropRun();
+        ClearContext();
+        return;
+    }
+    // composer_・ライブ変換・サジェストの状態は維持し、direct 方式の run として続ける
+    surface_ = text;
+    surfaceCaret_ = surface_.size();
+    surfaceSelectLength_ = 0;
 }

@@ -28,9 +28,11 @@ Enter で確定してはじめてアプリの文書に入る。この方式に�
 - composition 方式のコードは削除せず残す。direct 方式で文書の読み取り・置換が
   できないアプリ (CUAS 経由の古いアプリ、ターミナルなど) では、その文書に限って
   自動的に composition 方式で動く (後述のフォールバック)
-- 採らなかった案: 変換中 (候補選択中) だけ composition を張る折衷案。既存の
-  変換 UI をそのまま使えるが、フォームが崩れる原因が composition そのものである
-  以上、候補選択中も崩れる可能性が残るため採らない
+- 打鍵中は composition を使わず、変換中 (候補選択中) だけ composition を張る
+  (後述「変換中の composition」)。フォームが崩れる主因は打鍵ごとの composition 更新で、
+  変換中に限れば影響は小さい。一方、文書の選択による文節強調は Chromium 系で
+  保てない (文字列を変えた後にキャレットが挿入末尾へ戻される) ため、変換中の強調は
+  composition の表示属性で行う
 
 ### run モデル
 
@@ -77,7 +79,7 @@ Space は常にスペース、変換は専用の変換キーで行う。
 | 同上 | 候補選択中・サジェスト選択中 | 選択を確定して run 終了、新しい run を開始 |
 | Space | run なし | スペース挿入 (設定 space に従う)。食べずに通す場合も既存どおり |
 | Space | run 中 | run 終了 (未変換ローマ字は `Commit()` の救済で付ける) + スペース挿入 |
-| Space | 候補選択中 | 選択を確定して run 終了 + スペース挿入 |
+| Space | 候補選択中 | 次候補 (変換中は composition 方式の経路で動くため、composition 方式と同じ) |
 | 変換キー | run 中 (かな表示・ライブ表示) | 変換開始 (候補選択へ) |
 | 変換キー | 候補選択中 | 次候補。Shift+変換キー は前候補 |
 | 変換キー | run なし、ひらがな・カタカナ・ー のみの選択あり | 選択文字列を読みとして run を作り変換開始 (後置再変換) |
@@ -111,32 +113,89 @@ composition 方式では Space による変換を従来どおり残す (既存�
   (US 配列用の代替が Ctrl+Space)。将来 Shift 併用などを増やすときに KeyBinding を拡張する
 - composition 方式では、変換キーの設定に関わらず Space による変換も従来どおり使える
 
-### 文節の強調と候補ウィンドウ
+### 変換中の composition
 
-- composition の表示属性が使えないため、候補選択中は **現在文節の範囲を選択状態にする**
-  ことで強調する (どのアプリでも見える)
-- 候補ウィンドウの位置は、選択範囲の矩形 (`ITfContextView::GetTextExt`) の直下。
-  取れなければ既存どおりキャレット/マウス位置
-- 採らなかった案: 文書側には強調を出さず候補ウィンドウ内に現在文節の読みを表示する。
-  副作用は少ないが多文節の編集が分かりにくい
+run が変換状態に入るとき、run の範囲に composition を張り (「昇格」)、候補選択中は
+composition 方式の変換経路と表示属性 (入力中の下線・現在文節の強調) をそのまま使う。
+
+- 昇格の契機: run 中の変換キー、run 中の F4〜F10 (`ApplyFunctionKey`。変換状態に入る
+  キー)、後置再変換 (選択したかなを読みにした run の変換開始)
+- 昇格の edit session (`PromoteRunEditSession`): `MatchRunRange` で run の範囲を
+  特定・照合し (`surface_` / `surfaceCaret_`。後置再変換では選択開始が run 先頭)、
+  その範囲で `StartComposition` し、入力中の表示属性を付けて末尾に潰す。文字列は変えない
+- 昇格に成功したら run の文書上の状態 (`surface_` / `surfaceCaret_` /
+  `surfaceSelectLength_`) を捨てて `promoted_` を立てる。`composer_`・ライブ変換の状態・
+  文脈は composition にそのまま引き継ぐ (学習・確定アンドゥの記憶はしない)。
+  以後 `UsingDirectStyle()` は composition が生きている間 false を返すので、
+  キー判定・処理は composition 方式の経路に乗る。そこから既存の
+  `StartConversion` / `ApplyFunctionKey` を呼ぶ
+- 昇格の照合が不一致なら、今の不一致と同じく run を捨てる (文書は触らない)。
+  `StartComposition` が失敗・拒否されたら、従来の direct 方式の変換
+  (選択による文節強調。後述「置換 edit session」) にフォールバックする
+- 確定 (Enter・候補番号・Ctrl+M など composition 方式の確定) は composition 方式の
+  確定処理 (学習・文脈・確定アンドゥの記憶) をそのまま使う。確定後は composition が
+  無いので direct 方式に戻る
+- 降格: `promoted_` の composition が生きていて変換状態でなくなったとき (Esc・Backspace
+  での変換取消、Tab でのサジェスト移行、候補選択中の印字キーで確定して新しい
+  composition が始まったとき) は、composition をその表示文字列のまま終了し、
+  その文字列を `surface_` (キャレットは末尾) とする direct 方式の run に戻す
+  (`composer_`・ライブ変換の状態は維持、学習はしない)。判定は `HandleKey` の
+  composition 経路の後処理1か所で行う
+- composition が無くなったら (確定・アプリによる終了 `OnCompositionTerminated`)
+  `promoted_` を下ろす
+- 候補ウィンドウの位置は composition 方式と同じ (composition の矩形)
+
+フォールバック時 (昇格できなかった文書) の変換は、**現在文節の範囲を選択状態にする**
+ことで強調する。候補ウィンドウの位置は選択範囲の矩形 (`ITfContextView::GetTextExt`) の
+直下 (取れなければキャレット/マウス位置)。
 
 ### 置換 edit session
 
-新しい `ReplaceRunEditSession` を1つ用意し、挿入・置換・選択を全て担わせる。
+文字列の置換と選択の設定は別々の edit session で行う。Chromium 系 (Chrome・Vivaldi) は
+次の2つの制約を持つため (診断ログで確認):
 
-入力: `expected` (現在の surface。空なら新規挿入)、`caretOffset` (現在の選択開始位置が
-surface の何文字目か。末尾なら `surface.size()`。候補選択中は現在文節の先頭位置)、
-`newText`、`selectOffset` / `selectLength` (置換後に選択する範囲。長さ 0 なら末尾に潰す)。
+- 文書の選択が潰れておらず、置換範囲がその選択と一致しない置換は正しく反映されない
+  (旧文字列が残り、新しい文字列がその後ろに挿入される)。潰れたキャレットからの置換と、
+  選択と同じ範囲の置換は正しく反映される
+- 文字列を変えた edit session 内で設定した選択は捨てられ、キャレットは挿入した文字列の
+  末尾に置かれる。文字列を変えない session での選択設定は反映される
 
-手順 (1つの edit session 内):
+そこで2つの edit session を用意する。どちらも冒頭で run の位置を特定して照合する。
 
-1. `GetSelection` → 選択開始に潰す
-2. `expected` が空でなければ `ShiftEnd(+(expected.size() - caretOffset))`、
-   `ShiftStart(-caretOffset)` で run 範囲を作り、`GetText` で `expected` と比較する。
-   一致しなければ何もせず「不一致」を返す。`GetText` 自体が失敗したら「非対応」を返す
-3. `SetText(newText)` する (`expected` が空で選択が非空なら、選択を newText で置き換える)
-4. `selectLength > 0` なら newText 内の `[selectOffset, selectOffset+selectLength)` を
-   選択し、そうでなければ末尾に潰す
+照合 (両 session 共通): 入力は `expected` (現在の surface)、`caretOffset` (現在の
+選択開始位置が surface の何文字目か)。`GetSelection` → 選択開始に潰し、
+`ShiftEnd(+(expected.size() - caretOffset))`、`ShiftStart(-caretOffset)` で run 範囲を作り、
+`GetText` で `expected` と比較する。一致しなければ何もせず「不一致」を返す。
+`GetText` 自体が失敗したら「非対応」を返す。
+
+- `ReplaceRunEditSession` (置換): 入力は照合用の値と `newText`。`expected` が空なら
+  照合せずに選択位置へ挿入する (選択が非空なら選択を newText で置き換える)。
+  `SetText(newText)` の後は常に末尾に潰す
+- `SelectRunRangeEditSession` (選択のみ): 入力は照合用の値と `selectOffset` /
+  `selectLength` (run 内の範囲。長さ 0 なら `selectOffset` の位置に潰す)。
+  文字列は変えずに選択だけを設定する
+
+`TextService` は、文書の選択が run 内のどこにあるか (`surfaceCaret_`) に加えて、
+選択の長さ (`surfaceSelectLength_`) を持つ。表示の更新 (`ReplaceRunRange`) は次の順に行う:
+
+1. 選択が run 末尾に潰れたキャレットでないとき (`surfaceCaret_ != surface_.size()` または
+   `surfaceSelectLength_ > 0`。候補選択中・後置再変換の開始時など) は、
+   `SelectRunRangeEditSession` で run 末尾に潰す。失敗は置換の失敗と同じ扱いにする
+2. `ReplaceRunEditSession` で置換する (潰れたキャレットからの置換になる)
+3. 置換後に選択する範囲があれば (`selectLength > 0`)、`SelectRunRangeEditSession` で
+   その範囲を選択する。失敗しても置換は済んでいるので run は続け、選択は末尾に潰れた
+   ものとして状態を持つ (強調が付かないだけ。不一致なら次の操作の手順 1 で検出される)
+
+通常の打鍵では選択は常に末尾に潰れているので、手順 1・3 は走らず1 session のまま。
+手順 1・3 が走るのは昇格できなかった文書での変換 (フォールバック) と、F6 などで
+選択範囲を伴う表示更新をするときに限られる。Chromium 系では手順 3 の選択も後から
+戻されうるが、その場合は次の操作の照合が不一致になり run を捨てる (文書は壊さない)。
+
+候補選択中の確定 (`CommitRunDirect`) で選択を末尾に潰す処理も、同じ文字列での置換では
+なく `SelectRunRangeEditSession` で行う。
+
+後置再変換の開始時は、ユーザの選択 = run 全体なので `surfaceCaret_ = 0`、
+`surfaceSelectLength_ = surface_.size()` とする (手順 1 で末尾に潰してから置換する)。
 
 出力は3値: 成功 / 不一致 / 非対応。呼び出し側の対応:
 
@@ -194,7 +253,7 @@ direct 方式では run 中の Backspace で読みを直せるため出番は減
 | ファイル | 変更 |
 |---|---|
 | tsf/src/config.h / config.cpp | `inputStyle` (direct/composition)、`KeyFunc::Convert` と `key.convert` のパース (`Convert` / `Ctrl+Space`) |
-| tsf/src/edit_session.h / edit_session.cpp | `ReplaceRunEditSession`、`GetSelectionExtentEditSession` を追加 |
+| tsf/src/edit_session.h / edit_session.cpp | `ReplaceRunEditSession`、`SelectRunRangeEditSession`、`GetSelectionExtentEditSession` を追加 |
 | tsf/src/text_service.h | run 状態 (`surface_`、`directCapable_`、run 中フラグ)、direct 方式用メソッド宣言 |
 | tsf/src/text_service_direct.cpp (新規) | direct 方式のキー処理 `HandleKeyDirect`、`IsKeyEatenDirect`、run の開始/更新/終了、変換・候補選択・サジェスト・ライブ変換の direct 版、後置再変換、フォールバック判定。TextService のメンバ関数を別翻訳単位に分けるだけで、クラスは増やさない |
 | tsf/src/text_service.cpp | `IsKeyEaten` / `HandleKey` / `OnSetFocus` / `OnChange` (IME オフ) / `UndoCommit` で方式による分岐。`StartConversion` の候補生成部分 (エンジン問い合わせ + 生ローマ字候補 + 対記号同期) を表示から切り離して両方式で共用できるようにする |
@@ -276,7 +335,7 @@ direct 方式では run 中の Backspace で読みを直せるため出番は減
 | 2 | 続けて 変換キー ×2、Shift+変換キー | 候補が進み、戻る |
 | 3 | → で文節移動、Shift+→ で伸縮 | 選択範囲が該当文節に移る。伸縮で再変換される |
 | 4 | Enter | 選択が末尾に潰れ、run 終了。改行は入らない。LEARN が送られる (エンジンログか learning.tsv で確認) |
-| 5 | 候補選択中に Space | 確定 + スペース挿入 |
+| 5 | 候補選択中に Space | 次候補 (composition 方式と同じ) |
 | 6 | 候補選択中に Esc | 変換前のかな表示に戻る (run は続く) |
 | 7 | 候補選択中に `a` | 確定して `あ` の新 run が続く |
 | 8 | ライブ変換 ON で `kyouhaiitenki` | 打鍵ごとに `今日はいい天気` 側の表示に置き換わる。Space でスペースが入り run 終了 |
@@ -286,6 +345,13 @@ direct 方式では run 中の Backspace で読みを直せるため出番は減
 | 12 | 候補選択中に F6〜F10、F4、F5 | 既存どおりの直接変換・特殊変換が選択文節に効く |
 | 13 | 英字を含む入力 `apple` 変換キー | 生ローマ字候補 apple / Apple / APPLE が出る |
 | 14 | 変換キーを `Ctrl+Space` に設定 | Ctrl+Space で変換開始・次候補 |
+| 15 | Chrome / Vivaldi の textarea で `kyouhaiitenki` 変換キー ×4、数字キー、→、F7、Enter | 変換キーで下線付きの composition になり現在文節が強調される。候補送り・文節移動・F7 が効き、文字列が追加されない。Enter で確定し、続く打鍵は下線なし (direct) |
+| 16 | Chrome / Vivaldi でかなを選択して変換キー ×3、→、Enter | 同上 (後置再変換から composition に昇格) |
+| 17 | Chrome / Vivaldi で `kyou` F6 → Enter | `きょう` の composition になり、Enter で確定できる |
+| 18 | 候補選択中に Esc / Backspace | 変換前のかな表示に戻り、下線が消えて direct の run に戻る (続けて打鍵・Backspace で読みを編集できる) |
+| 19 | 候補選択中に `a` | 確定して `あ` が下線なしの direct の run として続く |
+| 20 | 候補選択中に Tab (サジェストあり) | direct の run に戻ってサジェスト選択に移る |
+| 21 | メモ帳で 15〜20 | 同じ挙動 (回帰確認) |
 
 ## 未決事項
 

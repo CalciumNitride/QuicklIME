@@ -304,7 +304,9 @@ TextService::TextService()
       predictionIndex_(-1),
       liveSuspended_(false),
       surfaceCaret_(0),
+      surfaceSelectLength_(0),
       directCapable_(DirectCapability::Unknown),
+      promoted_(false),
       openCloseCookie_(TF_INVALID_COOKIE),
       threadMgrEventCookie_(TF_INVALID_COOKIE),
       langBarButton_(nullptr)
@@ -474,6 +476,7 @@ STDMETHODIMP TextService::Deactivate()
     ClearContext();
     composer_.Clear();
     surface_.clear();
+    promoted_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
@@ -906,6 +909,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     ClearPrediction();
     ClearLiveConversion();
     composer_.Clear();
+    promoted_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
@@ -1029,10 +1033,16 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // その通知が来ないホストでも自動英字判定が設定どおりになるよう毎打鍵で渡し直す
     composer_.SetModeless(config_.Get().modeless);
 
-    if (UsingDirectStyle()) {
-        return HandleKeyDirect(context, wparam);
-    }
+    const HRESULT hr = UsingDirectStyle() ? HandleKeyDirect(context, wparam)
+                                          : HandleKeyComposition(context, wparam);
+    // 昇格した composition が変換状態を抜けた (変換取消・サジェスト移行・印字キーで
+    // 確定して次の composition が始まった・F4 で候補が無かった) なら direct の run に戻す
+    DemoteIfLeftConversion(context);
+    return hr;
+}
 
+HRESULT TextService::HandleKeyComposition(ITfContext* context, WPARAM wparam)
+{
     // 変換キー: Space と同じ変換操作 (未変換なら変換開始、変換中は次候補。Shift で前候補)
     if (Composing() && IsConvertKey(wparam)) {
         return converting_ ? CycleCandidate(context, IsShiftPressed() ? -1 : +1)
@@ -2120,6 +2130,9 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
                              TF_ES_SYNC | TF_ES_READWRITE);
     composition_->Release();
     composition_ = newComposition;
+    if (composition_ == nullptr) {
+        promoted_ = false;
+    }
     if (SUCCEEDED(hr) && composition_ == nullptr) {
         hr = E_FAIL;
     }
@@ -2389,6 +2402,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         TF_ES_SYNC | TF_ES_READWRITE);
     composition_->Release();
     composition_ = nullptr;
+    promoted_ = false;
     composer_.Clear();
     return hr;
 }

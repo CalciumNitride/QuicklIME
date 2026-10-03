@@ -110,8 +110,11 @@ private:
     bool IsKeyboardOpen() const;
     void SetKeyboardOpen(bool open);
 
-    // 食べたキーを状態機械に従って処理する
+    // 食べたキーを状態機械に従って処理する (方式で振り分け、処理後に昇格した
+    // composition の降格を判定する)
     HRESULT HandleKey(ITfContext* context, WPARAM wparam);
+    // composition 方式 (および昇格した composition) のキー処理
+    HRESULT HandleKeyComposition(ITfContext* context, WPARAM wparam);
 
     // ファンクションキー変換 (F4-F10 に割り当てた機能) を実行する。割当の無い機能は何もしない
     HRESULT ApplyFunctionKey(ITfContext* context, KeyFunc func);
@@ -326,11 +329,21 @@ private:
     // キャレット直前の expected を newText に置き換える (expected が空なら挿入)
     ReplaceRunResult ReplaceRunText(ITfContext* context, const std::wstring& expected,
                                     const std::wstring& newText);
-    // 選択開始が expected の caretOffset 文字目にあるとして expected を newText に置き換え、
-    // selectLength > 0 なら newText 内の範囲を選択する (候補選択中の置換用)
+    // 選択開始が expected の caretOffset 文字目、選択の長さが currentSelectLength であるとして
+    // expected を newText に置き換える。選択が末尾に潰れたキャレットでなければ先に末尾へ
+    // 潰してから置換する (Chromium 系は潰れていない選択と異なる範囲の置換を正しく反映
+    // しないため)。selectLength > 0 なら置換後に別 session で newText 内の範囲を選択し、
+    // 選択できたかを *selectedOut に返す (選択に失敗しても置換の結果は Succeeded のまま。
+    // そのとき選択は末尾に潰れている)
     ReplaceRunResult ReplaceRunRange(ITfContext* context, const std::wstring& expected,
-                                     size_t caretOffset, const std::wstring& newText,
-                                     size_t selectOffset, size_t selectLength);
+                                     size_t caretOffset, size_t currentSelectLength,
+                                     const std::wstring& newText, size_t selectOffset,
+                                     size_t selectLength, bool* selectedOut = nullptr);
+    // 文字列は変えずに、run (expected、選択開始が caretOffset 文字目) 内の
+    // [selectOffset, selectOffset + selectLength) を選択する (長さ 0 なら潰す)
+    ReplaceRunResult SelectRunRange(ITfContext* context, const std::wstring& expected,
+                                    size_t caretOffset, size_t selectOffset,
+                                    size_t selectLength);
     // surface_ を text に置き換えて run を続ける。失敗したら run を捨てる (文書は触らない)
     HRESULT ReplaceRunDisplay(ITfContext* context, const std::wstring& text,
                               size_t selectOffset = 0, size_t selectLength = 0);
@@ -343,6 +356,18 @@ private:
     void DropRun();
     // 確定アンドゥの direct 版: 直前の run の surface を読みのかな表示に戻して run を再開する
     HRESULT UndoCommitDirect(ITfContext* context);
+    // run を composition に昇格した結果
+    enum class PromoteResult {
+        Promoted,  // composition_ に移った (run の文書上の状態は捨てた)
+        Dropped,   // 照合が文書と食い違った等で run を捨てた (文書は触らない)
+        Refused,   // StartComposition が失敗・拒否された (run はそのまま。従来の direct 方式で変換する)
+    };
+    // 変換状態に入る直前に、run の範囲に composition を張る (文字列は変えない)。
+    // 候補選択中の表示 (下線・現在文節の強調) を composition 方式の経路で行うため
+    PromoteResult PromoteRun(ITfContext* context);
+    // 昇格した composition が変換状態でなくなっていれば、その表示文字列のまま
+    // composition を終えて direct 方式の run に戻す (学習はしない)
+    void DemoteIfLeftConversion(ITfContext* context);
 
     LONG refCount_;
     ITfThreadMgr* threadMgr_;
@@ -380,7 +405,12 @@ private:
     // 文書の選択開始が surface_ の何文字目にあるか (候補選択中は現在文節の先頭、
     // それ以外は末尾)。置換 session の expected 照合の基点に使う
     size_t surfaceCaret_;
+    // 文書の選択の長さ (候補選択中は現在文節の長さ、それ以外は 0)
+    size_t surfaceSelectLength_;
     DirectCapability directCapable_;  // フォーカス中の文書で direct 方式が使えるか
+    // composition_ が run から昇格したもの (変換状態を抜けたら run に戻す) か。
+    // 候補選択中の印字キーで確定して始まった次の composition にも引き継ぐ
+    bool promoted_;
 
     std::wstring lastCommitText_;   // 直前に確定した文字列 (確定アンドゥ用。使うと消える)
     RomajiComposer lastComposer_;   // 直前の確定時点のコンポーザ (読みと打鍵列の復元用)

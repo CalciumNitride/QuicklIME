@@ -181,7 +181,7 @@ enum class ReplaceRunResult {
     Unreadable,
 };
 
-// direct 方式の run の挿入・置換・選択を1つの edit session で行う。
+// direct 方式の run の挿入・置換を1つの edit session で行う。
 // expected が空なら選択位置へ newText を挿入し (選択があればそれを置き換え)、
 // 挿入した文字列を同じ session 内で読み戻して一致すれば Succeeded、読めなければ
 // Unsupported (文字列は文書に入ったまま)。probeSurroundingText を立てると、挿入前に
@@ -189,23 +189,61 @@ enum class ReplaceRunResult {
 // NoSurroundingText を返す。expected が非空なら、選択開始から caretOffset 文字前〜
 // (expected.size() - caretOffset) 文字後の範囲を expected と比較し、一致したときだけ
 // newText に置き換える (範囲が全く作れなければ Unreadable、内容が違えば Mismatch、
-// GetText 自体が失敗すれば Unsupported)。置換後、selectLength > 0 なら newText 内の
-// [selectOffset, selectOffset + selectLength) を選択し、そうでなければ末尾に潰す
+// GetText 自体が失敗すれば Unsupported)。置換後は常に選択を末尾に潰す。
+// Chromium 系は、潰れていない選択と異なる範囲の置換を正しく反映せず、文字列を変えた
+// session 内での選択設定も捨てるため、選択の設定は SelectRunRangeEditSession で別に行う
 class ReplaceRunEditSession : public EditSessionBase {
 public:
     ReplaceRunEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
-                          std::wstring newText, size_t selectOffset, size_t selectLength,
-                          bool probeSurroundingText, ReplaceRunResult* resultOut);
+                          std::wstring newText, bool probeSurroundingText,
+                          ReplaceRunResult* resultOut);
     STDMETHODIMP DoEditSession(TfEditCookie ec) override;
 
 private:
     std::wstring expected_;
     size_t caretOffset_;
     std::wstring newText_;
-    size_t selectOffset_;
-    size_t selectLength_;
     bool probeSurroundingText_;
     ReplaceRunResult* resultOut_;
+};
+
+// direct 方式の run の文字列は変えずに選択だけを設定する。照合は ReplaceRunEditSession と
+// 同じ (expected が空なら照合せず選択開始を run の先頭とみなす)。一致したら run 内の
+// [selectOffset, selectOffset + selectLength) を選択する (長さ 0 なら selectOffset の
+// 位置に潰す)。SetSelection が失敗したら Unsupported を返す
+class SelectRunRangeEditSession : public EditSessionBase {
+public:
+    SelectRunRangeEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
+                              size_t selectOffset, size_t selectLength,
+                              ReplaceRunResult* resultOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    std::wstring expected_;
+    size_t caretOffset_;
+    size_t selectOffset_;
+    size_t selectLength_;
+    ReplaceRunResult* resultOut_;
+};
+
+// direct 方式の run を composition に昇格する。照合は ReplaceRunEditSession と同じで、
+// 一致した run の範囲でそのまま composition を開始し (文字列は変えない)、入力中の
+// 表示属性を付けて選択を末尾に潰す。照合結果を *matchOut に、開始した composition を
+// *compositionOut に返す (照合が一致しても StartComposition が失敗・拒否されれば nullptr)
+class PromoteRunEditSession : public EditSessionBase {
+public:
+    PromoteRunEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
+                          ITfCompositionSink* sink, TfGuidAtom displayAttribute,
+                          ITfComposition** compositionOut, ReplaceRunResult* matchOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    std::wstring expected_;
+    size_t caretOffset_;
+    ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
+    TfGuidAtom displayAttribute_;
+    ITfComposition** compositionOut_;  // 開始した composition の受け取り先
+    ReplaceRunResult* matchOut_;
 };
 
 // 現在の選択範囲の画面上の矩形 (スクリーン座標) を取得する (direct 方式の候補
