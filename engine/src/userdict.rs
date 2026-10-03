@@ -16,11 +16,18 @@
 // 自動学習した複合語 (LEARNWORD) も名詞系単語として同じラティス・候補生成に載せる。
 // 手動登録と混ざると誤学習だけを捨てられなくなるため、メモリ上もファイルも別に持つ
 // (保存先は learning_word.tsv。読み\t表記 の追記ログ)
+//
+// インポート辞書 (単語登録ツールで他 IME の辞書から変換したもの) も保持する。
+// 保存先: %APPDATA%\QuicklIME\imported\*.tsv (QUICKLIME_IMPORT_DIR で上書き可)。
+// 数十万語規模がありうるため、名詞系は線形走査せず Dictionary (fst) に載せる。
+// 短縮よみは手動登録分の後ろに並べる
 
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
+use crate::dict::{Dictionary, Entry};
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
 
 /// 短縮よみの品詞名 (ファイル上の表記)
@@ -41,6 +48,13 @@ const MIN_LEARNED_CHARS: usize = 2;
 /// 候補リストから消えてしまい、あとで別の表記を選べなくなる。
 /// 候補の並びは同時に記録される「読み → 表記」の学習が受け持つ
 const LEARNED_WORD_COST: i16 = 12000;
+
+/// インポート辞書の名詞系単語の単語コスト。配布辞書には馴染みの薄い語も大量に含まれるため、
+/// 手動登録より低優先で一般名詞並みにする
+const IMPORTED_WORD_COST: i16 = 5000;
+
+/// 名詞系の品詞名 (noun_id_prefix が対応するもの)
+const NOUN_POS: [&str; 7] = ["名詞", "固有名詞", "人名", "姓", "名", "地名", "組織"];
 
 /// ユーザ辞書の品詞名 → id.def の品詞パス (前方一致)。未対応の品詞は None
 fn noun_id_prefix(pos: &str) -> Option<&'static str> {
@@ -79,6 +93,12 @@ pub struct UserDict {
     path: Option<PathBuf>,
     /// 複合語学習 (learn_word) の追記先ファイル。None ならメモリ上のみ
     learned_path: Option<PathBuf>,
+    /// インポート辞書の名詞系単語
+    imported: Dictionary,
+    /// インポート辞書の短縮よみ (読み, 表記)。ファイル名順 → 記載順
+    imported_shortcuts: Vec<(String, String)>,
+    /// インポート辞書のディレクトリ。None なら読み込まない (テスト時)
+    import_dir: Option<PathBuf>,
 }
 
 impl UserDict {
@@ -90,17 +110,24 @@ impl UserDict {
             learned: Vec::new(),
             path: None,
             learned_path: None,
+            imported: Dictionary::empty(),
+            imported_shortcuts: Vec::new(),
+            import_dir: None,
         }
     }
 
     /// 既定のパスから読み込む。ファイルが無ければ空で始める (初回登録時に作られる)。
     /// learned_path は自動学習した複合語の保存先 (learn::learned_word_path)
     pub fn load_default(functional: &FunctionalIds, learned_path: Option<PathBuf>) -> Self {
+        let import_dir = default_import_dir();
         let Some(path) = default_path() else {
             eprintln!("ユーザ辞書の保存先を特定できません。登録はこのセッション限りになります");
-            return UserDict::empty();
+            let mut dict = UserDict { import_dir, ..UserDict::empty() };
+            dict.load_imported(functional);
+            return dict;
         };
-        let mut dict = UserDict { path: Some(path.clone()), learned_path, ..UserDict::empty() };
+        let mut dict =
+            UserDict { path: Some(path.clone()), learned_path, import_dir, ..UserDict::empty() };
         if let Ok(file) = File::open(&path) {
             dict.load_from(BufReader::new(file), functional);
             eprintln!(
@@ -114,12 +141,14 @@ impl UserDict {
         if dict.learned_count() > 0 {
             eprintln!("複合語の学習データを読み込みました: {} 件", dict.learned_count());
         }
+        dict.load_imported(functional);
         dict
     }
 
-    /// ファイルから読み直す (RELOADUSER 用。手動編集の反映)。
+    /// ファイルから読み直す (RELOADUSER 用。手動編集とインポートの反映)。
     /// パスが無ければ (メモリ上のみなら) 何もしない
     pub fn reload(&mut self, functional: &FunctionalIds) {
+        self.load_imported(functional);
         let Some(path) = self.path.clone() else {
             return;
         };
@@ -152,6 +181,89 @@ impl UserDict {
                 self.insert_learned(reading, surface, functional);
             }
         }
+    }
+
+    /// インポート辞書のディレクトリにある *.tsv をすべて読み直す。
+    /// ディレクトリが無ければ空にする (ファイルを消せば辞書を外せる)
+    fn load_imported(&mut self, functional: &FunctionalIds) {
+        let Some(dir) = self.import_dir.clone() else {
+            return;
+        };
+        let mut paths: Vec<PathBuf> = std::fs::read_dir(&dir)
+            .map(|entries| {
+                entries
+                    .filter_map(|e| e.ok().map(|e| e.path()))
+                    .filter(|p| {
+                        p.is_file()
+                            && p.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("tsv"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // 同じ読みの候補の並びを起動ごとに変えないため、ファイル名順に読む
+        paths.sort();
+        let readers: Vec<BufReader<File>> =
+            paths.iter().filter_map(|p| File::open(p).ok().map(BufReader::new)).collect();
+        self.load_imported_from(readers, functional);
+        if self.imported_count() > 0 {
+            eprintln!(
+                "インポート辞書を読み込みました: {} ファイル・{} 件 [{}]",
+                paths.len(),
+                self.imported_count(),
+                dir.display()
+            );
+        }
+    }
+
+    /// インポート辞書を読み込み直す (テストからも使う)。readers は1ファイルずつ。
+    /// 形式は正規化済みの 読み\t表記\t品詞 で、未対応の品詞・不正な行は無視する
+    pub fn load_imported_from(
+        &mut self,
+        readers: impl IntoIterator<Item = impl BufRead>,
+        functional: &FunctionalIds,
+    ) {
+        // 品詞ごとの find_id は id.def の線形走査なので、語ごとに引かず先に解決しておく
+        let ids: HashMap<&str, u16> = NOUN_POS
+            .iter()
+            .filter_map(|&pos| {
+                let prefix = noun_id_prefix(pos)?;
+                Some((pos, functional.find_id(prefix).unwrap_or(DEFAULT_NOUN_ID)))
+            })
+            .collect();
+        let mut imported = Dictionary::empty();
+        let mut shortcuts = Vec::new();
+        for reader in readers {
+            for line in reader.lines() {
+                let Ok(line) = line else {
+                    break;
+                };
+                let mut fields = line.trim_end_matches('\r').split('\t');
+                let (Some(reading), Some(surface), Some(pos)) =
+                    (fields.next(), fields.next(), fields.next())
+                else {
+                    continue;
+                };
+                if reading.is_empty() || surface.is_empty() {
+                    continue;
+                }
+                if pos == SHORTCUT_POS {
+                    shortcuts.push((reading.to_string(), surface.to_string()));
+                } else if let Some(&id) = ids.get(pos) {
+                    imported.push_entry(
+                        reading,
+                        Entry {
+                            left_id: id,
+                            right_id: id,
+                            cost: IMPORTED_WORD_COST,
+                            surface: surface.to_string(),
+                        },
+                    );
+                }
+            }
+        }
+        imported.finalize();
+        self.imported = imported;
+        self.imported_shortcuts = shortcuts;
     }
 
     /// 1ファイル分のエントリを読み込む (テストからも使う)。不正な行は無視する
@@ -293,23 +405,62 @@ impl UserDict {
         true
     }
 
-    /// 読みに完全一致する短縮よみの表記一覧を返す (ファイル記載順)
+    /// 読みに完全一致する短縮よみの表記一覧を返す
+    /// (手動登録の記載順 → インポート辞書。同じ表記は先勝ち)
     pub fn lookup_shortcuts(&self, reading: &str) -> Vec<&str> {
-        self.shortcuts
+        let mut result: Vec<&str> = Vec::new();
+        for (r, s) in self.all_shortcuts() {
+            if r == reading && !result.contains(&s.as_str()) {
+                result.push(s);
+            }
+        }
+        result
+    }
+
+    /// 読みが prefix で始まる短縮よみを limit 件まで返す (予測入力用)。
+    /// 並びは lookup_shortcuts と同じで、同じ (読み, 表記) は先勝ち
+    pub fn shortcut_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
+        let mut result: Vec<(&str, &str)> = Vec::new();
+        for (r, s) in self.all_shortcuts() {
+            if result.len() >= limit {
+                break;
+            }
+            let pair = (r.as_str(), s.as_str());
+            if r.starts_with(prefix) && !result.contains(&pair) {
+                result.push(pair);
+            }
+        }
+        result
+    }
+
+    /// 手動登録の短縮よみとインポート辞書の短縮よみをこの順に走査する
+    fn all_shortcuts(&self) -> impl Iterator<Item = &(String, String)> {
+        self.shortcuts.iter().chain(self.imported_shortcuts.iter())
+    }
+
+    /// 読みに完全一致するインポート辞書の名詞系単語を返す (候補列挙用)。
+    /// 手動登録に同じ (読み, 表記) があるものは手動登録側を優先して除く
+    pub fn imported_words(&self, reading: &str) -> Vec<&Entry> {
+        self.imported
+            .lookup(reading)
             .iter()
-            .filter(|(r, _)| r.as_str() == reading)
-            .map(|(_, s)| s.as_str())
+            .filter(|e| !self.words.iter().any(|w| w.reading == reading && w.surface == e.surface))
             .collect()
     }
 
-    /// 読みが prefix で始まる短縮よみを記載順に limit 件まで返す (予測入力用)
-    pub fn shortcut_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
-        self.shortcuts
-            .iter()
-            .filter(|(r, _)| r.starts_with(prefix))
-            .take(limit)
-            .map(|(r, s)| (r.as_str(), s.as_str()))
-            .collect()
+    /// 読みの並び suffix の先頭から始まるインポート辞書の単語を短い順に返す
+    /// (Viterbi ラティス構築用。戻り値は Dictionary::common_prefix_search と同じ)。
+    /// 手動登録との重複は除かない: 同じ表記なら低コストの手動登録が経路に選ばれ、
+    /// 候補列挙側でも表記の重複は除かれるため、毎回の走査コストを払う意味が無い
+    pub fn imported_common_prefix(&self, suffix: &[char], max_chars: usize) -> Vec<(usize, &[Entry])> {
+        self.imported.common_prefix_search(suffix, max_chars)
+    }
+
+    /// 読みが prefix で始まるインポート辞書の単語をコスト昇順で limit 件まで返す (予測入力用)。
+    /// 戻り値は (コスト, 読み, 表記)。同梱辞書の候補とコスト順に混ぜるためコストも返す。
+    /// 表記の重複は呼び出し側 (予測の合成) で除く
+    pub fn imported_prefix(&self, prefix: &str, limit: usize) -> Vec<(i16, String, String)> {
+        self.imported.predict_prefix_scored(prefix, limit)
     }
 
     /// 読みに完全一致する名詞系単語を返す (手動登録が先、自動学習した複合語が後)
@@ -359,6 +510,21 @@ impl UserDict {
     pub fn learned_count(&self) -> usize {
         self.learned.len()
     }
+
+    /// インポート辞書の語数 (名詞系 + 短縮よみ)
+    pub fn imported_count(&self) -> usize {
+        self.imported.entry_count() + self.imported_shortcuts.len()
+    }
+}
+
+/// 既定のインポート辞書ディレクトリ。
+/// 優先順: QUICKLIME_IMPORT_DIR > %APPDATA%\QuicklIME\imported
+fn default_import_dir() -> Option<PathBuf> {
+    if let Ok(dir) = std::env::var("QUICKLIME_IMPORT_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    let appdata = std::env::var("APPDATA").ok()?;
+    Some(PathBuf::from(appdata).join("QuicklIME").join("imported"))
 }
 
 /// 既定のユーザ辞書パス。優先順: QUICKLIME_USER_DICT_FILE > %APPDATA%\QuicklIME\userdict.tsv
@@ -568,6 +734,114 @@ mod tests {
         assert_eq!(dict.learned_count(), 2);
         assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
         assert_eq!(dict.lookup_words("まいぐらふぃ")[0].surface, "マイグラフィ");
+    }
+
+    /// インポート辞書を2ファイル分読み込んだユーザ辞書 (手動登録あり)
+    fn sample_with_imported() -> UserDict {
+        let mut dict = sample();
+        let first = "にこにこ\tニコニコ大百科\t固有名詞\n\
+                     かんべ\t神戸\t姓\n\
+                     かんべ\t寛部\t名詞\n\
+                     めーる\tmail@example.com\t短縮よみ\n\
+                     めーる\timported@example.com\t短縮よみ\n\
+                     たべる\t食べる\t動詞\n\
+                     こわれた行\n";
+        let second = "にこにこどうが\tニコニコ動画\t組織\n";
+        dict.load_imported_from([first.as_bytes(), second.as_bytes()], &sample_functional());
+        dict
+    }
+
+    #[test]
+    fn インポート辞書の名詞系を文脈idとコストを解決して引ける() {
+        let dict = sample_with_imported();
+        let words = dict.imported_words("にこにこ");
+        assert_eq!(words.len(), 1);
+        assert_eq!(words[0].surface, "ニコニコ大百科");
+        assert_eq!(words[0].cost, IMPORTED_WORD_COST);
+        // sample_functional に 固有名詞,一般 は無いので一般名詞のIDで代用される
+        assert_eq!(words[0].left_id, DEFAULT_NOUN_ID);
+        // 2ファイル目も読まれる。未対応の品詞・壊れた行は無視
+        assert_eq!(dict.imported_words("にこにこどうが")[0].surface, "ニコニコ動画");
+        assert!(dict.imported_words("たべる").is_empty());
+        // 名詞系 4 件 + 短縮よみ 2 件
+        assert_eq!(dict.imported_count(), 6);
+        // 手動登録の件数には含めない
+        assert_eq!(dict.word_count(), 2);
+    }
+
+    #[test]
+    fn 手動登録と同じ語はインポート辞書側を除く() {
+        let dict = sample_with_imported();
+        // 手動登録の「かんべ → 神戸 (姓)」と重なる分は除かれる
+        let surfaces: Vec<&str> =
+            dict.imported_words("かんべ").iter().map(|e| e.surface.as_str()).collect();
+        assert_eq!(surfaces, ["寛部"]);
+        // 短縮よみは手動登録が先で、同じ表記は1回だけ
+        assert_eq!(
+            dict.lookup_shortcuts("めーる"),
+            ["mail@example.com", "second@example.jp", "imported@example.com"]
+        );
+        assert_eq!(
+            dict.shortcut_prefix("めー", 8),
+            vec![
+                ("めーる", "mail@example.com"),
+                ("めーる", "second@example.jp"),
+                ("めーる", "imported@example.com"),
+            ]
+        );
+        assert_eq!(dict.shortcut_prefix("めー", 2).len(), 2);
+    }
+
+    #[test]
+    fn インポート辞書をラティスと予測で引ける() {
+        let dict = sample_with_imported();
+        let suffix: Vec<char> = "にこにこどうがを".chars().collect();
+        let hits: Vec<(usize, Vec<&str>)> = dict
+            .imported_common_prefix(&suffix, 16)
+            .into_iter()
+            .map(|(len, entries)| (len, entries.iter().map(|e| e.surface.as_str()).collect()))
+            .collect();
+        assert_eq!(hits, vec![(4, vec!["ニコニコ大百科"]), (7, vec!["ニコニコ動画"])]);
+        assert_eq!(
+            dict.imported_prefix("にこ", 8),
+            vec![
+                (IMPORTED_WORD_COST, "にこにこ".to_string(), "ニコニコ大百科".to_string()),
+                (IMPORTED_WORD_COST, "にこにこどうが".to_string(), "ニコニコ動画".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn インポート辞書のディレクトリを読み込み再読込で反映する() {
+        let dir = std::env::temp_dir()
+            .join(format!("quicklime-imported-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let first = dir.join("a.tsv");
+        let second = dir.join("b.TSV");
+        let ignored = dir.join("memo.txt");
+        std::fs::write(&first, "にこにこ\tニコニコ大百科\t固有名詞\n").unwrap();
+        std::fs::write(&second, "ぴくしぶ\tpixiv\t固有名詞\nかお\t(^^)\t短縮よみ\n").unwrap();
+        std::fs::write(&ignored, "めも\tメモ\t名詞\n").unwrap();
+        let functional = sample_functional();
+
+        let mut dict = UserDict { import_dir: Some(dir.clone()), ..UserDict::empty() };
+        dict.reload(&functional);
+        assert_eq!(dict.imported_words("にこにこ")[0].surface, "ニコニコ大百科");
+        assert_eq!(dict.imported_words("ぴくしぶ")[0].surface, "pixiv");
+        assert_eq!(dict.lookup_shortcuts("かお"), ["(^^)"]);
+        assert!(dict.imported_words("めも").is_empty());
+        assert_eq!(dict.imported_count(), 3);
+
+        // ファイルを外して再読込すると消える
+        std::fs::remove_file(&second).unwrap();
+        dict.reload(&functional);
+        assert!(dict.imported_words("ぴくしぶ").is_empty());
+        assert!(dict.lookup_shortcuts("かお").is_empty());
+        assert_eq!(dict.imported_count(), 1);
+
+        let _ = std::fs::remove_file(&first);
+        let _ = std::fs::remove_file(&ignored);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     #[test]

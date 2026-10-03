@@ -253,6 +253,14 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       (英字の変換は変換キー)。composition / run が無いときの Space は直前の確定が
       ASCII 英数字だけなら半角。ローマ字として成立する英単語 (sake、pen など) は
       日本語優先で判定しない (生ローマ字候補か Shift 頭文字で入れる)
+- [x] 辞書インポート (2026-10-03 実装、docs/design/dict-import.md)。
+      MS-IME / ATOK / Mozc・Google 日本語入力の辞書テキスト (UTF-16・UTF-8・Shift_JIS を
+      自動判別) を単語登録ツールの「インポート...」から取り込む。名詞系と短縮よみのみを
+      QuicklIME の品詞へ対応づけ (import.rs)、%APPDATA%\QuicklIME\imported\<名前>.tsv に
+      1 辞書 1 ファイルで保存 (QUICKLIME_IMPORT_DIR で上書き可) して RELOADUSER で反映する。
+      エンジンは UserDict に imported\*.tsv を読み込み、名詞系は fst の Dictionary に載せて
+      (数十万語でも線形走査しない) ラティス・候補・予測・F5 で引く。コストは 5000
+      (手動登録 3000 より低優先、一般名詞並み)。手動登録と同じ (読み, 表記) は手動登録を優先
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点

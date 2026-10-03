@@ -316,6 +316,13 @@ impl Dictionary {
         Ok(())
     }
 
+    /// 文脈ID・コストを解決済みのエントリを1件積む (インポート辞書用)。
+    /// load_from と同じく finalize() を呼ぶまで検索には現れない
+    pub fn push_entry(&mut self, reading: &str, entry: Entry) {
+        self.staging.push((reading.to_string(), entry));
+        self.entry_count += 1;
+    }
+
     /// Mozc の symbol.tsv (記号辞書) を読み込む。
     /// フォーマット: 品詞\t記号\t読み(空白区切りで複数)\t説明... (先頭行はヘッダ)
     pub fn load_symbols(&mut self, path: &Path) -> io::Result<()> {
@@ -389,8 +396,20 @@ impl Dictionary {
     }
 
     /// 読みが prefix で始まるエントリをコスト昇順で limit 件まで返す (予測入力用)。
-    /// 戻り値は (読み, 表記)。finalize が未実行なら空を返す
+    /// 戻り値は (読み, 表記)。finalize が未実行なら空を返す。
+    /// 予測本体はインポート辞書と混ぜるためコスト付きの predict_prefix_scored を使うので、
+    /// これは検索結果を表記で確かめるテスト用に残している
+    #[cfg(test)]
     pub fn predict_prefix(&self, prefix: &str, limit: usize) -> Vec<(String, String)> {
+        self.predict_prefix_scored(prefix, limit)
+            .into_iter()
+            .map(|(_, reading, surface)| (reading, surface))
+            .collect()
+    }
+
+    /// predict_prefix と同じ検索で、コストも付けて (コスト, 読み, 表記) を返す。
+    /// 別の辞書 (インポート辞書) の予測候補とコスト順に混ぜるために使う
+    pub fn predict_prefix_scored(&self, prefix: &str, limit: usize) -> Vec<(i16, String, String)> {
         if prefix.is_empty() || limit == 0 {
             return Vec::new();
         }
@@ -412,7 +431,7 @@ impl Dictionary {
         hits.sort_by_key(|(cost, _, _)| *cost);
         hits.truncate(limit);
         hits.into_iter()
-            .map(|(_, idx, surface)| (readings[idx].clone(), surface.to_string()))
+            .map(|(cost, idx, surface)| (cost, readings[idx].clone(), surface.to_string()))
             .collect()
     }
 
@@ -536,6 +555,21 @@ mod tests {
     #[test]
     fn 壊れた行は無視してカウントしない() {
         assert_eq!(sample().entry_count(), 3);
+    }
+
+    #[test]
+    fn 解決済みエントリを積んでfinalize後に引ける() {
+        let mut dict = Dictionary::empty();
+        dict.push_entry("かんべ", Entry { left_id: 1917, right_id: 1917, cost: 5000, surface: "神戸".to_string() });
+        dict.push_entry("かんべ", Entry { left_id: 1851, right_id: 1851, cost: 5000, surface: "寛部".to_string() });
+        assert!(dict.lookup("かんべ").is_empty());
+        dict.finalize();
+        let entries = dict.lookup("かんべ");
+        // 同じ読みは積んだ順
+        assert_eq!(entries.len(), 2);
+        assert_eq!((entries[0].surface.as_str(), entries[0].left_id), ("神戸", 1917));
+        assert_eq!(entries[1].surface, "寛部");
+        assert_eq!(dict.entry_count(), 2);
     }
 
     fn sample_for_prediction() -> Dictionary {

@@ -1,8 +1,8 @@
 // 予測入力 (PREDICT) の候補生成
 //
-// 読みの前方一致でユーザ辞書 (短縮よみ → 名詞系、記載順) → 履歴 (確定履歴、
-// 新しい順) → 辞書 (コスト順) を検索し、この順に合成して返す。表記の重複は
-// 先勝ちで除き、表記が入力かなそのままの候補は出しても意味が無いため除外する。
+// 読みの前方一致でユーザ辞書 (短縮よみ → 名詞系、記載順) → 履歴 (確定履歴、新しい順)
+// → 同梱辞書とインポート辞書の名詞系 (両者を混ぜてコスト順。同コストは同梱辞書が先)
+// を検索し、この順に合成して返す。表記の重複は先勝ちで除き、表記が入力かなそのままの候補は出しても意味が無いため除外する。
 // 完全一致で枠が埋まらないときは、タイプミス補正 (1かな誤りの曖昧一致) で補充する。
 // 候補の最大数・最小読み文字数・補正の有無は設定 (config.rs) に従う。
 
@@ -40,8 +40,14 @@ pub fn predict(
     for (reading, surface) in learning.predict_prefix(kana, max) {
         push_unique(&mut results, kana, reading.to_string(), surface.to_string());
     }
+    // インポート辞書は数十万語規模になりうるため、履歴より前に置くと予測枠を占拠して
+    // 履歴や一般語が出なくなる。同梱辞書と同じ「一般語」としてコスト順に混ぜる。
+    // 安定ソートなので同コストは同梱辞書が先。
     // 履歴との重複と入力かな一致の除外で減る分を見込み、辞書は多めに引く
-    for (reading, surface) in dict.predict_prefix(kana, max * 2 + 1) {
+    let mut dict_hits = dict.predict_prefix_scored(kana, max * 2 + 1);
+    dict_hits.extend(user.imported_prefix(kana, max * 2 + 1));
+    dict_hits.sort_by_key(|(cost, _, _)| *cost);
+    for (_, reading, surface) in dict_hits {
         if results.len() >= max {
             break;
         }
@@ -186,6 +192,51 @@ mod tests {
                 ("かんべ".to_string(), "mail@example.com".to_string()),
                 ("かんべ".to_string(), "神戸".to_string()),
                 ("かんべい".to_string(), "寛平".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn インポート辞書の名詞は手動登録と履歴の後に出る() {
+        let mut user = user_from("かんべ\t神戸\t姓\n");
+        user.load_imported_from(
+            ["かんべ\t神戸\t地名\nかんべい\t官兵衛\t人名\n".as_bytes()],
+            &FunctionalIds::empty(),
+        );
+        let mut learning = LearningStore::in_memory();
+        learning.record("かんべつ", "鑑別");
+        // 手動登録と同じ表記のインポート語 (神戸) は重複して出ない
+        assert_eq!(
+            predict("かんべ", &sample_dict(), &user, &learning, &cfg()),
+            vec![
+                ("かんべ".to_string(), "神戸".to_string()),
+                ("かんべつ".to_string(), "鑑別".to_string()),
+                ("かんべい".to_string(), "官兵衛".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn インポート辞書の名詞は同梱辞書とコスト順に混ざる() {
+        // インポート語のコストは 5000。同コストの同梱辞書の語 (恐竜) が先
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "きょうと\t100\t100\t2000\t京都\n\
+             きょうりゅう\t100\t100\t5000\t恐竜\n\
+             きょうかい\t100\t100\t6000\t教会\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let mut user = UserDict::empty();
+        user.load_imported_from(["きょうしつ\t教室\t名詞\n".as_bytes()], &FunctionalIds::empty());
+        assert_eq!(
+            predict("きょう", &dict, &user, &LearningStore::in_memory(), &cfg()),
+            vec![
+                ("きょうと".to_string(), "京都".to_string()),
+                ("きょうりゅう".to_string(), "恐竜".to_string()),
+                ("きょうしつ".to_string(), "教室".to_string()),
+                ("きょうかい".to_string(), "教会".to_string()),
             ]
         );
     }

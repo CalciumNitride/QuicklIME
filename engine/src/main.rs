@@ -8,6 +8,9 @@ mod config;
 mod convert;
 mod datetime;
 mod dict;
+// 取り込み処理は単語登録ツールが使う。エンジン本体では単体テストのためだけに含める
+#[cfg(test)]
+mod import;
 mod learn;
 mod matrix;
 mod pos;
@@ -330,7 +333,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         },
         Some("CONVUSER") => match fields.next() {
             // ユーザ辞書変換 (F5 用): 読みに完全一致するユーザ登録語
-            // (短縮よみ → 名詞系、記載順) のみを返す。該当なしは候補ゼロの OK
+            // (短縮よみ → 名詞系 → インポート辞書の名詞系) のみを返す。該当なしは候補ゼロの OK
             Some(kana) if !kana.is_empty() => {
                 let user = data.user.lock().expect("user lock");
                 let mut candidates: Vec<String> =
@@ -338,6 +341,11 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 for word in user.lookup_words(kana) {
                     if !candidates.iter().any(|s| *s == word.surface) {
                         candidates.push(word.surface.clone());
+                    }
+                }
+                for entry in user.imported_words(kana) {
+                    if !candidates.iter().any(|s| *s == entry.surface) {
+                        candidates.push(entry.surface.clone());
                     }
                 }
                 if candidates.is_empty() {
@@ -496,14 +504,15 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
         }
         Some("RELOADUSER") => {
-            // ユーザ辞書ファイルを読み直す (手動編集の反映用)
+            // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
             let mut user = data.user.lock().expect("user lock");
             user.reload(&data.functional);
             eprintln!(
-                "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件・複合語 {} 件",
+                "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件・複合語 {} 件・インポート辞書 {} 件",
                 user.shortcut_count(),
                 user.word_count(),
-                user.learned_count()
+                user.learned_count(),
+                user.imported_count()
             );
             "OK\n".to_string()
         }
@@ -743,6 +752,18 @@ mod tests {
         );
         assert_eq!(handle_request("CONVUSER\tそんざいしない", &data), "OK\n");
         assert!(handle_request("CONVUSER\t", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convuserにインポート辞書の語も入る() {
+        let data = sample_data();
+        load_user(&data, "きょう\t匡\t名\n");
+        data.user.lock().unwrap().load_imported_from(
+            ["きょう\t匡\t人名\nきょう\t杏\t名\nきょう\t(^^)\t短縮よみ\n".as_bytes()],
+            &data.functional,
+        );
+        // 短縮よみ → 手動登録の名詞系 → インポート辞書の名詞系。手動登録と同じ語は1回だけ
+        assert_eq!(handle_request("CONVUSER\tきょう", &data), "OK\t(^^)\t匡\t杏\n");
     }
 
     #[test]

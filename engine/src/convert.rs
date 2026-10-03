@@ -91,6 +91,11 @@ pub fn resolve_context_id(
                 user.lookup_words(&tail)
                     .into_iter()
                     .map(|w| (w.cost, w.surface.as_str(), w.right_id)),
+            )
+            .chain(
+                user.imported_words(&tail)
+                    .into_iter()
+                    .map(|e| (e.cost, e.surface.as_str(), e.right_id)),
             );
         for (cost, surface, right_id) in hits {
             if ctx.surface.ends_with(surface) && best.is_none_or(|(c, _)| cost < c) {
@@ -295,7 +300,7 @@ pub fn convert_segments_fixed(
 }
 
 /// 読みに完全一致する候補を (コスト, 表記) で集める。
-/// システム辞書とユーザ登録の名詞系単語をまとめてコスト昇順に並べる
+/// システム辞書・ユーザ登録の名詞系単語・インポート辞書をまとめてコスト昇順に並べる
 fn exact_candidates<'a>(
     reading: &str,
     dict: &'a Dictionary,
@@ -306,6 +311,7 @@ fn exact_candidates<'a>(
         .iter()
         .map(|e| (e.cost, e.surface.as_str()))
         .chain(user.lookup_words(reading).into_iter().map(|w| (w.cost, w.surface.as_str())))
+        .chain(user.imported_words(reading).into_iter().map(|e| (e.cost, e.surface.as_str())))
         .collect();
     hits.sort_by_key(|(cost, _)| *cost);
     hits
@@ -585,7 +591,7 @@ fn viterbi_path(
                 ending_at[end].push(nodes.len() - 1);
             }
         }
-        // ユーザ登録の名詞系単語も通常の辞書語と同様にノードにする
+        // ユーザ登録の名詞系単語とインポート辞書も通常の辞書語と同様にノードにする
         for (len, word) in user.common_prefix_words(&chars[start..]) {
             let end = start + len;
             nodes.push(Node {
@@ -599,6 +605,23 @@ fn viterbi_path(
                 best_prev: 0,
             });
             ending_at[end].push(nodes.len() - 1);
+        }
+        for (len, entries) in user.imported_common_prefix(&chars[start..], MAX_READING_CHARS) {
+            let end = start + len;
+            let reading: String = chars[start..end].iter().collect();
+            for entry in entries {
+                nodes.push(Node {
+                    start,
+                    reading: reading.clone(),
+                    left_id: entry.left_id,
+                    right_id: entry.right_id,
+                    word_cost: i32::from(entry.cost),
+                    surface: entry.surface.clone(),
+                    best_cost: i64::MAX,
+                    best_prev: 0,
+                });
+                ending_at[end].push(nodes.len() - 1);
+            }
         }
         // 未知語ノード (1文字をそのまま出力)。どんな入力でも経路が成立する保険
         let ch = chars[start].to_string();
@@ -889,6 +912,84 @@ mod tests {
         let c = &segments[0].candidates;
         let user_word = c.iter().position(|s| s == "匡").unwrap();
         assert!(c.iter().position(|s| s == "今日").unwrap() < user_word);
+        assert!(user_word < c.iter().position(|s| s == "京").unwrap());
+    }
+
+    /// インポート辞書を TSV (読み\t表記\t品詞) から読み込んだユーザ辞書を作る
+    fn user_with_imported(manual: &str, imported: &str) -> UserDict {
+        let mut user = UserDict::empty();
+        user.load_from(manual.as_bytes(), &FunctionalIds::empty());
+        user.load_imported_from([imported.as_bytes()], &FunctionalIds::empty());
+        user
+    }
+
+    #[test]
+    fn インポート辞書の名詞が文中で変換される() {
+        let user = user_with_imported("", "かんべ\t神戸\t姓\n");
+        let result = convert_sentence(
+            "かんべです", &sample_dict(), &user, &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(result.unwrap(), "神戸です");
+    }
+
+    #[test]
+    fn インポート辞書の名詞が文節候補と全文候補に入る() {
+        // インポート語のコスト5000は 京(4000) より後ろ
+        let user = user_with_imported("", "きょう\t匡\t名\n");
+        let segments = convert_segments(
+            "きょう",
+            None,
+            &sample_dict(),
+            &user,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let c = &segments[0].candidates;
+        let imported = c.iter().position(|s| s == "匡").unwrap();
+        assert!(c.iter().position(|s| s == "京").unwrap() < imported);
+
+        let got = candidates(
+            "きょう", &sample_dict(), &user, &ConnectionMatrix::empty(), &sample_functional());
+        assert!(got.contains(&"匡".to_string()), "{got:?}");
+    }
+
+    #[test]
+    fn インポート辞書の短縮よみは手動登録の後に入る() {
+        let user = user_with_imported(
+            "きょう\tmail@example.com\t短縮よみ\n",
+            "きょう\timported@example.com\t短縮よみ\nきょう\tmail@example.com\t短縮よみ\n",
+        );
+        let segments = convert_segments(
+            "きょう",
+            None,
+            &sample_dict(),
+            &user,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let c = &segments[0].candidates;
+        assert_eq!(c[1], "mail@example.com");
+        assert_eq!(c[2], "imported@example.com");
+        assert_eq!(c.iter().filter(|s| *s == "mail@example.com").count(), 1);
+    }
+
+    #[test]
+    fn 手動登録と同じインポート語は候補に重複しない() {
+        // 手動登録 (3000) が 今日(2000) と 京(4000) の間に入り、インポート側は出ない
+        let user = user_with_imported("きょう\t匡\t名\n", "きょう\t匡\t人名\n");
+        let segments = convert_segments(
+            "きょう",
+            None,
+            &sample_dict(),
+            &user,
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let c = &segments[0].candidates;
+        assert_eq!(c.iter().filter(|s| *s == "匡").count(), 1);
+        let user_word = c.iter().position(|s| s == "匡").unwrap();
         assert!(user_word < c.iter().position(|s| s == "京").unwrap());
     }
 

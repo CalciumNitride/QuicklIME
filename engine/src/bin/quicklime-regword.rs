@@ -4,23 +4,35 @@
 // 入力 (単語・よみ・品詞) を ADDWORD としてエンジンへ送り、再起動なしで反映する。
 // エンジンに接続できない場合は userdict.tsv へ直接追記する (反映はエンジン起動時)。
 //
+// 「インポート...」で他 IME (MS-IME / ATOK / Mozc・Google 日本語入力) のユーザ辞書を取り込む。
+// 変換結果は imported\<元ファイル名>.tsv に保存し、RELOADUSER でエンジンへ反映する。
+//
 // 使い方: quicklime-regword.exe [単語の初期値] [よみの初期値]
 //         (TSF 層が Ctrl+F7 で選択テキストを単語の初期値として起動する)
 
 #![windows_subsystem = "windows"]
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::ptr::{null, null_mut};
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 use windows_sys::Win32::Graphics::Gdi::{COLOR_BTNFACE, CreateFontW};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_HIDEREADONLY, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST,
+    OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE, VK_RETURN};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+#[path = "../import.rs"]
+mod import;
 
 /// 品詞コンボの項目 (ADDWORD の品詞フィールドにそのまま使う)
 const POS_ITEMS: [&str; 8] = ["名詞", "固有名詞", "人名", "姓", "名", "地名", "組織", "短縮よみ"];
@@ -31,6 +43,7 @@ const ID_EDIT_READING: i32 = 101;
 const ID_COMBO_POS: i32 = 102;
 const ID_BUTTON_REGISTER: i32 = 110;
 const ID_BUTTON_CANCEL: i32 = 111;
+const ID_BUTTON_IMPORT: i32 = 112;
 
 /// NUL 終端の UTF-16 文字列を作る
 fn wide(s: &str) -> Vec<u16> {
@@ -164,7 +177,7 @@ fn main() {
         }
         SendMessageW(combo, CB_SETCURSEL, 0, 0); // 既定は「名詞」
 
-        // 4行目: ボタン (右寄せ)
+        // 4行目: ボタン (登録・キャンセルは右寄せ、インポートは左寄せ)
         y += row_h + row_gap;
         let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
         create_control(
@@ -173,6 +186,9 @@ fn main() {
         create_control(
             "BUTTON", "キャンセル", button_style, 0,
             client_w - margin - button_w, y, button_w, button_h, ID_BUTTON_CANCEL);
+        create_control(
+            "BUTTON", "インポート...", button_style, 0,
+            margin, y, button_w, button_h, ID_BUTTON_IMPORT);
 
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
@@ -215,6 +231,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_BUTTON_CANCEL => {
                         DestroyWindow(hwnd);
                     }
+                    ID_BUTTON_IMPORT => on_import(hwnd),
                     _ => {}
                 }
                 0
@@ -236,7 +253,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// 成功したらダイアログを閉じ、失敗したらメッセージを出して開いたままにする
 fn on_register(hwnd: HWND) {
     let word = get_text(hwnd, ID_EDIT_WORD).trim().to_string();
-    let reading = to_hiragana(get_text(hwnd, ID_EDIT_READING).trim());
+    let reading = import::to_hiragana(get_text(hwnd, ID_EDIT_READING).trim());
     let pos = unsafe {
         let combo = GetDlgItem(hwnd, ID_COMBO_POS);
         let index = SendMessageW(combo, CB_GETCURSEL, 0, 0);
@@ -286,6 +303,11 @@ enum SendError {
 
 /// named pipe でエンジンに ADDWORD を送り、応答を確認する
 fn send_addword(reading: &str, word: &str, pos: &str) -> Result<(), SendError> {
+    send_request(&format!("ADDWORD\t{reading}\t{word}\t{pos}"))
+}
+
+/// named pipe でエンジンに1行の要求を送り、応答が OK かを確認する
+fn send_request(request: &str) -> Result<(), SendError> {
     let name =
         std::env::var("QUICKLIME_PIPE_NAME").unwrap_or_else(|_| "quicklime-engine".to_string());
     let mut pipe = std::fs::OpenOptions::new()
@@ -293,8 +315,7 @@ fn send_addword(reading: &str, word: &str, pos: &str) -> Result<(), SendError> {
         .write(true)
         .open(format!(r"\\.\pipe\{name}"))
         .map_err(|_| SendError::NotConnected)?;
-    writeln!(pipe, "ADDWORD\t{reading}\t{word}\t{pos}")
-        .map_err(|_| SendError::NotConnected)?;
+    writeln!(pipe, "{request}").map_err(|_| SendError::NotConnected)?;
     let mut response = String::new();
     BufReader::new(pipe)
         .read_line(&mut response)
@@ -311,13 +332,7 @@ fn send_addword(reading: &str, word: &str, pos: &str) -> Result<(), SendError> {
 /// パスの決定はエンジン (userdict.rs) と同じ:
 /// QUICKLIME_USER_DICT_FILE > %APPDATA%\QuicklIME\userdict.tsv
 fn append_to_userdict(reading: &str, word: &str, pos: &str) -> Result<(), String> {
-    let path = if let Ok(path) = std::env::var("QUICKLIME_USER_DICT_FILE") {
-        PathBuf::from(path)
-    } else {
-        let appdata =
-            std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
-        PathBuf::from(appdata).join("QuicklIME").join("userdict.tsv")
-    };
+    let path = userdict_path()?;
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -327,6 +342,166 @@ fn append_to_userdict(reading: &str, word: &str, pos: &str) -> Result<(), String
         .open(&path)
         .and_then(|mut file| writeln!(file, "{reading}\t{word}\t{pos}"))
         .map_err(|e| format!("ユーザ辞書ファイルへ書き込めません ({e})"))
+}
+
+/// ユーザ辞書ファイルのパス (エンジンの userdict.rs と同じ決め方)
+fn userdict_path() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("QUICKLIME_USER_DICT_FILE") {
+        return Ok(PathBuf::from(path));
+    }
+    let appdata = std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
+    Ok(PathBuf::from(appdata).join("QuicklIME").join("userdict.tsv"))
+}
+
+/// インポート辞書の保存先ディレクトリ (エンジンの userdict.rs と同じ決め方):
+/// QUICKLIME_IMPORT_DIR > %APPDATA%\QuicklIME\imported
+fn import_dir() -> Result<PathBuf, String> {
+    if let Ok(dir) = std::env::var("QUICKLIME_IMPORT_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let appdata = std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
+    Ok(PathBuf::from(appdata).join("QuicklIME").join("imported"))
+}
+
+/// インポートボタン: ファイルを選ばせて取り込み、結果をメッセージで示す。
+/// 入力途中の登録内容を消さないよう、ダイアログは閉じない
+fn on_import(hwnd: HWND) {
+    let Some(source) = choose_file(hwnd) else {
+        return; // キャンセル
+    };
+    match import_file(&source) {
+        Ok(text) => message_box(hwnd, &text, MB_ICONINFORMATION),
+        Err(e) => message_box(hwnd, &format!("インポートできませんでした。\n{e}"), MB_ICONWARNING),
+    }
+}
+
+/// ファイル選択ダイアログを開く。キャンセルされたら None
+fn choose_file(hwnd: HWND) -> Option<PathBuf> {
+    let filter: Vec<u16> = "テキスト (*.txt;*.tsv)\0*.txt;*.tsv\0すべてのファイル (*.*)\0*.*\0\0"
+        .encode_utf16()
+        .collect();
+    let title = wide("インポートする辞書ファイル");
+    let mut buffer = vec![0u16; 32768];
+    let mut ofn = OPENFILENAMEW {
+        lStructSize: std::mem::size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        lpstrFilter: filter.as_ptr(),
+        nFilterIndex: 1,
+        lpstrFile: buffer.as_mut_ptr(),
+        nMaxFile: buffer.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        // 作業ディレクトリが変わると相対パスの環境変数指定 (QUICKLIME_*) の解決先がずれる
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_HIDEREADONLY | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    if unsafe { GetOpenFileNameW(&mut ofn) } == 0 {
+        return None;
+    }
+    let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+    Some(PathBuf::from(String::from_utf16_lossy(&buffer[..len])))
+}
+
+/// 辞書ファイルを読み込み・変換して imported\<名前>.tsv へ保存し、エンジンへ反映する。
+/// 成功時は結果表示用のメッセージを返す
+fn import_file(source: &Path) -> Result<String, String> {
+    let bytes = std::fs::read(source).map_err(|e| format!("ファイルを読めません ({e})"))?;
+    let text = import::decode(&bytes, decode_cp932)?;
+    let dir = import_dir()?;
+    let stem = source.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let file_name = format!("{stem}.tsv");
+
+    let result = import::parse(&text, &existing_pairs(&dir, &file_name));
+    let counts = format!(
+        "重複 {} / 未対応の品詞 {} / 不正な行 {}",
+        group_digits(result.duplicate),
+        group_digits(result.unsupported_pos),
+        group_digits(result.invalid)
+    );
+    if result.entries.is_empty() {
+        return Err(format!("取り込める語がありませんでした ({counts})。"));
+    }
+
+    std::fs::create_dir_all(&dir).map_err(|e| format!("保存先を作れません ({e})"))?;
+    let path = dir.join(&file_name);
+    std::fs::write(&path, import::to_tsv(&result.entries))
+        .map_err(|e| format!("保存できません ({e})"))?;
+
+    let summary = format!(
+        "辞書をインポートしました: {} 語 ({counts})\n保存先: {}",
+        group_digits(result.entries.len()),
+        path.display()
+    );
+    Ok(match send_request("RELOADUSER") {
+        Ok(()) => summary,
+        Err(SendError::NotConnected) => format!(
+            "{summary}\n\nエンジンが起動していないため、反映は次回のエンジン起動時になります。"
+        ),
+        Err(SendError::Refused(message)) => format!(
+            "{summary}\n\nエンジンへの反映に失敗しました ({message})。\n反映は次回のエンジン起動時になります。"
+        ),
+    })
+}
+
+/// 重複判定用に、userdict.tsv と他のインポート済みファイルの (読み, 表記) を集める。
+/// 上書き対象の同名ファイル自身は除く (配布辞書の更新で全語が重複扱いになるため)
+fn existing_pairs(dir: &Path, own_file_name: &str) -> HashSet<(String, String)> {
+    let mut pairs = HashSet::new();
+    let read = |path: &Path, pairs: &mut HashSet<(String, String)>| {
+        if let Ok(bytes) = std::fs::read(path) {
+            import::collect_pairs(&String::from_utf8_lossy(&bytes), pairs);
+        }
+    };
+    if let Ok(path) = userdict_path() {
+        read(&path, &mut pairs);
+    }
+    // Windows のファイル名は大文字小文字を区別しないため、同名判定もそれに合わせる
+    let own = own_file_name.to_lowercase();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_lowercase()) else {
+                continue;
+            };
+            if path.is_file() && name.ends_with(".tsv") && name != own {
+                read(&path, &mut pairs);
+            }
+        }
+    }
+    pairs
+}
+
+/// CP932 (Shift_JIS) のバイト列を Win32 API でデコードする。不正なバイト列なら None
+fn decode_cp932(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() {
+        return Some(String::new());
+    }
+    let len = i32::try_from(bytes.len()).ok()?;
+    unsafe {
+        let needed =
+            MultiByteToWideChar(932, MB_ERR_INVALID_CHARS, bytes.as_ptr(), len, null_mut(), 0);
+        if needed <= 0 {
+            return None;
+        }
+        let mut buffer = vec![0u16; needed as usize];
+        let written = MultiByteToWideChar(
+            932, MB_ERR_INVALID_CHARS, bytes.as_ptr(), len, buffer.as_mut_ptr(), needed);
+        if written <= 0 {
+            return None;
+        }
+        String::from_utf16(&buffer[..written as usize]).ok()
+    }
+}
+
+/// 件数を3桁区切りの文字列にする (123456 → 123,456)
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// コントロールのテキストを取得する
@@ -349,16 +524,27 @@ fn message_box(hwnd: HWND, text: &str, icon: u32) {
     unsafe { MessageBoxW(hwnd, text.as_ptr(), title.as_ptr(), MB_OK | icon) };
 }
 
-/// よみのカタカナをひらがなへ正規化する (変換時の読みはひらがなのため)
-fn to_hiragana(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            // カタカナ (ァ U+30A1 〜 ヶ U+30F6) はひらがなと 0x60 差で並んでいる
-            if ('ァ'..='ヶ').contains(&c) {
-                char::from_u32(c as u32 - 0x60).unwrap_or(c)
-            } else {
-                c
-            }
-        })
-        .collect()
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shift_jisをデコードする() {
+        // 「あ漢」の Shift_JIS
+        let sjis = [0x82u8, 0xA0, 0x8A, 0xBF];
+        assert_eq!(decode_cp932(&sjis).as_deref(), Some("あ漢"));
+        // BOM なしで UTF-8 として不正なら CP932 として読まれる
+        assert_eq!(import::decode(&sjis, decode_cp932).unwrap(), "あ漢");
+        // 2バイト文字の途中で切れたものは不正
+        assert_eq!(decode_cp932(&[0x82]), None);
+    }
+
+    #[test]
+    fn 件数を3桁区切りにする() {
+        assert_eq!(group_digits(0), "0");
+        assert_eq!(group_digits(999), "999");
+        assert_eq!(group_digits(1000), "1,000");
+        assert_eq!(group_digits(123456), "123,456");
+        assert_eq!(group_digits(1234567), "1,234,567");
+    }
 }
