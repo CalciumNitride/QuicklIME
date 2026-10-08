@@ -114,7 +114,7 @@ UINT ParseFunctionVk(const std::wstring& name)
 }
 
 // キー割当の値をパースする。requireCtrl は機能の文脈が要求する修飾
-// (composition 中の機能は無修飾 F1-F12 のみ、composition 無しの機能は
+// (run 中・候補選択中の機能は無修飾 F1-F12 のみ、run が無いときの機能は
 //  Ctrl+F1-F12 / Ctrl+Backspace のみ)。"none" は割当なし。
 // 文脈に合わない値・読めない値は変更しない
 void ParseKeyBinding(const std::wstring& value, bool requireCtrl, KeyBinding& out)
@@ -153,16 +153,6 @@ void ParseConvertKeyBinding(const std::wstring& value, KeyBinding& out)
     }
 }
 
-// "direct"/"composition" を入力方式にする。それ以外は変更しない
-void ParseInputStyle(const std::wstring& value, InputStyle& out)
-{
-    if (value == L"direct") {
-        out = InputStyle::Direct;
-    } else if (value == L"composition") {
-        out = InputStyle::Composition;
-    }
-}
-
 // 1行「キー\t値」を config へ反映する
 void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& config)
 {
@@ -174,7 +164,7 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         for (const auto& entry : kKeyNames) {
             if (key == entry.name) {
                 const size_t index = static_cast<size_t>(entry.func);
-                // 先頭7機能 (composition 中) は無修飾、残りは Ctrl 併用のみ
+                // 先頭7機能 (run 中・候補選択中) は無修飾、残りは Ctrl 併用のみ
                 const bool requireCtrl = entry.func >= KeyFunc::UndoCommit;
                 ParseKeyBinding(value, requireCtrl, config.keys[index]);
                 return;
@@ -182,8 +172,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
         return;
     }
-    if (key == L"input_style") {
-        ParseInputStyle(value, config.inputStyle);
+    if (key == L"debug_log") {
+        config.debugLog = value;
     } else if (key == L"space") {
         ParseWidth(value, config.spaceFullwidth);
     } else if (key == L"digits") {
@@ -197,8 +187,6 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
     } else if (key == L"candidate_font_size") {
         ParseClamped(value, 10, 40, config.candidateFontSize);
-    } else if (key == L"live_conversion") {
-        ParseBool(value, config.liveConversion);
     } else if (key == L"modeless") {
         ParseBool(value, config.modeless);
     }

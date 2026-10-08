@@ -4,6 +4,7 @@
 #include <cwctype>
 #include <new>
 
+#include "debug_log.h"
 #include "display_attribute.h"
 #include "edit_session.h"
 #include "globals.h"
@@ -302,11 +303,22 @@ TextService::TextService()
       segmentIndex_(0),
       segmentsResized_(false),
       predictionIndex_(-1),
-      liveSuspended_(false),
+      predictionInDocument_(false),
       surfaceCaret_(0),
       surfaceSelectLength_(0),
-      directCapable_(DirectCapability::Unknown),
       promoted_(false),
+      appendDocument_(AppendDocument::Unknown),
+      awaitingMarker_(false),
+      appendAction_(PseudoKeyAction::None),
+      appendActionFunc_(KeyFunc::None),
+      appendActionEndRun_(false),
+      appendFollowKeyPending_(false),
+      mouseHook_(nullptr),
+      backspaceTested_(false),
+      keyEditExpected_(false),
+      ownEditDepth_(0),
+      textEditSinkContext_(nullptr),
+      textEditSinkCookie_(TF_INVALID_COOKIE),
       openCloseCookie_(TF_INVALID_COOKIE),
       threadMgrEventCookie_(TF_INVALID_COOKIE),
       langBarButton_(nullptr)
@@ -339,6 +351,8 @@ STDMETHODIMP TextService::QueryInterface(REFIID riid, void** ppv)
         *ppv = static_cast<ITfCompartmentEventSink*>(this);
     } else if (IsEqualIID(riid, IID_ITfDisplayAttributeProvider)) {
         *ppv = static_cast<ITfDisplayAttributeProvider*>(this);
+    } else if (IsEqualIID(riid, IID_ITfTextEditSink)) {
+        *ppv = static_cast<ITfTextEditSink*>(this);
     } else {
         *ppv = nullptr;
         return E_NOINTERFACE;
@@ -467,20 +481,30 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
     // ユーザ設定の初回読み込み (以後はフォーカス切替・IMEオン時に変更を確認する)
     RefreshConfig();
+    ITfDocumentMgr* focus = nullptr;
+    if (SUCCEEDED(threadMgr_->GetFocus(&focus)) && focus != nullptr) {
+        UpdateTextEditSink(focus);
+        focus->Release();
+    }
     return S_OK;
 }
 
 STDMETHODIMP TextService::Deactivate()
 {
+    pendingWindow_.Hide();
+    CancelAppendAction();
+    UpdateTextEditSink(nullptr);
     ClearConversion();
     ClearContext();
     composer_.Clear();
     surface_.clear();
+    lastCommitText_.clear();
     promoted_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
     }
+    UpdateMouseHook();
 
     if (threadMgr_ != nullptr) {
         if (threadMgrEventCookie_ != TF_INVALID_COOKIE) {
@@ -550,20 +574,30 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* docMgr)
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prevFocus)
 {
-    UNREFERENCED_PARAMETER(focus);
     UNREFERENCED_PARAMETER(prevFocus);
-    // direct 方式の run は文書を離れた時点で忘れる。方式の可否は文書
-    // (アプリ・編集コントロール) の性質で決まるため、文書ごとに判定し直す
+    // 擬似 Backspace の目印待ちと未完成ローマ字の表示は離れる文書のもの
+    CancelAppendAction();
+    pendingWindow_.Hide();
+    // run は文書を離れた時点で忘れる
     if (InRun()) {
+        DiscardPendingRomaji();
         EndRun();
     }
-    directCapable_ = DirectCapability::Unknown;
+    // 確定アンドゥの記憶も離れる文書のもの。追記のみの文書は照合せずに擬似 Backspace で
+    // 消すため、別の文書へ持ち越すと関係ない文字を消してしまう
+    lastCommitText_.clear();
     // フォーカス切替は設定ファイルの変更を拾う機会にする (通常は更新時刻の比較のみ)。
     // 設定ツールで保存してアプリに戻る操作自体がフォーカス切替なので、実質すぐ反映される
     RefreshConfig();
+    // 読めるかどうかは文書 (アプリ・編集コントロール) の性質で決まるため、文書ごとに判定し直す
+    if (appendDocument_ != AppendDocument::Unknown) {
+        SetAppendDocument(AppendDocument::Unknown, L"フォーカス移動");
+    }
+    UpdateTextEditSink(focus);
     // 別のドキュメント (アプリ・編集コントロール) に移った可能性があるため、
     // 直前の確定文脈はここでは信用しない
     ClearContext();
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -591,6 +625,7 @@ void TextService::RefreshConfig()
 {
     if (config_.Refresh()) {
         candidateWindow_.SetFont(config_.Get().candidateFont, config_.Get().candidateFontSize);
+        pendingWindow_.SetFont(config_.Get().candidateFont, config_.Get().candidateFontSize);
     }
     // 自動英字判定の有効/無効はコンポーザが持つ。Clear() でも維持されるフラグなので
     // 設定を読む機会ごとに渡し直すだけでよい
@@ -615,80 +650,55 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     if (!IsKeyboardOpen()) {
         return false;
     }
-    if (UsingDirectStyle()) {
+    if (!Composing()) {
         return IsKeyEatenDirect(context, wparam);
     }
 
-    // Ctrl / Alt 併用時は原則アプリのショートカットなので手を出さないが、
-    // composition 中の Ctrl+M (確定) と Ctrl+H (1文字削除)、変換キー (Ctrl+Space 割当時)、
-    // composition が無いときの機能キー (既定: Ctrl+Backspace=確定アンドゥ、
-    // Ctrl+F7=単語登録、Ctrl+F12=設定。割当は変更可) だけは IME が処理する
+    // 候補選択中 (run を昇格した composition)。Ctrl / Alt 併用は原則アプリの
+    // ショートカットなので手を出さないが、Ctrl+M (確定)・Ctrl+H (変換の取消)・
+    // 変換キー (Ctrl+Space 割当時) だけは IME が処理する
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
-        if (Composing() && IsConvertKey(wparam)) {
-            return true;
-        }
-        if (ctrl && !alt && !Composing()) {
-            switch (config_.Get().FindCtrlFunc(wparam)) {
-            case KeyFunc::UndoCommit:
-                return !lastCommitText_.empty();
-            case KeyFunc::RegisterWord:
-            case KeyFunc::OpenConfig:
-                return true;
-            default:
-                break;
-            }
-        }
-        return ctrl && !alt && Composing() && (wparam == 'M' || wparam == 'H');
-    }
-    const bool shifted = IsShiftPressed();
-
-    if (Composing()) {
-        // 変換キー (既定 VK_CONVERT) は Space と同じ変換操作
         if (IsConvertKey(wparam)) {
             return true;
         }
-        // composition 中は編集キーも IME が処理する
-        switch (wparam) {
-        case VK_RETURN:
-        case VK_ESCAPE:
-        case VK_BACK:
-        case VK_SPACE:
-            return true;
-        case VK_TAB:
-        case VK_UP:
-        case VK_DOWN:
-        case VK_LEFT:
-        case VK_RIGHT:
-        case VK_PRIOR:
-        case VK_NEXT:
-            // composition 中の Tab (サジェスト選択。変換中は変換を取り消して移行)・
-            // 矢印・PgUp/PgDn は常に食べる (アプリにキャレットやフォーカスを
-            // 動かさせない)。用途が無い状態では食べた上で何もしない
-            return true;
-        default:
-            break;
-        }
-        // ファンクションキー変換 (既定: F4=特殊変換 (記号・日付), F5=短縮よみ,
-        // F6-F10=文字種の直接変換。割当は変更可)。割当のあるキーだけ食べる
-        if (wparam >= VK_F1 && wparam <= VK_F12) {
-            return config_.Get().FindPlainFunc(wparam) != KeyFunc::None;
-        }
-        // composition 中は英字 (Shift併用含む)・数字・記号・テンキーも IME が
-        // 処理し、未確定文字列の外へ文字が漏れないようにする
-        return IsLetterKey(wparam) || IsDigitKey(wparam) ||
-               FindSymbolKey(wparam, shifted) != nullptr || NumpadChar(wparam) != 0;
+        return ctrl && !alt && (wparam == 'M' || wparam == 'H');
     }
+    const bool shifted = IsShiftPressed();
 
-    // composition が無いとき: 英字 (Shift併用含む)・記号キー・数字・テンキーで
-    // composition を開始する (数字とテンキーは助数詞など数字を含む表現の
-    // サジェスト・変換につなげるため、常に未変換状態で入れる)。
-    // Space は全角スペースの直接挿入 (Shift+Space は食べずに半角のまま通す。
-    // 設定 space=half のときは Space も食べずに半角のまま通す)
-    return IsLetterKey(wparam) || FindSymbolKey(wparam, shifted) != nullptr ||
-           IsDigitKey(wparam) || NumpadChar(wparam) != 0 ||
-           (wparam == VK_SPACE && !shifted && config_.Get().spaceFullwidth);
+    // 変換キー (既定 VK_CONVERT) は次候補 (Shift で前候補)
+    if (IsConvertKey(wparam)) {
+        return true;
+    }
+    // 候補選択中は編集キーも IME が処理する
+    switch (wparam) {
+    case VK_RETURN:
+    case VK_ESCAPE:
+    case VK_BACK:
+    case VK_SPACE:
+    case VK_TAB:
+    case VK_UP:
+    case VK_DOWN:
+    case VK_LEFT:
+    case VK_RIGHT:
+    case VK_PRIOR:
+    case VK_NEXT:
+        // Tab (変換を取り消してサジェスト選択へ)・矢印・PgUp/PgDn は常に食べる
+        // (アプリにキャレットやフォーカスを動かさせない)。用途が無い状態では
+        // 食べた上で何もしない
+        return true;
+    default:
+        break;
+    }
+    // ファンクションキー変換 (既定: F4=特殊変換 (記号・日付), F5=短縮よみ,
+    // F6-F10=文字種の直接変換。割当は変更可)。割当のあるキーだけ食べる
+    if (wparam >= VK_F1 && wparam <= VK_F12) {
+        return config_.Get().FindPlainFunc(wparam) != KeyFunc::None;
+    }
+    // 英字 (Shift併用含む)・数字・記号・テンキーは確定して新しい run を始める
+    return IsLetterKey(wparam) || IsDigitKey(wparam) ||
+           FindSymbolKey(wparam, shifted) != nullptr || NumpadChar(wparam) != 0;
 }
 
 STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPARAM lparam,
@@ -699,10 +709,14 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
-    // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
-    // direct 方式の run の終了はここでも行う
-    EndRunIfPassthroughKey(context, wparam);
-    *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
+    if (!HandlePseudoKey(context, wparam, false, eaten)) {
+        // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
+        // run の終了はここでも行う
+        EndRunIfPassthroughKey(context, wparam);
+        *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
+        NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
+    }
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -714,9 +728,15 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    if (HandlePseudoKey(context, wparam, true, eaten)) {
+        UpdateMouseHook();
+        return S_OK;
+    }
     EndRunIfPassthroughKey(context, wparam);
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
+    NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
     if (*eaten == FALSE) {
+        UpdateMouseHook();
         return S_OK;
     }
     if (wparam < pendingKeyUps_.size()) {
@@ -728,6 +748,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     // (失敗 HRESULT を返すと「未処理」とみなして打鍵文字をそのまま挿入する
     //  ホストがあるため。内部の失敗はその打鍵が効かないだけに留める)
     HandleKey(context, wparam);
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -772,7 +793,9 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
         if (context != nullptr && (Composing() || InRun()) &&
             config_.Get().FindPlainFunc(VK_F10) != KeyFunc::None) {
             *eaten = TRUE;
-            return HandleKey(context, VK_F10);
+            const HRESULT hr = HandleKey(context, VK_F10);
+            UpdateMouseHook();
+            return hr;
         }
         // IME が使わないときは eaten=FALSE だけではアプリに F10 が届かないため、
         // Mozc と同様に WM_SYSKEYDOWN を合成してアプリ本来の F10 動作を再現する
@@ -800,10 +823,11 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     *eaten = TRUE;
 
     if (!open && Composing()) {
-        // オフにする前に入力途中の文字列を確定する
+        // オフにする前に候補選択中の文字列を確定する
         CommitComposition(context);
     }
     SetKeyboardOpen(open);
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -868,9 +892,12 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     RefreshConfig();
     // オフの間にキャレットが動かされる可能性があるため、次にオンに戻ったときの
     // 誤った文脈補正を避けるためオフになった時点で文脈を破棄する
-    // (direct 方式の run もオフの時点で忘れる)
+    // (run もオフの時点で忘れる)
     if (!IsKeyboardOpen()) {
+        CancelAppendAction();
+        pendingWindow_.Hide();
         if (InRun()) {
+            DiscardPendingRomaji();
             EndRun();
         }
         ClearContext();
@@ -879,7 +906,7 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
         langBarButton_->NotifyUpdate();
     }
     // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったら、
-    // 入力途中の文字列を確定して後始末する。自前の preserved key 経由では
+    // 候補選択中の文字列を確定して後始末する。自前の preserved key 経由では
     // 確定済みなのでここでは何も起きない
     if (!IsKeyboardOpen() && Composing()) {
         ITfDocumentMgr* docMgr = nullptr;
@@ -893,6 +920,7 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
             docMgr->Release();
         }
     }
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -904,16 +932,16 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     UNREFERENCED_PARAMETER(ecWrite);
     UNREFERENCED_PARAMETER(composition);
 
-    // アプリ側の操作 (クリックなど) で composition が終了した。入力途中の状態を捨てる
+    // アプリ側の操作 (クリックなど) で composition が終了した。候補選択中の状態を捨てる
     ClearConversion();
     ClearPrediction();
-    ClearLiveConversion();
     composer_.Clear();
     promoted_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
     }
+    UpdateMouseHook();
     return S_OK;
 }
 
@@ -941,6 +969,81 @@ STDMETHODIMP TextService::GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttrib
     return *info != nullptr ? S_OK : E_INVALIDARG;
 }
 
+// ---- ITfTextEditSink ----
+
+STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly,
+                                   ITfEditRecord* editRecord)
+{
+    UNREFERENCED_PARAMETER(context);
+    UNREFERENCED_PARAMETER(ecReadOnly);
+
+    if (editRecord == nullptr) {
+        return S_OK;
+    }
+    BOOL selectionChanged = FALSE;
+    if (FAILED(editRecord->GetSelectionStatus(&selectionChanged)) || !selectionChanged) {
+        return S_OK;
+    }
+    // 自分の同期 edit session の終わりに呼ばれたもの、またはアプリへ渡した Backspace・
+    // 擬似 Backspace でアプリが文書を編集したものは IME 由来とみなす
+    const bool own = ownEditDepth_ > 0;
+    const bool keyEdit = keyEditExpected_ || awaitingMarker_;
+    DebugLog(std::wstring(L"OnEndEdit 選択変更 own=") + (own ? L"1" : L"0") +
+             L" keyEdit=" + (keyEdit ? L"1" : L"0") + L" run=" + (InRun() ? L"1" : L"0") +
+             L" doc=" + AppendDocumentName(appendDocument_));
+    if (own || keyEdit) {
+        return S_OK;
+    }
+    // 読める文書は次の追記の照合でキャレット移動を検出できる
+    if (appendDocument_ != AppendDocument::AppendOnly || !InRun()) {
+        return S_OK;
+    }
+    DebugLog(L"追記のみの文書で run を終了: OnEndEdit の選択変更");
+    pendingWindow_.Hide();
+    DiscardPendingRomaji();
+    EndRun();
+    ClearContext();
+    UpdateMouseHook();
+    return S_OK;
+}
+
+void TextService::UpdateTextEditSink(ITfDocumentMgr* docMgr)
+{
+    if (textEditSinkContext_ != nullptr) {
+        ITfSource* source = nullptr;
+        if (SUCCEEDED(textEditSinkContext_->QueryInterface(IID_ITfSource,
+                                                           reinterpret_cast<void**>(&source)))) {
+            source->UnadviseSink(textEditSinkCookie_);
+            source->Release();
+        }
+        textEditSinkContext_->Release();
+        textEditSinkContext_ = nullptr;
+        textEditSinkCookie_ = TF_INVALID_COOKIE;
+    }
+    if (docMgr == nullptr) {
+        return;
+    }
+    ITfContext* context = nullptr;
+    if (FAILED(docMgr->GetTop(&context)) || context == nullptr) {
+        return;
+    }
+    bool advised = false;
+    ITfSource* source = nullptr;
+    if (SUCCEEDED(context->QueryInterface(IID_ITfSource, reinterpret_cast<void**>(&source)))) {
+        advised = SUCCEEDED(source->AdviseSink(IID_ITfTextEditSink,
+                                               static_cast<ITfTextEditSink*>(this),
+                                               &textEditSinkCookie_));
+        source->Release();
+    }
+    if (advised) {
+        textEditSinkContext_ = context;
+    } else {
+        textEditSinkCookie_ = TF_INVALID_COOKIE;
+        context->Release();
+    }
+    DebugLog(std::wstring(L"ITfTextEditSink の登録: ") + (advised ? L"成功" : L"失敗"));
+}
+
 // ---- 状態機械 ----
 
 HRESULT TextService::CommitComposition(ITfContext* context)
@@ -951,50 +1054,14 @@ HRESULT TextService::CommitComposition(ITfContext* context)
     if (converting_) {
         return CommitConversion(context);
     }
-    if (predictionIndex_ >= 0) {
-        return CommitPrediction(context);
-    }
-    if (!liveSegments_.empty()) {
-        // ライブ変換表示中の確定: 表示どおりの文字列で確定し、文節ごとに学習する
-        // (失敗しても確定は続行する)。末尾の未変換ローマ字は Commit() の
-        // 救済 ("n" のみ「ん」) を通した形で変換結果の後ろに付ける
-        std::vector<LearnEntry> entries;
-        std::wstring prevSurface = contextSurface_;
-        for (const ConversionSegment& segment : liveSegments_) {
-            entries.push_back({segment.reading, segment.candidates[0], prevSurface});
-            prevSurface = segment.candidates[0];
-        }
-        engine_.Learn(entries);
-        const std::wstring suffix =
-            composer_.Commit().substr(composer_.ConfirmedKana().size());
-        if (suffix.empty()) {
-            // 末尾に未変換の生ローマ字が付かない = 確定文字列は文節どおりなので
-            // 最終文節を次の変換の文脈にできる
-            SetCommitContext(liveSegments_.back().reading, liveSegments_.back().candidates[0]);
-        } else {
-            // 生ローマ字が末尾に付くと確定文字列と文節表記が一致しないため、
-            // 誤った文脈を引きずらないようクリアする
-            ClearContext();
-        }
-        return EndComposition(context, LiveText() + suffix);
-    }
-    ApplyModelessCommitRule();
-    // 無変換の確定でも、英字を含む入力 (英単語など) は読み=表記で学習し、
-    // 予測サジェストの履歴に蓄積する。かなのみの無変換確定は学習しない
-    // (学習は変換候補の並び替えにも使われるため、「きょう→きょう」の記録が
-    //  入ると変換時にひらがな候補が先頭へ来てしまう)
-    const std::wstring kana = composer_.Commit();
-    if (ContainsAsciiLetter(kana)) {
-        engine_.Learn({{kana, kana, contextSurface_}});
-    }
-    // 学習の可否に関わらず、確定したかな (助詞など) は次の変換の文脈として使える
-    SetCommitContext(kana, kana);
-    return EndComposition(context, kana);
+    // 昇格した composition は変換状態を抜けると run に戻るので、ここに来るのは
+    // 後始末が間に合わなかったときだけ。表示どおりのかなで確定する
+    return EndComposition(context, composer_.Commit());
 }
 
 void TextService::ApplyModelessCommitRule()
 {
-    if (converting_ || predictionIndex_ >= 0 || !liveSegments_.empty()) {
+    if (converting_ || predictionIndex_ >= 0) {
         return;
     }
     composer_.FinishForCommit();
@@ -1002,7 +1069,7 @@ void TextService::ApplyModelessCommitRule()
 
 std::wstring TextService::StandaloneSpaceText() const
 {
-    // 英字モードの run / composition を Space で終えた直後も英文の途中なので、
+    // 英字モードの run を Space で終えた直後も英文の途中なので、
     // 続く Space も半角にする (lastCommitText_ の末尾には Space 自身が入っている)。
     // モードレスが無効なら英字モードは Shift 由来だけで、Space の幅も従来どおり設定に従う
     if (config_.Get().modeless && IsAsciiAlnumText(lastCommitText_)) {
@@ -1033,18 +1100,18 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // その通知が来ないホストでも自動英字判定が設定どおりになるよう毎打鍵で渡し直す
     composer_.SetModeless(config_.Get().modeless);
 
-    const HRESULT hr = UsingDirectStyle() ? HandleKeyDirect(context, wparam)
-                                          : HandleKeyComposition(context, wparam);
-    // 昇格した composition が変換状態を抜けた (変換取消・サジェスト移行・印字キーで
-    // 確定して次の composition が始まった・F4 で候補が無かった) なら direct の run に戻す
+    const HRESULT hr = Composing() ? HandleKeyConverting(context, wparam)
+                                   : HandleKeyDirect(context, wparam);
+    // 昇格した composition が変換状態を抜けた (変換取消・印字キーで確定して次の
+    // composition が始まった・F4 で候補が無かった) なら run に戻す
     DemoteIfLeftConversion(context);
     return hr;
 }
 
-HRESULT TextService::HandleKeyComposition(ITfContext* context, WPARAM wparam)
+HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
 {
-    // 変換キー: Space と同じ変換操作 (未変換なら変換開始、変換中は次候補。Shift で前候補)
-    if (Composing() && IsConvertKey(wparam)) {
+    // 変換キー: 次候補 (Shift で前候補)
+    if (IsConvertKey(wparam)) {
         return converting_ ? CycleCandidate(context, IsShiftPressed() ? -1 : +1)
                            : StartConversion(context);
     }
@@ -1052,20 +1119,6 @@ HRESULT TextService::HandleKeyComposition(ITfContext* context, WPARAM wparam)
     // Ctrl 併用ショートカット: Ctrl+M は Enter、Ctrl+H は BackSpace として扱う。
     // (英字の打鍵と解釈されないよう、ここで読み替えてから通常の処理に流す)
     if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-        // composition が無いときの機能キー (既定: Ctrl+Backspace=確定アンドゥ、
-        // Ctrl+F7=単語登録、Ctrl+F12=設定。割当は変更可) を先に照合する
-        if (!Composing()) {
-            switch (config_.Get().FindCtrlFunc(wparam)) {
-            case KeyFunc::UndoCommit:
-                return UndoCommit(context);
-            case KeyFunc::RegisterWord:
-                return LaunchWordRegister(context);
-            case KeyFunc::OpenConfig:
-                return LaunchConfigTool();
-            default:
-                break;
-            }
-        }
         switch (wparam) {
         case 'M':
             wparam = VK_RETURN;
@@ -1080,247 +1133,70 @@ HRESULT TextService::HandleKeyComposition(ITfContext* context, WPARAM wparam)
 
     const bool shifted = IsShiftPressed();
 
-    // Shift+英字: 大文字をそのまま未確定文字列へ入れ、英字モードに入る。
-    // 以降の英字はローマ字変換せずアルファベットのまま続く (既存IMEと同様)
-    if (shifted && IsLetterKey(wparam)) {
-        const std::wstring upper(1, static_cast<wchar_t>(wparam));
-        if (converting_) {
-            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う
-            const std::wstring commitText = PrepareConversionCommit();
-            FinishConversionState(commitText);
-            composer_.EnterAsciiMode();
-            composer_.PushKana(upper, upper);
-            HRESULT hr = RestartComposition(context, commitText);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-            return UpdateCompositionAndPredict(context);
+    // 印字キー: 選択中の候補を確定して新しい run を始める。確定と新しい composition の
+    // 開始を1つの edit session で行い、その composition は打鍵の処理後に run へ戻す
+    // (DemoteIfLeftConversion)
+    DirectKey key;
+    if (ClassifyDirectKey(wparam, shifted, &key)) {
+        // 数字 1〜9 は候補番号による直接選択
+        if (!shifted && wparam >= '1' && wparam <= '9' && converting_) {
+            return SelectCandidateByNumber(context, wparam - '1');
         }
-        composer_.EnterAsciiMode();
-        composer_.PushKana(upper, upper);
-        if (!Composing()) {
-            HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
+        if (!converting_) {
+            return S_OK;
+        }
+        const std::wstring commitText = PrepareConversionCommit();
+        FinishConversionState(commitText);
+        PushDirectKey(key);
+        HRESULT hr = RestartComposition(context, commitText);
+        if (FAILED(hr)) {
+            composer_.Clear();
+            return hr;
         }
         return UpdateCompositionAndPredict(context);
     }
 
-    // 英字: ローマ字入力を進める (候補選択中なら選択中の候補を確定してから)。
-    // 英字モード中は変換せず小文字のまま続ける
-    if (IsLetterKey(wparam)) {
-        const wchar_t c = static_cast<wchar_t>(L'a' + (wparam - 'A'));
-        if (converting_) {
-            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う。
-            // 確定で composer_ は空になっているので常にローマ字変換で開始する
-            const std::wstring commitText = PrepareConversionCommit();
-            FinishConversionState(commitText);
-            composer_.Push(c);
-            HRESULT hr = RestartComposition(context, commitText);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-            return UpdateCompositionAndPredict(context);
-        }
-        if (composer_.AsciiMode()) {
-            const std::wstring letter(1, c);
-            composer_.PushKana(letter, letter);
-        } else {
-            composer_.Push(c);
-        }
-        if (!Composing()) {
-            HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-        }
-        return UpdateCompositionAndPredict(context);
-    }
-
-    // 記号: 全角形を未確定文字列へ入れる (composition が無ければ開始する)。
-    // 英字モード中は打鍵文字そのまま。
-    // (数字キーと重なる Shift+1 (！) などがあるため、数字判定より先に見る)
-    if (const SymbolKey* symbol = FindSymbolKey(wparam, shifted)) {
-        // 句読点は設定に従う (、。/，．などの組を config が持つ)
-        std::wstring kana = symbol->kana;
-        if (!shifted && wparam == VK_OEM_COMMA) {
-            kana = config_.Get().punctComma;
-        } else if (!shifted && wparam == VK_OEM_PERIOD) {
-            kana = config_.Get().punctPeriod;
-        }
-        if (converting_) {
-            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う。
-            // 確定で英字モードは解除されているので常に全角形を入れる
-            const std::wstring commitText = PrepareConversionCommit();
-            FinishConversionState(commitText);
-            composer_.PushKana(kana, symbol->raw);
-            HRESULT hr = RestartComposition(context, commitText);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-            return UpdateCompositionAndPredict(context);
-        }
-        if (composer_.AsciiMode()) {
-            composer_.PushKana(symbol->raw, symbol->raw);
-        } else {
-            composer_.PushKana(kana, symbol->raw);
-        }
-        if (!Composing()) {
-            HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-        }
-        return UpdateCompositionAndPredict(context);
-    }
-
-    // 数字: 半角 (設定 digits=full なら全角) のまま未確定文字列へ入れる
-    // (composition が無ければ開始する。助数詞など数字を含む表現の
-    // サジェスト・変換につなげるため直接挿入にはしない)
-    if (IsDigitKey(wparam)) {
-        // 変換中・サジェスト選択中の 1〜9 は候補番号による直接選択
-        if (wparam >= '1' && wparam <= '9') {
-            if (converting_) {
-                return SelectCandidateByNumber(context, wparam - '1');
-            }
-            if (predictionIndex_ >= 0) {
-                return SelectPredictionByNumber(context, wparam - '1');
-            }
-        }
-        wchar_t c = static_cast<wchar_t>(wparam);
-        if (config_.Get().digitsFullwidth) {
-            c = static_cast<wchar_t>(c - L'0' + L'０');
-        }
-        const std::wstring digit(1, c);
-        if (converting_) {
-            // 変換中の 0: 確定と新 composition の開始を1つの edit session で行う
-            const std::wstring commitText = PrepareConversionCommit();
-            FinishConversionState(commitText);
-            composer_.PushKana(digit, digit);
-            HRESULT hr = RestartComposition(context, commitText);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-            return UpdateCompositionAndPredict(context);
-        }
-        composer_.PushKana(digit, digit);
-        if (!Composing()) {
-            HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-        }
-        return UpdateCompositionAndPredict(context);
-    }
-
-    // テンキー: 数値入力用なので半角のまま未確定文字列へ入れる
-    // (composition が無ければ開始する。助数詞など数字を含む表現の
-    //  サジェスト・変換につなげるため、直接挿入にはしない)。
-    // 設定 digits=full のときは数字のみ全角にする (演算記号は半角のまま)
-    if (wchar_t numpad = NumpadChar(wparam)) {
-        if (config_.Get().digitsFullwidth && numpad >= L'0' && numpad <= L'9') {
-            numpad = static_cast<wchar_t>(numpad - L'0' + L'０');
-        }
-        const std::wstring text(1, numpad);
-        if (converting_) {
-            // 変換中の打鍵: 確定と新 composition の開始を1つの edit session で行う
-            const std::wstring commitText = PrepareConversionCommit();
-            FinishConversionState(commitText);
-            composer_.PushKana(text, text);
-            HRESULT hr = RestartComposition(context, commitText);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-            return UpdateCompositionAndPredict(context);
-        }
-        composer_.PushKana(text, text);
-        if (!Composing()) {
-            HRESULT hr = StartComposition(context);
-            if (FAILED(hr)) {
-                composer_.Clear();
-                return hr;
-            }
-        }
-        return UpdateCompositionAndPredict(context);
-    }
-
-    // 以下は composition 中のみ食べているキー (composition が無い Space を除く)
     switch (wparam) {
     case VK_RETURN:
         return CommitComposition(context);
     case VK_ESCAPE:
-        // 候補選択中は変換を取り消してかな表示 (ライブ変換中はライブ表示) に戻る。
-        // サジェスト選択中は選択解除のみ (もう一度 Esc で全消去)。
-        // ライブ変換表示中はかな表示に戻し、この composition 中はライブ変換を止める
-        // (もう一度 Esc で全消去)。それ以外は全消去
-        if (converting_) {
-            return CancelConversion(context);
-        }
-        if (predictionIndex_ >= 0) {
-            return DeselectPrediction(context);
-        }
-        if (!liveSegments_.empty()) {
-            liveSuspended_ = true;
-            return UpdateCompositionAndPredict(context);
-        }
-        return EndComposition(context, L"");
     case VK_BACK:
-        if (converting_) {
-            return CancelConversion(context);
-        }
-        composer_.Backspace();
-        if (composer_.Empty()) {
-            return EndComposition(context, L"");
-        }
-        return UpdateCompositionAndPredict(context);
+        // 変換を取り消して変換前のかな表示に戻る (その後 run に戻す)
+        return converting_ ? CancelConversion(context) : S_OK;
     case VK_SPACE:
-        // composition が無い Space はスペースの直接挿入
-        // (Shift+Space は食べていないので半角スペースがアプリに入る)
-        if (!Composing()) {
-            return InsertText(context, StandaloneSpaceText());
-        }
-        if (config_.Get().modeless) {
-            // 変換か確定かを決める前に自動英字判定ルール3を適用する (「わんt」→「want」)。
-            // composition のテキストは確定時に置き換わるので文書と食い違わない
-            ApplyModelessCommitRule();
-            if (composer_.AsciiMode()) {
-                // 英字モード中の Space は変換ではなく「半角スペースを付けた確定」
-                // (英文の語の区切りなので設定 space によらず半角。変換は変換キーで行う)
-                HRESULT hr = CommitComposition(context);
-                if (FAILED(hr)) {
-                    return hr;
-                }
-                return InsertText(context, L" ");
+        if (config_.Get().modeless && composer_.AsciiMode()) {
+            // 英字モード中の Space は変換ではなく「半角スペースを付けた確定」
+            // (英文の語の区切りなので設定 space によらず半角)
+            HRESULT hr = CommitComposition(context);
+            if (FAILED(hr)) {
+                return hr;
             }
+            hr = InsertText(context, L" ");
+            // 確定アンドゥはスペースまで含めて戻す (run を Space で終えたときと同じ)。
+            // 追記のみの文書は確定文字列を照合せずに擬似 Backspace で消すため、文書の
+            // 末尾と記憶を揃えておく必要がある
+            if (SUCCEEDED(hr) && !lastCommitText_.empty()) {
+                lastCommitText_ += L" ";
+            }
+            return hr;
         }
         return converting_ ? CycleCandidate(context, +1) : StartConversion(context);
     case VK_TAB:
-        // サジェスト選択。Shift+Tab は逆方向。
-        // 変換中は変換を取り消してサジェスト選択へ移行する (予測が無ければかな表示に戻るだけ)
+        // 変換を取り消してサジェスト選択へ移行する (予測が無ければかな表示に戻るだけ)。
+        // 先に run へ戻し、選択は run のサジェスト選択として行う
         if (converting_) {
             HRESULT hr = CancelConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
+            DemoteIfLeftConversion(context);
             return MovePredictionSelection(context, +1);
         }
-        return MovePredictionSelection(context, shifted ? -1 : +1);
+        return S_OK;
     case VK_DOWN:
-        return converting_ ? CycleCandidate(context, +1)
-                           : MovePredictionSelection(context, +1);
+        return converting_ ? CycleCandidate(context, +1) : S_OK;
     case VK_UP:
-        return converting_ ? CycleCandidate(context, -1)
-                           : MovePredictionSelection(context, -1);
+        return converting_ ? CycleCandidate(context, -1) : S_OK;
     case VK_LEFT:
         // Shift+← は現在文節を1文字縮める、← は文節移動
         if (!converting_) {
@@ -1387,8 +1263,6 @@ HRESULT TextService::StartConversion(ITfContext* context)
 void TextService::BuildConversionSegments()
 {
     ClearPrediction();
-    // 変換モードへ移るのでライブ変換の表示状態は捨てる (Esc での停止は維持する)
-    liveSegments_.clear();
 
     // 文節列をエンジンに問い合わせる。
     // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
@@ -1653,8 +1527,6 @@ void TextService::EnsureConversionState()
         return;
     }
     ClearPrediction();
-    // 変換モードへ移るのでライブ変換の表示状態は捨てる (Esc での停止は維持する)
-    liveSegments_.clear();
     ConversionSegment segment;
     segment.reading = composer_.Commit();
     segment.candidates.push_back(segment.reading);
@@ -1826,7 +1698,7 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 {
     ClearConversion();
     // かな入力に戻るので、サジェストも引き直して復活させる
-    if (UsingDirectStyle()) {
+    if (!Composing()) {
         return UpdateRunAndPredict(context);
     }
     return UpdateCompositionAndPredict(context);
@@ -1837,9 +1709,8 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 HRESULT TextService::UpdatePrediction(ITfContext* context)
 {
     predictionIndex_ = -1;
-    // ライブ変換が有効な間はサジェストを出さない (Esc での停止中・英字モードも含む。
-    // RestartComposition 後や確定アンドゥなど直接呼ばれる経路もここで塞ぐ)
-    if ((!Composing() && !InRun()) || converting_ || LiveConversionEnabled()) {
+    predictionInDocument_ = false;
+    if ((!Composing() && !InRun()) || converting_) {
         ClearPrediction();
         return S_OK;
     }
@@ -1871,10 +1742,6 @@ HRESULT TextService::UpdatePrediction(ITfContext* context)
 
 HRESULT TextService::UpdateCompositionAndPredict(ITfContext* context)
 {
-    if (LiveConversionActive()) {
-        return UpdateLiveConversion(context);
-    }
-    liveSegments_.clear(); // 非アクティブ時 (停止中・英字モード・設定OFF) は必ず空
     HRESULT hr = UpdateCompositionText(context, composer_.Display());
     if (FAILED(hr)) {
         return hr;
@@ -1883,49 +1750,11 @@ HRESULT TextService::UpdateCompositionAndPredict(ITfContext* context)
     return hr;
 }
 
-// ---- ライブ変換 ----
-
-HRESULT TextService::UpdateLiveConversion(ITfContext* context)
-{
-    ClearPrediction(); // ライブ変換中はサジェストを出さない (候補ウィンドウも閉じる)
-    return UpdateCompositionText(context, LiveDisplayText());
-}
-
-std::wstring TextService::LiveDisplayText()
-{
-    // 変換するのは確定済みかなだけ。末尾の未変換ローマ字 (「きょうh」の h) は
-    // 変換対象にせず、そのまま後ろに表示する (macOS のライブ変換と同様)
-    const std::wstring& kana = composer_.ConfirmedKana();
-    if (kana.empty() || ContainsAsciiLetter(kana) ||
-        !engine_.ConvertSegmentsLive(kana, CurrentContext(), &liveSegments_) ||
-        liveSegments_.empty()) {
-        // かな未確定 (子音1文字など)・英字入力・エンジン未接続/失敗 → かな表示のまま
-        liveSegments_.clear();
-        return composer_.Display();
-    }
-    const std::wstring pending = composer_.Display().substr(kana.size());
-    return LiveText() + pending;
-}
-
-std::wstring TextService::LiveText() const
-{
-    std::wstring text;
-    for (const ConversionSegment& segment : liveSegments_) {
-        text += segment.candidates[0];
-    }
-    return text;
-}
-
-void TextService::ClearLiveConversion()
-{
-    liveSegments_.clear();
-    liveSuspended_ = false;
-}
-
 void TextService::ClearPrediction()
 {
     predictions_.clear();
     predictionIndex_ = -1;
+    predictionInDocument_ = false;
     // 変換中は候補ウィンドウを変換側が使っているので触らない
     if (!converting_) {
         candidateWindow_.Hide();
@@ -1948,9 +1777,7 @@ HRESULT TextService::MovePredictionSelection(ITfContext* context, int delta)
     } else {
         --predictionIndex_;
     }
-    candidateWindow_.SetSelection(static_cast<size_t>(predictionIndex_));
-    return UpdateDisplayText(context,
-                             predictions_[static_cast<size_t>(predictionIndex_)].surface);
+    return ApplyPredictionSelection(context);
 }
 
 HRESULT TextService::SelectPredictionByNumber(ITfContext* context, size_t number)
@@ -1965,32 +1792,38 @@ HRESULT TextService::SelectPredictionByNumber(ITfContext* context, size_t number
         return S_OK; // 表示されていない番号は無視する
     }
     predictionIndex_ = static_cast<int>(index);
+    return ApplyPredictionSelection(context);
+}
+
+HRESULT TextService::ApplyPredictionSelection(ITfContext* context)
+{
+    const size_t index = static_cast<size_t>(predictionIndex_);
     candidateWindow_.SetSelection(index);
-    return UpdateDisplayText(context, predictions_[index].surface);
+    ClassifyAppendDocument(context);
+    if (appendDocument_ != AppendDocument::Readable) {
+        // 追記のみの文書の置き換えは擬似 Backspace が要るので、選択のたびには行わず、
+        // 採用したときに一度だけ作り直す (AdoptPrediction)
+        return S_OK;
+    }
+    HRESULT hr = ReplaceRunDisplay(context, predictions_[index].surface);
+    predictionInDocument_ = SUCCEEDED(hr);
+    return hr;
 }
 
 HRESULT TextService::DeselectPrediction(ITfContext* context)
 {
     predictionIndex_ = -1;
     candidateWindow_.SetSelection(predictions_.size()); // 範囲外 = ハイライトなし
-    return UpdateDisplayText(context, composer_.Display());
-}
-
-HRESULT TextService::CommitPrediction(ITfContext* context)
-{
-    if (predictionIndex_ < 0 ||
-        static_cast<size_t>(predictionIndex_) >= predictions_.size()) {
-        return E_UNEXPECTED;
+    if (!predictionInDocument_) {
+        return S_OK; // 候補ウィンドウの上だけの選択だった
     }
-
-    // EndComposition が予測状態を後始末するため、先にコピーを取る
-    const PredictionCandidate candidate =
-        predictions_[static_cast<size_t>(predictionIndex_)];
-
-    // 採用結果を候補の完全な読みで学習させる (失敗しても確定は続行する)
-    engine_.Learn({{candidate.reading, candidate.surface, contextSurface_}});
-    SetCommitContext(candidate.reading, candidate.surface);
-    return EndComposition(context, candidate.surface);
+    predictionInDocument_ = false;
+    // 文書には確定したかなだけを戻し、未完成のローマ字は小窓に出し直す
+    HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
+    if (SUCCEEDED(hr)) {
+        UpdateAppendPending(context, AppendPendingText());
+    }
+    return hr;
 }
 
 HRESULT TextService::CommitConversion(ITfContext* context)
@@ -2104,7 +1937,6 @@ void TextService::FinishConversionState(const std::wstring& commitText)
     }
     ClearConversion();
     ClearPrediction();
-    ClearLiveConversion();
     composer_.Clear();
 }
 
@@ -2137,43 +1969,6 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
         hr = E_FAIL;
     }
     return hr;
-}
-
-HRESULT TextService::UndoCommit(ITfContext* context)
-{
-    if (UsingDirectStyle()) {
-        return UndoCommitDirect(context);
-    }
-
-    // 一度きりの操作として、成否に関わらず記憶を消す
-    // (内容が一致しない = 確定後に別の編集があった場合に、以降の
-    //  Ctrl+Backspace を奪い続けないようにする)
-    const std::wstring commitText = lastCommitText_;
-    lastCommitText_.clear();
-    if (commitText.empty() || Composing()) {
-        return S_OK;
-    }
-
-    // キャレット直前が確定文字列と一致する場合のみ、確定前の読みの composition に
-    // 復元する (そのまま再変換や F6-F10 が使える)。削除と復元は1つの edit session で
-    // 行う (別々に分けると Word 等で2つ目の session が失敗する。RestartComposition 参照)
-    composer_ = lastComposer_;
-    bool succeeded = false;
-    HRESULT hr = RequestSync(context,
-                             new (std::nothrow) UndoCommitEditSession(
-                                 context, commitText, static_cast<ITfCompositionSink*>(this),
-                                 composer_.Display(), inputAttribute_, &composition_, &succeeded),
-                             TF_ES_SYNC | TF_ES_READWRITE);
-    if (!succeeded) {
-        composer_.Clear();
-        return hr;
-    }
-    // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない
-    ClearContext();
-    // 復元した読みを即ライブ再変換すると、直したいはずの誤変換へ戻ってしまうため、
-    // この composition 中はライブ変換を止めてかな表示を維持する
-    liveSuspended_ = true;
-    return UpdatePrediction(context);
 }
 
 HRESULT TextService::LaunchWordRegister(ITfContext* context)
@@ -2265,8 +2060,9 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
     const LONG targetLength =
         static_cast<LONG>(segments_[segmentIndex_].candidates[selected_[segmentIndex_]].size());
 
-    if (UsingDirectStyle()) {
-        // composition の表示属性が使えないため、現在文節を選択状態にして強調する
+    if (!Composing()) {
+        // 昇格できなかった run は composition の表示属性が使えないため、現在文節を
+        // 選択状態にして強調する
         return ReplaceRunDisplay(context, ConvertedText(), static_cast<size_t>(targetStart),
                                  static_cast<size_t>(targetLength));
     }
@@ -2277,18 +2073,10 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
                        TF_ES_SYNC | TF_ES_READWRITE);
 }
 
-HRESULT TextService::UpdateDisplayText(ITfContext* context, const std::wstring& text)
-{
-    if (UsingDirectStyle()) {
-        return ReplaceRunDisplay(context, text);
-    }
-    return UpdateCompositionText(context, text);
-}
-
 RECT TextService::CandidateAnchor(ITfContext* context)
 {
     // composition の矩形を取得して候補ウィンドウの位置を決める
-    // (direct 方式では選択範囲 = 候補選択中の現在文節、それ以外は末尾に潰した選択)
+    // (run では選択範囲 = 昇格できなかった run の現在文節、それ以外は末尾に潰した選択)
     RECT rect = {};
     bool succeeded = false;
     if (Composing()) {
@@ -2296,7 +2084,7 @@ RECT TextService::CandidateAnchor(ITfContext* context)
                     new (std::nothrow) GetTextExtentEditSession(context, composition_, &rect,
                                                                 &succeeded),
                     TF_ES_SYNC | TF_ES_READ);
-    } else if (UsingDirectStyle() && InRun()) {
+    } else if (InRun()) {
         RequestSync(context,
                     new (std::nothrow) GetSelectionExtentEditSession(context, &rect, &succeeded),
                     TF_ES_SYNC | TF_ES_READ);
@@ -2314,6 +2102,11 @@ RECT TextService::CandidateAnchor(ITfContext* context)
             GetCursorPos(&pt);
             rect = {pt.x, pt.y, pt.x, pt.y};
         }
+    }
+    // 未完成ローマ字の小窓はキャレットに重ねて出すので、サジェストはその下に出す
+    RECT pendingRect = {};
+    if (pendingWindow_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
+        rect.bottom = pendingRect.bottom;
     }
     return rect;
 }
@@ -2335,7 +2128,9 @@ HRESULT TextService::RequestSync(ITfContext* context, ITfEditSession* session,
         return E_OUTOFMEMORY;
     }
     HRESULT hrSession = S_OK;
+    ++ownEditDepth_;
     HRESULT hr = context->RequestEditSession(clientId_, session, flags, &hrSession);
+    --ownEditDepth_;
     session->Release();
     return FAILED(hr) ? hr : hrSession;
 }
@@ -2395,7 +2190,6 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     // 変換状態・予測状態と候補ウィンドウの後始末
     ClearConversion();
     ClearPrediction();
-    ClearLiveConversion();
 
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),

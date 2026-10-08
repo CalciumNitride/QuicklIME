@@ -154,8 +154,7 @@ STDMETHODIMP StartCompositionEditSession::DoEditSession(TfEditCookie ec)
 
     // 文脈補正のハイブリッド照合: composition を開始する前に、キャレット直前の
     // precedingLength_ 文字を読み取っておく (呼び出し側が内部履歴の文脈と比較する)。
-    // 0 なら文脈なし・照合不要なので読み取らない。UndoCommitEditSession と同じ
-    // ShiftStart (負方向) + GetText のパターンを読み取り専用で使う
+    // 0 なら文脈なし・照合不要なので読み取らない。ShiftStart (負方向) + GetText で読む
     if (precedingLength_ > 0 && precedingTextOut_ != nullptr) {
         ITfRange* preceding = nullptr;
         if (SUCCEEDED(range->Clone(&preceding))) {
@@ -309,77 +308,6 @@ STDMETHODIMP GetSelectionTextEditSession::DoEditSession(TfEditCookie ec)
         textOut_->assign(buffer, copied);
     }
     selection.range->Release();
-    return hr;
-}
-
-// ---- UndoCommitEditSession ----
-
-UndoCommitEditSession::UndoCommitEditSession(ITfContext* context, std::wstring expectedText,
-                                             ITfCompositionSink* sink, std::wstring newText,
-                                             TfGuidAtom displayAttribute,
-                                             ITfComposition** compositionOut, bool* succeededOut)
-    : EditSessionBase(context),
-      expectedText_(std::move(expectedText)),
-      sink_(sink),
-      newText_(std::move(newText)),
-      displayAttribute_(displayAttribute),
-      compositionOut_(compositionOut),
-      succeededOut_(succeededOut)
-{
-    *compositionOut_ = nullptr;
-    *succeededOut_ = false;
-}
-
-STDMETHODIMP UndoCommitEditSession::DoEditSession(TfEditCookie ec)
-{
-    TF_SELECTION selection = {};
-    ULONG fetched = 0;
-    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    if (FAILED(hr) || fetched == 0) {
-        return hr;
-    }
-    ITfRange* range = selection.range;
-
-    // キャレット位置に潰し、確定文字列の長さぶんだけ開始を前へ広げる
-    range->Collapse(ec, TF_ANCHOR_START);
-    LONG shifted = 0;
-    const LONG length = static_cast<LONG>(expectedText_.size());
-    hr = range->ShiftStart(ec, -length, &shifted, nullptr);
-    if (SUCCEEDED(hr) && shifted == -length) {
-        // 内容が確定文字列と一致する場合のみ復元する
-        // (確定後にキャレット移動や他の編集があった場合は何もしない)
-        std::vector<WCHAR> buffer(expectedText_.size());
-        ULONG read = 0;
-        hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
-        if (SUCCEEDED(hr) && read == expectedText_.size() &&
-            expectedText_.compare(0, expectedText_.size(), buffer.data(), read) == 0) {
-            // 確定文字列を覆う範囲で composition を開始し、確定前の読みに置き換える
-            // (削除と復元を同一 session 内で済ませる)
-            ITfContextComposition* contextComposition = nullptr;
-            hr = context_->QueryInterface(IID_ITfContextComposition,
-                                          reinterpret_cast<void**>(&contextComposition));
-            if (SUCCEEDED(hr)) {
-                hr = contextComposition->StartComposition(ec, range, sink_, compositionOut_);
-                contextComposition->Release();
-            }
-            if (SUCCEEDED(hr) && *compositionOut_ != nullptr) {
-                // composition が開始できた時点で成功扱いにする (以降の表示更新の
-                // 失敗は、読みが composition に入らないだけで Esc 等で回復できる)
-                *succeededOut_ = true;
-                ITfRange* compRange = nullptr;
-                if (SUCCEEDED((*compositionOut_)->GetRange(&compRange))) {
-                    hr = compRange->SetText(ec, 0, newText_.c_str(),
-                                            static_cast<LONG>(newText_.size()));
-                    if (SUCCEEDED(hr)) {
-                        ApplyDisplayAttribute(ec, context_, compRange, displayAttribute_);
-                        CollapseSelectionToEnd(ec, context_, compRange);
-                    }
-                    compRange->Release();
-                }
-            }
-        }
-    }
-    range->Release();
     return hr;
 }
 
@@ -547,13 +475,11 @@ ReplaceRunResult MatchRunRange(TfEditCookie ec, ITfRange* range, const std::wstr
 
 ReplaceRunEditSession::ReplaceRunEditSession(ITfContext* context, std::wstring expected,
                                              size_t caretOffset, std::wstring newText,
-                                             bool probeSurroundingText,
                                              ReplaceRunResult* resultOut)
     : EditSessionBase(context),
       expected_(std::move(expected)),
       caretOffset_(caretOffset),
       newText_(std::move(newText)),
-      probeSurroundingText_(probeSurroundingText),
       resultOut_(resultOut)
 {
     *resultOut_ = ReplaceRunResult::Unsupported;
@@ -580,45 +506,9 @@ STDMETHODIMP ReplaceRunEditSession::DoEditSession(TfEditCookie ec)
             }
         }
 
-        if (expected_.empty() && probeSurroundingText_) {
-            // 挿入前に、選択位置の周りに読める文字があるかを確かめる。CUAS 経由の文書は
-            // composition の外に文字を持てないため前後どちらへも範囲を伸ばせない
-            // (挿入直後の読み戻しは通ってしまうので、それでは判定できない)
-            ITfRange* probe = nullptr;
-            if (FAILED(range->Clone(&probe)) || probe == nullptr) {
-                break;
-            }
-            probe->Collapse(ec, TF_ANCHOR_START);
-            LONG shifted = 0;
-            bool readable =
-                SUCCEEDED(probe->ShiftStart(ec, -1, &shifted, nullptr)) && shifted != 0;
-            if (!readable) {
-                shifted = 0;
-                readable = SUCCEEDED(probe->ShiftEnd(ec, 1, &shifted, nullptr)) && shifted != 0;
-            }
-            probe->Release();
-            if (!readable) {
-                result = ReplaceRunResult::NoSurroundingText;
-                break;
-            }
-        }
-
         hr = range->SetText(ec, 0, newText_.c_str(), static_cast<LONG>(newText_.size()));
         if (FAILED(hr)) {
             break;
-        }
-
-        if (expected_.empty() && !newText_.empty()) {
-            // 新規挿入では挿入した文字列を読み戻し、この文書で direct 方式
-            // (文書の読み取り) が使えるかを判定する。CUAS 経由のアプリでは
-            // composition の外の文字列が読めない
-            std::vector<WCHAR> buffer(newText_.size());
-            ULONG read = 0;
-            hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
-            if (FAILED(hr) || read != newText_.size() ||
-                newText_.compare(0, newText_.size(), buffer.data(), read) != 0) {
-                break;
-            }
         }
 
         CollapseSelectionToEnd(ec, context_, range);
@@ -746,6 +636,88 @@ STDMETHODIMP PromoteRunEditSession::DoEditSession(TfEditCookie ec)
 
     *matchOut_ = match;
     range->Release();
+    return hr;
+}
+
+// ---- AppendRunEditSession ----
+
+AppendRunEditSession::AppendRunEditSession(ITfContext* context, std::wstring expected,
+                                           bool verify, bool abortOnMismatch, std::wstring text,
+                                           ReplaceRunResult* matchOut, bool* writtenOut)
+    : EditSessionBase(context),
+      expected_(std::move(expected)),
+      verify_(verify),
+      abortOnMismatch_(abortOnMismatch),
+      text_(std::move(text)),
+      matchOut_(matchOut),
+      writtenOut_(writtenOut)
+{
+    *matchOut_ = ReplaceRunResult::Unsupported;
+    *writtenOut_ = false;
+}
+
+STDMETHODIMP AppendRunEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+
+    ReplaceRunResult match = ReplaceRunResult::Succeeded;
+    if (verify_ && !expected_.empty()) {
+        ITfRange* probe = nullptr;
+        if (SUCCEEDED(range->Clone(&probe)) && probe != nullptr) {
+            HRESULT matchHr = S_OK;
+            match = MatchRunRange(ec, probe, expected_, expected_.size(), &matchHr);
+            probe->Release();
+        } else {
+            match = ReplaceRunResult::Unsupported;
+        }
+    }
+    *matchOut_ = match;
+    if (match != ReplaceRunResult::Succeeded && abortOnMismatch_) {
+        range->Release();
+        return S_OK;
+    }
+
+    bool written = true;
+    if (!text_.empty()) {
+        hr = range->SetText(ec, 0, text_.c_str(), static_cast<LONG>(text_.size()));
+        written = SUCCEEDED(hr);
+        if (written) {
+            CollapseSelectionToEnd(ec, context_, range);
+        }
+    }
+    range->Release();
+    *writtenOut_ = written;
+    return hr;
+}
+
+// ---- MatchRunEditSession ----
+
+MatchRunEditSession::MatchRunEditSession(ITfContext* context, std::wstring expected,
+                                         size_t caretOffset, ReplaceRunResult* resultOut)
+    : EditSessionBase(context),
+      expected_(std::move(expected)),
+      caretOffset_(caretOffset),
+      resultOut_(resultOut)
+{
+    *resultOut_ = ReplaceRunResult::Unsupported;
+}
+
+STDMETHODIMP MatchRunEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    *resultOut_ = MatchRunRange(ec, selection.range, expected_, caretOffset_, &hr);
+    selection.range->Release();
     return hr;
 }
 

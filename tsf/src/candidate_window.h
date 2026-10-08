@@ -19,6 +19,13 @@ public:
     // anchor (スクリーン座標、通常は composition の矩形) の直下に候補一覧を表示する
     bool Show(const RECT& anchor, const std::vector<std::wstring>& items, size_t selection);
 
+    // 番号列・選択行の無い1行だけの表示 (追記型入力 F1 の未完成ローマ字の小窓)。
+    // caret (スクリーン座標) の左上に重ねて表示する
+    bool ShowInline(const RECT& caret, const std::wstring& text);
+
+    // 表示中のウィンドウの矩形 (スクリーン座標)。非表示なら false
+    bool WindowRect(RECT* rect) const;
+
     // 選択中の候補を変えて再描画する
     void SetSelection(size_t selection);
 
@@ -43,6 +50,7 @@ private:
     HFONT numberFont_;  // 候補番号用フォント (候補文字列より控えめな小さいサイズ)
     std::vector<std::wstring> items_;
     size_t selection_;
+    bool inline_;       // ShowInline による1行表示中か
     int lineHeight_;
     int numberColumnWidth_;  // 番号列の幅 (px)。kPageSize<=9 のため番号は常に1桁
     int numberFontHeight_;   // 番号フォントの文字高 (px、行内の垂直中央揃えに使う)

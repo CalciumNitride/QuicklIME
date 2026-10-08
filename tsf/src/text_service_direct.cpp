@@ -1,15 +1,165 @@
-// 直接入力方式 (設定 input_style=direct) のキー処理。
-// TextService のメンバ関数のうち direct 方式に固有のものをこの翻訳単位に置く
-// (設計は docs/design/direct-input.md)
+// run (打鍵したかなを未確定文字列を使わずに文書へ追記する入力) のキー処理。
+// TextService のメンバ関数のうち run に固有のものをこの翻訳単位に置く
+// (設計は docs/design/direct-input.md、docs/design/append-input.md)
 #include "text_service.h"
 
 #include <new>
+#include <vector>
 
+#include "debug_log.h"
 #include "edit_session.h"
+#include "globals.h"
 
 using namespace key_util;
 
 namespace {
+
+// 擬似打鍵 (SendInput) の dwExtraInfo。ログで擬似打鍵かどうかを確かめるための目印
+constexpr ULONG_PTR kPseudoKeyExtraInfo = 0x514C4D45;
+// 擬似 Backspace の後ろに送る目印の打鍵 (どのアプリも使わない仮想キー)
+constexpr WPARAM kMarkerVk = VK_F24;
+// Alt・Win を離す前に挟む打鍵。Alt・Win を単独で押して離すとアプリのメニュー・
+// スタートメニューが開くため、間に他の打鍵があったことにして起動を打ち消す。
+// 0xE8 は割り当ての無い仮想キーで、押してもアプリ側で何も起きない
+constexpr WORD kMenuMaskVk = 0xE8;
+
+// 擬似 Backspace の前に離す修飾キー。押したままだとアプリには Ctrl+Backspace
+// (単語削除) や Alt+Backspace (元に戻す) として届く
+constexpr WORD kReleasedModifierVks[] = {VK_LCONTROL, VK_RCONTROL, VK_LSHIFT, VK_RSHIFT,
+                                         VK_LMENU,    VK_RMENU,    VK_LWIN,   VK_RWIN};
+
+// 追記のみの文書でマウスフックが run を終えるメッセージ (ボタンを押す操作とホイール)
+bool IsCaretMovingMouseMessage(WPARAM message)
+{
+    switch (message) {
+    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDBLCLK:
+    case WM_RBUTTONDOWN:
+    case WM_RBUTTONDBLCLK:
+    case WM_MBUTTONDOWN:
+    case WM_MBUTTONDBLCLK:
+    case WM_XBUTTONDOWN:
+    case WM_XBUTTONDBLCLK:
+    case WM_NCLBUTTONDOWN:
+    case WM_NCLBUTTONDBLCLK:
+    case WM_NCRBUTTONDOWN:
+    case WM_NCRBUTTONDBLCLK:
+    case WM_NCMBUTTONDOWN:
+    case WM_NCMBUTTONDBLCLK:
+    case WM_NCXBUTTONDOWN:
+    case WM_NCXBUTTONDBLCLK:
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// マウスフックを仕掛けた TextService。WH_MOUSE のスレッド限定フックはそのスレッドで
+// 呼ばれ、TextService はスレッドごとに1つなので、スレッドローカルで持てば足りる
+thread_local TextService* t_mouseHookOwner = nullptr;
+
+bool StartsWith(const std::wstring& text, const std::wstring& prefix)
+{
+    return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+}
+
+// 末尾の表示上の1文字の UTF-16 単位数 (サロゲートペアなら 2)
+size_t LastCharLength(const std::wstring& text)
+{
+    if (text.empty()) {
+        return 0;
+    }
+    if (text.size() >= 2 && IS_LOW_SURROGATE(text.back()) &&
+        IS_HIGH_SURROGATE(text[text.size() - 2])) {
+        return 2;
+    }
+    return 1;
+}
+
+// 表示上の文字数 (サロゲートペアを1文字と数える)。擬似 Backspace の回数に使う
+size_t DisplayCharCount(const std::wstring& text)
+{
+    size_t count = 0;
+    for (size_t i = 0; i < text.size(); ++i) {
+        if (i + 1 < text.size() && IS_HIGH_SURROGATE(text[i]) &&
+            IS_LOW_SURROGATE(text[i + 1])) {
+            ++i;
+        }
+        ++count;
+    }
+    return count;
+}
+
+const wchar_t* MatchReason(ReplaceRunResult match)
+{
+    switch (match) {
+    case ReplaceRunResult::Succeeded:
+        return L"読み戻し成功";
+    case ReplaceRunResult::Unreadable:
+        return L"周辺テキストなし";
+    case ReplaceRunResult::Mismatch:
+        return L"内容不一致";
+    default:
+        return L"読み戻し失敗";
+    }
+}
+
+// count 個の Backspace と目印の打鍵を送る。送信時点で押されている修飾キーは
+// Backspace の前に離し、後で押し直す。全部送れたら true
+bool SendPseudoBackspaces(size_t count)
+{
+    std::vector<INPUT> inputs;
+    const auto push = [&inputs](WORD vk, DWORD flags) {
+        INPUT input = {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = vk;
+        input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+        // 右側の Ctrl・Alt と Win は拡張キーとして送らないと左側のキーと区別されない
+        if (vk == VK_RCONTROL || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        input.ki.dwFlags = flags;
+        input.ki.dwExtraInfo = kPseudoKeyExtraInfo;
+        inputs.push_back(input);
+    };
+    std::vector<WORD> held;
+    bool menuKeyHeld = false;
+    for (WORD vk : kReleasedModifierVks) {
+        if ((GetAsyncKeyState(vk) & 0x8000) != 0) {
+            held.push_back(vk);
+            if (vk == VK_LMENU || vk == VK_RMENU || vk == VK_LWIN || vk == VK_RWIN) {
+                menuKeyHeld = true;
+            }
+        }
+    }
+    if (menuKeyHeld) {
+        push(kMenuMaskVk, 0);
+        push(kMenuMaskVk, KEYEVENTF_KEYUP);
+    }
+    for (WORD vk : held) {
+        push(vk, KEYEVENTF_KEYUP);
+    }
+    for (size_t i = 0; i < count; ++i) {
+        push(VK_BACK, 0);
+        push(VK_BACK, KEYEVENTF_KEYUP);
+    }
+    for (WORD vk : held) {
+        push(vk, 0);
+    }
+    if (menuKeyHeld) {
+        // 押し直した Alt・Win をユーザが離したときにも、メニューが開かないようにする
+        // (目印の打鍵は IME が食べるのでアプリには届かない)
+        push(kMenuMaskVk, 0);
+        push(kMenuMaskVk, KEYEVENTF_KEYUP);
+    }
+    push(static_cast<WORD>(kMarkerVk), 0);
+    push(static_cast<WORD>(kMarkerVk), KEYEVENTF_KEYUP);
+    const UINT sent =
+        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    return sent == inputs.size();
+}
 
 // 修飾キー自体の押下 (Ctrl や Shift の押し始め)。run を終える契機にしない
 bool IsModifierKey(WPARAM wparam)
@@ -29,6 +179,28 @@ bool IsModifierKey(WPARAM wparam)
     case VK_CAPITAL:
     case VK_NUMLOCK:
     case VK_SCROLL:
+        return true;
+    default:
+        return false;
+    }
+}
+
+// 擬似 Backspace と一緒に送る打鍵 (修飾キーの離し・押し直しとメニュー打ち消し)
+bool IsPseudoCompanionKey(WPARAM wparam)
+{
+    switch (wparam) {
+    case VK_SHIFT:
+    case VK_CONTROL:
+    case VK_MENU:
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+    case VK_LMENU:
+    case VK_RMENU:
+    case VK_LWIN:
+    case VK_RWIN:
+    case kMenuMaskVk:
         return true;
     default:
         return false;
@@ -106,18 +278,19 @@ constexpr size_t kMaxReconvertLength = 127;
 
 } // namespace
 
-bool TextService::UsingDirectStyle() const
+bool TextService::DocumentReadable() const
 {
-    // 生きている composition (フォールバック後や方式切替前のもの) は
-    // 必ず composition 方式の経路で後始末する
-    return config_.Get().inputStyle == InputStyle::Direct &&
-           directCapable_ != DirectCapability::Incapable && !Composing();
+    return appendDocument_ == AppendDocument::Readable;
 }
 
 bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
 {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    // Backspace は、未完成のローマ字が無ければアプリへ渡して文書の文字を消させる
+    // (run は NoteKeyForAppend で追従させる)
+    const bool backspaceEaten =
+        converting_ || predictionInDocument_ || !AppendPendingText().empty();
     if (ctrl || alt) {
         if (!ctrl || alt) {
             return false;
@@ -141,7 +314,8 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
         }
         // Ctrl+H は Backspace の読み替え。Ctrl+M (Enter) は候補選択中・サジェスト選択中の
         // 確定にだけ使い、それ以外は run を終えてアプリへ渡す
-        return wparam == 'H' || (wparam == 'M' && (converting_ || predictionIndex_ >= 0));
+        return (wparam == 'H' && backspaceEaten) ||
+               (wparam == 'M' && (converting_ || predictionIndex_ >= 0));
     }
     const bool shifted = IsShiftPressed();
 
@@ -158,9 +332,10 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
         switch (wparam) {
         case VK_SPACE:
         case VK_ESCAPE:
-        case VK_BACK:
             // Space は run を終えてからスペースを入れる。Esc は run を忘れるだけ
             return true;
+        case VK_BACK:
+            return backspaceEaten;
         case VK_RETURN:
             // 候補選択中・サジェスト選択中の確定のみ。それ以外はアプリで改行
             // (run は EndRunIfPassthroughKey で終わる)
@@ -184,56 +359,24 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
         }
         return false;
     }
-    // run が無い Space は全角スペースの直接挿入 (composition 方式と同じ条件)
+    // run が無い Space は全角スペースの直接挿入 (Shift+Space と space=half は食べずに通す)
     return wparam == VK_SPACE && !shifted && config_.Get().spaceFullwidth;
 }
 
 void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
 {
-    if (!UsingDirectStyle() || !InRun() || IsModifierKey(wparam)) {
+    if (Composing() || !InRun() || IsModifierKey(wparam)) {
         return;
     }
     // IME が食べるキーは HandleKeyDirect が状態を進める
     if (IsKeyEatenDirect(context, wparam)) {
         return;
     }
+    // Ctrl/Alt 併用はアプリのショートカット (Undo・全選択など文書を変えうる)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    // Ctrl/Alt 併用はアプリのショートカット (Undo・全選択など文書を変えうる)
     if (ctrl || alt || IsEditingKey(wparam)) {
-        // 候補選択中は現在文節が選択されたままなので、アプリにキーを渡す前に
-        // 確定して選択を末尾に潰す (Tab や Delete が文節を置き換えないように)
-        if (converting_) {
-            CommitRunDirect(context);
-        } else {
-            // 無変換のまま終える run には自動英字判定ルール3を適用する。文書の表示も
-            // 英字へ直せるのはこの経路 (context を持つ) だけで、置換できなかったときは
-            // ルール3 を捨てて文書に合わせる (学習・確定アンドゥを文書と食い違わせない)
-            const RomajiComposer before = composer_;
-            // Ctrl/Alt 併用 (Undo など) は確定ではないため、ルール3 で文書を
-            // 書き換えずに終える (直後の Undo が書き換えの方を取り消してしまう)
-            if (!ctrl && !alt) {
-                ApplyModelessCommitRule();
-            }
-            const std::wstring text = composer_.Display();
-            if (text != before.Display()) {
-                const ReplaceRunResult result = ReplaceRunRange(
-                    context, surface_, surfaceCaret_, surfaceSelectLength_, text, 0, 0);
-                if (result == ReplaceRunResult::Succeeded) {
-                    surface_ = text;
-                    surfaceCaret_ = surface_.size();
-                    surfaceSelectLength_ = 0;
-                    NoteDirectSuccess(false);
-                } else {
-                    if (result == ReplaceRunResult::Unsupported ||
-                        result == ReplaceRunResult::Unreadable) {
-                        directCapable_ = DirectCapability::Incapable;
-                    }
-                    composer_ = before;
-                }
-            }
-            EndRun();
-        }
+        EndAppendRunForPassthroughKey(context, ctrl, alt);
     }
 }
 
@@ -284,29 +427,38 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         // 候補選択中・サジェスト選択中の印字キーは選択を確定して新しい run を始める
         if (converting_ || predictionIndex_ >= 0) {
             CommitRunDirect(context);
+            if (awaitingMarker_) {
+                appendFollowKey_ = key;
+                appendFollowKeyPending_ = true;
+                return S_OK;
+            }
         }
-        return TypeDirect(context, key);
+        return TypeAppend(context, key);
     }
     switch (wparam) {
     case VK_RETURN:
         return CommitRunDirect(context);
     case VK_ESCAPE:
         if (converting_) {
-            return CancelConversion(context); // 変換前の表示 (かな / ライブ表示) に戻す
+            return CancelConversion(context); // 変換前のかな表示に戻す
         }
         if (predictionIndex_ >= 0) {
             return DeselectPrediction(context);
         }
-        // 文字は文書に残したまま run だけ忘れる
+        // 文字は文書に残したまま run だけ忘れる (未完成のローマ字も文書に残す)
         if (InRun()) {
+            const bool mismatch = FlushAppendPending(context) == AppendResult::Mismatch;
             EndRun();
+            if (mismatch) {
+                ClearContext();
+            }
         }
         return S_OK;
     case VK_BACK:
         if (converting_) {
             return CancelConversion(context);
         }
-        return BackspaceDirect(context);
+        return BackspaceAppend(context);
     case VK_SPACE:
         return SpaceDirect(context, shifted);
     case VK_TAB:
@@ -333,12 +485,13 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     default:
         if (InRun() && wparam >= VK_F1 && wparam <= VK_F12) {
+            const KeyFunc func = config_.Get().FindPlainFunc(wparam);
             // 変換状態に入るキーなので composition に昇格してから適用する。
-            // 昇格できない文書 (Refused) と既に候補選択中のフォールバックは direct のまま
-            if (!converting_ && PromoteRun(context) == PromoteResult::Dropped) {
-                return S_OK;
+            // 昇格できなかった run の候補選択中は、選択による強調のまま適用する
+            if (!converting_) {
+                return BeginAppendConversion(context, func);
             }
-            return ApplyFunctionKey(context, config_.Get().FindPlainFunc(wparam));
+            return ApplyFunctionKey(context, func);
         }
         return S_OK;
     }
@@ -347,9 +500,6 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
 bool TextService::ClassifyDirectKey(WPARAM wparam, bool shifted, DirectKey* key) const
 {
     *key = DirectKey{};
-    if (PassesDigitKeyThrough(wparam, shifted, InRun(), config_.Get().digitsFullwidth)) {
-        return false; // IsKeyEatenDirect が食べないキー (ここには来ない想定)
-    }
     if (IsLetterKey(wparam)) {
         if (shifted) {
             // Shift+英字: 大文字をそのまま入れ、英字モードに入る
@@ -437,14 +587,12 @@ ReplaceRunResult TextService::ReplaceRunRange(ITfContext* context, const std::ws
         }
         caretOffset = expected.size();
     }
-    // 未判定の文書での新規挿入だけ、挿入前に周辺テキストが読めるかを確かめる
-    const bool probe = expected.empty() && directCapable_ == DirectCapability::Unknown;
     result = ReplaceRunResult::Unsupported;
     RequestSync(context,
                 new (std::nothrow)
-                    ReplaceRunEditSession(context, expected, caretOffset, newText, probe, &result),
+                    ReplaceRunEditSession(context, expected, caretOffset, newText, &result),
                 TF_ES_SYNC | TF_ES_READWRITE);
-    if (result == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
+    if (result == ReplaceRunResult::Unreadable && DocumentReadable()) {
         // 読める文書と分かっている以上、範囲が作れないのはキャレットが動いたため
         result = ReplaceRunResult::Mismatch;
     }
@@ -470,7 +618,7 @@ ReplaceRunResult TextService::SelectRunRange(ITfContext* context, const std::wst
                 new (std::nothrow) SelectRunRangeEditSession(context, expected, caretOffset,
                                                              selectOffset, selectLength, &result),
                 TF_ES_SYNC | TF_ES_READWRITE);
-    if (result == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
+    if (result == ReplaceRunResult::Unreadable && DocumentReadable()) {
         // ReplaceRunRange と同じく、読める文書で範囲が作れないのはキャレットが動いたため
         result = ReplaceRunResult::Mismatch;
     }
@@ -480,6 +628,8 @@ ReplaceRunResult TextService::SelectRunRange(ITfContext* context, const std::wst
 HRESULT TextService::ReplaceRunDisplay(ITfContext* context, const std::wstring& text,
                                        size_t selectOffset, size_t selectLength)
 {
+    // 置き換えた後の表示に未完成のローマ字が要るなら、呼び出し側が小窓を出し直す
+    pendingWindow_.Hide();
     bool selected = false;
     const ReplaceRunResult result = ReplaceRunRange(context, surface_, surfaceCaret_,
                                                     surfaceSelectLength_, text, selectOffset,
@@ -489,169 +639,40 @@ HRESULT TextService::ReplaceRunDisplay(ITfContext* context, const std::wstring& 
         // 選択に失敗したときは置換 session が末尾に潰したままになっている
         surfaceCaret_ = selected ? selectOffset : surface_.size();
         surfaceSelectLength_ = selected ? selectLength : 0;
-        NoteDirectSuccess(false);
         return S_OK;
     }
-    if (result == ReplaceRunResult::Unsupported || result == ReplaceRunResult::Unreadable) {
-        directCapable_ = DirectCapability::Incapable;
-    }
     // 文書と食い違った run は文書を触らずに捨てる。候補選択中なら文書には変換結果が
-    // 残るが、composition 方式でアプリに composition を終了されたときと同じく学習しない
+    // 残るが、アプリに composition を終了されたときと同じく学習しない
     DropRun();
     ClearContext();
     return E_FAIL;
 }
 
-void TextService::NoteDirectSuccess(bool newInsertion)
-{
-    if (!newInsertion) {
-        // 別 session からの置換が通った = 前の打鍵で入れた文字列を読み直せた
-        directCapable_ = DirectCapability::Capable;
-    } else if (directCapable_ == DirectCapability::Unknown) {
-        // CUAS 経由の文書は挿入直後の読み戻しだけは通るため、まだ可にはしない
-        directCapable_ = DirectCapability::Provisional;
-    }
-}
-
-std::wstring TextService::RunDisplayText()
-{
-    if (LiveConversionActive()) {
-        return LiveDisplayText();
-    }
-    liveSegments_.clear(); // 非アクティブ時 (停止中・英字モード・設定OFF) は必ず空
-    return composer_.Display();
-}
-
-std::wstring TextService::RunCommitText() const
-{
-    if (converting_ || predictionIndex_ >= 0) {
-        return surface_;
-    }
-    if (!liveSegments_.empty()) {
-        // 末尾の未変換ローマ字は Commit() の救済 ("n" のみ「ん」) を通した形で
-        // 変換結果の後ろに付ける (CommitComposition のライブ分岐と同じ)
-        return LiveText() + composer_.Commit().substr(composer_.ConfirmedKana().size());
-    }
-    return composer_.Commit();
-}
-
-HRESULT TextService::TypeDirect(ITfContext* context, const DirectKey& key)
-{
-    // 不一致・非対応で run を捨てるときに、この打鍵を含まない状態へ戻すための控え
-    const RomajiComposer before = composer_;
-    const std::vector<ConversionSegment> liveBefore = liveSegments_;
-    bool newInsertion = !InRun();
-
-    PushDirectKey(key);
-    std::wstring text = RunDisplayText();
-    ReplaceRunResult result = ReplaceRunText(context, surface_, text);
-    if (result == ReplaceRunResult::Mismatch) {
-        // キャレット移動やアプリ側の編集で run が文書と食い違った。古い run は
-        // 忘れ (キャレットが動いた以上、直前の確定文脈も使えない)、
-        // この打鍵を新しい run の先頭として挿入し直す
-        composer_ = before;
-        liveSegments_ = liveBefore;
-        EndRun();
-        ClearContext();
-        PushDirectKey(key);
-        newInsertion = true;
-        text = RunDisplayText();
-        result = ReplaceRunText(context, surface_, text);
-    }
-    if (result == ReplaceRunResult::Succeeded) {
-        surface_ = text;
-        surfaceCaret_ = surface_.size();
-        surfaceSelectLength_ = 0;
-        NoteDirectSuccess(newInsertion);
-        UpdatePrediction(context);
-        return S_OK;
-    }
-    if (result == ReplaceRunResult::NoSurroundingText) {
-        // 周辺テキストが読めるか判定できない (空の入力欄、または CUAS 経由の文書)。
-        // 文書には何も入っていないので、この run だけ composition 方式で入力する。
-        // 判定は未判定のまま据え置き、次の run で改めて確かめる
-        HRESULT hr = StartComposition(context);
-        if (FAILED(hr)) {
-            composer_.Clear();
-            liveSegments_.clear();
-            return hr;
-        }
-        return UpdateCompositionAndPredict(context);
-    }
-
-    // 非対応・周辺テキストが読めない: この文書では以後 composition 方式で動く
-    directCapable_ = DirectCapability::Incapable;
-    if (newInsertion) {
-        // 1打鍵目の読み戻し失敗。挿入した文字は文書に残り、run は持たない
-        // (次の打鍵から composition 方式)
-        composer_.Clear();
-        liveSegments_.clear();
-        surface_.clear();
-        return S_OK;
-    }
-    // 2打鍵目以降: それまでの run の文字列は文書に残し、この打鍵から composition を始める
-    composer_ = before;
-    liveSegments_ = liveBefore;
-    EndRun();
-    PushDirectKey(key);
-    HRESULT hr = StartComposition(context);
-    if (FAILED(hr)) {
-        composer_.Clear();
-        return hr;
-    }
-    return UpdateCompositionAndPredict(context);
-}
-
-HRESULT TextService::BackspaceDirect(ITfContext* context)
-{
-    if (!InRun()) {
-        return S_OK;
-    }
-    const RomajiComposer before = composer_;
-    const std::vector<ConversionSegment> liveBefore = liveSegments_;
-    composer_.Backspace();
-    const std::wstring text = RunDisplayText();
-    const ReplaceRunResult result = ReplaceRunText(context, surface_, text);
-    if (result == ReplaceRunResult::Succeeded) {
-        surface_ = text;
-        surfaceCaret_ = surface_.size();
-        surfaceSelectLength_ = 0;
-        NoteDirectSuccess(false);
-        if (surface_.empty()) {
-            // 消し切った run に確定に相当するものは無い (学習・アンドゥ記憶なし)
-            DropRun();
-            return S_OK;
-        }
-        UpdatePrediction(context);
-        return S_OK;
-    }
-    // 文書と食い違った run は文書を触らずに忘れる (この Backspace は効かない)
-    composer_ = before;
-    liveSegments_ = liveBefore;
-    if (result == ReplaceRunResult::Unsupported || result == ReplaceRunResult::Unreadable) {
-        directCapable_ = DirectCapability::Incapable;
-        EndRun();
-    } else {
-        EndRun();
-        ClearContext();
-    }
-    return S_OK;
-}
-
 HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
 {
     if (!InRun()) {
-        // 食べているのは !shifted && space=full のときだけ (composition 方式と同じ)
-        return InsertText(context, StandaloneSpaceText());
+        // 食べているのは !shifted && space=full のときだけ
+        const std::wstring space = StandaloneSpaceText();
+        if (appendDocument_ != AppendDocument::Readable && !lastCommitText_.empty()) {
+            // 確定文字列の後ろに文字が入ったので、照合できない文書では確定アンドゥを捨てる
+            DebugLog(L"run の外の Space で確定アンドゥの記憶を捨てる");
+            lastCommitText_.clear();
+        }
+        return InsertText(context, space);
     }
-    // 確定文字列を作る前に自動英字判定ルール3を適用する (「わんt」→「want」)
-    ApplyModelessCommitRule();
+    if (!converting_ && predictionIndex_ < 0) {
+        return SpaceAppend(context, shifted);
+    }
     // run 中の Space は幅によらず IME が入れる (run の終了と1つの edit session で行う)。
     // モードレスが有効なときだけ、英字モード中は英文の語の区切りとして半角にする
     const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
     const std::wstring space =
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
-    const std::wstring text = RunCommitText() + space;
+    if (!converting_ && !predictionInDocument_) {
+        return AdoptPrediction(context, space);
+    }
+    // 文書の run の文字列は既に候補選択・サジェスト選択の結果になっている
+    const std::wstring text = surface_ + space;
     const ReplaceRunResult result =
         ReplaceRunRange(context, surface_, surfaceCaret_, surfaceSelectLength_, text, 0, 0);
     if (result == ReplaceRunResult::Succeeded) {
@@ -660,17 +681,11 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
         surface_ = text;
         surfaceCaret_ = surface_.size();
         surfaceSelectLength_ = 0;
-        NoteDirectSuccess(false);
         EndRun();
         return S_OK;
     }
-    if (result == ReplaceRunResult::Unsupported || result == ReplaceRunResult::Unreadable) {
-        directCapable_ = DirectCapability::Incapable;
-        EndRun();
-    } else {
-        EndRun();
-        ClearContext();
-    }
+    EndRun();
+    ClearContext();
     return InsertText(context, space);
 }
 
@@ -682,10 +697,7 @@ HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool shifted)
     if (converting_) {
         return CycleCandidate(context, shifted ? -1 : +1);
     }
-    if (PromoteRun(context) == PromoteResult::Dropped) {
-        return S_OK;
-    }
-    return StartConversion(context);
+    return BeginAppendConversion(context, KeyFunc::Convert);
 }
 
 bool TextService::ReadReconvertibleSelection(ITfContext* context, std::wstring* textOut) const
@@ -738,29 +750,39 @@ HRESULT TextService::CommitRunDirect(ITfContext* context)
         const ReplaceRunResult result =
             SelectRunRange(context, surface_, surfaceCaret_, surface_.size(), 0);
         if (result != ReplaceRunResult::Succeeded) {
-            if (result == ReplaceRunResult::Unsupported ||
-                result == ReplaceRunResult::Unreadable) {
-                directCapable_ = DirectCapability::Incapable;
-            }
             DropRun();
             ClearContext();
             return S_OK;
         }
         surfaceCaret_ = surface_.size();
         surfaceSelectLength_ = 0;
-        NoteDirectSuccess(false);
+    } else if (predictionIndex_ >= 0 && !predictionInDocument_) {
+        return AdoptPrediction(context, L"");
     }
     EndRun();
     return S_OK;
 }
 
+HRESULT TextService::AdoptPrediction(ITfContext* context, const std::wstring& suffix)
+{
+    if (predictionIndex_ < 0 || static_cast<size_t>(predictionIndex_) >= predictions_.size()) {
+        return E_UNEXPECTED;
+    }
+    const std::wstring text = predictions_[static_cast<size_t>(predictionIndex_)].surface + suffix;
+    // 作り直しの後の EndRun が、かなではなく採用した候補で学習するように先に立てる
+    predictionInDocument_ = true;
+    DebugLog(L"候補ウィンドウ上のサジェストを採用: " + text);
+    return RewriteAppendRun(context, text, true) == AppendResult::Failed ? E_FAIL : S_OK;
+}
+
 HRESULT TextService::UpdateRunAndPredict(ITfContext* context)
 {
-    const std::wstring text = RunDisplayText();
-    HRESULT hr = ReplaceRunDisplay(context, text);
+    // 文書には確定したかなだけを入れ、未完成のローマ字は小窓に表示する
+    HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
     if (FAILED(hr)) {
         return hr;
     }
+    UpdateAppendPending(context, AppendPendingText());
     UpdatePrediction(context);
     return hr;
 }
@@ -769,38 +791,19 @@ void TextService::EndRun()
 {
     if (!surface_.empty()) {
         if (converting_) {
-            // 候補選択中の確定: 文節ごとの学習と文脈更新 (composition 方式の確定と同じ)
+            // 候補選択中の確定: 文節ごとの学習と文脈更新 (composition の確定と同じ)
             PrepareConversionCommit();
-        } else if (predictionIndex_ >= 0 &&
+        } else if (predictionIndex_ >= 0 && predictionInDocument_ &&
                    static_cast<size_t>(predictionIndex_) < predictions_.size()) {
             // サジェスト選択中の確定: 候補の完全な読みで学習する
             const PredictionCandidate& candidate =
                 predictions_[static_cast<size_t>(predictionIndex_)];
             engine_.Learn({{candidate.reading, candidate.surface, contextSurface_}});
             SetCommitContext(candidate.reading, candidate.surface);
-        } else if (!liveSegments_.empty()) {
-            // ライブ表示中の確定: 文節ごとに学習する (CommitComposition のライブ分岐と同じ)
-            std::vector<LearnEntry> entries;
-            std::wstring prevSurface = contextSurface_;
-            for (const ConversionSegment& segment : liveSegments_) {
-                entries.push_back({segment.reading, segment.candidates[0], prevSurface});
-                prevSurface = segment.candidates[0];
-            }
-            engine_.Learn(entries);
-            const std::wstring suffix =
-                composer_.Commit().substr(composer_.ConfirmedKana().size());
-            if (suffix.empty()) {
-                SetCommitContext(liveSegments_.back().reading,
-                                 liveSegments_.back().candidates[0]);
-            } else {
-                // 生ローマ字が末尾に付くと確定文字列と文節表記が一致しないため、
-                // 誤った文脈を引きずらないようクリアする
-                ClearContext();
-            }
         } else {
-            // 無変換の確定と同じ: 英字を含む入力 (英単語など) は読み=表記で学習し、
-            // 確定したかなは次の変換の文脈にする (かなのみの学習はしない。
-            // CommitComposition と同じ理由)
+            // 無変換の確定: 英字を含む入力 (英単語など) は読み=表記で学習し、
+            // 確定したかなは次の変換の文脈にする (かなのみの学習はしない。学習は変換候補の
+            // 並び替えにも使われ、「きょう→きょう」が入るとひらがな候補が先頭へ来るため)
             const std::wstring kana = composer_.Commit();
             if (ContainsAsciiLetter(kana)) {
                 engine_.Learn({{kana, kana, contextSurface_}});
@@ -815,41 +818,50 @@ void TextService::EndRun()
 
 void TextService::DropRun()
 {
+    pendingWindow_.Hide();
     ClearConversion();
     ClearPrediction();
-    ClearLiveConversion();
     composer_.Clear();
     surface_.clear();
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
 }
 
-HRESULT TextService::UndoCommitDirect(ITfContext* context)
+HRESULT TextService::UndoCommit(ITfContext* context)
 {
-    // 一度きりの操作として、成否に関わらず記憶を消す (UndoCommit と同じ)
+    // 一度きりの操作として、成否に関わらず記憶を消す (内容が一致しない = 確定後に
+    // 別の編集があった場合に、以降の Ctrl+Backspace を奪い続けないようにする)
     const std::wstring commitText = lastCommitText_;
     lastCommitText_.clear();
-    if (commitText.empty() || InRun()) {
+    if (commitText.empty() || InRun() || Composing() || context == nullptr) {
         return S_OK;
     }
 
-    // キャレット直前が直前の run の surface と一致する場合のみ、読みのかな表示に
-    // 置き換えて run を再開する (composition は開始しない)
+    // 直前の確定文字列を run の文字列とみなして、読みのかなに戻した run を再開する
+    // (composition は開始しない)。未完成のローマ字は文書に戻さず小窓に出す
     composer_ = lastComposer_;
-    const std::wstring text = composer_.Display();
-    if (ReplaceRunText(context, commitText, text) != ReplaceRunResult::Succeeded) {
-        composer_.Clear();
-        return S_OK;
-    }
-    surface_ = text;
+    surface_ = commitText;
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
     // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない
     ClearContext();
-    // 復元した読みを即ライブ再変換すると、直したいはずの誤変換へ戻ってしまうため、
-    // この run の間はライブ変換を止める
-    liveSuspended_ = true;
-    return S_OK;
+    const std::wstring text = composer_.ConfirmedKana();
+    ClassifyAppendDocument(context);
+    if (appendDocument_ == AppendDocument::Readable) {
+        // キャレット直前が直前の確定文字列と一致する場合のみ置き換える
+        if (ReplaceRunText(context, commitText, text) != ReplaceRunResult::Succeeded) {
+            DropRun();
+            return S_OK;
+        }
+        surface_ = text;
+        surfaceCaret_ = surface_.size();
+        UpdateAppendPending(context, AppendPendingText());
+        return S_OK;
+    }
+    // 追記のみの文書は照合できない。確定後のキャレット移動は、記憶を捨てる契機
+    // (アプリへ渡したキー・マウス・フォーカス移動) で除いてある
+    DebugLog(L"追記のみの文書で確定アンドゥ: " + commitText);
+    return ScheduleAppendAction(context, PseudoKeyAction::Append, KeyFunc::None, text, false);
 }
 
 TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
@@ -861,14 +873,11 @@ TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
                                                          static_cast<ITfCompositionSink*>(this),
                                                          inputAttribute_, &composition, &match),
                 TF_ES_SYNC | TF_ES_READWRITE);
-    if (match == ReplaceRunResult::Unreadable && directCapable_ == DirectCapability::Capable) {
+    if (match == ReplaceRunResult::Unreadable && DocumentReadable()) {
         // ReplaceRunRange と同じく、読める文書で範囲が作れないのはキャレットが動いたため
         match = ReplaceRunResult::Mismatch;
     }
     if (match != ReplaceRunResult::Succeeded) {
-        if (match == ReplaceRunResult::Unsupported || match == ReplaceRunResult::Unreadable) {
-            directCapable_ = DirectCapability::Incapable;
-        }
         // 置換の不一致と同じく、文書と食い違った run は文書を触らずに捨てる
         DropRun();
         ClearContext();
@@ -879,8 +888,8 @@ TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
     }
     composition_ = composition;
     promoted_ = true;
-    // 文書上の位置は以後 composition が持つ。composer_・ライブ変換の状態・文脈は
-    // そのまま composition 方式へ引き継ぐ (確定ではないので学習・確定アンドゥの記憶はしない)
+    // 文書上の位置は以後 composition が持つ。composer_・文脈はそのまま候補選択へ
+    // 引き継ぐ (確定ではないので学習・確定アンドゥの記憶はしない)
     surface_.clear();
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
@@ -900,16 +909,8 @@ void TextService::DemoteIfLeftConversion(ITfContext* context)
     if (converting_) {
         return;
     }
-    // composition に今表示している文字列 (UpdateCompositionAndPredict・サジェスト選択の
-    // 表示と同じ求め方)。これを確定せずにそのまま run の surface にする
-    std::wstring text;
-    if (predictionIndex_ >= 0 && static_cast<size_t>(predictionIndex_) < predictions_.size()) {
-        text = predictions_[static_cast<size_t>(predictionIndex_)].surface;
-    } else if (!liveSegments_.empty()) {
-        text = LiveText() + composer_.Display().substr(composer_.ConfirmedKana().size());
-    } else {
-        text = composer_.Display();
-    }
+    // 確定したかなだけを文書に残して run に戻し、未完成のローマ字は小窓に戻す
+    const std::wstring text = composer_.ConfirmedKana();
     HRESULT hr = E_UNEXPECTED;
     if (context != nullptr) {
         hr = RequestSync(context,
@@ -919,13 +920,612 @@ void TextService::DemoteIfLeftConversion(ITfContext* context)
     composition_->Release();
     composition_ = nullptr;
     promoted_ = false;
-    if (FAILED(hr) || text.empty()) {
+    if (FAILED(hr) || composer_.Empty()) {
         DropRun();
         ClearContext();
         return;
     }
-    // composer_・ライブ変換・サジェストの状態は維持し、direct 方式の run として続ける
+    // composer_・サジェストの状態は維持し、run として続ける
     surface_ = text;
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
+    UpdateAppendPending(context, AppendPendingText());
+}
+
+// ---- 追記型入力 ----
+
+void TextService::DebugLog(const std::wstring& message) const
+{
+    WriteDebugLog(config_.Get().debugLog, message);
+}
+
+const wchar_t* TextService::AppendDocumentName(AppendDocument document)
+{
+    switch (document) {
+    case AppendDocument::Readable:
+        return L"読める";
+    case AppendDocument::AppendOnly:
+        return L"追記のみ";
+    default:
+        return L"未判定";
+    }
+}
+
+void TextService::SetAppendDocument(AppendDocument document, const wchar_t* reason)
+{
+    if (document != appendDocument_) {
+        DebugLog(std::wstring(L"文書の分類: ") + AppendDocumentName(appendDocument_) + L" -> " +
+                 AppendDocumentName(document) + L" (" + reason + L")");
+    }
+    appendDocument_ = document;
+}
+
+std::wstring TextService::AppendPendingText() const
+{
+    const std::wstring display = composer_.Display();
+    const std::wstring& confirmed = composer_.ConfirmedKana();
+    if (StartsWith(confirmed, surface_)) {
+        return display.substr(confirmed.size());
+    }
+    // Backspace で末尾の素通しの英字が未変換ローマ字に戻ったときは、文書に入っている
+    // 部分を除く
+    if (StartsWith(display, surface_)) {
+        return display.substr(surface_.size());
+    }
+    return display.substr(confirmed.size());
+}
+
+HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
+{
+    // 不一致で run を捨てるときに、この打鍵を含まない状態へ戻すための控え
+    const RomajiComposer before = composer_;
+    PushDirectKey(key);
+    AppendResult result = SyncAppendRun(context);
+    if (result == AppendResult::Mismatch) {
+        // 読める文書で run が文書と食い違った (キャレット移動・アプリ側の編集)。
+        // 古い run は忘れ、この打鍵を新しい run の先頭として追記し直す
+        composer_ = before;
+        pendingWindow_.Hide();
+        DiscardPendingRomaji();
+        EndRun();
+        ClearContext();
+        PushDirectKey(key);
+        result = SyncAppendRun(context);
+    }
+    if (result == AppendResult::Failed) {
+        return E_FAIL;
+    }
+    UpdatePrediction(context);
+    return S_OK;
+}
+
+TextService::AppendResult TextService::SyncAppendRun(ITfContext* context)
+{
+    const std::wstring display = composer_.Display();
+    const std::wstring confirmed = composer_.ConfirmedKana();
+    std::wstring delta;
+    std::wstring pending;
+    std::wstring newSurface;
+    if (StartsWith(confirmed, surface_)) {
+        delta = confirmed.substr(surface_.size());
+        pending = display.substr(confirmed.size());
+        newSurface = confirmed;
+    } else if (StartsWith(display, surface_)) {
+        pending = display.substr(surface_.size());
+        newSurface = surface_;
+    } else {
+        // モードレスの英字切替 (「あっp」→「appl」) などで、入れたかなが書き換わった
+        return RewriteAppendRun(context, confirmed, false);
+    }
+    if (!delta.empty()) {
+        const AppendResult result = AppendRunText(context, delta);
+        if (result != AppendResult::Done) {
+            return result;
+        }
+        surface_ = newSurface;
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+    }
+    UpdateAppendPending(context, pending);
+    return AppendResult::Done;
+}
+
+TextService::AppendResult TextService::AppendRunText(ITfContext* context,
+                                                     const std::wstring& text)
+{
+    if (context == nullptr) {
+        return AppendResult::Failed;
+    }
+    const bool verify = !surface_.empty() && appendDocument_ != AppendDocument::AppendOnly;
+    const bool readable = appendDocument_ == AppendDocument::Readable;
+    ReplaceRunResult match = ReplaceRunResult::Unsupported;
+    bool written = false;
+    RequestSync(context,
+                new (std::nothrow) AppendRunEditSession(context, surface_, verify, readable, text,
+                                                        &match, &written),
+                TF_ES_SYNC | TF_ES_READWRITE);
+    if (verify) {
+        if (appendDocument_ == AppendDocument::Unknown) {
+            // キャレット移動による食い違いと読めない文書を区別できないので、
+            // 一致しなければ追記のみ側に倒す
+            SetAppendDocument(match == ReplaceRunResult::Succeeded ? AppendDocument::Readable
+                                                                   : AppendDocument::AppendOnly,
+                              MatchReason(match));
+        } else if (match != ReplaceRunResult::Succeeded) {
+            DebugLog(std::wstring(L"読める文書で追記前の照合が不一致 (") + MatchReason(match) +
+                     L"): run を捨てる");
+            return AppendResult::Mismatch;
+        }
+    }
+    if (!written) {
+        DebugLog(L"追記に失敗: run を破棄");
+        DropRun();
+        ClearContext();
+        return AppendResult::Failed;
+    }
+    return AppendResult::Done;
+}
+
+TextService::AppendResult TextService::RewriteAppendRun(ITfContext* context,
+                                                        const std::wstring& newText,
+                                                        bool endRunAfter)
+{
+    pendingWindow_.Hide();
+    ClassifyAppendDocument(context);
+    if (appendDocument_ == AppendDocument::Readable) {
+        const ReplaceRunResult result = ReplaceRunText(context, surface_, newText);
+        if (result != ReplaceRunResult::Succeeded) {
+            DebugLog(L"作り直しの置換に失敗: run を破棄");
+            DropRun();
+            ClearContext();
+            return AppendResult::Failed;
+        }
+        surface_ = newText;
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+        if (endRunAfter) {
+            EndRun();
+        } else {
+            UpdateAppendPending(context, AppendPendingText());
+        }
+        return AppendResult::Done;
+    }
+    const HRESULT hr =
+        ScheduleAppendAction(context, PseudoKeyAction::Append, KeyFunc::None, newText, endRunAfter);
+    return SUCCEEDED(hr) ? AppendResult::Done : AppendResult::Failed;
+}
+
+void TextService::UpdateAppendPending(ITfContext* context, const std::wstring& pending)
+{
+    if (pending.empty() || context == nullptr) {
+        pendingWindow_.Hide();
+        return;
+    }
+    RECT rect = {};
+    bool succeeded = false;
+    RequestSync(context,
+                new (std::nothrow) GetSelectionExtentEditSession(context, &rect, &succeeded),
+                TF_ES_SYNC | TF_ES_READ);
+    if (!succeeded) {
+        // 選択範囲の矩形を返さない文書でも、システムキャレットがあればその位置に出す
+        GUITHREADINFO info = {};
+        info.cbSize = sizeof(info);
+        if (GetGUIThreadInfo(0, &info) && info.hwndCaret != nullptr) {
+            rect = info.rcCaret;
+            MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(&rect), 2);
+            succeeded = true;
+        }
+    }
+    if (!succeeded) {
+        pendingWindow_.Hide();
+        DebugLog(L"キャレットの矩形が取れないため小窓を出さない");
+        return;
+    }
+    pendingWindow_.ShowInline(rect, pending);
+}
+
+void TextService::DiscardPendingRomaji()
+{
+    while (!composer_.Empty()) {
+        const size_t size = composer_.Display().size();
+        if (size <= composer_.ConfirmedKana().size() || size <= surface_.size()) {
+            break;
+        }
+        composer_.Backspace();
+    }
+}
+
+TextService::AppendResult TextService::FlushAppendPending(ITfContext* context)
+{
+    const std::wstring tail = AppendPendingText();
+    pendingWindow_.Hide();
+    if (tail.empty()) {
+        return AppendResult::Done;
+    }
+    const AppendResult result = AppendRunText(context, tail);
+    if (result == AppendResult::Done) {
+        surface_ += tail;
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+    }
+    return result;
+}
+
+void TextService::ClassifyAppendDocument(ITfContext* context)
+{
+    if (appendDocument_ != AppendDocument::Unknown || surface_.empty() || context == nullptr) {
+        return;
+    }
+    ReplaceRunResult match = ReplaceRunResult::Unsupported;
+    RequestSync(context,
+                new (std::nothrow) MatchRunEditSession(context, surface_, surface_.size(), &match),
+                TF_ES_SYNC | TF_ES_READ);
+    SetAppendDocument(match == ReplaceRunResult::Succeeded ? AppendDocument::Readable
+                                                           : AppendDocument::AppendOnly,
+                      MatchReason(match));
+}
+
+HRESULT TextService::BackspaceAppend(ITfContext* context)
+{
+    if (!InRun()) {
+        return S_OK;
+    }
+    if (predictionInDocument_) {
+        // 読める文書のサジェスト選択中: 読みの末尾を削ってかなに戻す
+        composer_.Backspace();
+        HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
+        if (FAILED(hr)) {
+            return hr;
+        }
+        if (composer_.Empty()) {
+            DropRun();
+            return S_OK;
+        }
+        UpdateAppendPending(context, AppendPendingText());
+        UpdatePrediction(context);
+        return S_OK;
+    }
+    // 未完成のローマ字だけを削る (文書の文字はアプリへ渡した Backspace で消える)
+    if (AppendPendingText().empty()) {
+        return S_OK;
+    }
+    composer_.Backspace();
+    if (surface_.empty() && composer_.Empty()) {
+        UpdateAppendPending(context, L"");
+        DropRun();
+        return S_OK;
+    }
+    UpdateAppendPending(context, AppendPendingText());
+    UpdatePrediction(context);
+    return S_OK;
+}
+
+HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
+{
+    // 確定文字列を作る前に自動英字判定ルール3を適用する (「わんt」→「want」)
+    ApplyModelessCommitRule();
+    const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
+    const std::wstring space =
+        (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
+    const std::wstring text = composer_.Commit() + space;
+    if (StartsWith(text, surface_)) {
+        const AppendResult result = AppendRunText(context, text.substr(surface_.size()));
+        pendingWindow_.Hide();
+        if (result == AppendResult::Done) {
+            surface_ = text;
+            surfaceCaret_ = surface_.size();
+            surfaceSelectLength_ = 0;
+            EndRun();
+            return S_OK;
+        }
+        if (result == AppendResult::Mismatch) {
+            EndRun();
+            ClearContext();
+            return InsertText(context, space);
+        }
+        return E_FAIL;
+    }
+    // ルール3 で英字に切り替わり、入れたかなが書き換わる (Space は食べているので、
+    // 追記のみの文書でも擬似 Backspace の後に入れ直せる)
+    if (RewriteAppendRun(context, text, true) == AppendResult::Failed) {
+        return InsertText(context, space);
+    }
+    return S_OK;
+}
+
+void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, bool alt)
+{
+    if (converting_) {
+        // 候補選択中は現在文節が選択されたままなので、アプリにキーを渡す前に
+        // 確定して選択を末尾に潰す (Tab や Delete が文節を置き換えないように)
+        CommitRunDirect(context);
+        return;
+    }
+    if (predictionIndex_ >= 0) {
+        if (predictionInDocument_) {
+            EndRun();
+            return;
+        }
+        // 候補ウィンドウの上だけの選択は採用しない。このキーは擬似 Backspace より先に
+        // アプリへ届くので、作り直すと別の文字を消してしまう
+        predictionIndex_ = -1;
+    }
+    const RomajiComposer before = composer_;
+    // 追記のみの文書ではルール3 を適用しない (理由は上の採用と同じ)。Ctrl/Alt 併用
+    // (Undo など) は確定ではないため、ルール3 で文書を書き換えずに終える
+    // (直後の Undo が書き換えの方を取り消してしまう)
+    if (!ctrl && !alt && appendDocument_ == AppendDocument::Readable) {
+        ApplyModelessCommitRule();
+    }
+    const std::wstring display = composer_.Display();
+    if (display != before.Display()) {
+        pendingWindow_.Hide();
+        if (ReplaceRunText(context, surface_, display) == ReplaceRunResult::Succeeded) {
+            surface_ = display;
+            surfaceCaret_ = surface_.size();
+            surfaceSelectLength_ = 0;
+            EndRun();
+        } else {
+            // 置換できなかったときはルール3 を捨てて文書に合わせる (学習・確定アンドゥを
+            // 文書と食い違わせない)
+            composer_ = before;
+            EndRun();
+            ClearContext();
+        }
+        return;
+    }
+    // 未完成のローマ字は、そのまま文書に残して run を終える
+    if (FlushAppendPending(context) == AppendResult::Mismatch) {
+        EndRun();
+        ClearContext();
+        return;
+    }
+    EndRun();
+}
+
+HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
+{
+    pendingWindow_.Hide();
+    if (surface_.empty()) {
+        // 文書にはまだ何も入っていない (未完成のローマ字だけ) ので、消さずに composition を張る
+        return ScheduleAppendAction(context, PseudoKeyAction::Compose, func, L"", false);
+    }
+    ClassifyAppendDocument(context);
+    if (appendDocument_ == AppendDocument::Readable) {
+        const PromoteResult promoted = PromoteRun(context);
+        if (promoted == PromoteResult::Dropped) {
+            return S_OK;
+        }
+        // 昇格できなかった run は、現在文節の選択による強調で候補選択する
+        return func == KeyFunc::Convert ? StartConversion(context)
+                                        : ApplyFunctionKey(context, func);
+    }
+    return ScheduleAppendAction(context, PseudoKeyAction::Compose, func, L"", false);
+}
+
+HRESULT TextService::ScheduleAppendAction(ITfContext* context, PseudoKeyAction action,
+                                          KeyFunc func, const std::wstring& text,
+                                          bool endRunAfter)
+{
+    appendAction_ = action;
+    appendActionFunc_ = func;
+    appendActionText_ = text;
+    appendActionEndRun_ = endRunAfter;
+    const size_t count = DisplayCharCount(surface_);
+    if (count == 0) {
+        RunAppendAction(context);
+        return S_OK;
+    }
+    if (!SendPseudoBackspaces(count)) {
+        DebugLog(L"擬似 Backspace の送信に失敗 (SendInput)");
+        appendAction_ = PseudoKeyAction::None;
+        if (action == PseudoKeyAction::Compose) {
+            // 文書は触っていないので run はそのまま続ける
+            UpdateAppendPending(context, AppendPendingText());
+        } else {
+            DropRun();
+            ClearContext();
+        }
+        return E_FAIL;
+    }
+    awaitingMarker_ = true;
+    DebugLog(L"擬似 Backspace を送信: " + std::to_wstring(count) + L" 個 (surface=" + surface_ +
+             L")");
+    return S_OK;
+}
+
+void TextService::RunAppendAction(ITfContext* context)
+{
+    const PseudoKeyAction action = appendAction_;
+    appendAction_ = PseudoKeyAction::None;
+    const bool followKey = appendFollowKeyPending_;
+    appendFollowKeyPending_ = false;
+    if (action == PseudoKeyAction::None || context == nullptr) {
+        return;
+    }
+    // 擬似 Backspace で run の文字列は文書から消えている
+    const std::wstring deleted = surface_;
+    surface_.clear();
+    surfaceCaret_ = 0;
+    surfaceSelectLength_ = 0;
+
+    if (action == PseudoKeyAction::Compose) {
+        HRESULT hr = StartComposition(context);
+        if (FAILED(hr) || !Composing()) {
+            // composition を張れない文書では、消した文字列を入れ直して run を続ける
+            DebugLog(L"変換の composition を開始できない: 消した文字列を戻す");
+            if (!deleted.empty() && AppendRunText(context, deleted) == AppendResult::Done) {
+                surface_ = deleted;
+                surfaceCaret_ = surface_.size();
+            }
+            UpdateAppendPending(context, AppendPendingText());
+            return;
+        }
+        // 読める文書の昇格と同じく、composition の候補選択に入る
+        promoted_ = true;
+        ClearPrediction();
+        if (appendActionFunc_ == KeyFunc::Convert) {
+            StartConversion(context);
+        } else {
+            ApplyFunctionKey(context, appendActionFunc_);
+        }
+        DemoteIfLeftConversion(context);
+        return;
+    }
+
+    const std::wstring text = appendActionText_;
+    if (AppendRunText(context, text) != AppendResult::Done) {
+        return;
+    }
+    surface_ = text;
+    surfaceCaret_ = surface_.size();
+    if (appendActionEndRun_) {
+        EndRun();
+    } else {
+        UpdateAppendPending(context, AppendPendingText());
+    }
+    if (followKey) {
+        TypeAppend(context, appendFollowKey_);
+    }
+}
+
+void TextService::CancelAppendAction()
+{
+    awaitingMarker_ = false;
+    appendAction_ = PseudoKeyAction::None;
+    appendFollowKeyPending_ = false;
+}
+
+bool TextService::HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDown, BOOL* eaten)
+{
+    if (!awaitingMarker_) {
+        return false;
+    }
+    const bool injected =
+        static_cast<ULONG_PTR>(GetMessageExtraInfo()) == kPseudoKeyExtraInfo;
+    const std::wstring where = std::wstring(keyDown ? L"OnKeyDown" : L"OnTestKeyDown") +
+                               L" injected=" + (injected ? L"1" : L"0");
+    if (wparam == VK_BACK || IsPseudoCompanionKey(wparam)) {
+        // IME が送った Backspace と修飾キーの離し・押し直しは処理せずにアプリへ渡す
+        // (目印が届くまでのこれらの打鍵はすべて IME のものとみなす)
+        *eaten = FALSE;
+        if (wparam == VK_BACK) {
+            keyEditExpected_ = true;
+            DebugLog(L"擬似 Backspace をアプリへ渡す (" + where + L")");
+        }
+        return true;
+    }
+    if (wparam == kMarkerVk) {
+        *eaten = TRUE;
+        if (keyDown) {
+            pendingKeyUps_.set(wparam);
+            awaitingMarker_ = false;
+            DebugLog(L"目印の打鍵を受信 (" + where + L")");
+            RunAppendAction(context);
+        }
+        return true;
+    }
+    DebugLog(L"目印待ちの間の打鍵 vk=" + std::to_wstring(wparam) + L" (" + where + L")");
+    return false;
+}
+
+void TextService::NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eaten,
+                                   bool fromTest)
+{
+    const bool tested = backspaceTested_;
+    backspaceTested_ = false;
+    keyEditExpected_ = false;
+    if (eaten || Composing() || IsModifierKey(wparam)) {
+        return;
+    }
+    const bool ctrlOrAlt =
+        (GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0;
+    if (wparam == VK_BACK && !ctrlOrAlt) {
+        keyEditExpected_ = true;
+        // 同じ打鍵で OnTestKeyDown と OnKeyDown の両方が呼ばれるホストで二重に削らない
+        if (!fromTest && tested) {
+            return;
+        }
+        backspaceTested_ = fromTest;
+        if (!surface_.empty() && !converting_ && !predictionInDocument_) {
+            // アプリが文書の末尾の1文字を消すので、run の表示・読みの末尾も1文字削る
+            // (置換はしない。読みの打鍵列 Raw() とは対応しなくなることがある)
+            const size_t length = LastCharLength(surface_);
+            surface_.erase(surface_.size() - length);
+            surfaceCaret_ = surface_.size();
+            surfaceSelectLength_ = 0;
+            for (size_t i = 0; i < length && !composer_.Empty(); ++i) {
+                composer_.Backspace();
+            }
+            DebugLog(L"Backspace をアプリへ渡し run を追従: surface=" + surface_);
+            if (surface_.empty()) {
+                DropRun();
+                return;
+            }
+            UpdatePrediction(context);
+            return;
+        }
+    }
+    // アプリへ渡したキーで文書やキャレットが変わりうる。照合できない文書では、
+    // 確定アンドゥの擬似 Backspace が別の文字を消さないよう記憶を捨てる
+    if (appendDocument_ != AppendDocument::Readable && !lastCommitText_.empty()) {
+        DebugLog(L"アプリへ渡したキーで確定アンドゥの記憶を捨てる vk=" + std::to_wstring(wparam));
+        lastCommitText_.clear();
+    }
+}
+
+// ---- マウスフック ----
+
+void TextService::UpdateMouseHook()
+{
+    const bool wanted = appendDocument_ != AppendDocument::Readable &&
+                        (InRun() || !lastCommitText_.empty());
+    if (wanted == (mouseHook_ != nullptr)) {
+        return;
+    }
+    if (wanted) {
+        mouseHook_ = SetWindowsHookExW(WH_MOUSE, MouseHookProc, globals::dllInstance,
+                                       GetCurrentThreadId());
+        if (mouseHook_ != nullptr) {
+            t_mouseHookOwner = this;
+        }
+        DebugLog(std::wstring(L"マウスフックを仕掛ける: ") +
+                 (mouseHook_ != nullptr ? L"成功" : L"失敗"));
+        return;
+    }
+    UnhookWindowsHookEx(mouseHook_);
+    mouseHook_ = nullptr;
+    t_mouseHookOwner = nullptr;
+    DebugLog(L"マウスフックを外す");
+}
+
+void TextService::OnMouseInput()
+{
+    // 擬似 Backspace の目印待ちの間は、消している途中の run を目印の後の処理に任せる
+    if (awaitingMarker_) {
+        return;
+    }
+    if (appendDocument_ != AppendDocument::Readable) {
+        if (InRun()) {
+            DebugLog(L"追記のみの文書で run を終了: マウス操作");
+            pendingWindow_.Hide();
+            DiscardPendingRomaji();
+            EndRun();
+            ClearContext();
+        }
+        if (!lastCommitText_.empty()) {
+            DebugLog(L"マウス操作で確定アンドゥの記憶を捨てる");
+            lastCommitText_.clear();
+        }
+    }
+    UpdateMouseHook();
+}
+
+LRESULT CALLBACK TextService::MouseHookProc(int code, WPARAM wparam, LPARAM lparam)
+{
+    if (code >= 0 && IsCaretMovingMouseMessage(wparam) && t_mouseHookOwner != nullptr) {
+        t_mouseHookOwner->OnMouseInput();
+    }
+    // マウスメッセージは止めない (フックの第1引数は無視されるので、外した後でも渡せる)
+    return CallNextHookEx(nullptr, code, wparam, lparam);
 }

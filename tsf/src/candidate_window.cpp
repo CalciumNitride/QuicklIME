@@ -43,8 +43,8 @@ bool EnsureWindowClass()
 } // namespace
 
 CandidateWindow::CandidateWindow()
-    : hwnd_(nullptr), font_(nullptr), numberFont_(nullptr), selection_(0), lineHeight_(0),
-      numberColumnWidth_(0), numberFontHeight_(0)
+    : hwnd_(nullptr), font_(nullptr), numberFont_(nullptr), selection_(0), inline_(false),
+      lineHeight_(0), numberColumnWidth_(0), numberFontHeight_(0)
 {
     SetFont(L"Yu Gothic UI", 18);
 }
@@ -97,6 +97,7 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
     }
     items_ = items;
     selection_ = selection;
+    inline_ = false;
 
     // フォントで各行の寸法を測ってウィンドウサイズを決める
     HDC hdc = GetDC(nullptr);
@@ -146,6 +147,50 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
     ShowWindow(hwnd_, SW_SHOWNA);
     InvalidateRect(hwnd_, nullptr, TRUE);
     return true;
+}
+
+bool CandidateWindow::ShowInline(const RECT& caret, const std::wstring& text)
+{
+    if (text.empty() || !EnsureWindowClass()) {
+        return false;
+    }
+    items_.assign(1, text);
+    selection_ = 0;
+    inline_ = true;
+
+    HDC hdc = GetDC(nullptr);
+    HGDIOBJ oldFont = SelectObject(hdc, font_);
+    TEXTMETRICW tm = {};
+    GetTextMetricsW(hdc, &tm);
+    lineHeight_ = tm.tmHeight + kLinePadding * 2;
+    SIZE size = {};
+    GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &size);
+    SelectObject(hdc, oldFont);
+    ReleaseDC(nullptr, hdc);
+
+    const int width = kPadding * 2 + static_cast<int>(size.cx);
+    const int height = lineHeight_ + kPadding * 2;
+    const int x = caret.left;
+    const int y = caret.top;
+
+    if (hwnd_ == nullptr) {
+        hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                                kWindowClassName, L"", WS_POPUP | WS_BORDER, x, y, width, height,
+                                nullptr, nullptr, globals::dllInstance, this);
+        if (hwnd_ == nullptr) {
+            return false;
+        }
+    }
+
+    SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    ShowWindow(hwnd_, SW_SHOWNA);
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    return true;
+}
+
+bool CandidateWindow::WindowRect(RECT* rect) const
+{
+    return hwnd_ != nullptr && GetWindowRect(hwnd_, rect) != FALSE;
 }
 
 void CandidateWindow::SetSelection(size_t selection)
@@ -203,6 +248,16 @@ void CandidateWindow::Paint(HDC hdc)
 
     RECT client = {};
     GetClientRect(hwnd_, &client);
+
+    if (inline_) {
+        if (!items_.empty()) {
+            SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
+            TextOutW(hdc, kPadding, kPadding + kLinePadding, items_[0].c_str(),
+                     static_cast<int>(items_[0].size()));
+        }
+        SelectObject(hdc, oldFont);
+        return;
+    }
 
     // 選択位置が含まれるページだけを描画する
     const size_t page = selection_ / kPageSize;
