@@ -22,6 +22,17 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Controls_Dialogs",
     "Win32_Globalization",
 ] }
+# LLM 計測用の example (examples/llm_bench.rs) 専用。feature llm-bench を指定したときだけビルドする
+# openmp は llama.cpp 単体ビルドの既定 (GGML_OPENMP=ON) に揃えるため。common は使わないので外す
+llama-cpp-2 = { version = "=0.1.158", optional = true, default-features = false, features = ["openmp"] }
 
 [build-dependencies]
 winresource = "0.1"
+
+[features]
+llm-bench = ["dep:llama-cpp-2"]
+llm-bench-vulkan = ["llm-bench", "llama-cpp-2/vulkan"]
+
+[[example]]
+name = "llm_bench"
+required-features = ["llm-bench"]
