@@ -9,21 +9,38 @@
 
 #![windows_subsystem = "windows"]
 
+use std::cell::{Cell, RefCell};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
-    COLOR_BTNFACE, CreateFontW, EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW,
+    COLOR_BTNFACE, CreateFontW, EnumFontFamiliesExW, GetDC, HFONT, LOGFONTW, ReleaseDC,
+    TEXTMETRICW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
-use windows_sys::Win32::UI::Controls::BST_CHECKED;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetFocus, VK_ESCAPE, VK_RETURN};
+use windows_sys::Win32::UI::Controls::{
+    BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT,
+    LVCF_WIDTH, LVCOLUMNW, LVIF_STATE, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW,
+    LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED,
+    LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL,
+};
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    EnableWindow, GetFocus, GetKeyState, SetFocus, VK_ESCAPE, VK_RETURN,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
+
+#[link(name = "imm32")]
+unsafe extern "system" {
+    // キー取り込みダイアログで IME を無効にする (IME が打鍵を食べると WM_KEYDOWN で
+    // 元のキーが届かない)。windows-sys の Win32_UI_Input_Ime を有効にせずに使うため自前で宣言する
+    fn ImmAssociateContextEx(hwnd: HWND, himc: isize, flags: u32) -> i32;
+}
 
 // コントロールID
 const ID_CHECK_LEARNING: i32 = 100;
@@ -37,32 +54,289 @@ const ID_COMBO_DIGITS: i32 = 107;
 const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
 const ID_CHECK_MODELESS: i32 = 112;
-const ID_COMBO_KEY_BASE: i32 = 120; // +0〜9 (KEY_ITEMS の並び順)
-const ID_COMBO_KEY_CONVERT: i32 = 130;
+const ID_LIST_KEYS: i32 = 120;
+const ID_BUTTON_KEY_EDIT: i32 = 121;
+const ID_BUTTON_KEY_DEFAULT: i32 = 122;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
+// キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
+const ID_EDIT_LIST_BASE: i32 = 200;
+const ID_EDIT_ADD_BASE: i32 = 201;
+const ID_EDIT_REMOVE_BASE: i32 = 202;
+const ID_EDIT_OVERRIDE_BASE: i32 = 203;
+// キー取り込みダイアログ
+const ID_CAPTURE_MESSAGE: i32 = 300;
 
-/// キー割当の機能一覧: (設定キー名, 表示名, Ctrl 併用か)。
-/// 並びと制約は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
-const KEY_ITEMS: [(&str, &str, bool); 10] = [
-    ("key.convert_symbol", "記号・日付変換", false),
-    ("key.convert_user", "ユーザ語変換", false),
-    ("key.to_hiragana", "ひらがな変換", false),
-    ("key.to_katakana", "カタカナ変換", false),
-    ("key.to_half_katakana", "半角カタカナ変換", false),
-    ("key.to_full_ascii", "全角英字変換", false),
-    ("key.to_half_ascii", "半角英字変換", false),
-    ("key.undo_commit", "確定アンドゥ", true),
-    ("key.register_word", "単語登録", true),
-    ("key.open_config", "設定を開く", true),
+/// キー割当の照合に使う入力状態: (設定上の名前, 表示名)。
+/// 並びは TSF 層 (tsf/src/config.h の KeyState) と合わせる
+const STATES: [(&str, &str); 4] = [
+    ("idle", "入力なし"),
+    ("run", "run 中"),
+    ("candidate", "候補選択中"),
+    ("suggest", "サジェスト選択中"),
+];
+const IN_IDLE: u8 = 1 << 0;
+const IN_RUN: u8 = 1 << 1;
+const IN_CANDIDATE: u8 = 1 << 2;
+const IN_SUGGEST: u8 = 1 << 3;
+const IN_INPUT: u8 = IN_RUN | IN_CANDIDATE | IN_SUGGEST;
+
+/// キー割当の機能一覧: (設定キー名, 表示名, 働く状態, 既定の割当)。
+/// 並び・働く状態・既定は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
+const KEY_ITEMS: [(&str, &str, u8, &str); 14] = [
+    ("key.convert", "変換", IN_IDLE | IN_INPUT, "Convert"),
+    ("key.next_candidate", "次候補", IN_CANDIDATE, "Space"),
+    ("key.prev_candidate", "前候補", IN_CANDIDATE, "Shift+Space"),
+    ("key.commit_run", "確定", IN_INPUT, "NonConvert"),
+    ("key.convert_symbol", "記号・日付変換", IN_INPUT, "F4"),
+    ("key.convert_user", "ユーザ語変換", IN_INPUT, "F5"),
+    ("key.to_hiragana", "ひらがな変換", IN_INPUT, "F6"),
+    ("key.to_katakana", "カタカナ変換", IN_INPUT, "F7"),
+    ("key.to_half_katakana", "半角カタカナ変換", IN_INPUT, "F8"),
+    ("key.to_full_ascii", "全角英字変換", IN_INPUT, "F9"),
+    ("key.to_half_ascii", "半角英字変換", IN_INPUT, "F10"),
+    ("key.undo_commit", "確定アンドゥ", IN_IDLE, "Ctrl+Backspace"),
+    ("key.register_word", "単語登録", IN_IDLE, "Ctrl+F7"),
+    ("key.open_config", "設定を開く", IN_IDLE, "Ctrl+F12"),
+];
+
+/// 英字・数字・F1〜F24 以外の名前を持つキー: (表記, 仮想キーコード)
+const NAMED_KEYS: [(&str, u16); 18] = [
+    ("Space", 0x20),
+    ("Enter", 0x0D),
+    ("Esc", 0x1B),
+    ("Tab", 0x09),
+    ("Backspace", 0x08),
+    ("Delete", 0x2E),
+    ("Insert", 0x2D),
+    ("Home", 0x24),
+    ("End", 0x23),
+    ("PageUp", 0x21),
+    ("PageDown", 0x22),
+    ("Up", 0x26),
+    ("Down", 0x28),
+    ("Left", 0x25),
+    ("Right", 0x27),
+    ("Convert", 0x1C),
+    ("NonConvert", 0x1D),
+    ("Kana", 0x15),
 ];
 
 /// 句読点の選択肢 (設定値そのまま表示する)
 const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
 
-/// 変換キー (key.convert) の選択肢 (設定値そのまま表示する)。
-/// KEY_ITEMS の「無修飾 F1-F12 / Ctrl 併用」の枠に収まらない専用の2択
-const CONVERT_KEY_ITEMS: [&str; 2] = ["Convert", "Ctrl+Space"];
+/// 修飾キーの組と仮想キー
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct KeyCombo {
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    vk: u16,
+}
+
+/// 1機能のキー割当。overrides[s] が Some の状態では keys の代わりにそれを使う
+/// (空なら、その状態では割当なし)
+#[derive(Clone, PartialEq, Debug, Default)]
+struct KeyAssign {
+    keys: Vec<KeyCombo>,
+    overrides: [Option<Vec<KeyCombo>>; 4],
+}
+
+/// キー名を仮想キーコードにする
+fn parse_key_name(name: &str) -> Option<u16> {
+    let bytes = name.as_bytes();
+    if bytes.len() == 1 && (bytes[0].is_ascii_uppercase() || bytes[0].is_ascii_digit()) {
+        return Some(bytes[0] as u16);
+    }
+    if let Some(number) = name.strip_prefix('F') {
+        if (1..=2).contains(&number.len()) && number.bytes().all(|b| b.is_ascii_digit()) {
+            let n: u16 = number.parse().ok()?;
+            return (1..=24).contains(&n).then_some(0x70 + n - 1);
+        }
+    }
+    if let Some(&(_, vk)) = NAMED_KEYS.iter().find(|(key, _)| *key == name) {
+        return Some(vk);
+    }
+    let hex = name.strip_prefix("VK_")?;
+    if hex.len() != 2 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let vk = u16::from_str_radix(hex, 16).ok()?;
+    (vk != 0).then_some(vk)
+}
+
+/// 仮想キーコードの表記 (名前の無いキーは VK_xx)
+fn key_name(vk: u16) -> String {
+    match vk {
+        0x30..=0x39 | 0x41..=0x5A => char::from(vk as u8).to_string(),
+        0x70..=0x87 => format!("F{}", vk - 0x70 + 1),
+        _ => NAMED_KEYS
+            .iter()
+            .find(|(_, code)| *code == vk)
+            .map(|(name, _)| name.to_string())
+            .unwrap_or_else(|| format!("VK_{vk:02X}")),
+    }
+}
+
+/// コア操作のキー (Enter・Esc・Tab・Backspace・Delete・矢印・Home・End・PageUp・PageDown)
+fn is_core_vk(vk: u16) -> bool {
+    matches!(vk, 0x0D | 0x1B | 0x09 | 0x08 | 0x2E | 0x25..=0x28 | 0x24 | 0x23 | 0x21 | 0x22)
+}
+
+/// 印字キー (英字・数字・記号・テンキーの数字と演算子)
+fn is_printable_vk(vk: u16) -> bool {
+    matches!(vk, 0x41..=0x5A | 0x30..=0x39 | 0xBA..=0xC0 | 0xDB..=0xDF | 0xE2 | 0x60..=0x6B | 0x6D..=0x6F)
+}
+
+/// 修飾キー単体 (Shift・Ctrl・Alt・Win)
+fn is_modifier_vk(vk: u16) -> bool {
+    matches!(vk, 0x10..=0x12 | 0xA0..=0xA5 | 0x5B | 0x5C)
+}
+
+impl KeyCombo {
+    /// 1つのキーの表記 ("Ctrl+Shift+F7" など。修飾キーの順序は問わない) を読む
+    fn parse(text: &str) -> Option<KeyCombo> {
+        let mut parts: Vec<&str> = text.split('+').collect();
+        let name = parts.pop()?;
+        let mut combo = KeyCombo { ctrl: false, alt: false, shift: false, vk: 0 };
+        for modifier in parts {
+            let flag = match modifier {
+                "Ctrl" => &mut combo.ctrl,
+                "Alt" => &mut combo.alt,
+                "Shift" => &mut combo.shift,
+                _ => return None,
+            };
+            if *flag {
+                return None;
+            }
+            *flag = true;
+        }
+        combo.vk = parse_key_name(name)?;
+        Some(combo)
+    }
+
+    /// 表記 (修飾キーは Ctrl+・Alt+・Shift+ の順)
+    fn notation(&self) -> String {
+        let mut text = String::new();
+        if self.ctrl {
+            text.push_str("Ctrl+");
+        }
+        if self.alt {
+            text.push_str("Alt+");
+        }
+        if self.shift {
+            text.push_str("Shift+");
+        }
+        text.push_str(&key_name(self.vk));
+        text
+    }
+
+    /// 機能に割り当てられないキーなら理由を返す。TSF 層 (tsf/src/config.cpp の
+    /// IsAssignable) と同じ規則
+    fn unassignable_reason(&self) -> Option<&'static str> {
+        if is_modifier_vk(self.vk) {
+            return Some("修飾キーだけでは割り当てられません");
+        }
+        if matches!(self.vk, 0x19 | 0xF3 | 0xF4 | 0x16 | 0x1A) {
+            return Some("IME の切替キーは割り当てられません");
+        }
+        // Alt 併用の打鍵は IME の key event sink に届かないアプリがある (メモ帳で確認)
+        if self.alt {
+            return Some("Alt と組み合わせたキーは割り当てられません");
+        }
+        if !self.ctrl {
+            if is_core_vk(self.vk) {
+                return Some(
+                    "Enter・Esc・Tab・Backspace・Delete・矢印・Home・End・PageUp・PageDown は、\
+                     Ctrl と組み合わせたときだけ割り当てられます",
+                );
+            }
+            if is_printable_vk(self.vk) {
+                return Some("英字・数字・記号・テンキーは、Ctrl と組み合わせたときだけ割り当てられます");
+            }
+        }
+        if self.ctrl && !self.shift && (self.vk == 0x4D || self.vk == 0x48) {
+            return Some("Ctrl+M・Ctrl+H は Enter・Backspace として働くため割り当てられません");
+        }
+        None
+    }
+}
+
+/// キー割当の値 ("<キー>[,<キー>...]" または "none") を読む。読めない・対象外のキーは捨て、
+/// 1つも残らなければ None (既定のまま)。"none" は空の一覧
+fn parse_key_list(value: &str) -> Option<Vec<KeyCombo>> {
+    if value == "none" {
+        return Some(Vec::new());
+    }
+    let mut keys = Vec::new();
+    for item in value.split(',') {
+        if let Some(key) = KeyCombo::parse(item.trim_matches(' ')) {
+            if key.unassignable_reason().is_none() && !keys.contains(&key) {
+                keys.push(key);
+            }
+        }
+    }
+    (!keys.is_empty()).then_some(keys)
+}
+
+/// 設定ファイルに書くキー割当の値
+fn format_key_list(keys: &[KeyCombo]) -> String {
+    if keys.is_empty() {
+        return "none".to_string();
+    }
+    keys.iter().map(KeyCombo::notation).collect::<Vec<_>>().join(",")
+}
+
+/// 一覧・編集ダイアログに出すキー割当
+fn display_key_list(keys: &[KeyCombo]) -> String {
+    if keys.is_empty() {
+        return "(なし)".to_string();
+    }
+    keys.iter().map(KeyCombo::notation).collect::<Vec<_>>().join(", ")
+}
+
+fn default_key_assigns() -> Vec<KeyAssign> {
+    KEY_ITEMS
+        .iter()
+        .map(|(_, _, _, default)| KeyAssign {
+            keys: parse_key_list(default).unwrap_or_default(),
+            overrides: Default::default(),
+        })
+        .collect()
+}
+
+/// 状態 state で機能 index が使うキー (その状態で働かない機能は None)
+fn effective_keys(assigns: &[KeyAssign], index: usize, state: usize) -> Option<&[KeyCombo]> {
+    if KEY_ITEMS[index].2 & (1 << state) == 0 {
+        return None;
+    }
+    Some(assigns[index].overrides[state].as_deref().unwrap_or(assigns[index].keys.as_slice()))
+}
+
+/// 同じ状態で同じキーが複数の機能に割り当てられていれば、その説明を返す
+fn find_key_conflict(assigns: &[KeyAssign]) -> Option<String> {
+    for (state, (_, state_label)) in STATES.iter().enumerate() {
+        for i in 0..KEY_ITEMS.len() {
+            let Some(a) = effective_keys(assigns, i, state) else {
+                continue;
+            };
+            for j in i + 1..KEY_ITEMS.len() {
+                let Some(b) = effective_keys(assigns, j, state) else {
+                    continue;
+                };
+                if let Some(key) = a.iter().find(|key| b.contains(key)) {
+                    return Some(format!(
+                        "{state_label}: {} と {} ({})",
+                        KEY_ITEMS[i].1,
+                        KEY_ITEMS[j].1,
+                        key.notation()
+                    ));
+                }
+            }
+        }
+    }
+    None
+}
 
 /// 設定ファイルの内容 (エンジン向け + TSF 層向けの全キー)
 struct Config {
@@ -77,8 +351,7 @@ struct Config {
     modeless: bool,
     candidate_font: String,
     candidate_font_size: u32, // 10-40
-    keys: [String; 10],       // "F4" / "Ctrl+F7" / "none" (KEY_ITEMS の並び順)
-    convert_key: String,      // "Convert" / "Ctrl+Space"
+    keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
 }
 
 impl Default for Config {
@@ -95,12 +368,7 @@ impl Default for Config {
             modeless: false,
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
-            keys: [
-                "F4", "F5", "F6", "F7", "F8", "F9", "F10", "Ctrl+Backspace", "Ctrl+F7",
-                "Ctrl+F12",
-            ]
-            .map(String::from),
-            convert_key: "Convert".to_string(),
+            keys: default_key_assigns(),
         }
     }
 }
@@ -112,23 +380,6 @@ fn config_path() -> Result<PathBuf, String> {
     }
     let appdata = std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
     Ok(PathBuf::from(appdata).join("QuicklIME").join("config.tsv"))
-}
-
-/// キー割当の表記が文脈 (Ctrl 併用かどうか) に合う正しい形かどうか。
-/// TSF 層のパース (tsf/src/config.cpp) と同じ規則
-fn valid_key_notation(value: &str, ctrl: bool) -> bool {
-    if value == "none" {
-        return true;
-    }
-    let name = match (value.strip_prefix("Ctrl+"), ctrl) {
-        (Some(rest), true) => rest,
-        (None, false) => value,
-        _ => return false,
-    };
-    if ctrl && name == "Backspace" {
-        return true;
-    }
-    matches!(name.strip_prefix('F').and_then(|n| n.parse::<u32>().ok()), Some(1..=12))
 }
 
 impl Config {
@@ -203,18 +454,33 @@ impl Config {
                     self.candidate_font_size = n.clamp(10, 40);
                 }
             }
-            "key.convert" => {
-                if CONVERT_KEY_ITEMS.contains(&value) {
-                    self.convert_key = value.to_string();
-                }
-            }
-            _ => {
-                for (i, (name, _, ctrl)) in KEY_ITEMS.iter().enumerate() {
-                    if key == *name && valid_key_notation(value, *ctrl) {
-                        self.keys[i] = value.to_string();
-                    }
-                }
-            }
+            _ => self.apply_key(key, value),
+        }
+    }
+
+    /// key.<機能>[@<状態>] の行を反映する。上書きはその機能が働く状態にだけ書ける。
+    /// TSF 層のパース (tsf/src/config.cpp) と同じ規則
+    fn apply_key(&mut self, key: &str, value: &str) {
+        let (name, state) = match key.split_once('@') {
+            Some((name, state)) => (name, Some(state)),
+            None => (key, None),
+        };
+        let Some(index) = KEY_ITEMS.iter().position(|item| item.0 == name) else {
+            return;
+        };
+        let state = match state {
+            None => None,
+            Some(state) => match STATES.iter().position(|(s, _)| *s == state) {
+                Some(s) if KEY_ITEMS[index].2 & (1 << s) != 0 => Some(s),
+                _ => return,
+            },
+        };
+        let Some(keys) = parse_key_list(value) else {
+            return;
+        };
+        match state {
+            None => self.keys[index].keys = keys,
+            Some(s) => self.keys[index].overrides[s] = Some(keys),
         }
     }
 
@@ -241,11 +507,15 @@ impl Config {
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
-        text.push_str("\n# キー割当\n");
-        for (i, (name, _, _)) in KEY_ITEMS.iter().enumerate() {
-            text.push_str(&format!("{}\t{}\n", name, self.keys[i]));
+        text.push_str("\n# キー割当 (key.<機能>@<状態> は状態別の上書き)\n");
+        for (i, (name, _, _, _)) in KEY_ITEMS.iter().enumerate() {
+            text.push_str(&format!("{}\t{}\n", name, format_key_list(&self.keys[i].keys)));
+            for (s, (state, _)) in STATES.iter().enumerate() {
+                if let Some(keys) = &self.keys[i].overrides[s] {
+                    text.push_str(&format!("{name}@{state}\t{}\n", format_key_list(keys)));
+                }
+            }
         }
-        text.push_str(&format!("key.convert\t{}\n", self.convert_key));
         std::fs::write(&path, text.as_bytes())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
 
@@ -316,6 +586,13 @@ fn main() {
         }
 
         let config = Config::load();
+        KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = config.keys.clone());
+
+        let controls = INITCOMMONCONTROLSEX {
+            dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
+            dwICC: ICC_LISTVIEW_CLASSES,
+        };
+        InitCommonControlsEx(&controls);
 
         let wc = WNDCLASSW {
             style: 0,
@@ -330,6 +607,20 @@ fn main() {
             lpszClassName: class_name.as_ptr(),
         };
         RegisterClassW(&wc);
+        let edit_class = wide(KEY_EDIT_CLASS);
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(key_edit_wndproc),
+            hIcon: null_mut(),
+            lpszClassName: edit_class.as_ptr(),
+            ..wc
+        });
+        let capture_class = wide(KEY_CAPTURE_CLASS);
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(key_capture_wndproc),
+            hIcon: null_mut(),
+            lpszClassName: capture_class.as_ptr(),
+            ..wc
+        });
 
         // レイアウト (96dpi 基準の論理ピクセルを DPI でスケールする)
         let dpi = GetDpiForSystem();
@@ -346,10 +637,10 @@ fn main() {
 
         let left_w = label_w + row_gap + ctrl_w;
         let right_x = margin + left_w + col_gap;
-        let right_w = label_w + row_gap + ctrl_w;
+        let right_w = scale(440);
         let client_w = right_x + right_w + margin;
-        // 左カラム: 見出し3 + 項目11行 + 見出し前の隙間、右カラム: 見出し1 + 11行。
-        // 高さは行数の多い左カラム基準
+        // 左カラム: 見出し3 + 項目11行 + 見出し前の隙間、右カラム: 見出し1 + キー割当の一覧。
+        // 高さは左カラム基準で、一覧は残りの高さに合わせる
         let left_rows = 14;
         let client_h =
             margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
@@ -404,6 +695,8 @@ fn main() {
             0,
             face.as_ptr(),
         );
+        UI_FONT.set(font);
+        UI_DPI.set(dpi);
 
         let create_control = |class: &str,
                               text: &str,
@@ -547,30 +840,76 @@ fn main() {
         add_combo(ctrl_x, y, ID_COMBO_FONT_SIZE, &size_refs, &config.candidate_font_size.to_string());
 
         // ---- 右カラム: キー割当 ----
-        let key_ctrl_x = right_x + label_w + row_gap;
-        let mut y = margin;
-        create_control("STATIC", "キー割当", label_style, 0, right_x, y, right_w, row_h, 0);
-        // 割当の選択肢 (Ctrl 併用の機能とそれ以外で異なる)
-        let plain_items: Vec<String> =
-            std::iter::once("none".to_string()).chain((1..=12).map(|n| format!("F{n}"))).collect();
-        let ctrl_items: Vec<String> = std::iter::once("none".to_string())
-            .chain(std::iter::once("Ctrl+Backspace".to_string()))
-            .chain((1..=12).map(|n| format!("Ctrl+F{n}")))
-            .collect();
-        for (i, (_, label, ctrl)) in KEY_ITEMS.iter().enumerate() {
-            y += row_h + row_gap;
-            create_control("STATIC", &format!("{label}:"), label_style, 0, right_x, y + scale(3), label_w, row_h, 0);
-            let items = if *ctrl { &ctrl_items } else { &plain_items };
-            let refs: Vec<&str> = items.iter().map(String::as_str).collect();
-            add_combo(key_ctrl_x, y, ID_COMBO_KEY_BASE + i as i32, &refs, &config.keys[i]);
-        }
-        y += row_h + row_gap;
-        create_control("STATIC", "変換キー:", label_style, 0, right_x, y + scale(3), label_w, row_h, 0);
-        add_combo(key_ctrl_x, y, ID_COMBO_KEY_CONVERT, &CONVERT_KEY_ITEMS, &config.convert_key);
-
-        // ---- 下部ボタン (右寄せ) ----
         let button_y = client_h - margin - button_h;
         let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+        let y = margin;
+        create_control("STATIC", "キー割当", label_style, 0, right_x, y, right_w, row_h, 0);
+        let list_y = y + row_h + row_gap;
+        let key_button_y = button_y - section_gap - button_h;
+        let list = create_control(
+            "SysListView32",
+            "",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_BORDER
+                | LVS_REPORT
+                | LVS_SINGLESEL
+                | LVS_SHOWSELALWAYS
+                | LVS_NOSORTHEADER,
+            0,
+            right_x,
+            list_y,
+            right_w,
+            key_button_y - row_gap - list_y,
+            ID_LIST_KEYS,
+        );
+        SendMessageW(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            LVS_EX_FULLROWSELECT as usize,
+            LVS_EX_FULLROWSELECT as isize,
+        );
+        for (i, (title, width)) in
+            [("機能", scale(120)), ("キー", scale(130)), ("状態別の上書き", scale(165))]
+                .iter()
+                .enumerate()
+        {
+            let mut text = wide(title);
+            let column = LVCOLUMNW {
+                mask: LVCF_TEXT | LVCF_WIDTH,
+                cx: *width,
+                pszText: text.as_mut_ptr(),
+                ..Default::default()
+            };
+            SendMessageW(list, LVM_INSERTCOLUMNW, i, &column as *const _ as LPARAM);
+        }
+        refresh_key_list(list);
+        select_list_row(list, 0);
+        create_control(
+            "BUTTON",
+            "編集",
+            button_style,
+            0,
+            right_x,
+            key_button_y,
+            button_w,
+            button_h,
+            ID_BUTTON_KEY_EDIT,
+        );
+        create_control(
+            "BUTTON",
+            "既定に戻す",
+            button_style,
+            0,
+            right_x + button_w + row_gap,
+            key_button_y,
+            button_w,
+            button_h,
+            ID_BUTTON_KEY_DEFAULT,
+        );
+
+        // ---- 下部ボタン (右寄せ) ----
         create_control(
             "BUTTON",
             "保存",
@@ -634,6 +973,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_BUTTON_CANCEL => {
                         DestroyWindow(hwnd);
                     }
+                    ID_BUTTON_KEY_EDIT => on_edit_key(hwnd),
+                    ID_BUTTON_KEY_DEFAULT => {
+                        KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = default_key_assigns());
+                        refresh_key_list(GetDlgItem(hwnd, ID_LIST_KEYS));
+                    }
                     _ => {}
                 }
                 0
@@ -655,21 +999,13 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 fn on_save(hwnd: HWND) {
     let config = collect(hwnd);
 
-    // キー割当の重複を拒否する (無修飾と Ctrl 併用は別空間なので独立に確認)
-    for (i, (_, label_a, ctrl_a)) in KEY_ITEMS.iter().enumerate() {
-        for (j, (_, label_b, ctrl_b)) in KEY_ITEMS.iter().enumerate().skip(i + 1) {
-            if ctrl_a == ctrl_b && config.keys[i] != "none" && config.keys[i] == config.keys[j] {
-                message_box(
-                    hwnd,
-                    &format!(
-                        "キー割当が重複しています: {} と {} ({})",
-                        label_a, label_b, config.keys[j]
-                    ),
-                    MB_ICONWARNING,
-                );
-                return;
-            }
-        }
+    if let Some(conflict) = find_key_conflict(&config.keys) {
+        message_box(
+            hwnd,
+            &format!("同じ状態で同じキーが複数の機能に割り当てられています。\n{conflict}"),
+            MB_ICONWARNING,
+        );
+        return;
     }
 
     match config.save() {
@@ -730,16 +1066,7 @@ fn collect(hwnd: HWND) -> Config {
     if let Ok(n) = combo_text(ID_COMBO_FONT_SIZE).parse::<u32>() {
         config.candidate_font_size = n.clamp(10, 40);
     }
-    for (i, (_, _, ctrl)) in KEY_ITEMS.iter().enumerate() {
-        let value = combo_text(ID_COMBO_KEY_BASE + i as i32);
-        if valid_key_notation(&value, *ctrl) {
-            config.keys[i] = value;
-        }
-    }
-    let convert_key = combo_text(ID_COMBO_KEY_CONVERT);
-    if CONVERT_KEY_ITEMS.contains(&convert_key.as_str()) {
-        config.convert_key = convert_key;
-    }
+    config.keys = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
     config
 }
 
@@ -747,4 +1074,597 @@ fn message_box(hwnd: HWND, text: &str, icon: u32) {
     let text = wide(text);
     let title = wide("QuicklIME 設定");
     unsafe { MessageBoxW(hwnd, text.as_ptr(), title.as_ptr(), MB_OK | icon) };
+}
+
+// ---- キー割当の一覧・編集ダイアログ・キー取り込み ----
+
+const KEY_EDIT_CLASS: &str = "QuicklimeKeyEdit";
+const KEY_CAPTURE_CLASS: &str = "QuicklimeKeyCapture";
+const CAPTURE_PROMPT: &str = "割り当てるキーを押してください。修飾キーと組み合わせるときは、\
+                              修飾キーを押したまま押します。\n(やめるときは「キャンセル」)";
+
+/// 編集ダイアログで編集中の機能と割当
+struct KeyEdit {
+    assign: KeyAssign,
+    accepted: bool,
+}
+
+thread_local! {
+    /// 画面上のキー割当 (保存で書き出す。KEY_ITEMS の並び順)
+    static KEY_ASSIGNS: RefCell<Vec<KeyAssign>> = const { RefCell::new(Vec::new()) };
+    /// ダイアログの子ウィンドウに使うフォントと DPI (main で設定する)
+    static UI_FONT: Cell<HFONT> = const { Cell::new(null_mut()) };
+    static UI_DPI: Cell<u32> = const { Cell::new(96) };
+    static KEY_EDIT: RefCell<Option<KeyEdit>> = const { RefCell::new(None) };
+    /// キー取り込みダイアログで取り込んだキー
+    static CAPTURED_KEY: Cell<Option<KeyCombo>> = const { Cell::new(None) };
+}
+
+/// 96dpi 基準の論理ピクセルを DPI でスケールする
+fn scaled(value: i32) -> i32 {
+    value * UI_DPI.get() as i32 / 96
+}
+
+/// 一覧の行を現在のキー割当で作り直す (選択中の行は維持する)
+fn refresh_key_list(list: HWND) {
+    let assigns = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
+    unsafe {
+        let selected = SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+        SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
+        for (i, (_, label, _, _)) in KEY_ITEMS.iter().enumerate() {
+            let overrides: Vec<String> = STATES
+                .iter()
+                .enumerate()
+                .filter_map(|(s, (_, state_label))| {
+                    let keys = assigns[i].overrides[s].as_ref()?;
+                    Some(format!("{state_label}: {}", display_key_list(keys)))
+                })
+                .collect();
+            let texts = [label.to_string(), display_key_list(&assigns[i].keys), overrides.join(" / ")];
+            for (column, text) in texts.iter().enumerate() {
+                let mut text = wide(text);
+                let item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: i as i32,
+                    iSubItem: column as i32,
+                    pszText: text.as_mut_ptr(),
+                    ..Default::default()
+                };
+                let message = if column == 0 { LVM_INSERTITEMW } else { LVM_SETITEMTEXTW };
+                SendMessageW(list, message, i, &item as *const _ as LPARAM);
+            }
+        }
+        if selected >= 0 {
+            select_list_row(list, selected as usize);
+        }
+    }
+}
+
+fn select_list_row(list: HWND, row: usize) {
+    let item = LVITEMW {
+        mask: LVIF_STATE,
+        state: LVIS_SELECTED | LVIS_FOCUSED,
+        stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+        ..Default::default()
+    };
+    unsafe { SendMessageW(list, LVM_SETITEMSTATE, row, &item as *const _ as LPARAM) };
+}
+
+/// 「編集」ボタン: 一覧で選んでいる機能の編集ダイアログを開く
+fn on_edit_key(hwnd: HWND) {
+    unsafe {
+        let list = GetDlgItem(hwnd, ID_LIST_KEYS);
+        let selected = SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+        if selected < 0 {
+            return;
+        }
+        let index = selected as usize;
+        if let Some(assign) = open_key_edit_dialog(hwnd, index) {
+            KEY_ASSIGNS.with(|keys| keys.borrow_mut()[index] = assign);
+            refresh_key_list(list);
+        }
+        SetFocus(list);
+    }
+}
+
+unsafe fn create_child(
+    parent: HWND,
+    class: &str,
+    text: &str,
+    style: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    id: i32,
+) -> HWND {
+    let class = wide(class);
+    let text = wide(text);
+    unsafe {
+        let ctrl = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            text.as_ptr(),
+            style,
+            x,
+            y,
+            w,
+            h,
+            parent,
+            id as usize as _,
+            GetModuleHandleW(null()),
+            null(),
+        );
+        SendMessageW(ctrl, WM_SETFONT, UI_FONT.get() as usize, 1);
+        ctrl
+    }
+}
+
+/// owner の中央に、クライアント領域が client_w x client_h のモーダル用ウィンドウを作る
+unsafe fn create_modal_window(
+    owner: HWND,
+    class: &str,
+    title: &str,
+    client_w: i32,
+    client_h: i32,
+) -> HWND {
+    let class = wide(class);
+    let title = wide(title);
+    let style = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    unsafe {
+        let mut rect = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
+        AdjustWindowRectEx(&mut rect, style, 0, WS_EX_DLGMODALFRAME);
+        let w = rect.right - rect.left;
+        let h = rect.bottom - rect.top;
+        let mut owner_rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
+        GetWindowRect(owner, &mut owner_rect);
+        CreateWindowExW(
+            WS_EX_DLGMODALFRAME,
+            class.as_ptr(),
+            title.as_ptr(),
+            style,
+            owner_rect.left + (owner_rect.right - owner_rect.left - w) / 2,
+            owner_rect.top + (owner_rect.bottom - owner_rect.top - h) / 2,
+            w,
+            h,
+            owner,
+            null_mut(),
+            GetModuleHandleW(null()),
+            null(),
+        )
+    }
+}
+
+/// owner を無効にして hwnd を表示し、hwnd が閉じるまでメッセージを回す。
+/// dialog_keys なら Tab・Enter・Esc をダイアログの操作として扱う
+unsafe fn run_modal(owner: HWND, hwnd: HWND, dialog_keys: bool) {
+    unsafe {
+        EnableWindow(owner, 0);
+        ShowWindow(hwnd, SW_SHOW);
+        let mut msg = std::mem::zeroed::<MSG>();
+        while IsWindow(hwnd) != 0 {
+            let result = GetMessageW(&mut msg, null_mut(), 0, 0);
+            if result == 0 {
+                PostQuitMessage(msg.wParam as i32);
+                break;
+            }
+            if result < 0 {
+                break;
+            }
+            if dialog_keys {
+                if IsDialogMessageW(hwnd, &msg) != 0 {
+                    continue;
+                }
+                TranslateMessage(&msg);
+            }
+            DispatchMessageW(&msg);
+        }
+    }
+}
+
+/// モーダル用ウィンドウを閉じる。owner を無効のまま閉じると別のアプリが前面に出るため、
+/// 先に owner を有効に戻す
+unsafe fn close_modal(hwnd: HWND) {
+    unsafe {
+        EnableWindow(GetWindow(hwnd, GW_OWNER), 1);
+        DestroyWindow(hwnd);
+    }
+}
+
+fn with_key_edit<R>(f: impl FnOnce(&mut KeyEdit) -> R) -> Option<R> {
+    KEY_EDIT.with(|edit| edit.borrow_mut().as_mut().map(f))
+}
+
+/// 編集ダイアログの区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) のキー一覧。
+/// 上書きしていない区画は None
+fn section_keys(assign: &mut KeyAssign, k: usize) -> Option<&mut Vec<KeyCombo>> {
+    if k == 0 { Some(&mut assign.keys) } else { assign.overrides[k - 1].as_mut() }
+}
+
+/// 機能 index の割当を編集するダイアログ。OK で閉じたら編集後の割当を返す
+fn open_key_edit_dialog(owner: HWND, index: usize) -> Option<KeyAssign> {
+    let (_, label, states, _) = KEY_ITEMS[index];
+    let assign = KEY_ASSIGNS.with(|keys| keys.borrow()[index].clone());
+    let sections: Vec<usize> = std::iter::once(0)
+        .chain((0..STATES.len()).filter(|s| states & (1 << s) != 0).map(|s| s + 1))
+        .collect();
+    KEY_EDIT.with(|edit| *edit.borrow_mut() = Some(KeyEdit { assign, accepted: false }));
+
+    let margin = scaled(16);
+    let gap = scaled(8);
+    let row_h = scaled(24);
+    let list_w = scaled(240);
+    let list_h = scaled(72);
+    let button_w = scaled(88);
+    let button_h = scaled(28);
+    let section_h = row_h + gap + list_h + scaled(16);
+    let client_w = margin + list_w + gap + button_w + margin;
+    let client_h = margin + section_h * sections.len() as i32 + button_h + margin;
+    unsafe {
+        let hwnd = create_modal_window(
+            owner,
+            KEY_EDIT_CLASS,
+            &format!("キー割当の編集: {label}"),
+            client_w,
+            client_h,
+        );
+        if hwnd.is_null() {
+            KEY_EDIT.with(|edit| edit.borrow_mut().take());
+            return None;
+        }
+        let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+        let mut y = margin;
+        for &k in &sections {
+            let offset = k as i32 * 10;
+            if k == 0 {
+                create_child(hwnd, "STATIC", "基本の割当", WS_CHILD | WS_VISIBLE, margin, y + scaled(3), list_w, row_h, 0);
+            } else {
+                let check = create_child(
+                    hwnd,
+                    "BUTTON",
+                    &format!("{}で上書きする", STATES[k - 1].1),
+                    button_style | BS_AUTOCHECKBOX as u32,
+                    margin,
+                    y,
+                    list_w + gap + button_w,
+                    row_h,
+                    ID_EDIT_OVERRIDE_BASE + offset,
+                );
+                let overridden =
+                    with_key_edit(|edit| edit.assign.overrides[k - 1].is_some()).unwrap_or(false);
+                SendMessageW(check, BM_SETCHECK, overridden as usize, 0);
+            }
+            y += row_h + gap;
+            create_child(
+                hwnd,
+                "LISTBOX",
+                "",
+                WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_BORDER | WS_VSCROLL,
+                margin,
+                y,
+                list_w,
+                list_h,
+                ID_EDIT_LIST_BASE + offset,
+            );
+            let button_x = margin + list_w + gap;
+            create_child(hwnd, "BUTTON", "追加", button_style, button_x, y, button_w, button_h, ID_EDIT_ADD_BASE + offset);
+            create_child(
+                hwnd,
+                "BUTTON",
+                "削除",
+                button_style,
+                button_x,
+                y + button_h + gap,
+                button_w,
+                button_h,
+                ID_EDIT_REMOVE_BASE + offset,
+            );
+            refresh_edit_section(hwnd, k);
+            y += list_h + scaled(16);
+        }
+        let button_y = client_h - margin - button_h;
+        create_child(
+            hwnd,
+            "BUTTON",
+            "OK",
+            button_style | BS_DEFPUSHBUTTON as u32,
+            client_w - margin - button_w * 2 - gap,
+            button_y,
+            button_w,
+            button_h,
+            IDOK,
+        );
+        create_child(hwnd, "BUTTON", "キャンセル", button_style, client_w - margin - button_w, button_y, button_w, button_h, IDCANCEL);
+        run_modal(owner, hwnd, true);
+    }
+    let edit = KEY_EDIT.with(|edit| edit.borrow_mut().take())?;
+    edit.accepted.then_some(edit.assign)
+}
+
+/// 編集ダイアログの区画 k の一覧を作り直し、上書きしていない区画の操作を無効にする
+unsafe fn refresh_edit_section(hwnd: HWND, k: usize) {
+    let offset = k as i32 * 10;
+    let keys = with_key_edit(|edit| section_keys(&mut edit.assign, k).cloned()).flatten();
+    unsafe {
+        let list = GetDlgItem(hwnd, ID_EDIT_LIST_BASE + offset);
+        SendMessageW(list, LB_RESETCONTENT, 0, 0);
+        for key in keys.iter().flatten() {
+            let text = wide(&key.notation());
+            SendMessageW(list, LB_ADDSTRING, 0, text.as_ptr() as LPARAM);
+        }
+        for id in [ID_EDIT_LIST_BASE, ID_EDIT_ADD_BASE, ID_EDIT_REMOVE_BASE] {
+            EnableWindow(GetDlgItem(hwnd, id + offset), keys.is_some() as i32);
+        }
+    }
+}
+
+unsafe extern "system" fn key_edit_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_COMMAND => {
+                if ((wparam >> 16) & 0xFFFF) as u32 != BN_CLICKED {
+                    return 0;
+                }
+                match (wparam & 0xFFFF) as i32 {
+                    IDOK => {
+                        with_key_edit(|edit| edit.accepted = true);
+                        close_modal(hwnd);
+                    }
+                    IDCANCEL => close_modal(hwnd),
+                    id if id >= ID_EDIT_LIST_BASE => on_edit_section_command(hwnd, id),
+                    _ => {}
+                }
+                0
+            }
+            WM_CLOSE => {
+                close_modal(hwnd);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+/// 編集ダイアログの区画ごとのボタン (追加・削除・上書きする)
+unsafe fn on_edit_section_command(hwnd: HWND, id: i32) {
+    let k = ((id - ID_EDIT_LIST_BASE) / 10) as usize;
+    let offset = k as i32 * 10;
+    unsafe {
+        match id - offset {
+            ID_EDIT_ADD_BASE => {
+                let Some(key) = open_key_capture_dialog(hwnd) else {
+                    return;
+                };
+                with_key_edit(|edit| {
+                    if let Some(keys) = section_keys(&mut edit.assign, k) {
+                        if !keys.contains(&key) {
+                            keys.push(key);
+                        }
+                    }
+                });
+            }
+            ID_EDIT_REMOVE_BASE => {
+                let selected =
+                    SendMessageW(GetDlgItem(hwnd, ID_EDIT_LIST_BASE + offset), LB_GETCURSEL, 0, 0);
+                if selected < 0 {
+                    return;
+                }
+                with_key_edit(|edit| {
+                    if let Some(keys) = section_keys(&mut edit.assign, k) {
+                        if (selected as usize) < keys.len() {
+                            keys.remove(selected as usize);
+                        }
+                    }
+                });
+            }
+            ID_EDIT_OVERRIDE_BASE if k > 0 => {
+                let checked = SendMessageW(GetDlgItem(hwnd, id), BM_GETCHECK, 0, 0)
+                    == BST_CHECKED as isize;
+                // 上書きを始めるときは基本の割当を写して始める (チェックだけでは動作を変えない)
+                with_key_edit(|edit| {
+                    let base = edit.assign.keys.clone();
+                    let entry = &mut edit.assign.overrides[k - 1];
+                    if !checked {
+                        *entry = None;
+                    } else if entry.is_none() {
+                        *entry = Some(base);
+                    }
+                });
+            }
+            _ => return,
+        }
+        refresh_edit_section(hwnd, k);
+    }
+}
+
+/// 押したキーを取り込むダイアログ。取り込めたキーを返す (キャンセルなら None)
+fn open_key_capture_dialog(owner: HWND) -> Option<KeyCombo> {
+    CAPTURED_KEY.set(None);
+    let margin = scaled(16);
+    let gap = scaled(8);
+    let text_w = scaled(360);
+    let text_h = scaled(72);
+    let button_w = scaled(88);
+    let button_h = scaled(28);
+    let client_w = margin + text_w + margin;
+    let client_h = margin + text_h + gap + button_h + margin;
+    unsafe {
+        let hwnd = create_modal_window(owner, KEY_CAPTURE_CLASS, "キーの取り込み", client_w, client_h);
+        if hwnd.is_null() {
+            return None;
+        }
+        ImmAssociateContextEx(hwnd, 0, 0);
+        create_child(hwnd, "STATIC", CAPTURE_PROMPT, WS_CHILD | WS_VISIBLE, margin, margin, text_w, text_h, ID_CAPTURE_MESSAGE);
+        // 打鍵をすべてこのウィンドウで受けるため、ボタンには Tab でフォーカスを移さない
+        create_child(
+            hwnd,
+            "BUTTON",
+            "キャンセル",
+            WS_CHILD | WS_VISIBLE,
+            client_w - margin - button_w,
+            margin + text_h + gap,
+            button_w,
+            button_h,
+            IDCANCEL,
+        );
+        run_modal(owner, hwnd, false);
+    }
+    CAPTURED_KEY.get()
+}
+
+unsafe extern "system" fn key_capture_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_KEYDOWN | WM_SYSKEYDOWN => {
+                on_capture_key(hwnd, wparam as u16);
+                0
+            }
+            // Alt・F10 を離したときのメニュー起動や、WM_SYSCHAR の警告音を出さない
+            WM_KEYUP | WM_SYSKEYUP | WM_CHAR | WM_SYSCHAR => 0,
+            WM_ACTIVATE => {
+                // 前面に戻ったときに打鍵をこのウィンドウで受ける
+                if (wparam & 0xFFFF) != 0 {
+                    SetFocus(hwnd);
+                }
+                0
+            }
+            WM_COMMAND => {
+                if (wparam & 0xFFFF) as i32 == IDCANCEL {
+                    close_modal(hwnd);
+                }
+                0
+            }
+            WM_CLOSE => {
+                close_modal(hwnd);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+/// 取り込みダイアログで押されたキー。割り当てられるキーなら取り込んで閉じ、
+/// 割り当てられないキーなら理由を表示する
+unsafe fn on_capture_key(hwnd: HWND, vk: u16) {
+    // 修飾キーの押し始めは、続けて押すキーを待つ
+    if is_modifier_vk(vk) {
+        return;
+    }
+    let pressed = |key: u16| unsafe { (GetKeyState(key as i32) as u16 & 0x8000) != 0 };
+    let message = if vk == 0xE5 {
+        // VK_PROCESSKEY: IME が打鍵を処理した
+        "IME がこのキーを処理したため取り込めません".to_string()
+    } else if pressed(0x5B) || pressed(0x5C) {
+        "Win キーとの組み合わせは割り当てられません".to_string()
+    } else {
+        let key = KeyCombo { ctrl: pressed(0x11), alt: pressed(0x12), shift: pressed(0x10), vk };
+        match key.unassignable_reason() {
+            None => {
+                CAPTURED_KEY.set(Some(key));
+                unsafe { close_modal(hwnd) };
+                return;
+            }
+            Some(reason) => format!("{}: {reason}", key.notation()),
+        }
+    };
+    let text = wide(&message);
+    unsafe { SetWindowTextW(GetDlgItem(hwnd, ID_CAPTURE_MESSAGE), text.as_ptr()) };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(text: &str) -> KeyCombo {
+        KeyCombo::parse(text).unwrap()
+    }
+
+    #[test]
+    fn reads_legacy_values() {
+        for value in ["F4", "Ctrl+F7", "Ctrl+Backspace", "Convert", "Ctrl+Space"] {
+            assert_eq!(parse_key_list(value), Some(vec![key(value)]), "{value}");
+        }
+        assert_eq!(parse_key_list("none"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn parses_and_formats_notation() {
+        assert_eq!(key("Shift+Ctrl+F6").notation(), "Ctrl+Shift+F6");
+        assert_eq!(key("Alt+S"), KeyCombo { ctrl: false, alt: true, shift: false, vk: 0x53 });
+        assert_eq!(key("VK_e9").notation(), "VK_E9");
+        assert_eq!(key("VK_1C").notation(), "Convert");
+        assert_eq!(key("F24").vk, 0x87);
+        assert_eq!(key("NonConvert").vk, 0x1D);
+        assert!(KeyCombo::parse("F25").is_none());
+        assert!(KeyCombo::parse("Ctrl+Ctrl+A").is_none());
+        assert!(KeyCombo::parse("Win+A").is_none());
+        assert!(KeyCombo::parse("VK_00").is_none());
+        assert!(KeyCombo::parse("VK_+F").is_none());
+        assert_eq!(
+            parse_key_list("F7, Ctrl+K,F7"),
+            Some(vec![key("F7"), key("Ctrl+K")])
+        );
+        assert_eq!(format_key_list(&[key("F7"), key("Ctrl+K")]), "F7,Ctrl+K");
+        assert_eq!(format_key_list(&[]), "none");
+    }
+
+    #[test]
+    fn rejects_unassignable_keys() {
+        for text in [
+            "Enter", "A", "Shift+Tab", "Ctrl+H", "Ctrl+M", "Esc", "Shift+1", "VK_19", "VK_F3", "VK_10", "VK_6B",
+            "Alt+S", "Alt+Left", "Alt+F4", "Ctrl+Alt+F7", "Alt+Shift+Space",
+        ] {
+            assert!(key(text).unassignable_reason().is_some(), "{text}");
+        }
+        for text in ["Ctrl+Enter", "Ctrl+Left", "Ctrl+Shift+M", "Space", "Shift+Space", "Insert", "Kana", "Ctrl+A", "VK_6C"] {
+            assert!(key(text).unassignable_reason().is_none(), "{text}");
+        }
+        // 対象外だけなら既定のまま
+        assert_eq!(parse_key_list("Enter"), None);
+        assert_eq!(parse_key_list("Alt+S"), None);
+        assert_eq!(parse_key_list("Enter,F11"), Some(vec![key("F11")]));
+        assert_eq!(parse_key_list("F4,Alt+S"), Some(vec![key("F4")]));
+    }
+
+    #[test]
+    fn applies_overrides_only_to_working_states() {
+        let mut config = Config::default();
+        config.apply("key.next_candidate@candidate", "none");
+        config.apply("key.commit_run@candidate", "Ctrl+Enter");
+        config.apply("key.undo_commit@run", "F1");
+        config.apply("key.to_katakana@bogus", "F1");
+        config.apply("key.to_katakana", "Enter");
+        config.apply("key.convert", "Convert,Ctrl+Space");
+        assert_eq!(config.keys[1].overrides[2], Some(Vec::new()));
+        assert_eq!(config.keys[3].overrides[2], Some(vec![key("Ctrl+Enter")]));
+        assert_eq!(config.keys[11].overrides[1], None);
+        assert_eq!(config.keys[7], KeyAssign { keys: vec![key("F7")], overrides: Default::default() });
+        assert_eq!(config.keys[0].keys, vec![key("Convert"), key("Ctrl+Space")]);
+    }
+
+    #[test]
+    fn detects_conflicts_per_state() {
+        let mut assigns = default_key_assigns();
+        assert_eq!(find_key_conflict(&assigns), None);
+        // 働く状態が重ならなければ重なりではない (Ctrl+F7 は単語登録 = 入力なし のみ)
+        assigns[7].keys = vec![key("F7"), key("Ctrl+F7")];
+        assert_eq!(find_key_conflict(&assigns), None);
+        // 候補選択中だけ Space を記号変換にも割り当てる
+        assigns[4].overrides[2] = Some(vec![key("Space")]);
+        let conflict = find_key_conflict(&assigns).unwrap();
+        assert!(conflict.contains("候補選択中") && conflict.contains("次候補"), "{conflict}");
+        // 次候補の候補選択中を上書きで外せば解消する
+        assigns[1].overrides[2] = Some(Vec::new());
+        assert_eq!(find_key_conflict(&assigns), None);
+    }
 }

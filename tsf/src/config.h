@@ -2,13 +2,17 @@
 
 #include <windows.h>
 
+#include <array>
 #include <string>
+#include <vector>
 
-// キー割当を変えられる機能。コア操作 (Enter/Esc/Tab/矢印など) は対象外。
-// 先頭7つは run 中・候補選択中の機能 (無修飾の F1-F12 のみ割当可)、
-// 次の3つは run が無いときの機能 (Ctrl 併用のみ割当可)、
-// Convert は変換キー (Convert = VK_CONVERT / Ctrl+Space の2択)
+// キー割当を変えられる機能 (docs/design/keymap.md)。コア操作 (Enter/Esc/Tab/矢印など) と
+// 印字キーは対象外。並び順は、同じ状態で同じキーが重なったときの優先順位を兼ねる
 enum class KeyFunc {
+    Convert,         // 変換・次候補・後置再変換 (既定 変換キー)
+    NextCandidate,   // 次候補 (既定 Space)
+    PrevCandidate,   // 前候補 (既定 Shift+Space)
+    CommitRun,       // 確定 (既定 無変換キー)
     ConvertSymbol,   // 記号・日付変換 (既定 F4)
     ConvertUser,     // ユーザ登録語変換 (既定 F5)
     ToHiragana,      // ひらがな変換 (既定 F6)
@@ -19,17 +23,48 @@ enum class KeyFunc {
     UndoCommit,      // 確定アンドゥ (既定 Ctrl+Backspace)
     RegisterWord,    // 単語登録ツール起動 (既定 Ctrl+F7)
     OpenConfig,      // 設定ツール起動 (既定 Ctrl+F12)
-    Convert,         // 変換 (既定 変換キー = VK_CONVERT)
     None,            // 割当なし (照合の「該当なし」も表す)
 };
 
 constexpr size_t kKeyFuncCount = static_cast<size_t>(KeyFunc::None);
 
-// 1機能へのキー割当。vk == 0 は「割当なし (none)」
+// キー割当の照合に使う入力状態
+enum class KeyState {
+    Idle,       // 入力なし (run が無い)
+    Run,        // run 中 (候補選択中でもサジェスト選択中でもない)
+    Candidate,  // 候補選択中 (composition に昇格しているかは問わない)
+    Suggest,    // サジェスト選択中
+};
+
+constexpr size_t kKeyStateCount = 4;
+
+// 修飾キーの組と仮想キー
 struct KeyBinding {
     bool ctrl = false;
+    bool alt = false;
+    bool shift = false;
     UINT vk = 0;
+
+    bool operator==(const KeyBinding&) const = default;
 };
+
+// 1機能のキー割当。overridden[state] が立っている状態では keys の代わりに
+// overrides[state] を使う (空なら、その状態では割当なし)
+struct KeyAssignment {
+    std::vector<KeyBinding> keys;
+    std::array<bool, kKeyStateCount> overridden = {};
+    std::array<std::vector<KeyBinding>, kKeyStateCount> overrides;
+};
+
+// 照合の結果
+struct KeyMatch {
+    KeyFunc func = KeyFunc::None;
+    // Convert の割当に Shift を足した打鍵で一致した (候補選択中は前候補)
+    bool shiftAdded = false;
+};
+
+// 機能が働く状態か
+bool KeyFuncWorksIn(KeyFunc func, KeyState state);
 
 // ユーザ設定 (config.tsv) のうち TSF 層で使う項目。
 // エンジン向けのキー (learning, suggest など) はエンジンが同じファイルを読む
@@ -46,25 +81,15 @@ struct TsfConfig {
     // docs/design/modeless.md)
     bool modeless = false;
 
-    // 機能キーの割当 (KeyFunc の並び順)
-    KeyBinding keys[kKeyFuncCount] = {
-        {false, VK_F4},   // ConvertSymbol
-        {false, VK_F5},   // ConvertUser
-        {false, VK_F6},   // ToHiragana
-        {false, VK_F7},   // ToKatakana
-        {false, VK_F8},   // ToHalfKatakana
-        {false, VK_F9},   // ToFullAscii
-        {false, VK_F10},  // ToHalfAscii
-        {true, VK_BACK},  // UndoCommit
-        {true, VK_F7},    // RegisterWord
-        {true, VK_F12},   // OpenConfig
-        {false, VK_CONVERT}, // Convert
-    };
+    // 機能ごとのキー割当 (KeyFunc の並び順)
+    std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();
 
-    // 無修飾の wparam に割当てられた機能 (run 中・候補選択中の照合)。該当なしは None
-    KeyFunc FindPlainFunc(WPARAM wparam) const;
-    // Ctrl 併用の wparam に割当てられた機能 (run が無いときの照合)。該当なしは None
-    KeyFunc FindCtrlFunc(WPARAM wparam) const;
+    // state で打鍵 pressed に割り当てられた機能。状態別の上書きを基本の割当より優先し、
+    // 重なれば KeyFunc の並び順で先の機能を採る。Convert の割当は Shift を足した打鍵にも
+    // 一致する (明示的な割当がある打鍵ではそちらを優先する)
+    KeyMatch FindFunc(KeyState state, const KeyBinding& pressed) const;
+
+    static std::array<KeyAssignment, kKeyFuncCount> DefaultKeyAssignments();
 };
 
 // config.tsv (QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv) のローダ。

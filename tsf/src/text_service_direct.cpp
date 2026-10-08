@@ -161,6 +161,78 @@ bool SendPseudoBackspaces(size_t count)
     return sent == inputs.size();
 }
 
+// 食べた打鍵 vk を ctrl・shift の修飾付きで送り直す。送信時点で押されている修飾キーの
+// うち要らないものは間だけ離して押し直し、要るのに押されていないものは間だけ押す
+bool SendKeyWithModifiers(WORD vk, bool ctrl, bool shift)
+{
+    std::vector<INPUT> inputs;
+    const auto push = [&inputs](WORD key, DWORD flags) {
+        INPUT input = {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wVk = key;
+        input.ki.wScan = static_cast<WORD>(MapVirtualKeyW(key, MAPVK_VK_TO_VSC));
+        if (key == VK_RCONTROL || key == VK_RMENU || key == VK_LWIN || key == VK_RWIN) {
+            flags |= KEYEVENTF_EXTENDEDKEY;
+        }
+        input.ki.dwFlags = flags;
+        input.ki.dwExtraInfo = kPseudoKeyExtraInfo;
+        inputs.push_back(input);
+    };
+    std::vector<WORD> released;
+    bool menuKeyReleased = false;
+    bool ctrlHeld = false;
+    bool shiftHeld = false;
+    for (WORD key : kReleasedModifierVks) {
+        if ((GetAsyncKeyState(key) & 0x8000) == 0) {
+            continue;
+        }
+        const bool isCtrl = key == VK_LCONTROL || key == VK_RCONTROL;
+        const bool isShift = key == VK_LSHIFT || key == VK_RSHIFT;
+        if (isCtrl && ctrl) {
+            ctrlHeld = true;
+        } else if (isShift && shift) {
+            shiftHeld = true;
+        } else {
+            released.push_back(key);
+            if (!isCtrl && !isShift) {
+                menuKeyReleased = true;
+            }
+        }
+    }
+    std::vector<WORD> pressed;
+    if (ctrl && !ctrlHeld) {
+        pressed.push_back(VK_LCONTROL);
+    }
+    if (shift && !shiftHeld) {
+        pressed.push_back(VK_LSHIFT);
+    }
+    if (menuKeyReleased) {
+        push(kMenuMaskVk, 0);
+        push(kMenuMaskVk, KEYEVENTF_KEYUP);
+    }
+    for (WORD key : released) {
+        push(key, KEYEVENTF_KEYUP);
+    }
+    for (WORD key : pressed) {
+        push(key, 0);
+    }
+    push(vk, 0);
+    push(vk, KEYEVENTF_KEYUP);
+    for (WORD key : pressed) {
+        push(key, KEYEVENTF_KEYUP);
+    }
+    for (WORD key : released) {
+        push(key, 0);
+    }
+    if (menuKeyReleased) {
+        push(kMenuMaskVk, 0);
+        push(kMenuMaskVk, KEYEVENTF_KEYUP);
+    }
+    const UINT sent =
+        SendInput(static_cast<UINT>(inputs.size()), inputs.data(), sizeof(INPUT));
+    return sent == inputs.size();
+}
+
 // 修飾キー自体の押下 (Ctrl や Shift の押し始め)。run を終える契機にしない
 bool IsModifierKey(WPARAM wparam)
 {
@@ -283,7 +355,7 @@ bool TextService::DocumentReadable() const
     return appendDocument_ == AppendDocument::Readable;
 }
 
-bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
+bool TextService::IsKeyEatenDirect(WPARAM wparam) const
 {
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -292,37 +364,14 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
     const bool backspaceEaten =
         converting_ || predictionInDocument_ || !AppendPendingText().empty();
     if (ctrl || alt) {
-        if (!ctrl || alt) {
+        if (!ctrl || alt || !InRun()) {
             return false;
         }
-        if (IsConvertKey(wparam)) {
-            // Ctrl+Space 割当の変換キー。run が無ければ後置再変換できる選択があるときだけ
-            std::wstring selection;
-            return InRun() || ReadReconvertibleSelection(context, &selection);
-        }
-        if (!InRun()) {
-            switch (config_.Get().FindCtrlFunc(wparam)) {
-            case KeyFunc::UndoCommit:
-                return !lastCommitText_.empty();
-            case KeyFunc::RegisterWord:
-            case KeyFunc::OpenConfig:
-                return true;
-            default:
-                break;
-            }
-            return false;
-        }
-        // Ctrl+H は Backspace の読み替え。Ctrl+M (Enter) は候補選択中・サジェスト選択中の
-        // 確定にだけ使い、それ以外は run を終えてアプリへ渡す
-        return (wparam == 'H' && backspaceEaten) ||
-               (wparam == 'M' && (converting_ || predictionIndex_ >= 0));
+        // Ctrl+H は Backspace の読み替え。Ctrl+M は Enter と同じく確定してからアプリへ渡す
+        return (wparam == 'H' && backspaceEaten) || (wparam == 'M' && EnterNeedsResend());
     }
     const bool shifted = IsShiftPressed();
 
-    if (IsConvertKey(wparam)) {
-        std::wstring selection;
-        return InRun() || ReadReconvertibleSelection(context, &selection);
-    }
     // 印字キーは run の有無によらず IME が入れる (run が無ければ新しい run を始める)
     if (IsPrintableKey(wparam, shifted)) {
         return !PassesDigitKeyThrough(wparam, shifted, InRun(),
@@ -337,14 +386,14 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
         case VK_BACK:
             return backspaceEaten;
         case VK_RETURN:
-            // 候補選択中・サジェスト選択中の確定のみ。それ以外はアプリで改行
-            // (run は EndRunIfPassthroughKey で終わる)
-            return converting_ || predictionIndex_ >= 0;
+            // 確定 (run の終了) は EndRunIfPassthroughKey で済ませてからアプリへ渡す。
+            // 確定がアプリに反映される前に Enter が届きうる場合だけ食べて送り直す
+            return EnterNeedsResend();
         case VK_UP:
         case VK_DOWN:
-            return converting_ || !predictions_.empty();
         case VK_TAB:
-            return !converting_ && !predictions_.empty();
+            // 候補選択中の Tab は変換を取り消してサジェスト選択へ移る
+            return converting_ || !predictions_.empty();
         case VK_LEFT:
         case VK_RIGHT:
         case VK_PRIOR:
@@ -352,10 +401,6 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
             return converting_;
         default:
             break;
-        }
-        // ファンクションキー変換 (F4-F10。割当は変更可)。割当のあるキーだけ食べる
-        if (wparam >= VK_F1 && wparam <= VK_F12) {
-            return config_.Get().FindPlainFunc(wparam) != KeyFunc::None;
         }
         return false;
     }
@@ -365,40 +410,83 @@ bool TextService::IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const
 
 void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
 {
-    if (Composing() || !InRun() || IsModifierKey(wparam)) {
+    if ((!Composing() && !InRun()) || IsModifierKey(wparam)) {
         return;
     }
-    // IME が食べるキーは HandleKeyDirect が状態を進める
-    if (IsKeyEatenDirect(context, wparam)) {
+    // IME が食べるキーは HandleKey が状態を進める
+    if (IsKeyEaten(context, wparam)) {
         return;
     }
     // Ctrl/Alt 併用はアプリのショートカット (Undo・全選択など文書を変えうる)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    if (ctrl || alt || IsEditingKey(wparam)) {
-        EndAppendRunForPassthroughKey(context, ctrl, alt);
+    if (!ctrl && !alt && !IsEditingKey(wparam)) {
+        return;
+    }
+    if (Composing()) {
+        // 昇格した候補選択中も、昇格できなかった run と同じく確定してからアプリへ渡す
+        CommitComposition(context);
+        return;
+    }
+    const bool enter = !alt && (ctrl ? wparam == 'M' : wparam == VK_RETURN);
+    if (enter && (converting_ || predictionIndex_ >= 0)) {
+        // 候補選択中は確定、サジェスト選択中は採用して確定してから渡す
+        // (EnterNeedsResend のときは食べているのでここには来ない)
+        CommitRunDirect(context);
+        return;
+    }
+    EndAppendRunForPassthroughKey(context, ctrl, alt);
+}
+
+bool TextService::AdoptionNeedsPseudoBackspace() const
+{
+    return !converting_ && predictionIndex_ >= 0 && !predictionInDocument_ &&
+           appendDocument_ != AppendDocument::Readable && !surface_.empty();
+}
+
+bool TextService::EnterNeedsResend() const
+{
+    // 読める文書は確定が TSF の文書へ同期的に入るので、食べずに渡しても改行より先に入る。
+    // CUAS 経由のアプリ (WezTerm など) は composition の確定結果を IME メッセージで後から
+    // 受け取るため、食べずに渡すと確定結果より先に Enter が処理される。擬似 Backspace が
+    // 要る採用は、書き換えが終わる前に Enter が届かないようにする
+    return appendDocument_ != AppendDocument::Readable &&
+           (converting_ || AdoptionNeedsPseudoBackspace());
+}
+
+HRESULT TextService::CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted)
+{
+    // 送り直した打鍵は入力キューの後ろに並ぶので、確定結果のメッセージより後に処理される。
+    // 擬似 Backspace を送ったときは、書き換えが終わってから (目印の打鍵を受け取った後に) 送る
+    appendResendVk_ = vk;
+    appendResendCtrl_ = ctrl;
+    appendResendShift_ = shifted;
+    const HRESULT hr = Composing() ? CommitComposition(context) : CommitRunDirect(context);
+    if (!awaitingMarker_) {
+        SendResendKey();
+    }
+    return hr;
+}
+
+void TextService::SendResendKey()
+{
+    const WPARAM vk = appendResendVk_;
+    appendResendVk_ = 0;
+    if (vk == 0) {
+        return;
+    }
+    DebugLog(L"食べた打鍵をアプリへ送り直す vk=" + std::to_wstring(vk));
+    if (!SendKeyWithModifiers(static_cast<WORD>(vk), appendResendCtrl_, appendResendShift_)) {
+        DebugLog(L"打鍵の送り直しに失敗 (SendInput)");
     }
 }
 
 HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
 {
     const bool shifted = IsShiftPressed();
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-        if (IsConvertKey(wparam)) {
-            return ConvertKeyDirect(context, shifted);
-        }
-        if (!InRun()) {
-            switch (config_.Get().FindCtrlFunc(wparam)) {
-            case KeyFunc::UndoCommit:
-                return UndoCommit(context);
-            case KeyFunc::RegisterWord:
-                return LaunchWordRegister(context);
-            case KeyFunc::OpenConfig:
-                return LaunchConfigTool();
-            default:
-                break;
-            }
-        }
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const WPARAM originalVk = wparam;
+    if (ctrl) {
         switch (wparam) {
         case 'H':
             wparam = VK_BACK;
@@ -409,8 +497,6 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         default:
             return S_OK; // IsKeyEatenDirect が食べる Ctrl 併用は上記のみ
         }
-    } else if (IsConvertKey(wparam)) {
-        return ConvertKeyDirect(context, shifted);
     }
 
     DirectKey key;
@@ -437,7 +523,8 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     }
     switch (wparam) {
     case VK_RETURN:
-        return CommitRunDirect(context);
+        // 食べるのは EnterNeedsResend のときだけ
+        return CommitAndResendEnter(context, originalVk, ctrl, shifted);
     case VK_ESCAPE:
         if (converting_) {
             return CancelConversion(context); // 変換前のかな表示に戻す
@@ -462,6 +549,15 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     case VK_SPACE:
         return SpaceDirect(context, shifted);
     case VK_TAB:
+        if (converting_) {
+            // 昇格した候補選択中と同じく、変換を取り消してサジェスト選択へ移る
+            // (予測が無ければかな表示に戻るだけ)
+            const HRESULT hr = CancelConversion(context);
+            if (FAILED(hr)) {
+                return hr;
+            }
+            return MovePredictionSelection(context, +1);
+        }
         return MovePredictionSelection(context, shifted ? -1 : +1);
     case VK_DOWN:
         return converting_ ? CycleCandidate(context, +1)
@@ -484,15 +580,6 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     case VK_NEXT:
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     default:
-        if (InRun() && wparam >= VK_F1 && wparam <= VK_F12) {
-            const KeyFunc func = config_.Get().FindPlainFunc(wparam);
-            // 変換状態に入るキーなので composition に昇格してから適用する。
-            // 昇格できなかった run の候補選択中は、選択による強調のまま適用する
-            if (!converting_) {
-                return BeginAppendConversion(context, func);
-            }
-            return ApplyFunctionKey(context, func);
-        }
         return S_OK;
     }
 }
@@ -689,13 +776,13 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
     return InsertText(context, space);
 }
 
-HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool shifted)
+HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool previous)
 {
     if (!InRun()) {
         return ReconvertSelectionDirect(context);
     }
     if (converting_) {
-        return CycleCandidate(context, shifted ? -1 : +1);
+        return CycleCandidate(context, previous ? -1 : +1);
     }
     return BeginAppendConversion(context, KeyFunc::Convert);
 }
@@ -1394,6 +1481,7 @@ void TextService::CancelAppendAction()
     awaitingMarker_ = false;
     appendAction_ = PseudoKeyAction::None;
     appendFollowKeyPending_ = false;
+    appendResendVk_ = 0;
 }
 
 bool TextService::HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDown, BOOL* eaten)
@@ -1422,6 +1510,7 @@ bool TextService::HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDo
             awaitingMarker_ = false;
             DebugLog(L"目印の打鍵を受信 (" + where + L")");
             RunAppendAction(context);
+            SendResendKey();
         }
         return true;
     }

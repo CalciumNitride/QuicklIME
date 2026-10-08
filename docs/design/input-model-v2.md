@@ -57,7 +57,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 - 状態は4つ: 入力なし / run 中 / 候補選択中 / サジェスト選択中
 - 1つの機能に複数のキーを割り当てられる
 - 設定 UI では、機能ごとの一覧に状態別の上書きを足す見せ方にする
-- コア操作は割当変更の対象にしない (未決事項にコア操作の範囲の案を記す)
+- コア操作は割当変更の対象にしない (範囲は docs/design/keymap.md)
 
 ### フォールバック
 
@@ -83,7 +83,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 |---|---|---|---|
 | 0a | 実験: 追記型入力 (F1 / F2) の試作と比較 | TSF | docs/archive/experiment-0a-append-input.md |
 | 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/design/experiment-0b-llm.md |
-| 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | 未作成 |
+| 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF・エンジン (小) | 未作成 |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | 未作成 |
@@ -174,9 +174,6 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 ## 未決事項
 
-- コア操作 (割当変更の対象外) の範囲。案: Enter・Esc・Tab・Backspace・Delete・矢印・
-  Home/End・PgUp/PgDn と、それらの Shift 併用。Space・変換・無変換・ファンクションキー・
-  Ctrl/Alt 併用のキーは割当変更の対象にする
 - 段階5の LLM の構成 (CPU / Vulkan、モデル規模)
 - 候補バーの並び順・候補数・表示位置 (段階3)
 - CUAS での採用の方法 (段階2)

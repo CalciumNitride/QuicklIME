@@ -313,6 +313,9 @@ TextService::TextService()
       appendActionFunc_(KeyFunc::None),
       appendActionEndRun_(false),
       appendFollowKeyPending_(false),
+      appendResendVk_(0),
+      appendResendCtrl_(false),
+      appendResendShift_(false),
       mouseHook_(nullptr),
       backspaceTested_(false),
       keyEditExpected_(false),
@@ -632,15 +635,52 @@ void TextService::RefreshConfig()
     composer_.SetModeless(config_.Get().modeless);
 }
 
-bool TextService::IsConvertKey(WPARAM wparam) const
+KeyState TextService::CurrentKeyState() const
 {
-    const KeyBinding& binding = config_.Get().keys[static_cast<size_t>(KeyFunc::Convert)];
-    if (binding.vk == 0 || binding.vk != wparam) {
-        return false;
+    if (converting_) {
+        return KeyState::Candidate;
     }
-    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    return !alt && ctrl == binding.ctrl;
+    if (predictionIndex_ >= 0) {
+        return KeyState::Suggest;
+    }
+    return (InRun() || Composing()) ? KeyState::Run : KeyState::Idle;
+}
+
+KeyMatch TextService::MatchKeyFunc(WPARAM wparam) const
+{
+    if ((GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0) {
+        return {};
+    }
+    KeyBinding pressed;
+    pressed.ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    pressed.alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    pressed.shift = IsShiftPressed();
+    pressed.vk = static_cast<UINT>(wparam);
+    const KeyState state = CurrentKeyState();
+    // モードレスの英字モード中の Space は、候補選択中でも英文の語の区切りとして
+    // 確定して半角スペースを入れる (割当より優先する)
+    if (state == KeyState::Candidate && wparam == VK_SPACE && !pressed.ctrl && !pressed.alt &&
+        config_.Get().modeless && composer_.AsciiMode()) {
+        return {};
+    }
+    return config_.Get().FindFunc(state, pressed);
+}
+
+bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
+{
+    if (CurrentKeyState() != KeyState::Idle) {
+        return true;
+    }
+    switch (func) {
+    case KeyFunc::Convert: {
+        std::wstring selection;
+        return ReadReconvertibleSelection(context, &selection);
+    }
+    case KeyFunc::UndoCommit:
+        return !lastCommitText_.empty();
+    default:
+        return true;
+    }
 }
 
 bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
@@ -650,30 +690,29 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     if (!IsKeyboardOpen()) {
         return false;
     }
+    const KeyMatch match = MatchKeyFunc(wparam);
+    if (match.func != KeyFunc::None) {
+        return CanRunKeyFunc(context, match.func);
+    }
     if (!Composing()) {
-        return IsKeyEatenDirect(context, wparam);
+        return IsKeyEatenDirect(wparam);
     }
 
     // 候補選択中 (run を昇格した composition)。Ctrl / Alt 併用は原則アプリの
-    // ショートカットなので手を出さないが、Ctrl+M (確定)・Ctrl+H (変換の取消)・
-    // 変換キー (Ctrl+Space 割当時) だけは IME が処理する
+    // ショートカットなので確定してから渡すが、Ctrl+H (変換の取消) だけは IME が処理する。
+    // Enter・Ctrl+M は、読める文書では食べずに EndRunIfPassthroughKey で確定してから
+    // アプリへ渡し、そうでなければ食べて確定してから送り直す (EnterNeedsResend)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
-        if (IsConvertKey(wparam)) {
-            return true;
-        }
-        return ctrl && !alt && (wparam == 'M' || wparam == 'H');
+        return ctrl && !alt && (wparam == 'H' || (wparam == 'M' && EnterNeedsResend()));
     }
     const bool shifted = IsShiftPressed();
 
-    // 変換キー (既定 VK_CONVERT) は次候補 (Shift で前候補)
-    if (IsConvertKey(wparam)) {
-        return true;
-    }
     // 候補選択中は編集キーも IME が処理する
     switch (wparam) {
     case VK_RETURN:
+        return EnterNeedsResend();
     case VK_ESCAPE:
     case VK_BACK:
     case VK_SPACE:
@@ -690,11 +729,6 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
         return true;
     default:
         break;
-    }
-    // ファンクションキー変換 (既定: F4=特殊変換 (記号・日付), F5=短縮よみ,
-    // F6-F10=文字種の直接変換。割当は変更可)。割当のあるキーだけ食べる
-    if (wparam >= VK_F1 && wparam <= VK_F12) {
-        return config_.Get().FindPlainFunc(wparam) != KeyFunc::None;
     }
     // 英字 (Shift併用含む)・数字・記号・テンキーは確定して新しい run を始める
     return IsLetterKey(wparam) || IsDigitKey(wparam) ||
@@ -789,9 +823,12 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     }
 
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
-        // F10 に機能の割当が無いとき (割当変更で外したとき) はアプリへ再送する
-        if (context != nullptr && (Composing() || InRun()) &&
-            config_.Get().FindPlainFunc(VK_F10) != KeyFunc::None) {
+        // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき、入力なしの
+        // 状態など) はアプリへ再送する
+        const KeyFunc func = (context != nullptr && IsKeyboardOpen())
+                                 ? MatchKeyFunc(VK_F10).func
+                                 : KeyFunc::None;
+        if (func != KeyFunc::None && CanRunKeyFunc(context, func)) {
             *eaten = TRUE;
             const HRESULT hr = HandleKey(context, VK_F10);
             UpdateMouseHook();
@@ -1100,31 +1137,78 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // その通知が来ないホストでも自動英字判定が設定どおりになるよう毎打鍵で渡し直す
     composer_.SetModeless(config_.Get().modeless);
 
-    const HRESULT hr = Composing() ? HandleKeyConverting(context, wparam)
-                                   : HandleKeyDirect(context, wparam);
+    const KeyMatch match = MatchKeyFunc(wparam);
+    HRESULT hr;
+    if (match.func != KeyFunc::None) {
+        hr = RunKeyFunc(context, match);
+    } else {
+        hr = Composing() ? HandleKeyConverting(context, wparam) : HandleKeyDirect(context, wparam);
+    }
     // 昇格した composition が変換状態を抜けた (変換取消・印字キーで確定して次の
     // composition が始まった・F4 で候補が無かった) なら run に戻す
     DemoteIfLeftConversion(context);
     return hr;
 }
 
+HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
+{
+    switch (match.func) {
+    case KeyFunc::Convert:
+        if (Composing()) {
+            return converting_ ? CycleCandidate(context, match.shiftAdded ? -1 : +1)
+                               : StartConversion(context);
+        }
+        return ConvertKeyDirect(context, match.shiftAdded);
+    case KeyFunc::NextCandidate:
+        return CycleCandidate(context, +1);
+    case KeyFunc::PrevCandidate:
+        return CycleCandidate(context, -1);
+    case KeyFunc::CommitRun:
+        // 打鍵はアプリへ渡さないので、確定アンドゥの記憶は残る
+        if (Composing()) {
+            return CommitComposition(context);
+        }
+        if (converting_ || predictionIndex_ >= 0) {
+            return CommitRunDirect(context);
+        }
+        // run 中は、アプリへ渡すキーで run を終えるときと同じ救済を通す
+        // (読める文書ではモードレスのルール3、未完成のローマ字は文書に残す)
+        if (InRun()) {
+            EndAppendRunForPassthroughKey(context, false, false);
+        }
+        return S_OK;
+    case KeyFunc::UndoCommit:
+        return UndoCommit(context);
+    case KeyFunc::RegisterWord:
+        return LaunchWordRegister(context);
+    case KeyFunc::OpenConfig:
+        return LaunchConfigTool();
+    case KeyFunc::None:
+        return S_OK;
+    default:
+        // 文字種変換・記号変換・ユーザ語変換は変換状態に入るキーなので、run 中は
+        // composition に昇格してから適用する。昇格できなかった run の候補選択中は、
+        // 選択による強調のまま適用する
+        if (Composing() || converting_) {
+            return ApplyFunctionKey(context, match.func);
+        }
+        return BeginAppendConversion(context, match.func);
+    }
+}
+
 HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
 {
-    // 変換キー: 次候補 (Shift で前候補)
-    if (IsConvertKey(wparam)) {
-        return converting_ ? CycleCandidate(context, IsShiftPressed() ? -1 : +1)
-                           : StartConversion(context);
-    }
-
-    // Ctrl 併用ショートカット: Ctrl+M は Enter、Ctrl+H は BackSpace として扱う。
+    // Ctrl 併用ショートカット: Ctrl+H は BackSpace、Ctrl+M は Enter として扱う。
     // (英字の打鍵と解釈されないよう、ここで読み替えてから通常の処理に流す)
-    if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const WPARAM originalVk = wparam;
+    if (ctrl) {
         switch (wparam) {
-        case 'M':
-            wparam = VK_RETURN;
-            break;
         case 'H':
             wparam = VK_BACK;
+            break;
+        case 'M':
+            wparam = VK_RETURN;
             break;
         default:
             return S_OK; // IsKeyEaten が食べる Ctrl 併用は上記のみ
@@ -1158,29 +1242,32 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
 
     switch (wparam) {
     case VK_RETURN:
-        return CommitComposition(context);
+        // 食べるのは EnterNeedsResend のときだけ
+        return CommitAndResendEnter(context, originalVk, ctrl, shifted);
     case VK_ESCAPE:
     case VK_BACK:
         // 変換を取り消して変換前のかな表示に戻る (その後 run に戻す)
         return converting_ ? CancelConversion(context) : S_OK;
-    case VK_SPACE:
-        if (config_.Get().modeless && composer_.AsciiMode()) {
-            // 英字モード中の Space は変換ではなく「半角スペースを付けた確定」
-            // (英文の語の区切りなので設定 space によらず半角)
-            HRESULT hr = CommitComposition(context);
-            if (FAILED(hr)) {
-                return hr;
-            }
-            hr = InsertText(context, L" ");
-            // 確定アンドゥはスペースまで含めて戻す (run を Space で終えたときと同じ)。
-            // 追記のみの文書は確定文字列を照合せずに擬似 Backspace で消すため、文書の
-            // 末尾と記憶を揃えておく必要がある
-            if (SUCCEEDED(hr) && !lastCommitText_.empty()) {
-                lastCommitText_ += L" ";
-            }
+    case VK_SPACE: {
+        // 割当 (既定は次候補・前候補) に一致しない Space は、昇格できなかった run の
+        // 候補選択中と同じく確定してスペースを入れる。英字モード中は英文の語の区切り
+        // なので設定 space によらず半角
+        const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
+        const std::wstring space =
+            (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
+        HRESULT hr = CommitComposition(context);
+        if (FAILED(hr)) {
             return hr;
         }
-        return converting_ ? CycleCandidate(context, +1) : StartConversion(context);
+        hr = InsertText(context, space);
+        // 確定アンドゥはスペースまで含めて戻す (run を Space で終えたときと同じ)。
+        // 追記のみの文書は確定文字列を照合せずに擬似 Backspace で消すため、文書の
+        // 末尾と記憶を揃えておく必要がある
+        if (SUCCEEDED(hr) && !lastCommitText_.empty()) {
+            lastCommitText_ += space;
+        }
+        return hr;
+    }
     case VK_TAB:
         // 変換を取り消してサジェスト選択へ移行する (予測が無ければかな表示に戻るだけ)。
         // 先に run へ戻し、選択は run のサジェスト選択として行う
@@ -1216,11 +1303,6 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         // PgDn: 末尾の文節へ移動
         return converting_ ? MoveSegmentTo(context, segments_.size() - 1) : S_OK;
     default:
-        // ファンクションキー変換 (既定: F4=特殊変換, F5=短縮よみ, F6-F10=文字種の
-        // 直接変換。割当は変更可)。割当の無いキーはここに来ない (食べていない)
-        if (wparam >= VK_F1 && wparam <= VK_F12) {
-            return ApplyFunctionKey(context, config_.Get().FindPlainFunc(wparam));
-        }
         return S_OK;
     }
 }

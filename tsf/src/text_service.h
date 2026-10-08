@@ -101,9 +101,17 @@ private:
     // このキー入力を IME が処理する (アプリに渡さない) かどうか
     // (context は direct 方式の後置再変換の判定で選択テキストを読むのに使う)
     bool IsKeyEaten(ITfContext* context, WPARAM wparam) const;
-    // 押されているキーが設定の変換キー (key.convert: 無修飾 VK_CONVERT または
-    // Ctrl+Space) か。Shift の併用は問わない (Shift+変換キー = 前候補)
-    bool IsConvertKey(WPARAM wparam) const;
+
+    // ---- キー割当 (docs/design/keymap.md) ----
+    // 現在の入力状態 (割当の照合に使う)
+    KeyState CurrentKeyState() const;
+    // 押されている修飾キーと wparam を現在の状態の割当と照合する
+    KeyMatch MatchKeyFunc(WPARAM wparam) const;
+    // 割当に一致した機能を今実行できるか (入力なしの状態では、実行できないときは
+    // 打鍵を食べずにアプリへ渡す)
+    bool CanRunKeyFunc(ITfContext* context, KeyFunc func) const;
+    // 割当に一致した機能を実行する
+    HRESULT RunKeyFunc(ITfContext* context, const KeyMatch& match);
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
@@ -121,7 +129,7 @@ private:
     // 候補選択中 (run を昇格した composition) のキー処理
     HRESULT HandleKeyConverting(ITfContext* context, WPARAM wparam);
 
-    // ファンクションキー変換 (F4-F10 に割り当てた機能) を実行する。割当の無い機能は何もしない
+    // 文字種変換・記号変換・ユーザ語変換 (既定 F4-F10) を実行する。それ以外の機能は何もしない
     HRESULT ApplyFunctionKey(ITfContext* context, KeyFunc func);
 
     // 同期 edit session の実行 (session の所有権を受け取り、実行後に解放する)
@@ -279,17 +287,31 @@ private:
     // 未完成のローマ字だけの run (文書にはまだ何も入っていない) もある。
     // 候補選択中の composition は run に数えない
     bool InRun() const { return !surface_.empty() || (!Composing() && !composer_.Empty()); }
-    bool IsKeyEatenDirect(ITfContext* context, WPARAM wparam) const;
+    // 割当に一致しなかったキーを食べるか (候補選択中の composition 以外)
+    bool IsKeyEatenDirect(WPARAM wparam) const;
     HRESULT HandleKeyDirect(ITfContext* context, WPARAM wparam);
     // 食べずにアプリへ渡すキーのうち run を終えるもの (Enter・矢印・Ctrl 併用など) の
-    // 状態処理。OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
+    // 状態処理。候補選択中・サジェスト選択中の Enter は確定してから渡す
+    // (EnterNeedsResend のときは食べるのでここでは扱わない)。
+    // OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
     void EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam);
+    // サジェスト選択中の採用に擬似 Backspace が要る (候補ウィンドウの上だけで選んでいて、
+    // 文書が読めると判定されていない)
+    bool AdoptionNeedsPseudoBackspace() const;
+    // Enter (Ctrl+M) を食べて確定し、確定の後に元の打鍵を送り直す (読めると判定されていない
+    // 文書の候補選択中と、擬似 Backspace が要るサジェストの採用)。composition の有無によらない
+    bool EnterNeedsResend() const;
+    // 食べた Enter (Ctrl+M) の確定を行い、確定の後で元の打鍵 vk をアプリへ送り直す
+    HRESULT CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted);
+    // 食べた Enter (Ctrl+M) を、確定 (擬似 Backspace による書き換えを含む) の後でアプリへ送り直す
+    void SendResendKey();
     // 打鍵を分類する。印字キー (英字・記号・数字・テンキー) でなければ false
     bool ClassifyDirectKey(WPARAM wparam, bool shifted, DirectKey* key) const;
     void PushDirectKey(const DirectKey& key);
     HRESULT SpaceDirect(ITfContext* context, bool shifted);
-    // 変換キー: run 中は変換開始 / 次候補 (Shift で前候補)、run が無ければ後置再変換
-    HRESULT ConvertKeyDirect(ITfContext* context, bool shifted);
+    // 変換 (KeyFunc::Convert): run 中は変換開始 / 次候補 (previous なら前候補)、
+    // run が無ければ後置再変換
+    HRESULT ConvertKeyDirect(ITfContext* context, bool previous);
     // 後置再変換: 選択テキスト (ひらがな・カタカナ・ー のみ) を読みとして run を作り変換開始
     HRESULT ReconvertSelectionDirect(ITfContext* context);
     // 現在の選択テキストが後置再変換の対象なら true (対象なら textOut に入れる)
@@ -464,6 +486,11 @@ private:
     // 擬似 Backspace より先に追記すると、その文字まで消されるため目印の後に回す
     DirectKey appendFollowKey_;
     bool appendFollowKeyPending_;
+    // 確定の後にアプリへ送り直す打鍵 (0 なら無し) とその修飾キー
+    // (EnterNeedsResend のときの Enter・Ctrl+M)
+    WPARAM appendResendVk_;
+    bool appendResendCtrl_;
+    bool appendResendShift_;
     HHOOK mouseHook_;                        // UpdateMouseHook が仕掛けたマウスフック
     // 直前の OnTestKeyDown でアプリへ渡した Backspace に run を追従させた (同じ打鍵の
     // OnKeyDown で二重に削らないため)
