@@ -661,7 +661,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         }
         Some("ASCIISTART") => {
             // ASCIISTART\t<prefix|exact>\t<打鍵列1>\x1f<打鍵列2>... : 英字区間を始める要素の
-            // 位置を返す (かなのかたまりごとの打鍵列。一致しなければ 0 = 全体を英字にする)
+            // 位置を返す (かなのかたまりごとの打鍵列。どこでも一致しなければ NONE)
             let Some(mode) = fields.next().and_then(english::MatchMode::parse) else {
                 return "ERR\t照合方法が不正です\n".to_string();
             };
@@ -670,10 +670,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             };
             let elements: Vec<&str> = field.split(FIELD_SEPARATOR).collect();
             let user = data.user.lock().expect("user lock");
-            let start = english::ascii_start(&elements, |text| {
-                data.english.matches(text, mode) || user.english_matches(text, mode)
+            let start = english::ascii_start(&elements, mode, |text, m| {
+                data.english.matches(text, m) || user.english_matches(text, m)
             });
-            format!("OK\t{start}\n")
+            match start {
+                Some(start) => format!("OK\t{start}\n"),
+                None => "OK\tNONE\n".to_string(),
+            }
         }
         Some("RELOADUSER") => {
             // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
@@ -1171,7 +1174,14 @@ mod tests {
             "OK\t3\n"
         );
         assert_eq!(handle_request("ASCIISTART\tprefix\two\x1frl", &data), "OK\t0\n");
-        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fxyzw", &data), "OK\t0\n");
+        // どこでも一致しなければ NONE
+        assert_eq!(
+            handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fxyzw", &data),
+            "OK\tNONE\n"
+        );
+        // 完全一致でない前方一致は4文字から (app は apple の頭だが3文字)。開始位置 0 も同じ
+        assert_eq!(handle_request("ASCIISTART\tprefix\ta\x1fp\x1fp", &data), "OK\tNONE\n");
+        assert_eq!(handle_request("ASCIISTART\tprefix\ta\x1fp\x1fpl", &data), "OK\t0\n");
     }
 
     #[test]
@@ -1181,17 +1191,34 @@ mod tests {
             handle_request("ASCIISTART\texact\tkyo\x1fu\x1fha\x1fwa\x1fn\x1ft", &data),
             "OK\t3\n"
         );
-        // nt・t は2文字以下なので、t が辞書にあっても境目にしない
+        // nt・t、st は短すぎるので、辞書にあっても一致にしない
         assert_eq!(
             handle_request("ASCIISTART\texact\twa\x1fta\x1fsi\x1fha\x1fn\x1ft", &data),
-            "OK\t0\n"
+            "OK\tNONE\n"
         );
         assert_eq!(
             handle_request("ASCIISTART\texact\tka\x1fi\x1fsya\x1fs\x1ft", &data),
-            "OK\t0\n"
+            "OK\tNONE\n"
         );
-        // 前方一致なら一致する打ち途中の語 (wan → want) は完全一致では候補にならない
-        assert_eq!(handle_request("ASCIISTART\texact\tkyo\x1fu\x1fha\x1fwa\x1fn", &data), "OK\t0\n");
+        // 開始位置 0 も3文字未満は一致にしない (an は辞書にある)
+        assert_eq!(handle_request("ASCIISTART\texact\ta\x1fn", &data), "OK\tNONE\n");
+        assert_eq!(handle_request("ASCIISTART\texact\ta\x1fn\x1ft", &data), "OK\t0\n");
+        // 前方一致なら一致する打ち途中の語 (wan → want) は完全一致では一致しない
+        assert_eq!(
+            handle_request("ASCIISTART\texact\tkyo\x1fu\x1fha\x1fwa\x1fn", &data),
+            "OK\tNONE\n"
+        );
+    }
+
+    #[test]
+    fn asciistartのexact_anyは長さの制限なしで完全一致する() {
+        let data = english_data();
+        // an は2文字なので exact では一致しないが、exact-any では一致する
+        assert_eq!(handle_request("ASCIISTART\texact\ta\x1fn", &data), "OK\tNONE\n");
+        assert_eq!(handle_request("ASCIISTART\texact-any\ta\x1fn", &data), "OK\t0\n");
+        assert_eq!(handle_request("ASCIISTART\texact-any\tt", &data), "OK\t0\n");
+        // 完全一致だけ (wan は want の頭)
+        assert_eq!(handle_request("ASCIISTART\texact-any\twa\x1fn", &data), "OK\tNONE\n");
     }
 
     #[test]
@@ -1207,17 +1234,23 @@ mod tests {
     #[test]
     fn asciistartはユーザ辞書の英字の語も使う() {
         let data = sample_data();
-        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fqui", &data), "OK\t0\n");
+        assert_eq!(
+            handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fquic", &data),
+            "OK\tNONE\n"
+        );
         // 表記が英字だけの語は大文字を含んでも小文字にして英単語として扱う
         assert_eq!(handle_request("ADDWORD\tくいっくらいむ\tQuicklIME\t固有名詞", &data), "OK\n");
-        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fqui", &data), "OK\t3\n");
+        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fquic", &data), "OK\t3\n");
         assert_eq!(
             handle_request("ASCIISTART\texact\tko\x1fre\x1fha\x1fquick\x1flime", &data),
             "OK\t3\n"
         );
         // 英字以外を含む表記は英単語にしない
         assert_eq!(handle_request("ADDWORD\tめーる\tmail@example.com\t短縮よみ", &data), "OK\n");
-        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fmai", &data), "OK\t0\n");
+        assert_eq!(
+            handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fmail", &data),
+            "OK\tNONE\n"
+        );
     }
 
     #[test]

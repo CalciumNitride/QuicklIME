@@ -658,11 +658,17 @@ void TextService::PushDirectKey(const DirectKey& key)
     if (key.enterAscii) {
         composer_.EnterAsciiMode();
     }
+    // 語の区切りになる記号の前で run 終了時の判定を適用する。英字になれば記号は英字モード中と
+    // 同じく半角で入る (「pen.」)。記号キーは IME が食べるので、追記のみの文書でも作り直せる
+    if (key.romaji == 0 && !composer_.AsciiMode() && key.raw.size() == 1 &&
+        std::wstring(L".,!?:;").find(key.raw[0]) != std::wstring::npos) {
+        ApplyModelessCommitRule();
+    }
     if (composer_.AsciiMode()) {
         composer_.PushKana(key.raw, key.raw);
     } else if (key.romaji != 0) {
         composer_.Push(key.romaji);
-        ResolveAsciiRequest();
+        ResolveAsciiRequest(&composer_);
     } else {
         composer_.PushKana(key.kana, key.raw);
     }
@@ -878,13 +884,12 @@ HRESULT TextService::CommitRunKey(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
-    // 確定キーは IME が食べるキーなので、追記のみの文書でもルール3 を適用できる
-    // (擬似 Backspace より先にアプリへ届くキーが無い)
+    // 確定キーは IME が食べるキーなので、追記のみの文書でも run 終了時の判定 (ルール3・6・7) を
+    // 適用できる (擬似 Backspace より先にアプリへ届くキーが無い)
     RomajiComposer probe = composer_;
-    probe.FinishForCommit();
-    if (probe.AsciiRequested()) {
-        probe.ConfirmAscii(
-            engine_.AsciiStartLive(probe.AsciiRequestElements(), probe.AsciiRequestAtCommit()));
+    probe.FinishForCommit(PrecedingCommitEndsWithLetter());
+    ResolveAsciiRequest(&probe);
+    if (probe.AsciiMode() != composer_.AsciiMode()) {
         return CommitAsciiRunKey(context, probe);
     }
     for (size_t i = 0; i < barItems_.size(); ++i) {

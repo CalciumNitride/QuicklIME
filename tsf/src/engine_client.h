@@ -79,11 +79,19 @@ public:
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
 
+    // ASCIISTART の照合方法
+    enum class AsciiMatch {
+        Prefix,    // 前方一致 (完全一致を含む)
+        Exact,     // 完全一致
+        ExactAny,  // 長さの制限なしの完全一致
+    };
+
     // かなのかたまりごとの打鍵列から、英字区間を始める要素の位置を問い合わせる (ASCIISTART)。
-    // exact なら英単語との完全一致、それ以外は前方一致で照合する。
-    // 打鍵中に呼ぶため、エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIISTART を
-    // 知らない旧エンジンのときは 0 (全体を英字にする) を返す
-    size_t AsciiStartLive(const std::vector<std::wstring>& elements, bool exact);
+    // 一致すれば true で、位置を element に入れる。打鍵中に呼ぶため、エンジンの自動起動や
+    // 接続待ちはしない。未接続・エラー・ASCIISTART を知らない旧エンジンのときは一致なし (false)
+    // と同じに扱う
+    bool AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
+                        size_t* element);
 
     // RERANKGET の結果
     enum class RerankStatus {

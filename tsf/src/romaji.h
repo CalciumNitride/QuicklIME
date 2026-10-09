@@ -33,25 +33,38 @@ public:
     // 入力ごとに設定を渡し直さなくて済むよう、Clear() ではこのフラグを維持する
     void SetModeless(bool enabled) { modeless_ = enabled; }
 
-    // 自動英字判定のうち、確定する直前にだけ効く判定 (判定ルール3):
-    // 未変換ローマ字として n 以外の英小文字が1文字残っていれば英字と判定する
-    // (「want」の t)。打ち途中で暴発しないよう、run / composition を無変換のまま
-    // 確定する経路からのみ呼ぶ
-    void FinishForCommit();
+    // 自動英字判定のうち、確定する直前にだけ効く判定。打ち途中で暴発しないよう、
+    // run / composition を無変換のまま確定する経路 (と語の区切りになる記号キー) からのみ呼ぶ
+    // - ルール3: 未変換ローマ字として n 以外の英小文字が1文字残っていれば英字と判定する
+    //   (「want」の t)。境界は英単語辞書で決めるので要求にする
+    // - ルール7: 打鍵列の全体、または末尾 (かなの境目から始まる5文字以上) が語リストの語と
+    //   一致すれば、その語の頭から英字にする
+    // - ルール6: afterAsciiCommit (直前の確定の末尾が ASCII 英字) なら、run の打鍵列が英単語辞書と
+    //   完全一致するかを要求にする (英文の途中の「pen」)。助詞などと同じ形の語は除き、
+    //   1文字の語は a と i だけをその場で英字にする
+    void FinishForCommit(bool afterAsciiCommit);
 
-    // 自動英字判定 (ルール1〜3) が成立し、英字区間の始まりの決定を待っている。
+    // 自動英字判定 (ルール1〜6) が成立し、英単語辞書での照合を待っている。
     // かなと未変換ローマ字は判定の時点のまま (根拠の打鍵は未変換ローマ字に残っている) なので、
-    // Push・FinishForCommit の直後に呼び出し側が ConfirmAscii で確定する
+    // Push・FinishForCommit の直後に呼び出し側が ResolveAscii で決着させる
     bool AsciiRequested() const { return asciiRequest_ != AsciiRequest::None; }
-    // 要求が run 終了時の判定 (ルール3) によるものか。打ち終わった語なので、境界は英単語の
-    // 完全一致で決める (打鍵中の判定は打ち途中なので前方一致)
-    bool AsciiRequestAtCommit() const { return asciiRequest_ == AsciiRequest::Commit; }
+    // 要求が run 終了時の判定 (ルール3・6) によるものか。打ち終わった語なので、英単語辞書とは
+    // 完全一致で照合する (打鍵中の判定 (ルール1・2・4・5) は打ち途中なので前方一致)
+    bool AsciiRequestAtCommit() const
+    {
+        return asciiRequest_ == AsciiRequest::Commit || asciiRequest_ == AsciiRequest::Context;
+    }
+    // 要求がルール6 によるものか。英文中の短い語 (is・an) を拾うため、長さの制限を外して照合する
+    bool AsciiRequestAnyLength() const { return asciiRequest_ == AsciiRequest::Context; }
     // 境界の候補: かなのかたまり (打鍵列を持つかな。「きょ」は1かたまり) ごとの打鍵列と、
     // 未変換ローマ字 (あれば最後の要素)。ASCIISTART にそのまま送る
     std::vector<std::wstring> AsciiRequestElements() const;
-    // AsciiRequestElements の element 番目の要素から英字区間にして英字モードへ移る
-    // (0 なら run 全体が英字)
-    void ConfirmAscii(size_t element);
+    // 英単語辞書での照合の結果 (matched なら AsciiRequestElements の element 番目の要素から
+    // 一致) で要求を決着させる。一致しなかったときは判定の種類で扱いが変わる:
+    // 根拠の強い判定 (ルール1〜3) は run 全体を英字にし、根拠の弱い判定 (ルール4・5) は
+    // 英字にせずにかなへの変換を続け、ルール6 は先頭から一致したときだけ run 全体を英字にし、
+    // c で始まる未変換ローマ字の保留中は保留を続ける
+    void ResolveAscii(bool matched, size_t element);
 
     // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)。
     // モードレス入力が有効なときは、英字区間が空になったら英字モードを解除し、
@@ -98,16 +111,27 @@ private:
     // 以降は Shift+英字で入った英字モードと同じ扱い
     void SwitchToAscii(size_t start);
 
-    std::wstring kana_;             // 確定済みのかな
+    // 根拠の弱い判定の綴りを run が含むか: ルール4 (c の直後に母音、打鍵列が5文字以上。
+    // ローマ字テーブルに c 行のかながあるときだけ) とルール5 (th + 母音。thi を除く)
+    bool HasWeakAsciiSpelling() const;
+
+    // かなのかたまり (AsciiRequestElements の要素) ごとの先頭のかなの位置。
+    // 未変換ローマ字の要素は kana_.size() とする
+    std::vector<size_t> ElementPositions() const;
+
+    std::wstring kana_;            // 確定済みのかな
     std::vector<std::wstring> raw_; // kana_ の各文字に対応する打鍵列
     std::wstring pending_;          // 未変換のローマ字
     bool asciiMode_ = false;        // 英字モード (Shift+英字以降はアルファベットのまま)
     size_t asciiStart_ = 0;         // 英字区間の開始位置 (kana_ の位置。英字モードでなければ 0)
-    // 自動英字判定が成立し、ConfirmAscii を待っている判定の種類
+    // 自動英字判定が成立し、ResolveAscii を待っている判定の種類
     enum class AsciiRequest {
         None,
-        Typing,  // 打鍵中の判定 (ルール1・2)
-        Commit,  // run 終了時の判定 (ルール3)
+        Strong,   // 打鍵中の根拠の強い判定 (ルール1・2)
+        Weak,     // 打鍵中の根拠の弱い判定 (ルール4・5)
+        Commit,   // run 終了時の判定 (ルール3)
+        Context,  // 直前の確定が英字 (ルール6)
+        Hold,     // c で始まる未変換ローマ字の保留中に、3文字で英単語と完全一致するか
     };
     AsciiRequest asciiRequest_ = AsciiRequest::None;
     bool modeless_ = false;         // モードレス入力 (自動英字判定) が有効か

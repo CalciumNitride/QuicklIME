@@ -3,7 +3,8 @@
 # 実行内容:
 #   1. Rust バイナリ (release, CRT 静的リンク) のビルド
 #   2. TSF DLL の 64bit / 32bit Release ビルド
-#   3. installer/staging/ への集約 (バイナリ・辞書・プリセット・LLM の exe とモデル・VC++ ランタイム・ライセンス)
+#   3. installer/staging/ への集約 (バイナリ・辞書・英単語辞書・プリセット・LLM の exe とモデル・
+#      VC++ ランタイム・ライセンス)
 #   4. ISCC (Inno Setup) で installer/output/quicklime-<ver>-setup.exe を生成
 #
 # 前提: Visual Studio 2022 Community、Rust ツールチェーン、Inno Setup 6
@@ -137,9 +138,13 @@ Copy-Item (Join-Path $dictSrc 'dictionary0*.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'connection_single_column.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'id.def') "$staging\dict\"
 Copy-Item $symbolSrc "$staging\dict\"
+# 英単語辞書 (エンジンの load_english が exe と同じディレクトリの dict\ から読む)
+Copy-Item (Join-Path $root 'data\english-words.txt') "$staging\dict\"
+Copy-Item (Join-Path $root 'data\english-names.txt') "$staging\dict\"
 
 Copy-Item (Join-Path $root 'data\romaji-azik.tsv') "$staging\presets\"
 Copy-Item $mozcLicense "$staging\LICENSE-mozc.txt"
+Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-zenz.txt') $staging
 

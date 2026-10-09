@@ -374,12 +374,15 @@ bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionCo
     return RequestNBest(kana, context, true, candidates);
 }
 
-size_t EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, bool exact)
+bool EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
+                                  size_t* element)
 {
     if (elements.empty() || (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
-        return 0;
+        return false;
     }
-    std::string request = exact ? "ASCIISTART\texact\t" : "ASCIISTART\tprefix\t";
+    std::string request = match == AsciiMatch::ExactAny ? "ASCIISTART\texact-any\t"
+                          : match == AsciiMatch::Exact  ? "ASCIISTART\texact\t"
+                                                        : "ASCIISTART\tprefix\t";
     for (size_t i = 0; i < elements.size(); ++i) {
         if (i > 0) {
             request += "\x1f";
@@ -388,11 +391,17 @@ size_t EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, b
     }
     request += "\n";
     std::string response;
-    if (!SendReceive(request, &response) || response.rfind("OK\t", 0) != 0) {
-        return 0;
+    // 一致なしの応答 (OK\tNONE) は数字で始まらないので、下の数字の判定で一致なしになる
+    if (!SendReceive(request, &response) || response.rfind("OK\t", 0) != 0 ||
+        response.size() < 4 || response[3] < '0' || response[3] > '9') {
+        return false;
     }
     const unsigned long start = std::strtoul(response.c_str() + 3, nullptr, 10);
-    return start < elements.size() ? static_cast<size_t>(start) : 0;
+    if (start >= elements.size()) {
+        return false;
+    }
+    *element = static_cast<size_t>(start);
+    return true;
 }
 
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,

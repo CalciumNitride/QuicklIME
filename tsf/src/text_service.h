@@ -247,11 +247,11 @@ private:
     // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
     // 継続)。updateBar なら run を続けるときにバーを作り直す
     void FinishBarAdoption(ITfContext* context, bool updateBar);
-    // 確定キー (バー未選択): ルール3が成立すれば CommitAsciiRunKey で終える。成立しなければ
-    // 全体変換があれば採用して run を終え、無ければアプリへ渡すキーと同じ救済を通して run を終える。
-    // 区間分割した run は日本語区間の全体変換に英字区間を付けて終える
+    // 確定キー (バー未選択): run 終了時の判定 (ルール3・6・7) で英字になれば CommitAsciiRunKey で
+    // 終える。ならなければ全体変換があれば採用して run を終え、無ければアプリへ渡すキーと同じ
+    // 救済を通して run を終える。区間分割した run は日本語区間の全体変換に英字区間を付けて終える
     HRESULT CommitRunKey(ITfContext* context);
-    // 確定キーでルール3が成立した run (ascii は英字区間を確定した読み) を、文書を1回だけ書き換えて
+    // 確定キーで run 終了時の判定が成立した run (ascii は英字区間を確定した読み) を、文書を1回だけ書き換えて
     // 終える。区間分割なら日本語区間の全体変換の1件目 + 英字区間 (全体変換が無ければ日本語区間は
     // かなのまま)、run 全体が英字なら英字のまま (全体変換は採用しない)
     HRESULT CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii);
@@ -281,16 +281,19 @@ private:
                                 std::vector<SentenceCandidate>* candidates);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
-    // 無変換のまま確定する直前に、自動英字判定の判定ルール3 (末尾に残った
-    // 子音1文字で英字と判定する) を適用する。変換結果で確定する経路
-    // (候補選択中・バー選択中) では読みを英字へ作り直せないため何もしない。
+    // 無変換のまま確定する直前に、自動英字判定の run 終了時の判定 (ルール3・6・7) を
+    // 適用する。変換結果で確定する経路 (候補選択中・バー選択中) では読みを英字へ
+    // 作り直せないため何もしない。
     // 読みが英字へ変わると表示も変わるため、文書の表示を同時に直せる経路からのみ呼ぶ
     // (フォーカス移動などの run 終了では呼ばない)
     void ApplyModelessCommitRule();
+    // ルール6 の文脈: 直前の確定文字列の末尾 (スペースを除く) が ASCII 英字か
+    // (数字は英語の文脈にしない)
+    bool PrecedingCommitEndsWithLetter() const;
     // 自動英字判定の成立 (RomajiComposer::AsciiRequested) を、英単語辞書の問い合わせ
-    // (ASCIISTART) で英字区間の始まりを決めて確定する。composer_ に打鍵を入れた直後・
-    // ルール3を適用した直後に呼ぶ
-    void ResolveAsciiRequest();
+    // (ASCIISTART) の結果で決着させる。composer (composer_ か確定キーのプローブ) に打鍵を
+    // 入れた直後・run 終了時の判定を適用した直後に呼ぶ
+    void ResolveAsciiRequest(RomajiComposer* composer);
     // モードレス入力で、日本語区間を残して英字区間に分かれている run か
     // (モードレスが無効なら英字モードでも区間分割の扱いはしない)
     bool SplitAsciiRun() const;

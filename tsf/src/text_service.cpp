@@ -1111,20 +1111,36 @@ void TextService::ApplyModelessCommitRule()
     if (converting_ || barIndex_ >= 0) {
         return;
     }
-    composer_.FinishForCommit();
-    ResolveAsciiRequest();
+    composer_.FinishForCommit(PrecedingCommitEndsWithLetter());
+    ResolveAsciiRequest(&composer_);
 }
 
-void TextService::ResolveAsciiRequest()
+bool TextService::PrecedingCommitEndsWithLetter() const
 {
-    if (!composer_.AsciiRequested()) {
-        return;
+    const size_t last = lastCommitText_.find_last_not_of(L' ');
+    if (last == std::wstring::npos) {
+        return false;
     }
-    const size_t element = engine_.AsciiStartLive(composer_.AsciiRequestElements(),
-                                                  composer_.AsciiRequestAtCommit());
-    composer_.ConfirmAscii(element);
-    DebugLog(L"英字区間を始める要素: " + std::to_wstring(element) + L" (かなの位置 " +
-             std::to_wstring(composer_.AsciiStart()) + L")");
+    const wchar_t c = lastCommitText_[last];
+    return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+}
+
+void TextService::ResolveAsciiRequest(RomajiComposer* composer)
+{
+    // 根拠の弱い判定が一致しなかったときは、かなへの変換を続けた結果として根拠の強い判定の
+    // 要求が続けて出ることがある (判定の種類ごとに高々1回)
+    for (int i = 0; i < 4 && composer->AsciiRequested(); ++i) {
+        const EngineClient::AsciiMatch match =
+            composer->AsciiRequestAnyLength() ? EngineClient::AsciiMatch::ExactAny
+            : composer->AsciiRequestAtCommit() ? EngineClient::AsciiMatch::Exact
+                                               : EngineClient::AsciiMatch::Prefix;
+        size_t element = 0;
+        const bool matched =
+            engine_.AsciiStartLive(composer->AsciiRequestElements(), match, &element);
+        composer->ResolveAscii(matched, element);
+        DebugLog(matched ? L"英単語辞書の一致: 要素 " + std::to_wstring(element)
+                         : std::wstring(L"英単語辞書の一致なし"));
+    }
 }
 
 bool TextService::SplitAsciiRun() const

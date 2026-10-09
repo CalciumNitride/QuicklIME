@@ -3,9 +3,12 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <cwchar>
 #include <fstream>
 #include <map>
 #include <string>
+
+#include "english_words.h"
 
 namespace {
 
@@ -205,6 +208,77 @@ bool IsSmallVowelKana(const std::wstring& kana)
             kana[0] == L'ぉ');
 }
 
+// ルール4 を判定する打鍵列の最小の長さ (短い語は誤判定を避けるため対象外)
+constexpr size_t kCRowMinRawChars = 5;
+
+// c + 母音で始まる未変換ローマ字を保留する長さ (英単語辞書の前方一致の最小の長さ)。
+// これより1文字短い時点でも、英単語に完全一致すれば英字にする
+constexpr size_t kCHoldChars = 4;
+
+// ローマ字テーブルに c 行のかな (ca = か など) があるか。既定のテーブルには無い
+bool TableHasCRow()
+{
+    static const bool hasCRow = [] {
+        const auto& table = Table();
+        for (const wchar_t* key : {L"ca", L"ci", L"cu", L"ce", L"co"}) {
+            if (table.count(key) != 0) {
+                return true;
+            }
+        }
+        return false;
+    }();
+    return hasCRow;
+}
+
+// 打鍵列に c + 母音の綴りがあるか (ルール4。ch のち行は対象外)
+bool HasCRowSpelling(const std::wstring& raw)
+{
+    for (size_t i = 0; i + 1 < raw.size(); ++i) {
+        if (raw[i] == L'c' && IsVowel(raw[i + 1])) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 打鍵列に th + 母音の綴りがあるか (ルール5。thi は外来語の「てぃ」で日本語でも使うので除く)
+bool HasThVowelSpelling(const std::wstring& raw)
+{
+    for (size_t i = 0; i + 2 < raw.size(); ++i) {
+        if (raw[i] == L't' && raw[i + 1] == L'h' && IsVowel(raw[i + 2]) && raw[i + 2] != L'i') {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ルール7 の末尾一致に使う語の最小の長さ。日本語の末尾が偶然短い英単語の綴りになる誤判定を避ける
+constexpr size_t kTailWordMinChars = 5;
+
+// ルール6 の対象外: 助詞などと同じ形の語 (「GitHub no」の no は「の」のまま)
+bool IsParticleWord(const std::wstring& raw)
+{
+    static const wchar_t* const kParticles[] = {L"no", L"to", L"ga", L"wo", L"ni",
+                                                 L"de", L"ha", L"wa", L"mo", L"he",
+                                                 L"ya", L"ka", L"yo", L"ne"};
+    for (const wchar_t* particle : kParticles) {
+        if (raw == particle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ルール7 の語リストにあるか (語リストは整列済み)
+bool IsListedEnglishWord(const std::wstring& raw)
+{
+    const auto begin = std::begin(english_words::kWords);
+    const auto end = std::end(english_words::kWords);
+    const auto less = [](const wchar_t* a, const wchar_t* b) { return std::wcscmp(a, b) < 0; };
+    const auto it = std::lower_bound(begin, end, raw.c_str(), less);
+    return it != end && raw == *it;
+}
+
 // pending がテーブルのいずれかのキーの前方一致になっているか
 bool IsPrefixOfAnyKey(const std::wstring& pending)
 {
@@ -219,6 +293,13 @@ bool IsPrefixOfAnyKey(const std::wstring& pending)
 void RomajiComposer::Push(wchar_t c)
 {
     pending_ += c;
+    // 根拠の弱い判定 (ルール4・5) は、英単語辞書に一致しなかった後も綴りを含む間は
+    // 打鍵ごとに問い合わせ直すので、かなを足す前に毎回見る。一致しなければ ResolveAscii が
+    // Convert() を続ける
+    if (HasWeakAsciiSpelling()) {
+        asciiRequest_ = AsciiRequest::Weak;
+        return;
+    }
     Convert();
 }
 
@@ -273,7 +354,7 @@ void RomajiComposer::Convert()
             // 「へっ」+「ぉ」) は日本語の入力に現れないため英字と判定する
             if (modeless_ && !asciiMode_ && !kana_.empty() && kana_.back() == L'っ' &&
                 IsSmallVowelKana(it->second)) {
-                asciiRequest_ = AsciiRequest::Typing;
+                asciiRequest_ = AsciiRequest::Strong;
                 return;
             }
             AppendKana(it->second, pending_);
@@ -301,10 +382,21 @@ void RomajiComposer::Convert()
             continue;
         }
 
+        // テーブルに無い c + 母音 (既定のテーブル) は、ルール1 で判定する前に、英単語の頭として
+        // 辞書と照合できる長さになるまで小窓に保留する。すぐ判定すると「ca」の2文字では英単語の
+        // 始まりを決められず、run 全体を英字にしてしまうため
+        if (modeless_ && !asciiMode_ && pending_.size() >= 2 && pending_[0] == L'c' &&
+            IsVowel(pending_[1]) && pending_.size() < kCHoldChars) {
+            if (pending_.size() == kCHoldChars - 1) {
+                asciiRequest_ = AsciiRequest::Hold;
+            }
+            return;
+        }
+
         // 自動英字判定ルール1: ローマ字として成立しない英小文字の素通しは
         // 英語特有の子音連続 (apple の pl、str、th など) とみなして英字と判定する
         if (modeless_ && !asciiMode_ && IsAsciiLower(pending_[0])) {
-            asciiRequest_ = AsciiRequest::Typing;
+            asciiRequest_ = AsciiRequest::Strong;
             return;
         }
 
@@ -315,16 +407,84 @@ void RomajiComposer::Convert()
     }
 }
 
-void RomajiComposer::FinishForCommit()
+void RomajiComposer::FinishForCommit(bool afterAsciiCommit)
 {
-    if (!modeless_ || asciiMode_ || pending_.size() != 1) {
+    if (!modeless_ || asciiMode_) {
         return;
     }
-    // "n" は確定時に「ん」へ救済される打鍵なので日本語のままにする
-    if (pending_[0] == L'n' || !IsAsciiLower(pending_[0])) {
+    // ルール3。"n" は確定時に「ん」へ救済される打鍵なので日本語のままにする
+    if (pending_.size() == 1 && pending_[0] != L'n' && IsAsciiLower(pending_[0])) {
+        asciiRequest_ = AsciiRequest::Commit;
         return;
     }
-    asciiRequest_ = AsciiRequest::Commit;
+
+    // ルール6・7 はローマ字として読めるかな列 (未変換ローマ字が無いか "n" だけ) が対象
+    if (!pending_.empty() && pending_ != L"n") {
+        return;
+    }
+    const std::vector<std::wstring> elements = AsciiRequestElements();
+    std::wstring raw;
+    for (const std::wstring& element : elements) {
+        raw += element;
+    }
+    if (raw.empty() || !std::all_of(raw.begin(), raw.end(), IsAsciiLower)) {
+        return;
+    }
+    // ルール7 は境界がその場で決まるので、エンジンに問い合わせるルール6 より先に見る
+    if (IsListedEnglishWord(raw)) {
+        SwitchToAscii(0);
+        return;
+    }
+    // 最も前の境目を採る (後ろの短い打鍵列ほど偶然に一致しやすい)
+    const std::vector<size_t> positions = ElementPositions();
+    for (size_t element = 1; element < elements.size(); ++element) {
+        std::wstring tail;
+        for (size_t i = element; i < elements.size(); ++i) {
+            tail += elements[i];
+        }
+        if (tail.size() < kTailWordMinChars) {
+            break;
+        }
+        if (IsListedEnglishWord(tail)) {
+            SwitchToAscii(positions[element]);
+            return;
+        }
+    }
+    if (afterAsciiCommit && !IsParticleWord(raw)) {
+        // 1文字の語は英文中で使う a と i だけ (エンジンの長さの制限を外して照合するため、
+        // それ以外の1文字を送ると u・o などまで英字になる)
+        if (raw.size() == 1) {
+            if (raw == L"a" || raw == L"i") {
+                SwitchToAscii(0);
+            }
+            return;
+        }
+        asciiRequest_ = AsciiRequest::Context;
+    }
+}
+
+bool RomajiComposer::HasWeakAsciiSpelling() const
+{
+    if (!modeless_ || asciiMode_) {
+        return false;
+    }
+    const std::wstring raw = Raw();
+    return (TableHasCRow() && raw.size() >= kCRowMinRawChars && HasCRowSpelling(raw)) ||
+           HasThVowelSpelling(raw);
+}
+
+std::vector<size_t> RomajiComposer::ElementPositions() const
+{
+    std::vector<size_t> positions;
+    for (size_t i = 0; i < raw_.size(); ++i) {
+        if (i == 0 || !raw_[i].empty()) {
+            positions.push_back(i);
+        }
+    }
+    if (!pending_.empty()) {
+        positions.push_back(kana_.size());
+    }
+    return positions;
 }
 
 std::vector<std::wstring> RomajiComposer::AsciiRequestElements() const
@@ -343,22 +503,39 @@ std::vector<std::wstring> RomajiComposer::AsciiRequestElements() const
     return elements;
 }
 
-void RomajiComposer::ConfirmAscii(size_t element)
+void RomajiComposer::ResolveAscii(bool matched, size_t element)
 {
-    // element 番目のかたまりの先頭の位置。かたまりの数以上は未変換ローマ字の要素で、
-    // かなはすべて日本語区間に残る
-    size_t start = 0;
-    size_t chunk = 0;
-    for (; start < raw_.size(); ++start) {
-        if (start == 0 || !raw_[start].empty()) {
-            if (chunk == element) {
-                break;
-            }
-            ++chunk;
-        }
-    }
+    const AsciiRequest request = asciiRequest_;
     asciiRequest_ = AsciiRequest::None;
-    SwitchToAscii(start);
+    const std::vector<size_t> positions = ElementPositions();
+    const size_t start = element < positions.size() ? positions[element] : kana_.size();
+    switch (request) {
+    case AsciiRequest::None:
+        return;
+    case AsciiRequest::Strong:
+    case AsciiRequest::Commit:
+        // 英語でしかありえない綴りなので、辞書に無い語 (固有名詞・略語など) でも英字にする
+        SwitchToAscii(matched ? start : 0);
+        return;
+    case AsciiRequest::Weak:
+        if (matched) {
+            SwitchToAscii(start);
+        } else {
+            Convert();
+        }
+        return;
+    case AsciiRequest::Context:
+        if (matched && start == 0) {
+            SwitchToAscii(0);
+        }
+        return;
+    case AsciiRequest::Hold:
+        // 一致しなければ保留を続け、保留の長さに達した時点でルール1 として判定する
+        if (matched) {
+            SwitchToAscii(start);
+        }
+        return;
+    }
 }
 
 void RomajiComposer::SwitchToAscii(size_t start)
