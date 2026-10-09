@@ -15,8 +15,9 @@ Mozc / Google日本語入力と同じ「薄いクライアント + 別プロセ�
 | 層 | 言語 | 形態 | 役割 |
 |---|---|---|---|
 | TSF層 | C++ | in-proc COM DLL | Windows に IME として登録、キー捕捉、composition 管理、候補描画 |
-| 変換エンジン | Rust | 常駐別プロセス | ローマ字かな変換、かな漢字変換、学習 |
-| (将来) 設定UI等 | 未定 | 別実行ファイル | 設定画面、ユーザ辞書管理 |
+| 変換エンジン | Rust | 常駐別プロセス | かな漢字変換、予測、学習 |
+| LLM (任意) | Rust (llama.cpp) | エンジンの子プロセス | 入力全体の候補の並べ替え (zenz 系モデル) |
+| 設定・単語登録ツール | Rust | 別実行ファイル | 設定画面、ユーザ辞書管理 |
 
 ### この構成を選んだ理由
 
@@ -175,13 +176,13 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       変換対象にせず生表示 (「きょうh」→「今日h」)。ライブ変換 ON の間は予測サジェストを
       出さない。Space で従来の変換モードへ移行、Esc はかな表示に戻して composition 終了まで
       ライブ変換を停止 (もう一度 Esc で全消去)。確定時は文節ごとに LEARN を送る。
-      確定アンドゥ (Ctrl+Backspace) で復元した読みは再ライブ変換しない
+      確定アンドゥ (Ctrl+Backspace) で復元した読みは再ライブ変換しない。
+      入力モデル v2 の段階3で候補バーに置き換え、設定 live_conversion は廃止した
 
 **優先度D: 長期の研究枠 (フェーズ6以降)**
 
-- [ ] ニューラル補正 (azooKey の Zenzai 方式)。GPT-2 系の小型モデルで変換し、既存の統計変換を
-      ドラフトにした投機的デコーディングでリアルタイム性を確保する。現エンジンを
-      ドラフトに使える点でアーキテクチャの相性は良いが、規模が別次元のため調査課題に留める
+- [x] ニューラル補正 (2026-10-09 実装、入力モデル v2 の段階5)。生成ではなく、統計変換の
+      N-best を zenz 系モデルの尤度で並べ替える方式にした (docs/design/llm-rerank.md)
 
 参考になる Rust クレート: vibrato (形態素解析)、lindera。辞書検索は fst を採用済み
 (yada / crawdad のダブル配列は前方一致列挙の API が無く予測入力に使えないため見送り)
@@ -226,7 +227,8 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       対応するコード変更: FindExePath に親ディレクトリ候補 (x86\ DLL 用)、
       dictionary_dir に exe 同階層 dict\ 候補、CRT 静的リンク化
       (TSF は /MT、Rust は crt-static。全プロセスにロードされる DLL のため)
-- [ ] 直接入力方式 (docs/design/direct-input.md)。設定 input_style (composition / direct、
+- [x] 直接入力方式 (docs/design/direct-input.md)。入力モデル v2 の段階2で唯一の入力方式にし、
+      composition 方式と設定 input_style は廃止した。設定 input_style (composition / direct、
       既定 composition) で切り替える。direct は打鍵した文字を composition ではなく文書へ
       直接入れ、IME が「自分が入れた文字列 (surface) と読み」= run を覚えて毎打鍵で
       キャレット直前を置き換える (未確定文字列の挙動が不安定な Web フォーム対策)。
@@ -261,6 +263,20 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
       エンジンは UserDict に imported\*.tsv を読み込み、名詞系は fst の Dictionary に載せて
       (数十万語でも線形走査しない) ラティス・候補・予測・F5 で引く。コストは 5000
       (手動登録 3000 より低優先、一般名詞並み)。手動登録と同じ (読み, 表記) は手動登録を優先
+- [x] 入力モデル v2 (2026-10-09 完了、総論は docs/design/input-model-v2.md)。
+      文書に入った文字列を IME が自動で書き換えない、1キー1機能、を原則に入力モデルを作り直した
+  - [x] 段階0a・0b: 追記型入力の試作比較 (F1 方式を採用)、LLM の遅延・メモリ・精度の計測
+        (docs/design/experiment-0b-llm-results.md)
+  - [x] 段階1: キー割当を状態別の表に置き換え、Enter をアプリへ渡すキーとして分離し、
+        確定キーを新設 (docs/design/keymap.md)
+  - [x] 段階2: 未完成のローマ字を小窓に出し、かなを文書に追記する入力に一本化
+        (docs/design/append-input.md)
+  - [x] 段階3: ライブ変換と予測サジェストを横一列の候補バーに統合し、採用時だけ文書を
+        書き換える (docs/design/candidate-bar.md)
+  - [x] 段階4: 入力全体の N-best を候補バーと変換キーの候補に使い、文節 UI を設定
+        segment_ui でオンにしたときだけにする (docs/design/nbest.md)
+  - [x] 段階5: LLM (別プロセス quicklime-llm、CPU / Vulkan) で N-best を文脈に合わせて
+        並べ替え、候補バーへ非同期に反映する。設定 llm (既定 OFF) (docs/design/llm-rerank.md)
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点
