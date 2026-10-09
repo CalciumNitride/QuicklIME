@@ -358,6 +358,88 @@ bool EngineClient::ParseSegmentsResponse(std::string response,
     return !segments->empty();
 }
 
+bool EngineClient::ConvertNBest(const std::wstring& kana, const ConversionContext& context,
+                                std::vector<SentenceCandidate>* candidates)
+{
+    return RequestNBest(kana, context, false, candidates);
+}
+
+bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
+                                    std::vector<SentenceCandidate>* candidates)
+{
+    return RequestNBest(kana, context, true, candidates);
+}
+
+bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
+                                bool live, std::vector<SentenceCandidate>* candidates)
+{
+    if (candidates == nullptr || kana.empty()) {
+        return false;
+    }
+    if (!nbestUnsupported_ && !legacyEngine_) {
+        if (live && pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+            return false;
+        }
+        const std::string contextField =
+            context.Empty() ? std::string()
+                            : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+        const std::string request = "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\n";
+        std::string response;
+        if (!(live ? SendReceive(request, &response) : Transact(request, &response))) {
+            return false;
+        }
+        if (!IsUnknownCommandError(response)) {
+            return ParseNBestResponse(std::move(response), candidates);
+        }
+        nbestUnsupported_ = true;
+    }
+
+    std::vector<ConversionSegment> segments;
+    if (!RequestSegments(BuildSegmentsRequest(kana, context, ""),
+                         "CONVSEG\t" + WideToUtf8(kana) + "\n", live, &segments)) {
+        return false;
+    }
+    SentenceCandidate candidate;
+    for (const ConversionSegment& segment : segments) {
+        candidate.segments.push_back({segment.reading, segment.candidates[0]});
+        candidate.surface += segment.candidates[0];
+    }
+    candidates->assign(1, std::move(candidate));
+    return true;
+}
+
+bool EngineClient::ParseNBestResponse(std::string response,
+                                      std::vector<SentenceCandidate>* candidates)
+{
+    // 応答: "OK\t読み\x1F表記\x1E読み\x1F表記...\t読み\x1F表記...\n"
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK\t", 0) != 0) {
+        return false;
+    }
+
+    candidates->clear();
+    for (const std::string& candidateField : SplitFields(response.substr(3), '\t')) {
+        SentenceCandidate candidate;
+        for (const std::string& segmentField : SplitFields(candidateField, '\x1e')) {
+            const std::vector<std::string> parts = SplitFields(segmentField, '\x1f');
+            if (parts.size() != 2) {
+                return false; // 文節は読み + 表記の組
+            }
+            std::wstring surface = Utf8ToWide(parts[1]);
+            candidate.surface += surface;
+            candidate.segments.push_back({Utf8ToWide(parts[0]), std::move(surface)});
+        }
+        if (candidate.segments.empty()) {
+            return false;
+        }
+        candidates->push_back(std::move(candidate));
+    }
+    return !candidates->empty();
+}
+
 bool EngineClient::ConvertSymbols(const std::wstring& kana,
                                   std::vector<std::wstring>* candidates)
 {

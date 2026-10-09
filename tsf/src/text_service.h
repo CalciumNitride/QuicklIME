@@ -196,7 +196,7 @@ private:
     // ---- 候補バー (docs/design/candidate-bar.md) ----
     // 候補の種類
     enum class BarKind {
-        Whole,       // 全体変換 (確定済みかな全体の各文節の先頭候補の連結)
+        Whole,       // 全体変換 (確定済みかな全体の CONVNBEST の上位)
         Prediction,  // 予測候補
         Head,        // 先頭文節 (部分採用)
     };
@@ -206,6 +206,8 @@ private:
         // 学習に送る読み (全体変換は確定済みかな、予測候補は候補の完全な読み、
         // 先頭文節はその文節の読み)
         std::wstring reading;
+        // 全体変換の文節ごとの (読み, 表記) (全体変換の学習に使う)
+        std::vector<std::pair<std::wstring, std::wstring>> segments;
     };
     // 採用の仕方
     enum class BarAdopt {
@@ -259,6 +261,10 @@ private:
     // 変換確定の前half: エンジンへの学習送信のみ行い、確定文字列を返す
     // (edit session は発行せず、状態も変えない)
     std::wstring PrepareConversionCommit();
+    // 確定した文節列 (読み, 表記) の学習内容: 文節ごとの (読み, 表記, 直前文節の表記) と、
+    // 2文節以上なら読み全体 → 表記の連結 (文脈なし)
+    std::vector<LearnEntry> SentenceLearnEntries(
+        const std::vector<std::pair<std::wstring, std::wstring>>& segments) const;
     // 文節伸縮で分割を直したまま確定したときの学習をエンジンへ送る
     void LearnResizedSegments();
     // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
@@ -481,15 +487,16 @@ private:
     // 最初の文節伸縮を行う直前の文節ごとの読みの長さ。
     // 確定時に「区切り直し」と「複合語を割って入力した」を見分けるのに使う
     std::vector<size_t> preResizeLengths_;
+    // 入力全体を1文節にした候補選択 (segment_ui 0) の、候補ごとの文節。確定時の学習に使う
+    std::vector<SentenceCandidate> wholeCandidates_;
     CandidateWindow candidateWindow_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
 
     // 候補バー。候補ウィンドウは候補選択中の縦の表示と排他で共用する
-    std::vector<BarCandidate> barItems_;          // 表示中の候補 (空 = 非表示)
-    std::wstring barKana_;                        // 候補を作った確定済みかな
-    std::vector<ConversionSegment> barSegments_;  // 全体変換の文節 (全体変換の学習に使う)
-    int barIndex_;                                // 選択中の候補 index (-1 = 未選択)
+    std::vector<BarCandidate> barItems_;  // 表示中の候補 (空 = 非表示)
+    std::wstring barKana_;                // 候補を作った確定済みかな
+    int barIndex_;                        // 選択中の候補 index (-1 = 未選択)
     // バーの x 座標。run で最初に出した時点 (部分採用の後はその時点) の位置に固定する
     int barX_;
     bool barXFixed_;

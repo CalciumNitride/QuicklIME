@@ -398,7 +398,8 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
         case VK_RIGHT:
         case VK_PRIOR:
         case VK_NEXT:
-            return converting_;
+            // 文節の操作は文節 UI のときだけ。入力全体の候補選択では確定してアプリへ渡す
+            return converting_ && config_.Get().segmentUi;
         default:
             break;
         }
@@ -901,18 +902,13 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
 
     BarAdoption adoption;
     switch (item.kind) {
-    case BarKind::Whole: {
-        std::wstring prevSurface = contextSurface_;
-        for (const ConversionSegment& segment : barSegments_) {
-            adoption.learn.push_back({segment.reading, segment.candidates[0], prevSurface});
-            prevSurface = segment.candidates[0];
-        }
-        if (!barSegments_.empty()) {
-            adoption.contextReading = barSegments_.back().reading;
-            adoption.contextSurface = barSegments_.back().candidates[0];
+    case BarKind::Whole:
+        adoption.learn = SentenceLearnEntries(item.segments);
+        if (!item.segments.empty()) {
+            adoption.contextReading = item.segments.back().first;
+            adoption.contextSurface = item.segments.back().second;
         }
         break;
-    }
     case BarKind::Prediction:
     case BarKind::Head:
         adoption.learn.push_back({item.reading, item.surface, contextSurface_});

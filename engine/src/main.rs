@@ -285,6 +285,36 @@ fn segments_response(
     format!("OK\t{body}\n")
 }
 
+/// CONVNBEST 応答で候補内の文節を区切る文字 (ASCII Record Separator)
+const SEGMENT_SEPARATOR: char = '\x1e';
+
+/// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ
+fn nbest_response(kana: &str, ctx: Option<&convert::Context>, data: &EngineData) -> String {
+    let user = data.user.lock().expect("user lock");
+    let learning = data.learning.lock().expect("learning lock");
+    let candidates = convert::convert_nbest(
+        kana,
+        ctx,
+        &data.dictionary,
+        &user,
+        &data.matrix,
+        &data.functional,
+        &learning,
+    );
+    let body = candidates
+        .iter()
+        .map(|c| {
+            c.segments
+                .iter()
+                .map(|(reading, surface)| format!("{reading}{FIELD_SEPARATOR}{surface}"))
+                .collect::<Vec<_>>()
+                .join(&SEGMENT_SEPARATOR.to_string())
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
+    format!("OK\t{body}\n")
+}
+
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
     // 日付・時刻の動的候補用の現在日時 (CONVSYM の候補生成と LEARN の除外判定に使う)
@@ -313,6 +343,14 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 Some(kana) if !kana.is_empty() => {
                     segments_response(kana, fields.next(), ctx.as_ref(), data)
                 }
+                _ => "ERR\tかなが空です\n".to_string(),
+            }
+        }
+        Some("CONVNBEST") => {
+            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな> : 入力全体の候補を返す
+            let ctx = fields.next().and_then(parse_context);
+            match fields.next() {
+                Some(kana) if !kana.is_empty() => nbest_response(kana, ctx.as_ref(), data),
                 _ => "ERR\tかなが空です\n".to_string(),
             }
         }
@@ -659,6 +697,44 @@ mod tests {
         assert!(handle_request("CONVCTX\tはれ\x1f晴れ\t", &data).starts_with("ERR\t"));
         assert!(handle_request("CONVCTX\tはれ\x1f晴れ", &data).starts_with("ERR\t"));
         assert!(handle_request("CONVCTX", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn convnbest要求に文節つきの入力全体の候補を返す() {
+        // 候補はタブ区切り、候補内の文節は RS (\x1e) 区切りで「読み\x1f表記」
+        let data = sample_data();
+        let response = handle_request("CONVNBEST\t\tきょうははれ", &data);
+        assert!(
+            response.starts_with("OK\tきょうは\x1f今日は\x1eはれ\x1f晴れ\t"),
+            "{response}"
+        );
+        assert!(
+            response.ends_with("\tきょうははれ\x1fキョウハハレ\tきょうははれ\x1fきょうははれ\n"),
+            "{response}"
+        );
+        // 前文脈が候補順に影響しない入力では、前文脈ありでも同じ応答になる
+        assert_eq!(handle_request("CONVNBEST\tはれ\x1f晴れ\tきょうははれ", &data), response);
+    }
+
+    #[test]
+    fn convnbestのかなが空ならエラー() {
+        let data = sample_data();
+        assert!(handle_request("CONVNBEST\t\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("CONVNBEST\tはれ\x1f晴れ", &data).starts_with("ERR\t"));
+        assert!(handle_request("CONVNBEST", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn 読み全体の学習がconvnbestの先頭とpredictに出る() {
+        let data = sample_data();
+        // 文節ごとの学習と、読み全体 → 候補の表記 (文脈表記は空) を1回の LEARN2 で送る
+        let request = "LEARN2\tきょうは\x1f京は\x1f\tはれ\x1f晴れ\x1f京は\t\
+                       きょうははれ\x1f京は晴れ\x1f";
+        assert_eq!(handle_request(request, &data), "OK\n");
+        let response = handle_request("CONVNBEST\t\tきょうははれ", &data);
+        assert!(response.starts_with("OK\tきょうははれ\x1f京は晴れ\t"), "{response}");
+        let response = handle_request("PREDICT\tきょうは", &data);
+        assert!(response.contains("きょうははれ\x1f京は晴れ"), "{response}");
     }
 
     #[test]

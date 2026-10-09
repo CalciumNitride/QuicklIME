@@ -86,7 +86,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
-| 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | 未作成 |
+| 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | docs/design/nbest.md |
 | 5 | LLM による順位補正 | エンジン | 未作成 |
 
 - 0a・0b は互いに独立しており、段階1とも並行して進められる

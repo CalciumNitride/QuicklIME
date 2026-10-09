@@ -84,6 +84,9 @@ struct TsfConfig {
     bool candidateBar = true;
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
+    // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
+    // オフなら入力全体の候補から選ぶ (docs/design/nbest.md)
+    bool segmentUi = false;
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();

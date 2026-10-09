@@ -720,14 +720,17 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     case VK_TAB:
     case VK_UP:
     case VK_DOWN:
+        // Tab (変換を取り消してバーの先頭を選ぶ)・↑↓ は常に食べる
+        // (アプリにキャレットやフォーカスを動かさせない)。用途が無い状態では
+        // 食べた上で何もしない
+        return true;
     case VK_LEFT:
     case VK_RIGHT:
     case VK_PRIOR:
     case VK_NEXT:
-        // Tab (変換を取り消してバーの先頭を選ぶ)・矢印・PgUp/PgDn は常に食べる
-        // (アプリにキャレットやフォーカスを動かさせない)。用途が無い状態では
-        // 食べた上で何もしない
-        return true;
+        // ←→・PgUp/PgDn も文節 UI では同じく常に食べる。入力全体の候補選択には文節の
+        // 操作が無いので、Home / End と同じく確定してアプリへ渡す (EndRunIfPassthroughKey)
+        return !converting_ || config_.Get().segmentUi;
     default:
         break;
     }
@@ -1352,11 +1355,27 @@ void TextService::BuildConversionSegments()
     // 英字が残っている入力 (英単語の打鍵など) は文節分割しても意味を
     // 成さないため、全体を1文節に固定して変換する
     const std::wstring kana = composer_.Commit();
-    const bool ok = ContainsAsciiLetter(kana)
-        ? engine_.ConvertSegmentsFixed(kana, {kana.size()}, CurrentContext(), &segments_)
-        : engine_.ConvertSegments(kana, CurrentContext(), &segments_);
+    wholeCandidates_.clear();
+    bool ok;
+    if (ContainsAsciiLetter(kana)) {
+        ok = engine_.ConvertSegmentsFixed(kana, {kana.size()}, CurrentContext(), &segments_);
+    } else if (config_.Get().segmentUi) {
+        ok = engine_.ConvertSegments(kana, CurrentContext(), &segments_);
+    } else {
+        // 入力全体を1文節として候補を選ぶ。候補ごとの文節は確定時の学習に使う
+        ok = engine_.ConvertNBest(kana, CurrentContext(), &wholeCandidates_);
+        if (ok) {
+            ConversionSegment segment;
+            segment.reading = kana;
+            for (const SentenceCandidate& candidate : wholeCandidates_) {
+                segment.candidates.push_back(candidate.surface);
+            }
+            segments_.assign(1, std::move(segment));
+        }
+    }
     if (!ok || segments_.empty()) {
         segments_.clear();
+        wholeCandidates_.clear();
         ConversionSegment fallback;
         fallback.reading = kana;
         fallback.candidates.push_back(kana);
@@ -1807,15 +1826,9 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     }
 
     // どちらもエンジン未接続なら即 false を返す (自動起動・接続待ちで打鍵を止めない)
-    std::vector<ConversionSegment> segments;
-    if (!engine_.ConvertSegmentsLive(kana, CurrentContext(), &segments)) {
-        segments.clear();
-    }
-    for (const ConversionSegment& segment : segments) {
-        if (segment.candidates.empty()) {
-            segments.clear();
-            break;
-        }
+    std::vector<SentenceCandidate> sentences;
+    if (!engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
+        sentences.clear();
     }
     std::vector<PredictionCandidate> predictions;
     if (!engine_.Predict(kana, &predictions)) {
@@ -1827,20 +1840,32 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         return std::any_of(items.begin(), items.end(),
                            [&surface](const BarCandidate& item) { return item.surface == surface; });
     };
-    std::wstring whole;
-    for (const ConversionSegment& segment : segments) {
-        whole += segment.candidates[0];
+    constexpr size_t kMaxWholes = 3;
+    for (const SentenceCandidate& sentence : sentences) {
+        if (items.size() >= kMaxWholes) {
+            break;
+        }
+        if (sentence.surface != kana && !contains(sentence.surface)) {
+            items.push_back({BarKind::Whole, sentence.surface, kana, sentence.segments});
+        }
     }
-    if (!segments.empty() && whole != kana) {
-        items.push_back({BarKind::Whole, whole, kana});
-    }
+    // 先頭文節は上位の候補から順に、2文節以上の候補の第1文節を (読み, 表記) の重複なく集める
+    // (区切りの違う「今日は…」「今日…」が並ぶ)
     constexpr size_t kMaxHeads = 3;
-    std::vector<std::wstring> heads;
-    if (segments.size() >= 2 && !segments[0].reading.empty() &&
-        kana.compare(0, segments[0].reading.size(), segments[0].reading) == 0) {
-        const auto& candidates = segments[0].candidates;
-        heads.assign(candidates.begin(),
-                     candidates.begin() + (std::min)(kMaxHeads, candidates.size()));
+    std::vector<std::pair<std::wstring, std::wstring>> heads;
+    for (const SentenceCandidate& sentence : sentences) {
+        if (heads.size() >= kMaxHeads) {
+            break;
+        }
+        if (sentence.segments.size() < 2) {
+            continue;
+        }
+        const auto& head = sentence.segments[0];
+        if (head.first.empty() || kana.compare(0, head.first.size(), head.first) != 0 ||
+            std::find(heads.begin(), heads.end(), head) != heads.end()) {
+            continue;
+        }
+        heads.push_back(head);
     }
     const size_t predictionLimit = CandidateWindow::kPageSize - items.size() - heads.size();
     size_t predictionCount = 0;
@@ -1851,12 +1876,12 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         if (contains(candidate.surface)) {
             continue;
         }
-        items.push_back({BarKind::Prediction, candidate.surface, candidate.reading});
+        items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
         ++predictionCount;
     }
-    for (const std::wstring& head : heads) {
-        if (!contains(head)) {
-            items.push_back({BarKind::Head, head, segments[0].reading});
+    for (const auto& [reading, surface] : heads) {
+        if (!contains(surface)) {
+            items.push_back({BarKind::Head, surface, reading, {}});
         }
     }
     if (items.empty()) {
@@ -1887,7 +1912,6 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     items.resize(shown);
     barItems_ = std::move(items);
     barKana_ = kana;
-    barSegments_ = std::move(segments);
     return S_OK;
 }
 
@@ -1905,7 +1929,6 @@ void TextService::ClearBar()
 {
     barItems_.clear();
     barKana_.clear();
-    barSegments_.clear();
     barIndex_ = -1;
     // 変換中は候補ウィンドウを変換側が使っているので触らない
     if (!converting_) {
@@ -1961,23 +1984,53 @@ HRESULT TextService::CommitConversion(ITfContext* context)
 std::wstring TextService::PrepareConversionCommit()
 {
     // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)。
-    // 各文節の文脈 = 先頭文節は外部文脈、以降は1つ前の文節で選んだ表記
-    std::vector<LearnEntry> entries;
-    std::wstring prevSurface = contextSurface_;
-    for (size_t i = 0; i < segments_.size(); ++i) {
-        const std::wstring& surface = segments_[i].candidates[selected_[i]];
-        entries.push_back({segments_[i].reading, surface, prevSurface});
-        prevSurface = surface;
+    // 入力全体の候補を選んだときは、その候補の文節を確定した文節とする
+    std::vector<std::pair<std::wstring, std::wstring>> committed;
+    if (segments_.size() == 1) {
+        const std::wstring& surface = segments_[0].candidates[selected_[0]];
+        const auto it = std::find_if(
+            wholeCandidates_.begin(), wholeCandidates_.end(),
+            [&surface](const SentenceCandidate& candidate) { return candidate.surface == surface; });
+        if (it != wholeCandidates_.end()) {
+            committed = it->segments;
+        }
     }
-    engine_.Learn(entries);
+    if (committed.empty()) {
+        for (size_t i = 0; i < segments_.size(); ++i) {
+            committed.push_back({segments_[i].reading, segments_[i].candidates[selected_[i]]});
+        }
+    }
+    engine_.Learn(SentenceLearnEntries(committed));
     // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
     if (segmentsResized_) {
         LearnResizedSegments();
     }
-    if (!segments_.empty()) {
-        SetCommitContext(segments_.back().reading, segments_.back().candidates[selected_.back()]);
+    if (!committed.empty()) {
+        SetCommitContext(committed.back().first, committed.back().second);
     }
     return ConvertedText();
+}
+
+std::vector<LearnEntry> TextService::SentenceLearnEntries(
+    const std::vector<std::pair<std::wstring, std::wstring>>& segments) const
+{
+    // 各文節の文脈 = 先頭文節は外部文脈、以降は1つ前の文節の表記
+    std::vector<LearnEntry> entries;
+    std::wstring prevSurface = contextSurface_;
+    std::wstring reading;
+    std::wstring surface;
+    for (const auto& [segmentReading, segmentSurface] : segments) {
+        entries.push_back({segmentReading, segmentSurface, prevSurface});
+        prevSurface = segmentSurface;
+        reading += segmentReading;
+        surface += segmentSurface;
+    }
+    // 読み全体の学習は、次に同じ読みを打ったとき入力全体の候補の先頭に来るようにする。
+    // 1文節なら文節の学習と同じなので送らない
+    if (segments.size() >= 2) {
+        entries.push_back({reading, surface, L""});
+    }
+    return entries;
 }
 
 void TextService::LearnResizedSegments()
@@ -2163,6 +2216,7 @@ void TextService::ClearConversion()
     segmentIndex_ = 0;
     segmentsResized_ = false;
     preResizeLengths_.clear();
+    wholeCandidates_.clear();
 }
 
 std::wstring TextService::ConvertedText() const

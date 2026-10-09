@@ -55,6 +55,7 @@ const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
 const ID_CHECK_MODELESS: i32 = 112;
 const ID_CHECK_CANDIDATE_BAR: i32 = 113;
+const ID_CHECK_SEGMENT_UI: i32 = 114;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
@@ -351,6 +352,7 @@ struct Config {
     digits_full: bool,
     modeless: bool,
     candidate_bar: bool,
+    segment_ui: bool,
     candidate_font: String,
     candidate_font_size: u32, // 10-40
     keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
@@ -369,6 +371,7 @@ impl Default for Config {
             digits_full: false,
             modeless: false,
             candidate_bar: true,
+            segment_ui: false,
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
             keys: default_key_assigns(),
@@ -442,6 +445,7 @@ impl Config {
             },
             "modeless" => parse_bool(&mut self.modeless),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
+            "segment_ui" => parse_bool(&mut self.segment_ui),
             "punctuation" => {
                 if PUNCT_ITEMS.contains(&value) {
                     self.punctuation = value.to_string();
@@ -508,6 +512,7 @@ impl Config {
         text.push_str(&format!("punctuation\t{}\n", self.punctuation));
         text.push_str(&format!("digits\t{}\n", if self.digits_full { "full" } else { "half" }));
         text.push_str(&format!("modeless\t{}\n", self.modeless as u32));
+        text.push_str(&format!("segment_ui\t{}\n", self.segment_ui as u32));
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
@@ -646,7 +651,7 @@ fn main() {
         let client_w = right_x + right_w + margin;
         // 左カラム: 見出し3 + 項目12行 + 見出し前の隙間、右カラム: 見出し1 + キー割当の一覧。
         // 高さは左カラム基準で、一覧は残りの高さに合わせる
-        let left_rows = 15;
+        let left_rows = 16;
         let client_h =
             margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
 
@@ -778,6 +783,8 @@ fn main() {
         let chars_items: Vec<String> = (1..=5).map(|n| n.to_string()).collect();
         let chars_refs: Vec<&str> = chars_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_MIN_CHARS, &chars_refs, &config.min_suggest_chars.to_string());
+        y += row_h + row_gap;
+        check("文節単位で変換する", y, ID_CHECK_SEGMENT_UI, config.segment_ui);
 
         y += row_h + row_gap + section_gap;
         create_control("STATIC", "入力", label_style, 0, margin, y, left_w, row_h, 0);
@@ -1067,6 +1074,7 @@ fn collect(hwnd: HWND) -> Config {
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
     config.modeless = checked(ID_CHECK_MODELESS);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
+    config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     let font = combo_text(ID_COMBO_FONT);
     if !font.is_empty() && font.encode_utf16().count() < 32 {
         config.candidate_font = font;

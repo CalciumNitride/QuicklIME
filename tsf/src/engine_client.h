@@ -12,6 +12,13 @@ struct ConversionSegment {
     std::vector<std::wstring> candidates;  // 候補リスト (先頭が最良)
 };
 
+// 入力全体の候補 (CONVNBEST の1件)
+struct SentenceCandidate {
+    // 文節ごとの (読み, 表記)。確定・採用時の学習に使う
+    std::vector<std::pair<std::wstring, std::wstring>> segments;
+    std::wstring surface;  // 文節の表記の連結
+};
+
 // 予測入力の1候補
 struct PredictionCandidate {
     std::wstring reading;  // 候補の完全な読み (採用時の LEARN に使う)
@@ -61,6 +68,16 @@ public:
     // 自動起動や接続待ちはせず、未接続なら即 false を返す (Predict と同じ方式)
     bool ConvertSegmentsLive(const std::wstring& kana, const ConversionContext& context,
                              std::vector<ConversionSegment>* segments);
+
+    // かなに対する入力全体の候補を取得する (CONVNBEST)。CONVNBEST を知らない旧エンジンには
+    // CONVCTX / CONVSEG を送り、各文節の先頭候補を連結した1件だけを返す
+    bool ConvertNBest(const std::wstring& kana, const ConversionContext& context,
+                      std::vector<SentenceCandidate>* candidates);
+
+    // ConvertNBest の毎打鍵の候補バー用。エンジンの自動起動や接続待ちはせず、
+    // 未接続なら即 false を返す (ConvertSegmentsLive と同じ方式)
+    bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
+                          std::vector<SentenceCandidate>* candidates);
 
     // 読みに対する記号候補のみを取得する (CONVSYM、F4 の記号変換用)。
     // 通信に成功すれば true (記号が1つも無い場合も true で candidates は空)
@@ -114,9 +131,17 @@ private:
                          std::vector<ConversionSegment>* segments);
     // CONVSEG 系の応答1行を segments にパースする
     bool ParseSegmentsResponse(std::string response, std::vector<ConversionSegment>* segments);
+    // CONVNBEST (旧エンジンには CONVCTX / CONVSEG) を送って入力全体の候補を得る
+    bool RequestNBest(const std::wstring& kana, const ConversionContext& context, bool live,
+                      std::vector<SentenceCandidate>* candidates);
+    // CONVNBEST の応答1行を candidates にパースする
+    bool ParseNBestResponse(std::string response, std::vector<SentenceCandidate>* candidates);
 
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     ULONGLONG lastLaunchTick_ = 0; // 最後にエンジン起動を試みた時刻 (連続起動の抑止)
     // 旧エンジン (CONVCTX/LEARN2 未対応) と判定したら以後は旧コマンドのみ送る
     bool legacyEngine_ = false;
+    // CONVNBEST を知らないエンジンと判定したら以後は CONVCTX / CONVSEG で代用する
+    // (CONVCTX には対応しているエンジンがあるため legacyEngine_ とは別に持つ)
+    bool nbestUnsupported_ = false;
 };

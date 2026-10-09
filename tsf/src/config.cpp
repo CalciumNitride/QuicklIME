@@ -374,6 +374,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.candidateBar);
     } else if (key == L"min_suggest_chars") {
         ParseClamped(value, 1, 5, config.minSuggestChars);
+    } else if (key == L"segment_ui") {
+        ParseBool(value, config.segmentUi);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

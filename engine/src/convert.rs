@@ -2,7 +2,11 @@
 //
 // フェーズ4-3: Viterbi の最小コスト経路を品詞情報で文節にまとめ、
 // 文節ごとの候補リストを返す。
+// 入力全体を1単位とした N-best (convert_nbest) は docs/design/nbest.md を参照。
 // 全文一括の候補 (candidates) も互換のため残している。
+
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::dict::Dictionary;
 use crate::learn::{LearningStore, MIN_BOUNDARY_CHARS};
@@ -34,6 +38,20 @@ const SEGMENT_PENALTY: i32 = 1000;
 /// (学習した境界と紛らわしい別の文が、常に学習側へ引きずられるのを避ける)
 const BOUNDARY_BONUS: i32 = 500;
 
+/// 入力全体の N-best の上限件数 (重複を除いた経路の数)
+const MAX_NBEST: usize = 10;
+
+/// N-best に入れる経路のコストの上限 (1-best のコストからの差)。
+/// 未知語まじりなど、質の悪い経路を候補に出さないため
+const NBEST_COST_MARGIN: i64 = 5000;
+
+/// N-best の探索で取り出す部分経路の数の上限。長い入力で打鍵を止めないため
+const MAX_NBEST_EXPANSIONS: usize = 3000;
+
+/// 1-best と違う文節が同じ候補 (同じ文節の言い換え) の上限件数。
+/// 末尾の1文節の同音異義語だけで N-best の枠が埋まるのを防ぐ
+const MAX_NBEST_PER_CLASS: usize = 4;
+
 /// 変換結果の1文節
 pub struct Segment {
     /// この文節の読み (ひらがな)
@@ -48,6 +66,26 @@ struct PathWord {
     surface: String,
     left_id: u16,
     right_id: u16,
+}
+
+/// 入力全体の候補 (CONVNBEST の1件)。文節ごとの (読み, 表記) を持つ
+pub struct SentenceCandidate {
+    pub segments: Vec<(String, String)>,
+}
+
+impl SentenceCandidate {
+    /// 文節の表記の連結
+    pub fn surface(&self) -> String {
+        self.segments.iter().map(|(_, surface)| surface.as_str()).collect()
+    }
+}
+
+/// N-best 経路の1文節
+struct PathSegment {
+    /// 読みの開始位置 (文字単位)
+    start: usize,
+    reading: String,
+    surface: String,
 }
 
 /// 前文脈 (直前に確定した文節の読みと表記)。
@@ -124,6 +162,11 @@ pub fn convert_segments(
     else {
         return Vec::new();
     };
+    segments_from_path(path, ctx, dict, user, functional, learning)
+}
+
+/// 経路の単語列を文節にまとめる (連続する数字を1語にし、付属語を前の自立語に付ける)
+fn group_path(path: Vec<PathWord>, functional: &FunctionalIds) -> Vec<Vec<PathWord>> {
     // 辞書の数字は1桁単位のため、連続する数字を1語にまとめてから文節を作る
     let path = merge_digit_runs(path);
 
@@ -136,12 +179,23 @@ pub fn convert_segments(
             groups.push(vec![word]);
         }
     }
+    groups
+}
 
+/// 1-best 経路から候補リスト付きの文節列を作る (文節ごとの学習を当てる)
+fn segments_from_path(
+    path: Vec<PathWord>,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> Vec<Segment> {
     // 文脈学習は「直前文節の表記」をキーに引く。先頭文節は前文脈の表記、
     // 2文節目以降は直前文節の先頭候補 (既定のまま確定する流れと自己整合する)
     let mut segments: Vec<Segment> = Vec::new();
     let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
-    for group in &groups {
+    for group in &group_path(path, functional) {
         let segment = segment_from_group(group, dict, user, learning, prev_surface.as_deref());
         prev_surface = Some(segment.candidates[0].clone());
         segments.push(segment);
@@ -474,6 +528,222 @@ pub fn convert_sentence(
     Some(path.into_iter().map(|w| w.surface).collect())
 }
 
+/// かな文字列に対する入力全体の候補 (CONVNBEST) を返す。ctx は直前に確定した文節。
+/// 並び: 読み全体の学習表記 → 文節ごとの学習を当てた 1-best → N-best の残り (コスト順)
+///       → 短縮よみ・読み全体の辞書完全一致 → 記号・カタカナ・ひらがな。
+/// 表記が同じ候補は先勝ちで除く
+pub fn convert_nbest(
+    kana: &str,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> Vec<SentenceCandidate> {
+    let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
+    let Some(lattice) =
+        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning))
+    else {
+        return Vec::new();
+    };
+
+    let mut result: Vec<SentenceCandidate> = Vec::new();
+    let mut surfaces: Vec<String> = Vec::new();
+    let mut add = |segments: Vec<(String, String)>| -> bool {
+        let candidate = SentenceCandidate { segments };
+        let surface = candidate.surface();
+        if surfaces.contains(&surface) {
+            return false;
+        }
+        surfaces.push(surface);
+        result.push(candidate);
+        true
+    };
+    let whole = |surface: &str| vec![(kana.to_string(), surface.to_string())];
+
+    if let Some(learned) = learning.get(kana) {
+        add(whole(learned));
+    }
+    if let Some(indices) = best_path(&lattice, matrix) {
+        let segments =
+            segments_from_path(lattice.path_words(&indices), ctx, dict, user, functional, learning);
+        add(segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect());
+    }
+    for (_, path) in nbest_paths(&lattice, matrix, functional) {
+        add(path.into_iter().map(|s| (s.reading, s.surface)).collect());
+    }
+
+    // 縦の候補リストで、読みそのものの別表記を選べるようにする (CONVERT の並びと同じ)
+    let mut dict_count = 0;
+    let shortcuts = user.lookup_shortcuts(kana).into_iter();
+    let exact = exact_candidates(kana, dict, user).into_iter().map(|(_, surface)| surface);
+    for surface in shortcuts.chain(exact) {
+        if dict_count >= MAX_DICT_CANDIDATES {
+            break;
+        }
+        if add(whole(surface)) {
+            dict_count += 1;
+        }
+    }
+    for symbol in dict.lookup_symbols(kana) {
+        add(whole(symbol));
+    }
+    add(whole(&to_katakana(kana)));
+    add(whole(kana));
+    result
+}
+
+/// 後ろ向き探索の部分経路 (node から EOS まで)
+struct Partial {
+    node: usize,
+    /// 経路上で node の次のノード (partials の index)。node が文末の語なら None
+    next: Option<usize>,
+    /// node より後ろ (node 自身は含まない) のコスト。EOS への接続を含む
+    suffix: i64,
+}
+
+/// 前向きの最小コストを見積もりにして文末から A* 探索し、取り出した経路を最大 MAX_NBEST 件、
+/// (総コスト, 文節列) で返す。表記の連結が同じ経路は1件にまとめ、1-best と違う文節が同じ
+/// 分類の中は並べ直して MAX_NBEST_PER_CLASS 件だけ残す (分類どうしの並びはコスト順)
+fn nbest_paths(
+    lattice: &Lattice,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Vec<(i64, Vec<PathSegment>)> {
+    let nodes = &lattice.nodes;
+    let n = lattice.ending_at.len() - 1;
+
+    // 前向きの最小コストは「BOS からそのノードまで」の正確な値なので、見積もり
+    // (前向きの最小コスト + 後ろの確定コスト) の小さい順に取り出すと経路の総コスト順になる
+    let mut partials: Vec<Partial> = Vec::new();
+    let mut heap: BinaryHeap<Reverse<(i64, usize)>> = BinaryHeap::new();
+    for &i in &lattice.ending_at[n] {
+        if nodes[i].best_cost == i64::MAX {
+            continue;
+        }
+        let suffix = lattice.eos_cost(i, matrix);
+        partials.push(Partial { node: i, next: None, suffix });
+        heap.push(Reverse((nodes[i].best_cost + suffix, partials.len() - 1)));
+    }
+
+    // 完成した経路 (総コスト, 文節列, 単語列)。表記の重複は除いてコスト順
+    let mut found: Vec<(i64, Vec<PathSegment>, Vec<PathSegment>)> = Vec::new();
+    let mut surfaces: HashSet<String> = HashSet::new();
+    let mut expansions = 0;
+    while let Some(Reverse((cost, index))) = heap.pop() {
+        expansions += 1;
+        if expansions > MAX_NBEST_EXPANSIONS {
+            break;
+        }
+        let node = partials[index].node;
+        if node != 0 {
+            let suffix =
+                partials[index].suffix + i64::from(nodes[node].word_cost) + nodes[node].penalty;
+            for &p in &lattice.ending_at[nodes[node].start] {
+                if nodes[p].best_cost == i64::MAX {
+                    continue;
+                }
+                let suffix = suffix + i64::from(matrix.get(nodes[p].right_id, nodes[node].left_id));
+                partials.push(Partial { node: p, next: Some(index), suffix });
+                heap.push(Reverse((nodes[p].best_cost + suffix, partials.len() - 1)));
+            }
+            continue;
+        }
+
+        // BOS まで届いた = 経路が1本完成した
+        if found.first().is_some_and(|(best, _, _)| cost > best + NBEST_COST_MARGIN) {
+            break;
+        }
+        let mut indices: Vec<usize> = Vec::new();
+        let mut cursor = partials[index].next;
+        while let Some(c) = cursor {
+            indices.push(partials[c].node);
+            cursor = partials[c].next;
+        }
+        let (segments, words) = path_segments(lattice.path_words(&indices), functional);
+        let surface: String = segments.iter().map(|s| s.surface.as_str()).collect();
+        // 同じ表記の語が品詞違いで複数あるため、区切りや品詞だけが違う経路が多数出る
+        if surfaces.insert(surface) {
+            found.push((cost, segments, words));
+        }
+    }
+    if found.is_empty() {
+        return Vec::new();
+    }
+
+    // 1-best と違う文節の (開始位置, 読み) の並びで分類し、分類ごとに
+    // (1-best に無い単語の数, コスト) の順へ並べ直す。区切りを変えた候補のうち、
+    // 1-best の語を流用したもの (今日|歯医者に) を、語を総入れ替えしたもの (共|歯医者に) より先に出す
+    let same = |a: &PathSegment, b: &PathSegment| {
+        a.start == b.start && a.reading == b.reading && a.surface == b.surface
+    };
+    let (best_segments, best_words) = (&found[0].1, &found[0].2);
+    let mut class_of: Vec<usize> = vec![0; found.len()];
+    // 分類ごとの (1-best に無い単語の数, コスト, found の index)
+    let mut classes: Vec<Vec<(usize, i64, usize)>> = Vec::new();
+    let mut class_index: HashMap<Vec<(usize, String)>, usize> = HashMap::new();
+    for (i, (cost, segments, words)) in found.iter().enumerate().skip(1) {
+        let key: Vec<(usize, String)> = segments
+            .iter()
+            .filter(|s| !best_segments.iter().any(|b| same(b, s)))
+            .map(|s| (s.start, s.reading.clone()))
+            .collect();
+        let novel = words.iter().filter(|w| !best_words.iter().any(|b| same(b, w))).count();
+        let next = classes.len();
+        let c = *class_index.entry(key).or_insert(next);
+        if c == classes.len() {
+            classes.push(Vec::new());
+        }
+        classes[c].push((novel, *cost, i));
+        class_of[i] = c;
+    }
+    for members in &mut classes {
+        // 安定ソートなので、同じ (語の数, コスト) は取り出した順のまま
+        members.sort_by_key(|&(novel, cost, _)| (novel, cost));
+    }
+
+    // 分類どうしの並びはコスト順のまま: 分類 C が i 回目に現れる位置へ、並べ直した C の i 件目を置く
+    let mut order: Vec<usize> = vec![0];
+    let mut used: Vec<usize> = vec![0; classes.len()];
+    for &c in class_of.iter().skip(1) {
+        let k = used[c];
+        used[c] += 1;
+        if k < MAX_NBEST_PER_CLASS {
+            order.push(classes[c][k].2);
+        }
+    }
+    order.truncate(MAX_NBEST);
+    let mut slots: Vec<Option<(i64, Vec<PathSegment>)>> =
+        found.into_iter().map(|(cost, segments, _)| Some((cost, segments))).collect();
+    order.into_iter().filter_map(|i| slots[i].take()).collect()
+}
+
+/// 経路の単語列を文節に分け、各文節と各単語 (数字をまとめた後の語) に開始位置を付ける
+/// (convert_segments と同じ区切り)。戻り値は (文節列, 単語列)
+fn path_segments(
+    path: Vec<PathWord>,
+    functional: &FunctionalIds,
+) -> (Vec<PathSegment>, Vec<PathSegment>) {
+    let mut segments = Vec::new();
+    let mut words = Vec::new();
+    let mut start = 0;
+    for group in group_path(path, functional) {
+        let segment_start = start;
+        let mut reading = String::new();
+        let mut surface = String::new();
+        for word in group {
+            reading.push_str(&word.reading);
+            surface.push_str(&word.surface);
+            let length = word.reading.chars().count();
+            words.push(PathSegment { start, reading: word.reading, surface: word.surface });
+            start += length;
+        }
+        segments.push(PathSegment { start: segment_start, reading, surface });
+    }
+    (segments, words)
+}
+
 /// Viterbi 用のラティスノード
 struct Node {
     /// 読みの開始位置 (文字単位)
@@ -483,10 +753,40 @@ struct Node {
     right_id: u16,
     word_cost: i32,
     surface: String,
+    /// 文節境界ペナルティ (付属語は 0)。前向きの計算で決まり、N-best の後ろ向き探索でも使う
+    penalty: i64,
     /// BOS からこのノードまでの最小コスト
     best_cost: i64,
     /// 最小コスト経路での直前ノード (nodes 内の index)
     best_prev: usize,
+}
+
+/// 前向きの Viterbi まで済ませたラティス
+struct Lattice {
+    /// nodes[0] は BOS
+    nodes: Vec<Node>,
+    /// ending_at[p] = 位置 p で終わるノードの index 一覧 (BOS は位置 0 で終わる扱い)
+    ending_at: Vec<Vec<usize>>,
+}
+
+impl Lattice {
+    /// 文末 (位置 n) で終わるノード i から EOS への接続コスト
+    fn eos_cost(&self, i: usize, matrix: &ConnectionMatrix) -> i64 {
+        i64::from(matrix.get(self.nodes[i].right_id, 0))
+    }
+
+    /// 経路 (BOS を含まないノード index の列) を単語列にする
+    fn path_words(&self, indices: &[usize]) -> Vec<PathWord> {
+        indices
+            .iter()
+            .map(|&i| PathWord {
+                reading: self.nodes[i].reading.clone(),
+                surface: self.nodes[i].surface.clone(),
+                left_id: self.nodes[i].left_id,
+                right_id: self.nodes[i].right_id,
+            })
+            .collect()
+    }
 }
 
 /// 学習済みの文節境界から、位置ごとの文節ペナルティ調整値を求める。
@@ -546,6 +846,33 @@ fn viterbi_path(
     left_context_id: u16,
     learning: Option<&LearningStore>,
 ) -> Option<Vec<PathWord>> {
+    let mut lattice =
+        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning)?;
+    let indices = best_path(&lattice, matrix)?;
+    Some(
+        indices
+            .into_iter()
+            .map(|i| PathWord {
+                reading: std::mem::take(&mut lattice.nodes[i].reading),
+                surface: std::mem::take(&mut lattice.nodes[i].surface),
+                left_id: lattice.nodes[i].left_id,
+                right_id: lattice.nodes[i].right_id,
+            })
+            .collect(),
+    )
+}
+
+/// ラティスを構築し、前向きの Viterbi で各ノードの最小コストを求める。
+/// 引数は viterbi_path と同じ。入力が空なら None
+fn build_lattice(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    left_context_id: u16,
+    learning: Option<&LearningStore>,
+) -> Option<Lattice> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
     if n == 0 {
@@ -562,6 +889,7 @@ fn viterbi_path(
         right_id: left_context_id,
         word_cost: 0,
         surface: String::new(),
+        penalty: 0,
         best_cost: 0,
         best_prev: 0,
     }];
@@ -585,6 +913,7 @@ fn viterbi_path(
                     right_id: entry.right_id,
                     word_cost: i32::from(entry.cost),
                     surface: entry.surface.clone(),
+                    penalty: 0,
                     best_cost: i64::MAX,
                     best_prev: 0,
                 });
@@ -601,6 +930,7 @@ fn viterbi_path(
                 right_id: word.right_id,
                 word_cost: i32::from(word.cost),
                 surface: word.surface.clone(),
+                penalty: 0,
                 best_cost: i64::MAX,
                 best_prev: 0,
             });
@@ -617,6 +947,7 @@ fn viterbi_path(
                     right_id: entry.right_id,
                     word_cost: i32::from(entry.cost),
                     surface: entry.surface.clone(),
+                    penalty: 0,
                     best_cost: i64::MAX,
                     best_prev: 0,
                 });
@@ -632,6 +963,7 @@ fn viterbi_path(
             right_id: DEFAULT_NOUN_ID,
             word_cost: UNKNOWN_WORD_COST,
             surface: ch,
+            penalty: 0,
             best_cost: i64::MAX,
             best_prev: 0,
         });
@@ -668,18 +1000,26 @@ fn viterbi_path(
                 best_prev = p;
             }
         }
+        nodes[i].penalty = penalty;
         nodes[i].best_cost = best_cost;
         nodes[i].best_prev = best_prev;
     }
+    Some(Lattice { nodes, ending_at })
+}
+
+/// 前向きの結果から最小コスト経路のノード index 列 (BOS を含まない) を返す
+fn best_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<Vec<usize>> {
+    let nodes = &lattice.nodes;
+    let n = lattice.ending_at.len() - 1;
 
     // EOS: 位置 n で終わるノードから文末への接続コストを含めて最良を選ぶ
     let mut best_end: Option<usize> = None;
     let mut best_end_cost = i64::MAX;
-    for &i in &ending_at[n] {
+    for &i in &lattice.ending_at[n] {
         if nodes[i].best_cost == i64::MAX {
             continue;
         }
-        let cost = nodes[i].best_cost + i64::from(matrix.get(nodes[i].right_id, 0));
+        let cost = nodes[i].best_cost + lattice.eos_cost(i, matrix);
         if cost < best_end_cost {
             best_end_cost = cost;
             best_end = Some(i);
@@ -694,17 +1034,7 @@ fn viterbi_path(
         cursor = nodes[cursor].best_prev;
     }
     indices.reverse();
-    Some(
-        indices
-            .into_iter()
-            .map(|i| PathWord {
-                reading: std::mem::take(&mut nodes[i].reading),
-                surface: std::mem::take(&mut nodes[i].surface),
-                left_id: nodes[i].left_id,
-                right_id: nodes[i].right_id,
-            })
-            .collect(),
-    )
+    Some(indices)
 }
 
 /// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
@@ -1546,6 +1876,192 @@ mod tests {
     fn 境界学習が無ければ調整しない() {
         let chars: Vec<char> = "きょうは".chars().collect();
         assert!(boundary_adjust("きょうは", &chars, &LearningStore::in_memory()).is_empty());
+    }
+
+    /// 前文脈・境界学習なしで N-best を求め、(総コスト, 表記) の列を返す
+    fn nbest_of(
+        kana: &str,
+        dict: &Dictionary,
+        matrix: &ConnectionMatrix,
+        functional: &FunctionalIds,
+    ) -> Vec<(i64, String)> {
+        let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None).unwrap();
+        nbest_paths(&lattice, matrix, functional)
+            .into_iter()
+            .map(|(cost, segments)| (cost, segments.iter().map(|s| s.surface.as_str()).collect()))
+            .collect()
+    }
+
+    fn surfaces_of(candidates: &[SentenceCandidate]) -> Vec<String> {
+        candidates.iter().map(SentenceCandidate::surface).collect()
+    }
+
+    #[test]
+    fn nbestはコスト順に並び先頭がviterbiの1bestと一致する() {
+        let dict = sample_dict();
+        let matrix = ConnectionMatrix::empty();
+        let functional = sample_functional();
+        let got = nbest_of("きょうははれです", &dict, &matrix, &functional);
+        let best = convert_sentence("きょうははれです", &dict, &no_user(), &matrix, &functional);
+        assert_eq!(Some(got[0].1.clone()), best);
+        assert_eq!(got[1].1, "京は晴れです");
+        assert!(got.windows(2).all(|w| w[0].0 <= w[1].0), "{got:?}");
+    }
+
+    #[test]
+    fn 区切りだけが違う同じ表記の経路は1件になる() {
+        // A+I と AI は表記の連結が同じ
+        let mut dict = Dictionary::empty();
+        dict.load_from("あ\t1\t1\t100\tA\nい\t1\t1\t100\tI\nあい\t1\t1\t1500\tAI\n".as_bytes())
+            .unwrap();
+        dict.finalize();
+        let got =
+            nbest_of("あい", &dict, &ConnectionMatrix::empty(), &sample_functional());
+        let surfaces: Vec<&str> = got.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(surfaces, vec!["AI"]);
+    }
+
+    #[test]
+    fn 一bestと違う文節が同じ候補は上限件数まで() {
+        // 「きょうは|いく」の2文節目だけが違う候補は (4, いく) の同じ分類になる
+        // (1-best の「行く」と、上限より2件多い言い換え)
+        let mut data = String::from("きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\n");
+        for i in 0..MAX_NBEST_PER_CLASS + 3 {
+            data.push_str(&format!("いく\t1\t1\t{}\t行{i}\n", 3000 + i * 10));
+        }
+        let mut dict = Dictionary::empty();
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        let got =
+            nbest_of("きょうはいく", &dict, &ConnectionMatrix::empty(), &sample_functional());
+        let surfaces: Vec<String> = got.into_iter().map(|(_, s)| s).collect();
+        let expected: Vec<String> =
+            (0..=MAX_NBEST_PER_CLASS).map(|i| format!("今日は行{i}")).collect();
+        assert_eq!(surfaces, expected);
+    }
+
+    #[test]
+    fn 同じ分類の中は1bestの語を流用した候補が先に来る() {
+        // 1-best は 今日は|医者 (7500)。コスト順は 共|歯医者 (7600)・今日は|意者 (7650)・
+        // 今日|歯医者 (7700)・共は|医者 (8400)・共は|意者 (8550)。共|歯医者 と 今日|歯医者 は
+        // 同じ分類 ((0, きょう), (3, はいしゃ)) で、1-best に無い語は前者が2つ (共・歯医者)、
+        // 後者が1つ。他の分類の 今日は|意者・共は|医者 の位置は動かない
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "きょう\t1\t1\t2000\t今日\n\
+             きょう\t6\t6\t1900\t共\n\
+             は\t2\t2\t500\tは\n\
+             いしゃ\t1\t1\t3000\t医者\n\
+             いしゃ\t1\t1\t3150\t意者\n\
+             はいしゃ\t1\t1\t3700\t歯医者\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let functional =
+            FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n6 名詞,一般\n".as_bytes())
+                .unwrap();
+        // 共 (右6) → は (左2) の連接だけ高くして、共は|医者 を 1-best にしない
+        let size = 7;
+        let mut text = format!("{size}\n");
+        for right in 0..size {
+            for left in 0..size {
+                text.push_str(if right == 6 && left == 2 { "1000\n" } else { "0\n" });
+            }
+        }
+        let matrix = ConnectionMatrix::parse(&text).unwrap();
+        let got = nbest_of("きょうはいしゃ", &dict, &matrix, &functional);
+        let surfaces: Vec<&str> = got.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(
+            surfaces,
+            vec!["今日は医者", "今日歯医者", "今日は意者", "共歯医者", "共は医者", "共は意者"]
+        );
+    }
+
+    #[test]
+    fn 一bestからコストが離れた経路は出ない() {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            format!("あ\t1\t1\t100\t亜\nあ\t1\t1\t{}\t阿\n", 101 + NBEST_COST_MARGIN).as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let got = nbest_of("あ", &dict, &ConnectionMatrix::empty(), &FunctionalIds::empty());
+        let surfaces: Vec<&str> = got.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(surfaces, vec!["亜"]);
+    }
+
+    #[test]
+    fn nbestは上限件数を超えない() {
+        // 4文節がそれぞれ2候補を持つ (16通り。どれも 1-best と違う文節の組が異なる)
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "あ\t1\t1\t100\t亜\nあ\t1\t1\t110\t阿\n\
+             い\t1\t1\t100\t伊\nい\t1\t1\t110\t意\n\
+             う\t1\t1\t100\t宇\nう\t1\t1\t110\t羽\n\
+             え\t1\t1\t100\t江\nえ\t1\t1\t110\t絵\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let got =
+            nbest_of("あいうえ", &dict, &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(got.len(), MAX_NBEST.min(16));
+        assert_eq!(got[0].1, "亜伊宇江");
+        assert!(got.windows(2).all(|w| w[0].0 <= w[1].0), "{got:?}");
+    }
+
+    #[test]
+    fn 入力全体の候補は読み全体の学習_文節学習の1best_nbestの順() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("きょうははれです", "今日は晴れデス");
+        learning.record("きょうは", "京は");
+        let got = convert_nbest(
+            "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        assert_eq!(
+            got[0].segments,
+            vec![("きょうははれです".to_string(), "今日は晴れデス".to_string())]
+        );
+        assert_eq!(
+            got[1].segments,
+            vec![
+                ("きょうは".to_string(), "京は".to_string()),
+                ("はれです".to_string(), "晴れです".to_string()),
+            ]
+        );
+        assert_eq!(got[2].surface(), "今日は晴れです");
+        // 末尾はカタカナ・ひらがな (読み全体の1文節)。表記の重複は無い
+        let surfaces = surfaces_of(&got);
+        assert_eq!(&surfaces[surfaces.len() - 2..], ["キョウハハレデス", "きょうははれです"]);
+        let mut unique = surfaces.clone();
+        unique.sort();
+        unique.dedup();
+        assert_eq!(unique.len(), surfaces.len());
+    }
+
+    #[test]
+    fn 入力全体の候補に読み全体の辞書完全一致が入る() {
+        let got = convert_nbest(
+            "にほんご", None, &sample_dict(), &user_with_shortcut("にほんご", "NIHONGO"),
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "日本語");
+        assert!(surfaces.contains(&"NIHONGO".to_string()), "{surfaces:?}");
+        assert_eq!(surfaces.last().unwrap(), "にほんご");
+    }
+
+    #[test]
+    fn 入力全体の候補でも前文脈で先頭語が入れ替わる() {
+        let (dict, matrix) = context_dict_and_matrix();
+        let learning = LearningStore::in_memory();
+        let got = convert_nbest(
+            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+        assert_eq!(got[0].surface(), "阿");
+        let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
+        let got = convert_nbest(
+            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+        assert_eq!(got[0].surface(), "亜");
     }
 
     #[test]
