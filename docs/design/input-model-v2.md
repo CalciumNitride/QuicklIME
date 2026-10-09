@@ -85,7 +85,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/design/experiment-0b-llm.md |
 | 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
-| 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF・エンジン (小) | 未作成 |
+| 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | 未作成 |
 | 5 | LLM による順位補正 | エンジン | 未作成 |
 
@@ -160,7 +160,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | tsf/src/romaji.cpp, tsf/src/romaji.h | 0a, 2 |
 | tsf/src/candidate_window.cpp | 3 (横並び表示) |
 | engine/src/convert.rs | 4, 5 |
-| docs/protocol.md | 3, 4, 5 |
+| docs/protocol.md | 4, 5 |
 | docs/design/direct-input.md | 2 (フォールバック判定・composition 方式の記述を更新) |
 
 ## 検証方法
@@ -175,7 +175,6 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 ## 未決事項
 
 - 段階5の LLM の構成 (CPU / Vulkan、モデル規模)
-- 候補バーの並び順・候補数・表示位置 (段階3)
 - CUAS での採用の方法 (段階2)
 
 ## 参考

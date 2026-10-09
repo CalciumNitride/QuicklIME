@@ -361,8 +361,7 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     // Backspace は、未完成のローマ字が無ければアプリへ渡して文書の文字を消させる
     // (run は NoteKeyForAppend で追従させる)
-    const bool backspaceEaten =
-        converting_ || predictionInDocument_ || !AppendPendingText().empty();
+    const bool backspaceEaten = converting_ || !AppendPendingText().empty();
     if (ctrl || alt) {
         if (!ctrl || alt || !InRun()) {
             return false;
@@ -392,8 +391,9 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
         case VK_UP:
         case VK_DOWN:
         case VK_TAB:
-            // 候補選択中の Tab は変換を取り消してサジェスト選択へ移る
-            return converting_ || !predictions_.empty();
+            // 候補選択中の Tab は変換を取り消してバーの先頭を選ぶ。バーが無ければ
+            // 他の編集キーと同じく run を終えてアプリへ渡す
+            return converting_ || !barItems_.empty();
         case VK_LEFT:
         case VK_RIGHT:
         case VK_PRIOR:
@@ -429,8 +429,8 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
         return;
     }
     const bool enter = !alt && (ctrl ? wparam == 'M' : wparam == VK_RETURN);
-    if (enter && (converting_ || predictionIndex_ >= 0)) {
-        // 候補選択中は確定、サジェスト選択中は採用して確定してから渡す
+    if (enter && (converting_ || barIndex_ >= 0)) {
+        // 候補選択中は確定、バー選択中は採用して run を終えてから渡す
         // (EnterNeedsResend のときは食べているのでここには来ない)
         CommitRunDirect(context);
         return;
@@ -440,8 +440,8 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
 
 bool TextService::AdoptionNeedsPseudoBackspace() const
 {
-    return !converting_ && predictionIndex_ >= 0 && !predictionInDocument_ &&
-           appendDocument_ != AppendDocument::Readable && !surface_.empty();
+    return !converting_ && barIndex_ >= 0 && appendDocument_ != AppendDocument::Readable &&
+           !surface_.empty();
 }
 
 bool TextService::EnterNeedsResend() const
@@ -501,17 +501,22 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
 
     DirectKey key;
     if (ClassifyDirectKey(wparam, shifted, &key)) {
-        // 候補選択中・サジェスト選択中の 1〜9 は候補番号による直接選択
+        // 候補選択中・バー選択中の 1〜9 は候補番号による直接選択
         if (!shifted && wparam >= '1' && wparam <= '9') {
             if (converting_) {
                 return SelectCandidateByNumber(context, wparam - '1');
             }
-            if (predictionIndex_ >= 0) {
-                return SelectPredictionByNumber(context, wparam - '1');
+            if (barIndex_ >= 0) {
+                return SelectBarByNumber(wparam - '1');
             }
         }
-        // 候補選択中・サジェスト選択中の印字キーは選択を確定して新しい run を始める
-        if (converting_ || predictionIndex_ >= 0) {
+        // バー選択中の印字キーは選択中の候補を採用し、その打鍵から続ける
+        if (!converting_ && barIndex_ >= 0) {
+            return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::Continue, L"",
+                                &key);
+        }
+        // 候補選択中の印字キーは選択を確定して新しい run を始める
+        if (converting_) {
             CommitRunDirect(context);
             if (awaitingMarker_) {
                 appendFollowKey_ = key;
@@ -529,8 +534,8 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         if (converting_) {
             return CancelConversion(context); // 変換前のかな表示に戻す
         }
-        if (predictionIndex_ >= 0) {
-            return DeselectPrediction(context);
+        if (barIndex_ >= 0) {
+            return DeselectBar();
         }
         // 文字は文書に残したまま run だけ忘れる (未完成のローマ字も文書に残す)
         if (InRun()) {
@@ -550,21 +555,19 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         return SpaceDirect(context, shifted);
     case VK_TAB:
         if (converting_) {
-            // 昇格した候補選択中と同じく、変換を取り消してサジェスト選択へ移る
-            // (予測が無ければかな表示に戻るだけ)
+            // 昇格した候補選択中と同じく、変換を取り消してバーの先頭を選ぶ
+            // (バーが無ければかな表示に戻るだけ)
             const HRESULT hr = CancelConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
-            return MovePredictionSelection(context, +1);
+            return MoveBarSelection(+1);
         }
-        return MovePredictionSelection(context, shifted ? -1 : +1);
+        return MoveBarSelection(shifted ? -1 : +1);
     case VK_DOWN:
-        return converting_ ? CycleCandidate(context, +1)
-                           : MovePredictionSelection(context, +1);
+        return converting_ ? CycleCandidate(context, +1) : MoveBarSelection(+1);
     case VK_UP:
-        return converting_ ? CycleCandidate(context, -1)
-                           : MovePredictionSelection(context, -1);
+        return converting_ ? CycleCandidate(context, -1) : MoveBarSelection(-1);
     case VK_LEFT:
         if (!converting_) {
             return S_OK;
@@ -747,7 +750,7 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
         }
         return InsertText(context, space);
     }
-    if (!converting_ && predictionIndex_ < 0) {
+    if (!converting_ && barIndex_ < 0) {
         return SpaceAppend(context, shifted);
     }
     // run 中の Space は幅によらず IME が入れる (run の終了と1つの edit session で行う)。
@@ -755,10 +758,11 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
     const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
     const std::wstring space =
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
-    if (!converting_ && !predictionInDocument_) {
-        return AdoptPrediction(context, space);
+    if (!converting_) {
+        return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::End, space,
+                            nullptr);
     }
-    // 文書の run の文字列は既に候補選択・サジェスト選択の結果になっている
+    // 文書の run の文字列は既に候補選択の結果になっている
     const std::wstring text = surface_ + space;
     const ReplaceRunResult result =
         ReplaceRunRange(context, surface_, surfaceCaret_, surfaceSelectLength_, text, 0, 0);
@@ -843,26 +847,153 @@ HRESULT TextService::CommitRunDirect(ITfContext* context)
         }
         surfaceCaret_ = surface_.size();
         surfaceSelectLength_ = 0;
-    } else if (predictionIndex_ >= 0 && !predictionInDocument_) {
-        return AdoptPrediction(context, L"");
+    } else if (barIndex_ >= 0) {
+        return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::End, L"",
+                            nullptr);
     }
     EndRun();
     return S_OK;
 }
 
-HRESULT TextService::AdoptPrediction(ITfContext* context, const std::wstring& suffix)
+HRESULT TextService::CommitRunKey(ITfContext* context)
 {
-    if (predictionIndex_ < 0 || static_cast<size_t>(predictionIndex_) >= predictions_.size()) {
-        return E_UNEXPECTED;
+    if (!InRun()) {
+        return S_OK;
     }
-    const std::wstring text = predictions_[static_cast<size_t>(predictionIndex_)].surface + suffix;
-    // 作り直しの後の EndRun が、かなではなく採用した候補で学習するように先に立てる
-    predictionInDocument_ = true;
-    DebugLog(L"候補ウィンドウ上のサジェストを採用: " + text);
-    return RewriteAppendRun(context, text, true) == AppendResult::Failed ? E_FAIL : S_OK;
+    // ルール3 (EndAppendRunForPassthroughKey と同じく読める文書だけ) で英字になる入力は、
+    // 全体変換を採用せずに英字で終える
+    RomajiComposer probe = composer_;
+    probe.FinishForCommit();
+    const bool becomesAscii =
+        appendDocument_ == AppendDocument::Readable && probe.AsciiMode() != composer_.AsciiMode();
+    if (!becomesAscii) {
+        for (size_t i = 0; i < barItems_.size(); ++i) {
+            if (barItems_[i].kind == BarKind::Whole) {
+                return AdoptBarItem(context, i, BarAdopt::End, L"", nullptr);
+            }
+        }
+    }
+    // 全体変換が無ければ、アプリへ渡すキーで run を終えるときと同じ救済を通す
+    // (読める文書ではモードレスのルール3、未完成のローマ字は文書に残す)
+    EndAppendRunForPassthroughKey(context, false, false);
+    return S_OK;
 }
 
-HRESULT TextService::UpdateRunAndPredict(ITfContext* context)
+HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
+                                  const std::wstring& suffix, const DirectKey* followKey)
+{
+    // 採用できないときは選択を解除する (Enter を送り直す経路が、選択中のまま再び
+    // 採用を試みて送り直しを繰り返さないように)
+    const std::wstring& kana = composer_.ConfirmedKana();
+    if (index >= barItems_.size() || kana != barKana_) {
+        DeselectBar();
+        return E_UNEXPECTED;
+    }
+    const BarCandidate item = barItems_[index];
+    const bool head = item.kind == BarKind::Head;
+    const size_t readingLength = head ? item.reading.size() : kana.size();
+    // 文書の run の文字列は確定済みかなで始まる (Backspace で末尾の英字が未完成の
+    // ローマ字に戻ったときだけ、その英字まで文書に入っている)
+    if (surface_.compare(0, readingLength, kana, 0, readingLength) != 0) {
+        DeselectBar();
+        return E_UNEXPECTED;
+    }
+
+    BarAdoption adoption;
+    switch (item.kind) {
+    case BarKind::Whole: {
+        std::wstring prevSurface = contextSurface_;
+        for (const ConversionSegment& segment : barSegments_) {
+            adoption.learn.push_back({segment.reading, segment.candidates[0], prevSurface});
+            prevSurface = segment.candidates[0];
+        }
+        if (!barSegments_.empty()) {
+            adoption.contextReading = barSegments_.back().reading;
+            adoption.contextSurface = barSegments_.back().candidates[0];
+        }
+        break;
+    }
+    case BarKind::Prediction:
+    case BarKind::Head:
+        adoption.learn.push_back({item.reading, item.surface, contextSurface_});
+        adoption.contextReading = item.reading;
+        adoption.contextSurface = item.surface;
+        break;
+    }
+    adoption.readingLength = readingLength;
+    adoption.adoptedLength = item.surface.size();
+    adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !head);
+    adoption.written = item.surface + surface_.substr(readingLength);
+    if (adoption.endRun) {
+        // run を終えるので、未完成のローマ字も文書に残す (確定キー・Enter の救済と同じ)
+        adoption.written += AppendPendingText() + suffix;
+    }
+    adoption.before = composer_;
+    adoption_ = std::move(adoption);
+    DebugLog(L"バーの候補を採用: " + adoption_.written);
+
+    pendingWindow_.Hide();
+    ClassifyAppendDocument(context);
+    if (appendDocument_ == AppendDocument::Readable) {
+        if (ReplaceRunText(context, surface_, adoption_.written) != ReplaceRunResult::Succeeded) {
+            DebugLog(L"採用の置換に失敗: run を破棄");
+            DropRun();
+            ClearContext();
+            return E_FAIL;
+        }
+        FinishBarAdoption(context, followKey == nullptr);
+        return followKey != nullptr ? TypeAppend(context, *followKey) : S_OK;
+    }
+    // 擬似 Backspace より先に打鍵を追記すると、その文字まで消されるため目印の後に回す
+    if (followKey != nullptr) {
+        appendFollowKey_ = *followKey;
+        appendFollowKeyPending_ = true;
+    }
+    const HRESULT hr = ScheduleAppendAction(context, PseudoKeyAction::Adopt, KeyFunc::None,
+                                            adoption_.written, false);
+    if (FAILED(hr)) {
+        appendFollowKeyPending_ = false;
+    }
+    return hr;
+}
+
+void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
+{
+    engine_.Learn(adoption_.learn);
+    SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
+    // 採用した部分は run から外す (以後 IME はその文字列を書き換えない)
+    composer_.RemoveFront(adoption_.readingLength);
+    const std::wstring rest = adoption_.written.substr(adoption_.adoptedLength);
+    ClearBar();
+    // run の先頭が変わったので、次にバーを出す位置はその時点で取り直す
+    barXFixed_ = false;
+    if (adoption_.endRun && !composer_.ConfirmedKana().empty()) {
+        // 先頭文節を採用して run を終える: 残りのかなは採用せずに終えた run と同じ扱い
+        surface_ = rest;
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+        EndRun();
+        return;
+    }
+    if (adoption_.endRun || composer_.Empty()) {
+        // 採用した部分で run が終わる。確定アンドゥは採用前の読みに戻す
+        lastCommitText_ = adoption_.written;
+        lastComposer_ = adoption_.before;
+        DropRun();
+        return;
+    }
+    surface_ = rest;
+    surfaceCaret_ = surface_.size();
+    surfaceSelectLength_ = 0;
+    // 続く run の手前は採用した文字列なので、それより前の確定アンドゥの記憶は使えない
+    lastCommitText_.clear();
+    UpdateAppendPending(context, AppendPendingText());
+    if (updateBar) {
+        UpdateBar(context);
+    }
+}
+
+HRESULT TextService::UpdateRunAndBar(ITfContext* context)
 {
     // 文書には確定したかなだけを入れ、未完成のローマ字は小窓に表示する
     HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
@@ -870,7 +1001,7 @@ HRESULT TextService::UpdateRunAndPredict(ITfContext* context)
         return hr;
     }
     UpdateAppendPending(context, AppendPendingText());
-    UpdatePrediction(context);
+    UpdateBar(context);
     return hr;
 }
 
@@ -880,13 +1011,6 @@ void TextService::EndRun()
         if (converting_) {
             // 候補選択中の確定: 文節ごとの学習と文脈更新 (composition の確定と同じ)
             PrepareConversionCommit();
-        } else if (predictionIndex_ >= 0 && predictionInDocument_ &&
-                   static_cast<size_t>(predictionIndex_) < predictions_.size()) {
-            // サジェスト選択中の確定: 候補の完全な読みで学習する
-            const PredictionCandidate& candidate =
-                predictions_[static_cast<size_t>(predictionIndex_)];
-            engine_.Learn({{candidate.reading, candidate.surface, contextSurface_}});
-            SetCommitContext(candidate.reading, candidate.surface);
         } else {
             // 無変換の確定: 英字を含む入力 (英単語など) は読み=表記で学習し、
             // 確定したかなは次の変換の文脈にする (かなのみの学習はしない。学習は変換候補の
@@ -907,7 +1031,8 @@ void TextService::DropRun()
 {
     pendingWindow_.Hide();
     ClearConversion();
-    ClearPrediction();
+    ClearBar();
+    barXFixed_ = false;
     composer_.Clear();
     surface_.clear();
     surfaceCaret_ = 0;
@@ -980,7 +1105,7 @@ TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
     surface_.clear();
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
-    ClearPrediction();
+    ClearBar();
     return PromoteResult::Promoted;
 }
 
@@ -1012,7 +1137,7 @@ void TextService::DemoteIfLeftConversion(ITfContext* context)
         ClearContext();
         return;
     }
-    // composer_・サジェストの状態は維持し、run として続ける
+    // composer_・バーの状態は維持し、run として続ける
     surface_ = text;
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
@@ -1082,7 +1207,7 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
     if (result == AppendResult::Failed) {
         return E_FAIL;
     }
-    UpdatePrediction(context);
+    UpdateBar(context);
     return S_OK;
 }
 
@@ -1189,26 +1314,33 @@ void TextService::UpdateAppendPending(ITfContext* context, const std::wstring& p
         return;
     }
     RECT rect = {};
-    bool succeeded = false;
-    RequestSync(context,
-                new (std::nothrow) GetSelectionExtentEditSession(context, &rect, &succeeded),
-                TF_ES_SYNC | TF_ES_READ);
-    if (!succeeded) {
-        // 選択範囲の矩形を返さない文書でも、システムキャレットがあればその位置に出す
-        GUITHREADINFO info = {};
-        info.cbSize = sizeof(info);
-        if (GetGUIThreadInfo(0, &info) && info.hwndCaret != nullptr) {
-            rect = info.rcCaret;
-            MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(&rect), 2);
-            succeeded = true;
-        }
-    }
-    if (!succeeded) {
+    if (!CaretRect(context, &rect)) {
         pendingWindow_.Hide();
         DebugLog(L"キャレットの矩形が取れないため小窓を出さない");
         return;
     }
     pendingWindow_.ShowInline(rect, pending);
+}
+
+bool TextService::CaretRect(ITfContext* context, RECT* rect)
+{
+    bool succeeded = false;
+    if (context != nullptr) {
+        RequestSync(context,
+                    new (std::nothrow) GetSelectionExtentEditSession(context, rect, &succeeded),
+                    TF_ES_SYNC | TF_ES_READ);
+    }
+    if (!succeeded) {
+        // 選択範囲の矩形を返さない文書でも、システムキャレットがあればその位置に出す
+        GUITHREADINFO info = {};
+        info.cbSize = sizeof(info);
+        if (GetGUIThreadInfo(0, &info) && info.hwndCaret != nullptr) {
+            *rect = info.rcCaret;
+            MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(rect), 2);
+            succeeded = true;
+        }
+    }
+    return succeeded;
 }
 
 void TextService::DiscardPendingRomaji()
@@ -1257,21 +1389,6 @@ HRESULT TextService::BackspaceAppend(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
-    if (predictionInDocument_) {
-        // 読める文書のサジェスト選択中: 読みの末尾を削ってかなに戻す
-        composer_.Backspace();
-        HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
-        if (FAILED(hr)) {
-            return hr;
-        }
-        if (composer_.Empty()) {
-            DropRun();
-            return S_OK;
-        }
-        UpdateAppendPending(context, AppendPendingText());
-        UpdatePrediction(context);
-        return S_OK;
-    }
     // 未完成のローマ字だけを削る (文書の文字はアプリへ渡した Backspace で消える)
     if (AppendPendingText().empty()) {
         return S_OK;
@@ -1283,7 +1400,7 @@ HRESULT TextService::BackspaceAppend(ITfContext* context)
         return S_OK;
     }
     UpdateAppendPending(context, AppendPendingText());
-    UpdatePrediction(context);
+    UpdateBar(context);
     return S_OK;
 }
 
@@ -1328,15 +1445,9 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, 
         CommitRunDirect(context);
         return;
     }
-    if (predictionIndex_ >= 0) {
-        if (predictionInDocument_) {
-            EndRun();
-            return;
-        }
-        // 候補ウィンドウの上だけの選択は採用しない。このキーは擬似 Backspace より先に
-        // アプリへ届くので、作り直すと別の文字を消してしまう
-        predictionIndex_ = -1;
-    }
+    // バーの選択は採用せず、かなのまま run を終える (P1。追記のみの文書では、このキーが
+    // 擬似 Backspace より先にアプリへ届くので、作り直すと別の文字を消してしまう)
+    barIndex_ = -1;
     const RomajiComposer before = composer_;
     // 追記のみの文書ではルール3 を適用しない (理由は上の採用と同じ)。Ctrl/Alt 併用
     // (Undo など) は確定ではないため、ルール3 で文書を書き換えずに終える
@@ -1450,13 +1561,23 @@ void TextService::RunAppendAction(ITfContext* context)
         }
         // 読める文書の昇格と同じく、composition の候補選択に入る
         promoted_ = true;
-        ClearPrediction();
+        ClearBar();
         if (appendActionFunc_ == KeyFunc::Convert) {
             StartConversion(context);
         } else {
             ApplyFunctionKey(context, appendActionFunc_);
         }
         DemoteIfLeftConversion(context);
+        return;
+    }
+    if (action == PseudoKeyAction::Adopt) {
+        if (AppendRunText(context, appendActionText_) != AppendResult::Done) {
+            return;
+        }
+        FinishBarAdoption(context, !followKey);
+        if (followKey) {
+            TypeAppend(context, appendFollowKey_);
+        }
         return;
     }
 
@@ -1536,7 +1657,7 @@ void TextService::NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eate
             return;
         }
         backspaceTested_ = fromTest;
-        if (!surface_.empty() && !converting_ && !predictionInDocument_) {
+        if (!surface_.empty() && !converting_) {
             // アプリが文書の末尾の1文字を消すので、run の表示・読みの末尾も1文字削る
             // (置換はしない。読みの打鍵列 Raw() とは対応しなくなることがある)
             const size_t length = LastCharLength(surface_);
@@ -1551,7 +1672,7 @@ void TextService::NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eate
                 DropRun();
                 return;
             }
-            UpdatePrediction(context);
+            UpdateBar(context);
             return;
         }
     }

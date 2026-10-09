@@ -8,6 +8,8 @@ constexpr wchar_t kWindowClassName[] = L"QuicklIMECandidateWindow";
 constexpr int kPadding = 4;       // ウィンドウ内側の余白
 constexpr int kLinePadding = 2;   // 行間の余白
 constexpr int kNumberGap = 6;     // 番号列と候補文字列の間の余白
+constexpr int kBarItemPadding = 4;  // 候補バーの各候補の左右の余白 (選択の強調に含める)
+constexpr int kBarItemGap = 4;      // 候補バーの候補どうしの間隔
 constexpr size_t kPageSize = CandidateWindow::kPageSize; // 1ページに表示する候補数
 
 // 候補番号のフォント高を候補文字列より一回り小さくして控えめにする
@@ -43,8 +45,8 @@ bool EnsureWindowClass()
 } // namespace
 
 CandidateWindow::CandidateWindow()
-    : hwnd_(nullptr), font_(nullptr), numberFont_(nullptr), selection_(0), inline_(false),
-      lineHeight_(0), numberColumnWidth_(0), numberFontHeight_(0)
+    : hwnd_(nullptr), font_(nullptr), numberFont_(nullptr), selection_(0),
+      layout_(Layout::Vertical), lineHeight_(0), numberColumnWidth_(0), numberFontHeight_(0)
 {
     SetFont(L"Yu Gothic UI", 18);
 }
@@ -97,7 +99,7 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
     }
     items_ = items;
     selection_ = selection;
-    inline_ = false;
+    layout_ = Layout::Vertical;
 
     // フォントで各行の寸法を測ってウィンドウサイズを決める
     HDC hdc = GetDC(nullptr);
@@ -156,7 +158,7 @@ bool CandidateWindow::ShowInline(const RECT& caret, const std::wstring& text)
     }
     items_.assign(1, text);
     selection_ = 0;
-    inline_ = true;
+    layout_ = Layout::Inline;
 
     HDC hdc = GetDC(nullptr);
     HGDIOBJ oldFont = SelectObject(hdc, font_);
@@ -186,6 +188,107 @@ bool CandidateWindow::ShowInline(const RECT& caret, const std::wstring& text)
     ShowWindow(hwnd_, SW_SHOWNA);
     InvalidateRect(hwnd_, nullptr, TRUE);
     return true;
+}
+
+size_t CandidateWindow::ShowBar(const RECT& caret, int x, const std::vector<BarItem>& items,
+                                size_t selection)
+{
+    if (items.empty() || !EnsureWindowClass()) {
+        Hide();
+        return 0;
+    }
+
+    HDC hdc = GetDC(nullptr);
+    HGDIOBJ oldFont = SelectObject(hdc, numberFont_);
+    TEXTMETRICW numberTm = {};
+    GetTextMetricsW(hdc, &numberTm);
+    numberFontHeight_ = numberTm.tmHeight;
+    SIZE numberSize = {};
+    GetTextExtentPoint32W(hdc, L"9", 1, &numberSize);
+    numberColumnWidth_ = numberSize.cx;
+
+    SelectObject(hdc, font_);
+    TEXTMETRICW tm = {};
+    GetTextMetricsW(hdc, &tm);
+    lineHeight_ = tm.tmHeight + kLinePadding * 2;
+
+    std::vector<std::wstring> texts;
+    std::vector<int> widths;
+    for (size_t i = 0; i < items.size() && i < kPageSize; ++i) {
+        std::wstring text = items[i].partial ? items[i].text + L"…" : items[i].text;
+        SIZE size = {};
+        GetTextExtentPoint32W(hdc, text.c_str(), static_cast<int>(text.size()), &size);
+        widths.push_back(kBarItemPadding * 2 + numberColumnWidth_ + kNumberGap +
+                         static_cast<int>(size.cx));
+        texts.push_back(std::move(text));
+    }
+    SelectObject(hdc, oldFont);
+    ReleaseDC(nullptr, hdc);
+
+    RECT work = {};
+    MONITORINFO monitor = {};
+    monitor.cbSize = sizeof(monitor);
+    const POINT origin = {x, caret.bottom};
+    if (GetMonitorInfoW(MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        work = monitor.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    }
+
+    const int border = GetSystemMetrics(SM_CXBORDER);
+    x = max(x, static_cast<int>(work.left));
+    size_t count = 0;
+    int width = kPadding * 2 + border * 2;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        const int next = width + (i > 0 ? kBarItemGap : 0) + widths[i];
+        if (x + next > work.right) {
+            break;
+        }
+        width = next;
+        ++count;
+    }
+    if (count == 0) {
+        // 先頭の候補も入らない位置では、先頭の候補が収まるところまで左へ寄せる
+        count = 1;
+        width = kPadding * 2 + border * 2 + widths[0];
+        x = max(static_cast<int>(work.left), static_cast<int>(work.right) - width);
+    }
+
+    texts.resize(count);
+    items_ = std::move(texts);
+    selection_ = selection;
+    layout_ = Layout::Bar;
+    barItemX_.clear();
+    barItemWidth_.clear();
+    int itemX = kPadding;
+    for (size_t i = 0; i < count; ++i) {
+        barItemX_.push_back(itemX);
+        barItemWidth_.push_back(widths[i]);
+        itemX += widths[i] + kBarItemGap;
+    }
+
+    // 未完成ローマ字の小窓 (同じフォントの1行表示) はキャレットに重ねて出し、打鍵ごとに
+    // 出たり消えたりする。小窓の有無で上下に動かないよう、常に小窓の下端より下に出す
+    const int height = lineHeight_ + kPadding * 2 + border * 2;
+    const int inlineBottom = static_cast<int>(caret.top) + lineHeight_ + kPadding * 2;
+    int y = max(static_cast<int>(caret.bottom), inlineBottom) + 2;
+    if (y + height > work.bottom) {
+        y = static_cast<int>(caret.top) - height - 2;
+    }
+
+    if (hwnd_ == nullptr) {
+        hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
+                                kWindowClassName, L"", WS_POPUP | WS_BORDER, x, y, width, height,
+                                nullptr, nullptr, globals::dllInstance, this);
+        if (hwnd_ == nullptr) {
+            return 0;
+        }
+    }
+
+    SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
+    ShowWindow(hwnd_, SW_SHOWNA);
+    InvalidateRect(hwnd_, nullptr, TRUE);
+    return count;
 }
 
 bool CandidateWindow::WindowRect(RECT* rect) const
@@ -249,12 +352,17 @@ void CandidateWindow::Paint(HDC hdc)
     RECT client = {};
     GetClientRect(hwnd_, &client);
 
-    if (inline_) {
+    if (layout_ == Layout::Inline) {
         if (!items_.empty()) {
             SetTextColor(hdc, GetSysColor(COLOR_WINDOWTEXT));
             TextOutW(hdc, kPadding, kPadding + kLinePadding, items_[0].c_str(),
                      static_cast<int>(items_[0].size()));
         }
+        SelectObject(hdc, oldFont);
+        return;
+    }
+    if (layout_ == Layout::Bar) {
+        PaintBar(hdc);
         SelectObject(hdc, oldFont);
         return;
     }
@@ -303,4 +411,29 @@ void CandidateWindow::Paint(HDC hdc)
     }
 
     SelectObject(hdc, oldFont);
+}
+
+void CandidateWindow::PaintBar(HDC hdc)
+{
+    for (size_t i = 0; i < items_.size() && i < barItemX_.size(); ++i) {
+        const RECT itemRect = {barItemX_[i], kPadding, barItemX_[i] + barItemWidth_[i],
+                               kPadding + lineHeight_};
+        const bool isSelected = (i == selection_);
+        if (isSelected) {
+            FillRect(hdc, &itemRect, GetSysColorBrush(COLOR_HIGHLIGHT));
+        }
+
+        // 番号は縦の一覧と同じく、候補本体より控えめに描画する
+        SelectObject(hdc, numberFont_);
+        SetTextColor(hdc, GetSysColor(isSelected ? COLOR_HIGHLIGHTTEXT : COLOR_GRAYTEXT));
+        const std::wstring number = std::to_wstring(i + 1);
+        const int numberX = barItemX_[i] + kBarItemPadding;
+        TextOutW(hdc, numberX, kPadding + (lineHeight_ - numberFontHeight_) / 2, number.c_str(),
+                 static_cast<int>(number.size()));
+
+        SelectObject(hdc, font_);
+        SetTextColor(hdc, GetSysColor(isSelected ? COLOR_HIGHLIGHTTEXT : COLOR_WINDOWTEXT));
+        TextOutW(hdc, numberX + numberColumnWidth_ + kNumberGap, kPadding + kLinePadding,
+                 items_[i].c_str(), static_cast<int>(items_[i].size()));
+    }
 }

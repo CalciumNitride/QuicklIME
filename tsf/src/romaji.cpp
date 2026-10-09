@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <fstream>
 #include <map>
 #include <string>
@@ -348,6 +349,13 @@ void RomajiComposer::Backspace()
         kana_.pop_back();
         raw_.pop_back();
     }
+}
+
+void RomajiComposer::RemoveFront(size_t count)
+{
+    count = (std::min)(count, kana_.size());
+    kana_.erase(0, count);
+    raw_.erase(raw_.begin(), raw_.begin() + static_cast<std::ptrdiff_t>(count));
 }
 
 void RomajiComposer::Clear()

@@ -191,31 +191,60 @@ private:
     // F7-F10 連打用: 現在の選択候補から見て循環列の次の形
     std::wstring NextFormText(size_t index, ConversionForm form) const;
 
-    // ---- 予測入力 (サジェスト) ----
-    // 現在の読みで予測候補を引き直して表示する (条件を満たさなければ消す)
-    HRESULT UpdatePrediction(ITfContext* context);
-    // composition を Display() で更新し、続けて予測を引き直す (候補選択を取り消したときの表示)
-    HRESULT UpdateCompositionAndPredict(ITfContext* context);
-    // 予測状態を破棄する (非変換中なら候補ウィンドウも隠す)
-    void ClearPrediction();
-    // サジェストの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)
-    HRESULT MovePredictionSelection(ITfContext* context, int delta);
-    // 数字キー 1〜9: サジェスト選択中に表示中ページ内の番号 (0始まり) で
-    // 候補を直接選択する (対応する候補が無ければ何もしない)
-    HRESULT SelectPredictionByNumber(ITfContext* context, size_t number);
-    // predictionIndex_ の候補を候補ウィンドウの選択に反映する。読める文書では run の文字列も
-    // 候補に置き換え、追記のみの文書 (未判定を含む) では文書を書き換えない
-    HRESULT ApplyPredictionSelection(ITfContext* context);
-    // サジェストの選択を解除してかな表示に戻す (候補ウィンドウは表示のまま)
-    HRESULT DeselectPrediction(ITfContext* context);
-    // 候補ウィンドウの上だけで選んでいるサジェスト候補を採用する: run の文字列を候補 + suffix に
-    // 作り直して run を終える (追記のみの文書では擬似 Backspace の後に追記する)
-    HRESULT AdoptPrediction(ITfContext* context, const std::wstring& suffix);
+    struct DirectKey;
+
+    // ---- 候補バー (docs/design/candidate-bar.md) ----
+    // 候補の種類
+    enum class BarKind {
+        Whole,       // 全体変換 (確定済みかな全体の各文節の先頭候補の連結)
+        Prediction,  // 予測候補
+        Head,        // 先頭文節 (部分採用)
+    };
+    struct BarCandidate {
+        BarKind kind;
+        std::wstring surface;  // 採用する表記
+        // 学習に送る読み (全体変換は確定済みかな、予測候補は候補の完全な読み、
+        // 先頭文節はその文節の読み)
+        std::wstring reading;
+    };
+    // 採用の仕方
+    enum class BarAdopt {
+        End,        // run を終える (Enter・Space)
+        CommitKey,  // 確定キー: 先頭文節は run を続け、それ以外は run を終える
+        Continue,   // 採用した部分だけを run から外して続ける (印字キー)
+    };
+    // 現在の確定済みかなで候補を作り直して表示する (条件を満たさなければ消す)。選択は解除する
+    HRESULT UpdateBar(ITfContext* context);
+    // composition を Display() で更新し、続けてバーを作り直す (候補選択を取り消したときの表示)
+    HRESULT UpdateCompositionAndBar(ITfContext* context);
+    // バーの候補と選択を破棄する (非変換中なら候補ウィンドウも隠す)
+    void ClearBar();
+    // バーの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)。
+    // 文書は書き換えない
+    HRESULT MoveBarSelection(int delta);
+    // 数字キー 1〜9: バー選択中に番号 (0始まり) の候補を選ぶ (無ければ何もしない)
+    HRESULT SelectBarByNumber(size_t number);
+    // バーの選択を解除する (バーは表示のまま)
+    HRESULT DeselectBar();
+    // バーの index の候補を採用する。run の文字列を「採用部分 + 残りのかな」(run を終えるときは
+    // 未完成のローマ字と suffix も) に作り直す (追記のみの文書では擬似 Backspace の後に追記する)。
+    // followKey があれば、採用の後にその打鍵を入れる
+    HRESULT AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
+                         const std::wstring& suffix, const DirectKey* followKey);
+    // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
+    // 継続)。updateBar なら run を続けるときにバーを作り直す
+    void FinishBarAdoption(ITfContext* context, bool updateBar);
+    // 確定キー (バー未選択): 全体変換があれば採用して run を終え、無ければ (ルール3で英字に
+    // なる場合も) アプリへ渡すキーと同じ救済を通して run を終える
+    HRESULT CommitRunKey(ITfContext* context);
+    // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
+    // システムキャレットの矩形)。どちらも取れなければ false
+    bool CaretRect(ITfContext* context, RECT* rect);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
     // 無変換のまま確定する直前に、自動英字判定の判定ルール3 (末尾に残った
-    // 子音1文字で英字と判定する) を適用する。表示が既に変換結果になっている経路
-    // (候補選択中・サジェスト選択中) では読みを英字へ作り直せないため何もしない。
+    // 子音1文字で英字と判定する) を適用する。変換結果で確定する経路
+    // (候補選択中・バー選択中) では読みを英字へ作り直せないため何もしない。
     // 読みが英字へ変わると表示も変わるため、文書の表示を同時に直せる経路からのみ呼ぶ
     // (フォーカス移動などの run 終了では呼ばない)
     void ApplyModelessCommitRule();
@@ -291,15 +320,14 @@ private:
     bool IsKeyEatenDirect(WPARAM wparam) const;
     HRESULT HandleKeyDirect(ITfContext* context, WPARAM wparam);
     // 食べずにアプリへ渡すキーのうち run を終えるもの (Enter・矢印・Ctrl 併用など) の
-    // 状態処理。候補選択中・サジェスト選択中の Enter は確定してから渡す
+    // 状態処理。候補選択中・バー選択中の Enter は確定してから渡す
     // (EnterNeedsResend のときは食べるのでここでは扱わない)。
     // OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
     void EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam);
-    // サジェスト選択中の採用に擬似 Backspace が要る (候補ウィンドウの上だけで選んでいて、
-    // 文書が読めると判定されていない)
+    // バー選択中の採用に擬似 Backspace が要る (文書が読めると判定されていない)
     bool AdoptionNeedsPseudoBackspace() const;
     // Enter (Ctrl+M) を食べて確定し、確定の後に元の打鍵を送り直す (読めると判定されていない
-    // 文書の候補選択中と、擬似 Backspace が要るサジェストの採用)。composition の有無によらない
+    // 文書の候補選択中と、擬似 Backspace が要るバーの採用)。composition の有無によらない
     bool EnterNeedsResend() const;
     // 食べた Enter (Ctrl+M) の確定を行い、確定の後で元の打鍵 vk をアプリへ送り直す
     HRESULT CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted);
@@ -316,12 +344,12 @@ private:
     HRESULT ReconvertSelectionDirect(ITfContext* context);
     // 現在の選択テキストが後置再変換の対象なら true (対象なら textOut に入れる)
     bool ReadReconvertibleSelection(ITfContext* context, std::wstring* textOut) const;
-    // 候補選択中・サジェスト選択中の確定: 選択を末尾に潰して run を終える
-    // (候補ウィンドウの上だけのサジェスト選択は AdoptPrediction で採用する)
+    // 候補選択中の確定 (選択を末尾に潰して run を終える)、バー選択中の確定 (選択中の候補を
+    // 採用して run を終える)
     HRESULT CommitRunDirect(ITfContext* context);
-    // 文書には確定したかなを、小窓には未完成のローマ字を出してサジェストを引き直す
+    // 文書には確定したかなを、小窓には未完成のローマ字を出してバーを作り直す
     // (昇格できなかった run の変換を取り消したとき)
-    HRESULT UpdateRunAndPredict(ITfContext* context);
+    HRESULT UpdateRunAndBar(ITfContext* context);
     // キャレット直前の expected を newText に置き換える (expected が空なら挿入)
     ReplaceRunResult ReplaceRunText(ITfContext* context, const std::wstring& expected,
                                     const std::wstring& newText);
@@ -374,7 +402,8 @@ private:
     enum class PseudoKeyAction {
         None,
         Compose,  // run の読みで composition を張り、変換 (appendActionFunc_) に入る
-        Append,   // appendActionText_ を追記する (英字切替・ルール3・サジェスト採用・確定アンドゥ)
+        Append,   // appendActionText_ を追記する (英字切替・ルール3・確定アンドゥ)
+        Adopt,    // バーの採用 (adoption_.written) を追記して FinishBarAdoption を行う
     };
     void DebugLog(const std::wstring& message) const;
     void SetAppendDocument(AppendDocument document, const wchar_t* reason);
@@ -456,12 +485,26 @@ private:
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
 
-    // 予測入力 (かな入力中のサジェスト)。候補ウィンドウは変換中と排他で共用する
-    std::vector<PredictionCandidate> predictions_;  // 予測候補 (空 = サジェスト非表示)
-    int predictionIndex_;                           // 選択中の候補 index (-1 = 未選択)
-    // 選択中のサジェスト候補が run の文字列として文書に入っている (読める文書での選択、
-    // または採用の作り直しを始めた後)。偽なら選択は候補ウィンドウの上だけ
-    bool predictionInDocument_;
+    // 候補バー。候補ウィンドウは候補選択中の縦の表示と排他で共用する
+    std::vector<BarCandidate> barItems_;          // 表示中の候補 (空 = 非表示)
+    std::wstring barKana_;                        // 候補を作った確定済みかな
+    std::vector<ConversionSegment> barSegments_;  // 全体変換の文節 (全体変換の学習に使う)
+    int barIndex_;                                // 選択中の候補 index (-1 = 未選択)
+    // バーの x 座標。run で最初に出した時点 (部分採用の後はその時点) の位置に固定する
+    int barX_;
+    bool barXFixed_;
+    // 採用で文書を書き換えた後に行うこと (追記のみの文書では目印の打鍵まで持ち越す)
+    struct BarAdoption {
+        std::vector<LearnEntry> learn;
+        std::wstring contextReading;   // 次の前文脈にする文節
+        std::wstring contextSurface;
+        size_t readingLength = 0;      // 読みの先頭から取り除く文字数
+        size_t adoptedLength = 0;      // written のうち採用部分の長さ
+        std::wstring written;          // 文書の run の文字列を置き換える文字列
+        bool endRun = false;
+        RomajiComposer before;         // 採用前の読み (確定アンドゥの復元用)
+    };
+    BarAdoption adoption_;
 
     // run: 現在文書に入っている、この run 由来の文字列 (未完成のローマ字は含まない)
     std::wstring surface_;
@@ -482,7 +525,7 @@ private:
     KeyFunc appendActionFunc_;               // Compose で行う変換 (Convert は通常の変換)
     std::wstring appendActionText_;          // Append で入れる文字列
     bool appendActionEndRun_;                // Append の後に run を終えるか
-    // Append の後に入れる印字キー (サジェスト選択中の印字キーで採用したとき)。
+    // Adopt の後に入れる印字キー (バー選択中の印字キーで採用したとき)。
     // 擬似 Backspace より先に追記すると、その文字まで消されるため目印の後に回す
     DirectKey appendFollowKey_;
     bool appendFollowKeyPending_;

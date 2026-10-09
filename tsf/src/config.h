@@ -33,7 +33,7 @@ enum class KeyState {
     Idle,       // 入力なし (run が無い)
     Run,        // run 中 (候補選択中でもサジェスト選択中でもない)
     Candidate,  // 候補選択中 (composition に昇格しているかは問わない)
-    Suggest,    // サジェスト選択中
+    Suggest,    // サジェスト選択中 (候補バーで候補を選んでいる)
 };
 
 constexpr size_t kKeyStateCount = 4;
@@ -80,6 +80,10 @@ struct TsfConfig {
     // モードレス入力 (英語の打鍵を自動で判定して英字のまま入れる。
     // docs/design/modeless.md)
     bool modeless = false;
+    // 入力中に横一列の候補バーを出す (docs/design/candidate-bar.md)
+    bool candidateBar = true;
+    // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
+    int minSuggestChars = 2;
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();

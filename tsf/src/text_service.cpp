@@ -302,8 +302,9 @@ TextService::TextService()
       converting_(false),
       segmentIndex_(0),
       segmentsResized_(false),
-      predictionIndex_(-1),
-      predictionInDocument_(false),
+      barIndex_(-1),
+      barX_(0),
+      barXFixed_(false),
       surfaceCaret_(0),
       surfaceSelectLength_(0),
       promoted_(false),
@@ -640,7 +641,7 @@ KeyState TextService::CurrentKeyState() const
     if (converting_) {
         return KeyState::Candidate;
     }
-    if (predictionIndex_ >= 0) {
+    if (barIndex_ >= 0) {
         return KeyState::Suggest;
     }
     return (InRun() || Composing()) ? KeyState::Run : KeyState::Idle;
@@ -723,7 +724,7 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     case VK_RIGHT:
     case VK_PRIOR:
     case VK_NEXT:
-        // Tab (変換を取り消してサジェスト選択へ)・矢印・PgUp/PgDn は常に食べる
+        // Tab (変換を取り消してバーの先頭を選ぶ)・矢印・PgUp/PgDn は常に食べる
         // (アプリにキャレットやフォーカスを動かさせない)。用途が無い状態では
         // 食べた上で何もしない
         return true;
@@ -971,7 +972,8 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
 
     // アプリ側の操作 (クリックなど) で composition が終了した。候補選択中の状態を捨てる
     ClearConversion();
-    ClearPrediction();
+    ClearBar();
+    barXFixed_ = false;
     composer_.Clear();
     promoted_ = false;
     if (composition_ != nullptr) {
@@ -1098,7 +1100,7 @@ HRESULT TextService::CommitComposition(ITfContext* context)
 
 void TextService::ApplyModelessCommitRule()
 {
-    if (converting_ || predictionIndex_ >= 0) {
+    if (converting_ || barIndex_ >= 0) {
         return;
     }
     composer_.FinishForCommit();
@@ -1168,15 +1170,14 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         if (Composing()) {
             return CommitComposition(context);
         }
-        if (converting_ || predictionIndex_ >= 0) {
+        if (converting_) {
             return CommitRunDirect(context);
         }
-        // run 中は、アプリへ渡すキーで run を終えるときと同じ救済を通す
-        // (読める文書ではモードレスのルール3、未完成のローマ字は文書に残す)
-        if (InRun()) {
-            EndAppendRunForPassthroughKey(context, false, false);
+        if (barIndex_ >= 0) {
+            return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::CommitKey, L"",
+                                nullptr);
         }
-        return S_OK;
+        return CommitRunKey(context);
     case KeyFunc::UndoCommit:
         return UndoCommit(context);
     case KeyFunc::RegisterWord:
@@ -1237,7 +1238,7 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
             composer_.Clear();
             return hr;
         }
-        return UpdateCompositionAndPredict(context);
+        return UpdateCompositionAndBar(context);
     }
 
     switch (wparam) {
@@ -1269,15 +1270,15 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         return hr;
     }
     case VK_TAB:
-        // 変換を取り消してサジェスト選択へ移行する (予測が無ければかな表示に戻るだけ)。
-        // 先に run へ戻し、選択は run のサジェスト選択として行う
+        // 変換を取り消してバーの先頭を選ぶ (バーが無ければかな表示に戻るだけ)。
+        // 先に run へ戻し、選択は run のバー選択として行う
         if (converting_) {
             HRESULT hr = CancelConversion(context);
             if (FAILED(hr)) {
                 return hr;
             }
             DemoteIfLeftConversion(context);
-            return MovePredictionSelection(context, +1);
+            return MoveBarSelection(+1);
         }
         return S_OK;
     case VK_DOWN:
@@ -1344,7 +1345,7 @@ HRESULT TextService::StartConversion(ITfContext* context)
 
 void TextService::BuildConversionSegments()
 {
-    ClearPrediction();
+    ClearBar();
 
     // 文節列をエンジンに問い合わせる。
     // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
@@ -1608,7 +1609,7 @@ void TextService::EnsureConversionState()
     if (converting_) {
         return;
     }
-    ClearPrediction();
+    ClearBar();
     ConversionSegment segment;
     segment.reading = composer_.Commit();
     segment.candidates.push_back(segment.reading);
@@ -1779,133 +1780,177 @@ HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
     ClearConversion();
-    // かな入力に戻るので、サジェストも引き直して復活させる
+    // かな入力に戻るので、バーも作り直して復活させる
     if (!Composing()) {
-        return UpdateRunAndPredict(context);
+        return UpdateRunAndBar(context);
     }
-    return UpdateCompositionAndPredict(context);
+    return UpdateCompositionAndBar(context);
 }
 
-// ---- 予測入力 (サジェスト) ----
+// ---- 候補バー ----
 
-HRESULT TextService::UpdatePrediction(ITfContext* context)
+HRESULT TextService::UpdateBar(ITfContext* context)
 {
-    predictionIndex_ = -1;
-    predictionInDocument_ = false;
-    if ((!Composing() && !InRun()) || converting_) {
-        ClearPrediction();
+    barIndex_ = -1;
+    const TsfConfig& config = config_.Get();
+    // 候補選択中は縦の候補ウィンドウを使う。モードレスの英字モード中は英文の入力なので出さない
+    if (!config.candidateBar || (!Composing() && !InRun()) || converting_ ||
+        (config.modeless && composer_.AsciiMode())) {
+        ClearBar();
+        return S_OK;
+    }
+    // 未完成のローマ字は採用の対象外なので、候補は確定済みかなだけから作る
+    const std::wstring kana = composer_.ConfirmedKana();
+    if (kana.size() < static_cast<size_t>(config.minSuggestChars)) {
+        ClearBar();
         return S_OK;
     }
 
-    // 短すぎる読みは予測しない (2文字の下限はエンジン側 PREDICT と同じで、
-    // 無駄な往復を省くだけ)。英字モードや英字が残る入力でも予測は行い、
-    // 英字読みの確定履歴 (英単語など) が前方一致すればサジェストする
-    // (辞書の読みはかなのみなので、英字入力では自然に履歴だけが対象になる)
-    const std::wstring kana = composer_.Commit();
-    if (kana.size() < 2) {
-        ClearPrediction();
+    // どちらもエンジン未接続なら即 false を返す (自動起動・接続待ちで打鍵を止めない)
+    std::vector<ConversionSegment> segments;
+    if (!engine_.ConvertSegmentsLive(kana, CurrentContext(), &segments)) {
+        segments.clear();
+    }
+    for (const ConversionSegment& segment : segments) {
+        if (segment.candidates.empty()) {
+            segments.clear();
+            break;
+        }
+    }
+    std::vector<PredictionCandidate> predictions;
+    if (!engine_.Predict(kana, &predictions)) {
+        predictions.clear();
+    }
+
+    std::vector<BarCandidate> items;
+    const auto contains = [&items](const std::wstring& surface) {
+        return std::any_of(items.begin(), items.end(),
+                           [&surface](const BarCandidate& item) { return item.surface == surface; });
+    };
+    std::wstring whole;
+    for (const ConversionSegment& segment : segments) {
+        whole += segment.candidates[0];
+    }
+    if (!segments.empty() && whole != kana) {
+        items.push_back({BarKind::Whole, whole, kana});
+    }
+    constexpr size_t kMaxHeads = 3;
+    std::vector<std::wstring> heads;
+    if (segments.size() >= 2 && !segments[0].reading.empty() &&
+        kana.compare(0, segments[0].reading.size(), segments[0].reading) == 0) {
+        const auto& candidates = segments[0].candidates;
+        heads.assign(candidates.begin(),
+                     candidates.begin() + (std::min)(kMaxHeads, candidates.size()));
+    }
+    const size_t predictionLimit = CandidateWindow::kPageSize - items.size() - heads.size();
+    size_t predictionCount = 0;
+    for (const PredictionCandidate& candidate : predictions) {
+        if (predictionCount >= predictionLimit) {
+            break;
+        }
+        if (contains(candidate.surface)) {
+            continue;
+        }
+        items.push_back({BarKind::Prediction, candidate.surface, candidate.reading});
+        ++predictionCount;
+    }
+    for (const std::wstring& head : heads) {
+        if (!contains(head)) {
+            items.push_back({BarKind::Head, head, segments[0].reading});
+        }
+    }
+    if (items.empty()) {
+        ClearBar();
         return S_OK;
     }
 
-    // エンジン未接続なら Predict は即 false を返す (自動起動で打鍵を止めない)
-    if (!engine_.Predict(kana, &predictions_) || predictions_.empty()) {
-        ClearPrediction();
+    RECT caret = {};
+    if (!CaretRect(context, &caret)) {
+        ClearBar();
         return S_OK;
     }
-
-    std::vector<std::wstring> items;
-    for (const PredictionCandidate& candidate : predictions_) {
-        items.push_back(candidate.surface);
+    if (!barXFixed_) {
+        barX_ = caret.left;
+        barXFixed_ = true;
     }
-    // selection に範囲外 (items.size()) を渡し、どの行もハイライトしない表示にする
-    candidateWindow_.Show(CandidateAnchor(context), items, items.size());
+    std::vector<CandidateWindow::BarItem> labels;
+    for (const BarCandidate& item : items) {
+        labels.push_back({item.surface, item.kind == BarKind::Head});
+    }
+    // selection に範囲外を渡し、どの候補も強調しない表示にする
+    const size_t shown = candidateWindow_.ShowBar(caret, barX_, labels, labels.size());
+    if (shown == 0) {
+        ClearBar();
+        return S_OK;
+    }
+    // 作業領域に収まらず表示しなかった候補は、選択の対象からも外す
+    items.resize(shown);
+    barItems_ = std::move(items);
+    barKana_ = kana;
+    barSegments_ = std::move(segments);
     return S_OK;
 }
 
-HRESULT TextService::UpdateCompositionAndPredict(ITfContext* context)
+HRESULT TextService::UpdateCompositionAndBar(ITfContext* context)
 {
     HRESULT hr = UpdateCompositionText(context, composer_.Display());
     if (FAILED(hr)) {
         return hr;
     }
-    UpdatePrediction(context);
+    UpdateBar(context);
     return hr;
 }
 
-void TextService::ClearPrediction()
+void TextService::ClearBar()
 {
-    predictions_.clear();
-    predictionIndex_ = -1;
-    predictionInDocument_ = false;
+    barItems_.clear();
+    barKana_.clear();
+    barSegments_.clear();
+    barIndex_ = -1;
     // 変換中は候補ウィンドウを変換側が使っているので触らない
     if (!converting_) {
         candidateWindow_.Hide();
     }
 }
 
-HRESULT TextService::MovePredictionSelection(ITfContext* context, int delta)
+HRESULT TextService::MoveBarSelection(int delta)
 {
-    if (converting_ || predictions_.empty()) {
+    if (converting_ || barItems_.empty()) {
         return S_OK;
     }
     if (delta > 0) {
         // 未選択 (-1) からは先頭へ、末尾からは先頭へ循環する
-        predictionIndex_ = (predictionIndex_ + 1) % static_cast<int>(predictions_.size());
-    } else if (predictionIndex_ < 0) {
+        barIndex_ = (barIndex_ + 1) % static_cast<int>(barItems_.size());
+    } else if (barIndex_ < 0) {
         return S_OK; // 未選択の↑は何もしない
-    } else if (predictionIndex_ == 0) {
-        // 先頭でさらに↑は選択解除してかな表示に戻す
-        return DeselectPrediction(context);
+    } else if (barIndex_ == 0) {
+        // 先頭でさらに↑は選択解除
+        return DeselectBar();
     } else {
-        --predictionIndex_;
+        --barIndex_;
     }
-    return ApplyPredictionSelection(context);
+    candidateWindow_.SetSelection(static_cast<size_t>(barIndex_));
+    return S_OK;
 }
 
-HRESULT TextService::SelectPredictionByNumber(ITfContext* context, size_t number)
+HRESULT TextService::SelectBarByNumber(size_t number)
 {
-    if (converting_ || predictions_.empty() || predictionIndex_ < 0) {
-        return E_UNEXPECTED; // サジェスト選択中のみ呼ばれる
+    if (converting_ || barItems_.empty() || barIndex_ < 0) {
+        return E_UNEXPECTED; // バー選択中のみ呼ばれる
     }
-    // 候補ウィンドウの表示ページと番号の対応は変換候補と同じ
-    const size_t page = static_cast<size_t>(predictionIndex_) / CandidateWindow::kPageSize;
-    const size_t index = page * CandidateWindow::kPageSize + number;
-    if (index >= predictions_.size()) {
+    if (number >= barItems_.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
-    predictionIndex_ = static_cast<int>(index);
-    return ApplyPredictionSelection(context);
+    barIndex_ = static_cast<int>(number);
+    candidateWindow_.SetSelection(number);
+    return S_OK;
 }
 
-HRESULT TextService::ApplyPredictionSelection(ITfContext* context)
+HRESULT TextService::DeselectBar()
 {
-    const size_t index = static_cast<size_t>(predictionIndex_);
-    candidateWindow_.SetSelection(index);
-    ClassifyAppendDocument(context);
-    if (appendDocument_ != AppendDocument::Readable) {
-        // 追記のみの文書の置き換えは擬似 Backspace が要るので、選択のたびには行わず、
-        // 採用したときに一度だけ作り直す (AdoptPrediction)
-        return S_OK;
-    }
-    HRESULT hr = ReplaceRunDisplay(context, predictions_[index].surface);
-    predictionInDocument_ = SUCCEEDED(hr);
-    return hr;
-}
-
-HRESULT TextService::DeselectPrediction(ITfContext* context)
-{
-    predictionIndex_ = -1;
-    candidateWindow_.SetSelection(predictions_.size()); // 範囲外 = ハイライトなし
-    if (!predictionInDocument_) {
-        return S_OK; // 候補ウィンドウの上だけの選択だった
-    }
-    predictionInDocument_ = false;
-    // 文書には確定したかなだけを戻し、未完成のローマ字は小窓に出し直す
-    HRESULT hr = ReplaceRunDisplay(context, composer_.ConfirmedKana());
-    if (SUCCEEDED(hr)) {
-        UpdateAppendPending(context, AppendPendingText());
-    }
-    return hr;
+    barIndex_ = -1;
+    candidateWindow_.SetSelection(barItems_.size()); // 範囲外 = 強調なし
+    return S_OK;
 }
 
 HRESULT TextService::CommitConversion(ITfContext* context)
@@ -2018,7 +2063,8 @@ void TextService::FinishConversionState(const std::wstring& commitText)
         lastComposer_ = composer_;
     }
     ClearConversion();
-    ClearPrediction();
+    ClearBar();
+    barXFixed_ = false;
     composer_.Clear();
 }
 
@@ -2185,7 +2231,7 @@ RECT TextService::CandidateAnchor(ITfContext* context)
             rect = {pt.x, pt.y, pt.x, pt.y};
         }
     }
-    // 未完成ローマ字の小窓はキャレットに重ねて出すので、サジェストはその下に出す
+    // 未完成ローマ字の小窓はキャレットに重ねて出すので、候補ウィンドウはその下に出す
     RECT pendingRect = {};
     if (pendingWindow_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
         rect.bottom = pendingRect.bottom;
@@ -2269,9 +2315,10 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         lastComposer_ = composer_;
     }
 
-    // 変換状態・予測状態と候補ウィンドウの後始末
+    // 変換状態・バーと候補ウィンドウの後始末
     ClearConversion();
-    ClearPrediction();
+    ClearBar();
+    barXFixed_ = false;
 
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),

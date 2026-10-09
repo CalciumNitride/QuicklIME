@@ -370,6 +370,10 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseClamped(value, 10, 40, config.candidateFontSize);
     } else if (key == L"modeless") {
         ParseBool(value, config.modeless);
+    } else if (key == L"candidate_bar") {
+        ParseBool(value, config.candidateBar);
+    } else if (key == L"min_suggest_chars") {
+        ParseClamped(value, 1, 5, config.minSuggestChars);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

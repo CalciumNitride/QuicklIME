@@ -37,6 +37,10 @@ public:
     // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)
     void Backspace();
 
+    // 確定済みのかなの先頭 count 文字と、対応する打鍵列を取り除く
+    // (候補バーで採用した部分を読みから外す。未変換ローマ字と英字モードは維持する)
+    void RemoveFront(size_t count);
+
     void Clear();
     bool Empty() const;
 
