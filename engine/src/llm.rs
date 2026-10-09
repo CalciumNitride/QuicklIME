@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -123,19 +123,21 @@ impl Launcher for ProcessLauncher {
 }
 
 /// エンジンの exe のディレクトリと、開発レイアウトのリポジトリ直下
-/// (exe が engine/target/{debug,release}/ にある前提)
-fn exe_dir_and_repo_root() -> Option<(PathBuf, PathBuf)> {
+/// (exe が engine/target/{debug,release}/ にある前提)。
+/// インストール先 (C:\Program Files\QuicklIME) のように3階層さかのぼれない場所では
+/// リポジトリ直下は None にし、exe のディレクトリだけで探させる
+fn exe_dir_and_repo_root() -> Option<(PathBuf, Option<PathBuf>)> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?.to_path_buf();
-    let root = dir.parent()?.parent()?.parent()?.to_path_buf();
+    let root = dir.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf);
     Some((dir, root))
 }
 
 /// LLM の exe の場所。exe と同じディレクトリ → 開発レイアウトの llm\target\release\
 fn llm_exe_path(name: &str) -> Option<PathBuf> {
     let (dir, root) = exe_dir_and_repo_root()?;
-    [dir.join(name), root.join("llm").join("target").join("release").join(name)]
-        .into_iter()
+    std::iter::once(dir.join(name))
+        .chain(root.map(|r| r.join("llm").join("target").join("release").join(name)))
         .find(|p| p.is_file())
 }
 
@@ -150,7 +152,7 @@ fn model_dir() -> Option<PathBuf> {
     if bundled.is_dir() {
         return Some(bundled);
     }
-    Some(root.join("models"))
+    root.map(|r| r.join("models"))
 }
 
 struct ProcessChild {

@@ -16,7 +16,7 @@
 ; - LLM の子プロセス (quicklime-llm*.exe) はエンジンが起動する。モデルは {app}\models\ に置く
 
 #define MyAppName "QuicklIME"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "1.0.0"
 #define Staging "staging"
 #define CommonFileFlags "ignoreversion restartreplace uninsrestartdelete"
 
