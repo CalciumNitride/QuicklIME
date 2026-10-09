@@ -79,6 +79,12 @@ public:
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
 
+    // かなのかたまりごとの打鍵列から、英字区間を始める要素の位置を問い合わせる (ASCIISTART)。
+    // exact なら英単語との完全一致、それ以外は前方一致で照合する。
+    // 打鍵中に呼ぶため、エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIISTART を
+    // 知らない旧エンジンのときは 0 (全体を英字にする) を返す
+    size_t AsciiStartLive(const std::vector<std::wstring>& elements, bool exact);
+
     // RERANKGET の結果
     enum class RerankStatus {
         Pending,  // 推論中・順番待ち

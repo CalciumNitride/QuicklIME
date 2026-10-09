@@ -3,6 +3,7 @@
 // (設計は docs/design/direct-input.md、docs/design/append-input.md)
 #include "text_service.h"
 
+#include <algorithm>
 #include <new>
 #include <vector>
 
@@ -63,6 +64,19 @@ thread_local TextService* t_mouseHookOwner = nullptr;
 bool StartsWith(const std::wstring& text, const std::wstring& prefix)
 {
     return text.size() >= prefix.size() && text.compare(0, prefix.size(), prefix) == 0;
+}
+
+// a と b に共通する先頭の長さ (サロゲートペアの途中では切らない)
+size_t CommonPrefixLength(const std::wstring& a, const std::wstring& b)
+{
+    size_t length = 0;
+    while (length < a.size() && length < b.size() && a[length] == b[length]) {
+        ++length;
+    }
+    if (length > 0 && IS_HIGH_SURROGATE(a[length - 1])) {
+        --length;
+    }
+    return length;
 }
 
 // 末尾の表示上の1文字の UTF-16 単位数 (サロゲートペアなら 2)
@@ -648,6 +662,7 @@ void TextService::PushDirectKey(const DirectKey& key)
         composer_.PushKana(key.raw, key.raw);
     } else if (key.romaji != 0) {
         composer_.Push(key.romaji);
+        ResolveAsciiRequest();
     } else {
         composer_.PushKana(key.kana, key.raw);
     }
@@ -863,31 +878,61 @@ HRESULT TextService::CommitRunKey(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
-    // ルール3 (EndAppendRunForPassthroughKey と同じく読める文書だけ) で英字になる入力は、
-    // 全体変換を採用せずに英字で終える
+    // 確定キーは IME が食べるキーなので、追記のみの文書でもルール3 を適用できる
+    // (擬似 Backspace より先にアプリへ届くキーが無い)
     RomajiComposer probe = composer_;
     probe.FinishForCommit();
-    const bool becomesAscii =
-        appendDocument_ == AppendDocument::Readable && probe.AsciiMode() != composer_.AsciiMode();
-    if (!becomesAscii) {
-        for (size_t i = 0; i < barItems_.size(); ++i) {
-            if (barItems_[i].kind == BarKind::Whole) {
-                return AdoptBarItem(context, i, BarAdopt::End, L"", nullptr);
-            }
+    if (probe.AsciiRequested()) {
+        probe.ConfirmAscii(
+            engine_.AsciiStartLive(probe.AsciiRequestElements(), probe.AsciiRequestAtCommit()));
+        return CommitAsciiRunKey(context, probe);
+    }
+    for (size_t i = 0; i < barItems_.size(); ++i) {
+        if (barItems_[i].kind == BarKind::Whole) {
+            return AdoptBarItem(context, i, BarAdopt::End, L"", nullptr);
         }
     }
     // 全体変換が無ければ、アプリへ渡すキーで run を終えるときと同じ救済を通す
-    // (読める文書ではモードレスのルール3、未完成のローマ字は文書に残す)
+    // (未完成のローマ字は文書に残す)
     EndAppendRunForPassthroughKey(context, false, false);
     return S_OK;
 }
 
+HRESULT TextService::CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii)
+{
+    // 文書はまだ英字に直していない。追記のみの文書で擬似 Backspace の処理を2つ続けると
+    // 目印の打鍵の対応が食い違うため、書き換えは組み立てた文字列で1回だけ行う
+    composer_ = ascii;
+    if (SplitAsciiRun()) {
+        // 表示中のバーは分割前のかな全体に対するもので使えないので、日本語区間の全体変換を取り直す
+        const std::wstring kana = BarReading();
+        std::vector<SentenceCandidate> sentences;
+        if (config_.Get().candidateBar &&
+            kana.size() >= static_cast<size_t>(config_.Get().minSuggestChars) &&
+            engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
+            std::vector<BarCandidate> items = BuildBarItems(kana, sentences, {});
+            for (BarCandidate& item : items) {
+                if (item.kind == BarKind::Whole) {
+                    barItems_.assign(1, std::move(item));
+                    barKana_ = kana;
+                    barIndex_ = -1;
+                    return AdoptBarItem(context, 0, BarAdopt::End, L"", nullptr, true);
+                }
+            }
+        }
+    }
+    // run 全体が英字のとき、日本語区間の全体変換が無いときは、英字にした読みのまま終える
+    return RewriteAppendRun(context, composer_.Display(), true) == AppendResult::Failed ? E_FAIL
+                                                                                         : S_OK;
+}
+
 HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
-                                  const std::wstring& suffix, const DirectKey* followKey)
+                                  const std::wstring& suffix, const DirectKey* followKey,
+                                  bool restFromReading)
 {
     // 採用できないときは選択を解除する (Enter を送り直す経路が、選択中のまま再び
     // 採用を試みて送り直しを繰り返さないように)
-    const std::wstring& kana = composer_.ConfirmedKana();
+    const std::wstring kana = BarReading();
     if (index >= barItems_.size() || kana != barKana_) {
         DeselectBar();
         return E_UNEXPECTED;
@@ -921,10 +966,13 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     adoption.readingLength = readingLength;
     adoption.adoptedLength = item.surface.size();
     adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !head);
-    adoption.written = item.surface + surface_.substr(readingLength);
+    // restFromReading のときは、読みが文書より先に変わっている (英字区間をまだ文書に
+    // 反映していない) ので、残りは文書ではなく読みの表示から作る
+    adoption.written = item.surface + (restFromReading ? composer_.Display().substr(readingLength)
+                                                       : surface_.substr(readingLength));
     if (adoption.endRun) {
         // run を終えるので、未完成のローマ字も文書に残す (確定キー・Enter の救済と同じ)
-        adoption.written += AppendPendingText() + suffix;
+        adoption.written += (restFromReading ? L"" : AppendPendingText()) + suffix;
     }
     adoption.before = composer_;
     adoption_ = std::move(adoption);
@@ -1297,8 +1345,10 @@ TextService::AppendResult TextService::RewriteAppendRun(ITfContext* context,
 {
     pendingWindow_.Hide();
     ClassifyAppendDocument(context);
+    const size_t keep = CommonPrefixLength(surface_, newText);
     if (appendDocument_ == AppendDocument::Readable) {
-        const ReplaceRunResult result = ReplaceRunText(context, surface_, newText);
+        const ReplaceRunResult result =
+            ReplaceRunText(context, surface_.substr(keep), newText.substr(keep));
         if (result != ReplaceRunResult::Succeeded) {
             DebugLog(L"作り直しの置換に失敗: run を破棄");
             DropRun();
@@ -1315,8 +1365,8 @@ TextService::AppendResult TextService::RewriteAppendRun(ITfContext* context,
         }
         return AppendResult::Done;
     }
-    const HRESULT hr =
-        ScheduleAppendAction(context, PseudoKeyAction::Append, KeyFunc::None, newText, endRunAfter);
+    const HRESULT hr = ScheduleAppendAction(context, PseudoKeyAction::Append, KeyFunc::None,
+                                            newText, endRunAfter, keep);
     return SUCCEEDED(hr) ? AppendResult::Done : AppendResult::Failed;
 }
 
@@ -1471,7 +1521,10 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, 
     const std::wstring display = composer_.Display();
     if (display != before.Display()) {
         pendingWindow_.Hide();
-        if (ReplaceRunText(context, surface_, display) == ReplaceRunResult::Succeeded) {
+        // 英字区間に入らなかった日本語区間は書き換えない
+        const size_t keep = CommonPrefixLength(surface_, display);
+        if (ReplaceRunText(context, surface_.substr(keep), display.substr(keep)) ==
+            ReplaceRunResult::Succeeded) {
             surface_ = display;
             surfaceCaret_ = surface_.size();
             surfaceSelectLength_ = 0;
@@ -1516,13 +1569,15 @@ HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
 
 HRESULT TextService::ScheduleAppendAction(ITfContext* context, PseudoKeyAction action,
                                           KeyFunc func, const std::wstring& text,
-                                          bool endRunAfter)
+                                          bool endRunAfter, size_t keep)
 {
+    keep = (std::min)(keep, surface_.size());
     appendAction_ = action;
     appendActionFunc_ = func;
     appendActionText_ = text;
     appendActionEndRun_ = endRunAfter;
-    const size_t count = DisplayCharCount(surface_);
+    appendActionKeep_ = keep;
+    const size_t count = DisplayCharCount(surface_.substr(keep));
     if (count == 0) {
         RunAppendAction(context);
         return S_OK;
@@ -1541,7 +1596,7 @@ HRESULT TextService::ScheduleAppendAction(ITfContext* context, PseudoKeyAction a
     }
     awaitingMarker_ = true;
     DebugLog(L"擬似 Backspace を送信: " + std::to_wstring(count) + L" 個 (surface=" + surface_ +
-             L")");
+             L"、残す先頭 " + std::to_wstring(keep) + L" 文字)");
     return S_OK;
 }
 
@@ -1554,10 +1609,12 @@ void TextService::RunAppendAction(ITfContext* context)
     if (action == PseudoKeyAction::None || context == nullptr) {
         return;
     }
-    // 擬似 Backspace で run の文字列は文書から消えている
-    const std::wstring deleted = surface_;
-    surface_.clear();
-    surfaceCaret_ = 0;
+    // 擬似 Backspace で run の文字列は (残した先頭を除いて) 文書から消えている
+    const size_t keep = (std::min)(appendActionKeep_, surface_.size());
+    appendActionKeep_ = 0;
+    const std::wstring deleted = surface_.substr(keep);
+    surface_.resize(keep);
+    surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
 
     if (action == PseudoKeyAction::Compose) {
@@ -1595,7 +1652,7 @@ void TextService::RunAppendAction(ITfContext* context)
     }
 
     const std::wstring text = appendActionText_;
-    if (AppendRunText(context, text) != AppendResult::Done) {
+    if (AppendRunText(context, text.substr((std::min)(keep, text.size()))) != AppendResult::Done) {
         return;
     }
     surface_ = text;

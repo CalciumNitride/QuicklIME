@@ -225,13 +225,28 @@ void RomajiComposer::Push(wchar_t c)
 void RomajiComposer::PushKana(const std::wstring& kana, const std::wstring& raw)
 {
     // 未変換ローマ字が残っていたら確定と同じ規則で救済してから記号を足す
+    FlushPending();
+    AppendKana(kana, raw);
+}
+
+void RomajiComposer::FlushPending()
+{
     if (pending_ == L"n") {
         AppendKana(L"ん", L"n");
     } else if (!pending_.empty()) {
         AppendKana(pending_, pending_);
     }
     pending_.clear();
-    AppendKana(kana, raw);
+}
+
+void RomajiComposer::EnterAsciiMode()
+{
+    if (asciiMode_) {
+        return;
+    }
+    FlushPending();
+    asciiStart_ = kana_.size();
+    asciiMode_ = true;
 }
 
 void RomajiComposer::AppendKana(const std::wstring& kana, const std::wstring& raw)
@@ -258,7 +273,7 @@ void RomajiComposer::Convert()
             // 「へっ」+「ぉ」) は日本語の入力に現れないため英字と判定する
             if (modeless_ && !asciiMode_ && !kana_.empty() && kana_.back() == L'っ' &&
                 IsSmallVowelKana(it->second)) {
-                SwitchToAscii();
+                asciiRequest_ = AsciiRequest::Typing;
                 return;
             }
             AppendKana(it->second, pending_);
@@ -289,7 +304,7 @@ void RomajiComposer::Convert()
         // 自動英字判定ルール1: ローマ字として成立しない英小文字の素通しは
         // 英語特有の子音連続 (apple の pl、str、th など) とみなして英字と判定する
         if (modeless_ && !asciiMode_ && IsAsciiLower(pending_[0])) {
-            SwitchToAscii();
+            asciiRequest_ = AsciiRequest::Typing;
             return;
         }
 
@@ -309,19 +324,64 @@ void RomajiComposer::FinishForCommit()
     if (pending_[0] == L'n' || !IsAsciiLower(pending_[0])) {
         return;
     }
-    SwitchToAscii();
+    asciiRequest_ = AsciiRequest::Commit;
 }
 
-void RomajiComposer::SwitchToAscii()
+std::vector<std::wstring> RomajiComposer::AsciiRequestElements() const
 {
-    const std::wstring raw = Raw();
-    kana_.clear();
-    raw_.clear();
+    std::vector<std::wstring> elements;
+    for (size_t i = 0; i < raw_.size(); ++i) {
+        if (i == 0 || !raw_[i].empty()) {
+            elements.push_back(raw_[i]);
+        } else {
+            elements.back() += raw_[i];
+        }
+    }
+    if (!pending_.empty()) {
+        elements.push_back(pending_);
+    }
+    return elements;
+}
+
+void RomajiComposer::ConfirmAscii(size_t element)
+{
+    // element 番目のかたまりの先頭の位置。かたまりの数以上は未変換ローマ字の要素で、
+    // かなはすべて日本語区間に残る
+    size_t start = 0;
+    size_t chunk = 0;
+    for (; start < raw_.size(); ++start) {
+        if (start == 0 || !raw_[start].empty()) {
+            if (chunk == element) {
+                break;
+            }
+            ++chunk;
+        }
+    }
+    asciiRequest_ = AsciiRequest::None;
+    SwitchToAscii(start);
+}
+
+void RomajiComposer::SwitchToAscii(size_t start)
+{
+    start = (std::min)(start, kana_.size());
+    // 2文字以上のかな (「きょ」など) は打鍵列を先頭の文字だけが持つため、途中では
+    // 打鍵列を分けられない。かたまりの先頭まで戻して、かたまりごと英字区間に入れる
+    while (start > 0 && start < raw_.size() && raw_[start].empty()) {
+        --start;
+    }
+    std::wstring raw;
+    for (size_t i = start; i < raw_.size(); ++i) {
+        raw += raw_[i];
+    }
+    raw += pending_;
+    kana_.erase(start);
+    raw_.erase(raw_.begin() + static_cast<std::ptrdiff_t>(start), raw_.end());
     pending_.clear();
     for (const wchar_t c : raw) {
         AppendKana(std::wstring(1, c), std::wstring(1, c));
     }
     asciiMode_ = true;
+    asciiStart_ = start;
 }
 
 void RomajiComposer::Backspace()
@@ -341,7 +401,11 @@ void RomajiComposer::Backspace()
     // (raw と一致する英小文字1文字 = Convert() でどの規則にも合わず素通しされた打鍵)。
     // 英字モード中はアルファベットのまま入力を続ける状態なので戻さない
     if (asciiMode_) {
-        return;
+        if (!modeless_ || kana_.size() > asciiStart_) {
+            return;
+        }
+        asciiMode_ = false;
+        asciiStart_ = 0;
     }
     while (!kana_.empty() && kana_.back() >= L'a' && kana_.back() <= L'z' &&
            raw_.back() == std::wstring(1, kana_.back())) {
@@ -356,6 +420,7 @@ void RomajiComposer::RemoveFront(size_t count)
     count = (std::min)(count, kana_.size());
     kana_.erase(0, count);
     raw_.erase(raw_.begin(), raw_.begin() + static_cast<std::ptrdiff_t>(count));
+    asciiStart_ -= (std::min)(count, asciiStart_);
 }
 
 void RomajiComposer::Clear()
@@ -364,6 +429,8 @@ void RomajiComposer::Clear()
     raw_.clear();
     pending_.clear();
     asciiMode_ = false;
+    asciiStart_ = 0;
+    asciiRequest_ = AsciiRequest::None;
     // modeless_ は設定由来のため維持する
 }
 

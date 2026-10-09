@@ -317,6 +317,7 @@ TextService::TextService()
       appendAction_(PseudoKeyAction::None),
       appendActionFunc_(KeyFunc::None),
       appendActionEndRun_(false),
+      appendActionKeep_(0),
       appendFollowKeyPending_(false),
       appendResendVk_(0),
       appendResendCtrl_(false),
@@ -1111,6 +1112,24 @@ void TextService::ApplyModelessCommitRule()
         return;
     }
     composer_.FinishForCommit();
+    ResolveAsciiRequest();
+}
+
+void TextService::ResolveAsciiRequest()
+{
+    if (!composer_.AsciiRequested()) {
+        return;
+    }
+    const size_t element = engine_.AsciiStartLive(composer_.AsciiRequestElements(),
+                                                  composer_.AsciiRequestAtCommit());
+    composer_.ConfirmAscii(element);
+    DebugLog(L"英字区間を始める要素: " + std::to_wstring(element) + L" (かなの位置 " +
+             std::to_wstring(composer_.AsciiStart()) + L")");
+}
+
+bool TextService::SplitAsciiRun() const
+{
+    return config_.Get().modeless && composer_.AsciiMode() && composer_.AsciiStart() > 0;
 }
 
 std::wstring TextService::StandaloneSpaceText() const
@@ -1825,13 +1844,13 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     barIndex_ = -1;
     const TsfConfig& config = config_.Get();
     // 候補選択中は縦の候補ウィンドウを使う。モードレスの英字モード中は英文の入力なので出さない
+    // (日本語区間が残っている区間分割の run は、日本語区間に対して出す)
     if (!config.candidateBar || (!Composing() && !InRun()) || converting_ ||
-        (config.modeless && composer_.AsciiMode())) {
+        (config.modeless && composer_.AsciiMode() && !SplitAsciiRun())) {
         ClearBar();
         return S_OK;
     }
-    // 未完成のローマ字は採用の対象外なので、候補は確定済みかなだけから作る
-    const std::wstring kana = composer_.ConfirmedKana();
+    const std::wstring kana = BarReading();
     if (kana.size() < static_cast<size_t>(config.minSuggestChars)) {
         ClearBar();
         return S_OK;
@@ -1842,8 +1861,9 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     if (!engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
         sentences.clear();
     }
+    // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
     std::vector<PredictionCandidate> predictions;
-    if (!engine_.Predict(kana, &predictions)) {
+    if (SplitAsciiRun() || !engine_.Predict(kana, &predictions)) {
         predictions.clear();
     }
 
@@ -1870,6 +1890,13 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     barPredictions_ = std::move(predictions);
     RequestRerank(kana);
     return S_OK;
+}
+
+std::wstring TextService::BarReading() const
+{
+    // 未完成のローマ字は採用の対象外なので、候補は確定済みかなだけから作る
+    const std::wstring& kana = composer_.ConfirmedKana();
+    return SplitAsciiRun() ? kana.substr(0, composer_.AsciiStart()) : kana;
 }
 
 std::vector<TextService::BarCandidate> TextService::BuildBarItems(
@@ -1930,9 +1957,13 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
 
 bool TextService::ShowBarItems(const RECT& caret, std::vector<BarCandidate> items)
 {
+    // 区間分割した run の全体変換は、採用後の文字列が分かるよう英字区間を付けて見せる
+    const std::wstring asciiTail =
+        SplitAsciiRun() ? composer_.ConfirmedKana().substr(composer_.AsciiStart()) : L"";
     std::vector<CandidateWindow::BarItem> labels;
     for (const BarCandidate& item : items) {
-        labels.push_back({item.surface, item.kind == BarKind::Head});
+        const bool head = item.kind == BarKind::Head;
+        labels.push_back({head ? item.surface : item.surface + asciiTail, head});
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
     const size_t shown = candidateWindow_.ShowBar(caret, barX_, labels, labels.size());

@@ -217,6 +217,8 @@ private:
     };
     // 現在の確定済みかなで候補を作り直して表示する (条件を満たさなければ消す)。選択は解除する
     HRESULT UpdateBar(ITfContext* context);
+    // バーの候補を作る読み (区間分割した run は日本語区間、それ以外は確定済みかな全体)
+    std::wstring BarReading() const;
     // 入力全体の候補 (CONVNBEST の並び) と予測候補からバーの候補を組み立てる
     std::vector<BarCandidate> BuildBarItems(const std::wstring& kana,
                                             const std::vector<SentenceCandidate>& sentences,
@@ -237,15 +239,22 @@ private:
     HRESULT DeselectBar();
     // バーの index の候補を採用する。run の文字列を「採用部分 + 残りのかな」(run を終えるときは
     // 未完成のローマ字と suffix も) に作り直す (追記のみの文書では擬似 Backspace の後に追記する)。
-    // followKey があれば、採用の後にその打鍵を入れる
+    // followKey があれば、採用の後にその打鍵を入れる。restFromReading なら、採用部分の後ろは
+    // 文書の run の文字列ではなく読みの表示から作る (読みを英字に直した後、文書がまだ直っていないとき)
     HRESULT AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
-                         const std::wstring& suffix, const DirectKey* followKey);
+                         const std::wstring& suffix, const DirectKey* followKey,
+                         bool restFromReading = false);
     // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
     // 継続)。updateBar なら run を続けるときにバーを作り直す
     void FinishBarAdoption(ITfContext* context, bool updateBar);
-    // 確定キー (バー未選択): 全体変換があれば採用して run を終え、無ければ (ルール3で英字に
-    // なる場合も) アプリへ渡すキーと同じ救済を通して run を終える
+    // 確定キー (バー未選択): ルール3が成立すれば CommitAsciiRunKey で終える。成立しなければ
+    // 全体変換があれば採用して run を終え、無ければアプリへ渡すキーと同じ救済を通して run を終える。
+    // 区間分割した run は日本語区間の全体変換に英字区間を付けて終える
     HRESULT CommitRunKey(ITfContext* context);
+    // 確定キーでルール3が成立した run (ascii は英字区間を確定した読み) を、文書を1回だけ書き換えて
+    // 終える。区間分割なら日本語区間の全体変換の1件目 + 英字区間 (全体変換が無ければ日本語区間は
+    // かなのまま)、run 全体が英字なら英字のまま (全体変換は採用しない)
+    HRESULT CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii);
     // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
     // システムキャレットの矩形)。どちらも取れなければ false
     bool CaretRect(ITfContext* context, RECT* rect);
@@ -278,6 +287,13 @@ private:
     // 読みが英字へ変わると表示も変わるため、文書の表示を同時に直せる経路からのみ呼ぶ
     // (フォーカス移動などの run 終了では呼ばない)
     void ApplyModelessCommitRule();
+    // 自動英字判定の成立 (RomajiComposer::AsciiRequested) を、英単語辞書の問い合わせ
+    // (ASCIISTART) で英字区間の始まりを決めて確定する。composer_ に打鍵を入れた直後・
+    // ルール3を適用した直後に呼ぶ
+    void ResolveAsciiRequest();
+    // モードレス入力で、日本語区間を残して英字区間に分かれている run か
+    // (モードレスが無効なら英字モードでも区間分割の扱いはしない)
+    bool SplitAsciiRun() const;
     // run が無いときに挿入するスペース。モードレス有効時のみ、直前の確定が
     // ASCII 英数字だけなら英文の途中とみなして半角にし、それ以外は設定 space に従う
     std::wstring StandaloneSpaceText() const;
@@ -456,6 +472,7 @@ private:
     // 何も書かずに Mismatch
     AppendResult AppendRunText(ITfContext* context, const std::wstring& text);
     // run の文字列を newText に作り直す (読める文書は置換、追記のみの文書は擬似 Backspace)。
+    // run の文字列と newText に共通する先頭 (英字区間の切替で残る日本語区間) は書き換えない。
     // endRunAfter なら作り直した後に run を終える
     AppendResult RewriteAppendRun(ITfContext* context, const std::wstring& newText,
                                   bool endRunAfter);
@@ -473,10 +490,11 @@ private:
     void EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, bool alt);
     // 変換キー・F4〜F10: 読める文書は昇格、追記のみの文書は擬似 Backspace の後に composition
     HRESULT BeginAppendConversion(ITfContext* context, KeyFunc func);
-    // run の文字列 (surface_) を擬似 Backspace で文書から消してから action を行う
-    // (消す文字が無ければ即座に。text は Append で入れる文字列)
+    // run の文字列 (surface_) の先頭 keep 文字より後ろを擬似 Backspace で文書から消してから
+    // action を行う (消す文字が無ければ即座に)。text は Append で run の文字列にする文字列で、
+    // 先頭 keep 文字は surface_ と同じであること
     HRESULT ScheduleAppendAction(ITfContext* context, PseudoKeyAction action, KeyFunc func,
-                                 const std::wstring& text, bool endRunAfter);
+                                 const std::wstring& text, bool endRunAfter, size_t keep = 0);
     void RunAppendAction(ITfContext* context);
     // 目印待ちと、目印の後に行う予定だったことを捨てる (フォーカス移動・IME オフ)
     void CancelAppendAction();
@@ -575,6 +593,7 @@ private:
     KeyFunc appendActionFunc_;               // Compose で行う変換 (Convert は通常の変換)
     std::wstring appendActionText_;          // Append で入れる文字列
     bool appendActionEndRun_;                // Append の後に run を終えるか
+    size_t appendActionKeep_;                // 擬似 Backspace で消さずに残す run の先頭の文字数
     // Adopt の後に入れる印字キー (バー選択中の印字キーで採用したとき)。
     // 擬似 Backspace より先に追記すると、その文字まで消されるため目印の後に回す
     DirectKey appendFollowKey_;

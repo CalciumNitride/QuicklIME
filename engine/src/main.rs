@@ -8,6 +8,7 @@ mod config;
 mod convert;
 mod datetime;
 mod dict;
+mod english;
 // 取り込み処理は単語登録ツールが使う。エンジン本体では単体テストのためだけに含める
 #[cfg(test)]
 mod import;
@@ -30,6 +31,7 @@ use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToN
 
 use config::Config;
 use dict::Dictionary;
+use english::EnglishDict;
 use learn::LearningStore;
 use matrix::ConnectionMatrix;
 use pos::FunctionalIds;
@@ -56,6 +58,8 @@ struct EngineData {
     config: Mutex<Config>,
     /// LLM による並べ替えのワーカーと、接続ごとの依頼・結果
     llm: llm::LlmManager,
+    /// 英単語辞書 (ASCIISTART 用。ユーザ辞書の英字の語は user が持つ)
+    english: EnglishDict,
 }
 
 fn main() -> std::io::Result<()> {
@@ -80,6 +84,7 @@ fn main() -> std::io::Result<()> {
         learning: Mutex::new(LearningStore::load_default()),
         config: Mutex::new(config),
         llm: llm::LlmManager::new(Box::new(llm::ProcessLauncher)),
+        english: load_english(),
     });
     data.llm.configure(config.llm, config.llm_backend);
 
@@ -164,6 +169,35 @@ fn load_symbols(dict: &mut Dictionary, dictionary_dir: &Path) {
         ),
         Err(e) => eprintln!("記号辞書の読み込みに失敗しました ({e})。記号候補なしで動作します"),
     }
+}
+
+/// 英単語辞書のディレクトリ。exe と同じディレクトリの dict\ に英単語辞書があればそこ
+/// (インストール先のレイアウト)、無ければプロジェクトルートの data/
+/// (exe が engine/target/{debug,release}/ にある前提で相対解決)。
+/// QUICKLIME_DICT_DIR は Mozc 辞書の置き場所を指すので見ない
+fn english_dir() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bundled = exe.parent()?.join("dict");
+    if bundled.join(english::WORD_FILES[0]).is_file() {
+        return Some(bundled);
+    }
+    let project_root = exe.parent()?.parent()?.parent()?.parent()?;
+    Some(project_root.join("data"))
+}
+
+/// 英単語辞書を読み込む。無くても ASCIISTART が常に 0 を返すだけで起動は続ける
+fn load_english() -> EnglishDict {
+    let Some(dir) = english_dir() else {
+        eprintln!("英単語辞書のディレクトリを特定できません。英単語辞書なしで起動します");
+        return EnglishDict::empty();
+    };
+    let (dict, count) = EnglishDict::load_dir(&dir);
+    if count == 0 {
+        eprintln!("英単語辞書がありません ({})。英単語辞書なしで起動します", dir.display());
+    } else {
+        eprintln!("英単語辞書を読み込みました: {count} 語 [{}]", dir.display());
+    }
+    dict
 }
 
 /// 連接行列を読み込む。失敗しても連接コスト0で起動を続行する
@@ -625,6 +659,22 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 Err(e) => format!("ERR\t{e}\n"),
             }
         }
+        Some("ASCIISTART") => {
+            // ASCIISTART\t<prefix|exact>\t<打鍵列1>\x1f<打鍵列2>... : 英字区間を始める要素の
+            // 位置を返す (かなのかたまりごとの打鍵列。一致しなければ 0 = 全体を英字にする)
+            let Some(mode) = fields.next().and_then(english::MatchMode::parse) else {
+                return "ERR\t照合方法が不正です\n".to_string();
+            };
+            let Some(field) = fields.next().filter(|f| !f.is_empty()) else {
+                return "ERR\t打鍵列が空です\n".to_string();
+            };
+            let elements: Vec<&str> = field.split(FIELD_SEPARATOR).collect();
+            let user = data.user.lock().expect("user lock");
+            let start = english::ascii_start(&elements, |text| {
+                data.english.matches(text, mode) || user.english_matches(text, mode)
+            });
+            format!("OK\t{start}\n")
+        }
         Some("RELOADUSER") => {
             // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
             let mut user = data.user.lock().expect("user lock");
@@ -664,6 +714,7 @@ mod tests {
             learning: Mutex::new(LearningStore::in_memory()),
             config: Mutex::new(Config::default()),
             llm: test_llm(),
+            english: EnglishDict::empty(),
         }
     }
 
@@ -690,6 +741,7 @@ mod tests {
             learning: Mutex::new(LearningStore::in_memory()),
             config: Mutex::new(Config::default()),
             llm: test_llm(),
+            english: EnglishDict::empty(),
         }
     }
 
@@ -1100,6 +1152,72 @@ mod tests {
         assert_eq!(handle_line("RERANKGET\t1", &data, &mut session), "OK\tNONE\n");
         let mut other = Session::new();
         assert_eq!(handle_line("RERANKGET\t2", &data, &mut other), "OK\tNONE\n");
+    }
+
+    /// ASCIISTART のテスト用の英単語辞書 (1〜2文字の語も入れて、短い英字区間を候補にしないことを確かめる)
+    fn english_data() -> EngineData {
+        let mut data = sample_data();
+        data.english = EnglishDict::load_from(
+            ["an\nant\napple\ngithub\nst\nt\nwant\nworld\n".as_bytes()],
+        );
+        data
+    }
+
+    #[test]
+    fn asciistartのprefixは英単語の前方一致になる最初の要素の位置を返す() {
+        let data = english_data();
+        assert_eq!(
+            handle_request("ASCIISTART\tprefix\tkyo\x1fu\x1fha\x1fgi\x1fth", &data),
+            "OK\t3\n"
+        );
+        assert_eq!(handle_request("ASCIISTART\tprefix\two\x1frl", &data), "OK\t0\n");
+        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fxyzw", &data), "OK\t0\n");
+    }
+
+    #[test]
+    fn asciistartのexactは3文字以上の英単語に完全一致する最初の要素の位置を返す() {
+        let data = english_data();
+        assert_eq!(
+            handle_request("ASCIISTART\texact\tkyo\x1fu\x1fha\x1fwa\x1fn\x1ft", &data),
+            "OK\t3\n"
+        );
+        // nt・t は2文字以下なので、t が辞書にあっても境目にしない
+        assert_eq!(
+            handle_request("ASCIISTART\texact\twa\x1fta\x1fsi\x1fha\x1fn\x1ft", &data),
+            "OK\t0\n"
+        );
+        assert_eq!(
+            handle_request("ASCIISTART\texact\tka\x1fi\x1fsya\x1fs\x1ft", &data),
+            "OK\t0\n"
+        );
+        // 前方一致なら一致する打ち途中の語 (wan → want) は完全一致では候補にならない
+        assert_eq!(handle_request("ASCIISTART\texact\tkyo\x1fu\x1fha\x1fwa\x1fn", &data), "OK\t0\n");
+    }
+
+    #[test]
+    fn asciistartの要求が不正ならエラー() {
+        let data = english_data();
+        assert!(handle_request("ASCIISTART\tfuzzy\tkyo\x1fu", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIISTART\tkyo\x1fu", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIISTART\tprefix\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIISTART\tprefix", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIISTART", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn asciistartはユーザ辞書の英字の語も使う() {
+        let data = sample_data();
+        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fqui", &data), "OK\t0\n");
+        // 表記が英字だけの語は大文字を含んでも小文字にして英単語として扱う
+        assert_eq!(handle_request("ADDWORD\tくいっくらいむ\tQuicklIME\t固有名詞", &data), "OK\n");
+        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fqui", &data), "OK\t3\n");
+        assert_eq!(
+            handle_request("ASCIISTART\texact\tko\x1fre\x1fha\x1fquick\x1flime", &data),
+            "OK\t3\n"
+        );
+        // 英字以外を含む表記は英単語にしない
+        assert_eq!(handle_request("ADDWORD\tめーる\tmail@example.com\t短縮よみ", &data), "OK\n");
+        assert_eq!(handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fmai", &data), "OK\t0\n");
     }
 
     #[test]

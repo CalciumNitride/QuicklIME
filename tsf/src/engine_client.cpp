@@ -374,6 +374,27 @@ bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionCo
     return RequestNBest(kana, context, true, candidates);
 }
 
+size_t EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, bool exact)
+{
+    if (elements.empty() || (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+        return 0;
+    }
+    std::string request = exact ? "ASCIISTART\texact\t" : "ASCIISTART\tprefix\t";
+    for (size_t i = 0; i < elements.size(); ++i) {
+        if (i > 0) {
+            request += "\x1f";
+        }
+        request += WideToUtf8(elements[i]);
+    }
+    request += "\n";
+    std::string response;
+    if (!SendReceive(request, &response) || response.rfind("OK\t", 0) != 0) {
+        return 0;
+    }
+    const unsigned long start = std::strtoul(response.c_str() + 3, nullptr, 10);
+    return start < elements.size() ? static_cast<size_t>(start) : 0;
+}
+
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
                                 bool live, std::vector<SentenceCandidate>* candidates)
 {

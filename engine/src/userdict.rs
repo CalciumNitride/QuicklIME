@@ -28,6 +28,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
 use crate::dict::{Dictionary, Entry};
+use crate::english;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
 
 /// 短縮よみの品詞名 (ファイル上の表記)
@@ -99,6 +100,9 @@ pub struct UserDict {
     imported_shortcuts: Vec<(String, String)>,
     /// インポート辞書のディレクトリ。None なら読み込まない (テスト時)
     import_dir: Option<PathBuf>,
+    /// 短縮よみ・名詞系単語のうち表記が ASCII 英字だけのもの (小文字、整列済み)。
+    /// ASCIISTART で英単語辞書と合わせて照合する
+    english: Vec<String>,
 }
 
 impl UserDict {
@@ -113,6 +117,7 @@ impl UserDict {
             imported: Dictionary::empty(),
             imported_shortcuts: Vec::new(),
             import_dir: None,
+            english: Vec::new(),
         }
     }
 
@@ -154,6 +159,7 @@ impl UserDict {
         };
         self.shortcuts.clear();
         self.words.clear();
+        self.english.clear();
         if let Ok(file) = File::open(&path) {
             self.load_from(BufReader::new(file), functional);
         }
@@ -329,6 +335,7 @@ impl UserDict {
                 return Err("すでに登録されています".to_string());
             }
             self.shortcuts.push(pair);
+            self.insert_english(surface);
             return Ok(());
         }
         let Some(prefix) = noun_id_prefix(pos) else {
@@ -347,7 +354,24 @@ impl UserDict {
             right_id: id,
             cost: USER_WORD_COST,
         });
+        self.insert_english(surface);
         Ok(())
+    }
+
+    /// 表記が ASCII 英字だけなら英単語として整列を保って足す
+    fn insert_english(&mut self, surface: &str) {
+        if !english::is_ascii_word(surface) {
+            return;
+        }
+        let word = surface.to_ascii_lowercase();
+        if let Err(index) = self.english.binary_search(&word) {
+            self.english.insert(index, word);
+        }
+    }
+
+    /// 表記が ASCII 英字だけの登録語に、text (小文字) が mode の方法で一致するものがあるか
+    pub fn english_matches(&self, text: &str, mode: english::MatchMode) -> bool {
+        english::sorted_matches(&self.english, text, mode)
     }
 
     /// 分割して確定した複合語を1語として学習する: メモリへ反映し、
