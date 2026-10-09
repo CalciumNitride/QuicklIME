@@ -217,6 +217,13 @@ private:
     };
     // 現在の確定済みかなで候補を作り直して表示する (条件を満たさなければ消す)。選択は解除する
     HRESULT UpdateBar(ITfContext* context);
+    // 入力全体の候補 (CONVNBEST の並び) と予測候補からバーの候補を組み立てる
+    std::vector<BarCandidate> BuildBarItems(const std::wstring& kana,
+                                            const std::vector<SentenceCandidate>& sentences,
+                                            const std::vector<PredictionCandidate>& predictions) const;
+    // items を caret の行に固定の x 位置で表示する。作業領域に収まった候補だけを選択の対象に
+    // する。1件も出せなければ false (何も変えない)
+    bool ShowBarItems(const RECT& caret, std::vector<BarCandidate> items);
     // composition を Display() で更新し、続けてバーを作り直す (候補選択を取り消したときの表示)
     HRESULT UpdateCompositionAndBar(ITfContext* context);
     // バーの候補と選択を破棄する (非変換中なら候補ウィンドウも隠す)
@@ -242,6 +249,27 @@ private:
     // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
     // システムキャレットの矩形)。どちらも取れなければ false
     bool CaretRect(ITfContext* context, RECT* rect);
+
+    // ---- LLM による並べ替え (docs/design/llm-rerank.md) ----
+    // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
+    // IME が文書に入れた文字列の履歴を使う (設定 llm が無効なら何もしない)
+    void CaptureLlmContext(ITfContext* context);
+    // IME が文書に入れた文字列を履歴 (追記のみの文書の左文脈) に足す
+    void AppendLlmHistory(const std::wstring& text);
+    // 部分採用の後も run は続く。文書は読み直さず、run を始めたときの左文脈に採用した文字列を足す
+    void ExtendLlmContext(const std::wstring& adopted);
+    // バーを作り直した後に並べ替えを依頼し、結果の問い合わせ (タイマー) を始める
+    void RequestRerank(const std::wstring& kana);
+    // 結果の問い合わせを止める (依頼と受け取った結果は変換キーで使うので覚えておく)
+    void StopRerankPolling();
+    // 依頼と受け取った結果を捨てる
+    void ResetRerank();
+    // タイマー: 結果を問い合わせ、条件を満たせば並べ替えた候補でバーを組み直す
+    void OnRerankTimer();
+    // 変換キー: kana と前文脈が依頼したときのままで結果が出ていれば、並べ替えた候補を返す
+    // (出ていなければ待たずに false)
+    bool TakeRerankedCandidates(const std::wstring& kana,
+                                std::vector<SentenceCandidate>* candidates);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
     // 無変換のまま確定する直前に、自動英字判定の判定ルール3 (末尾に残った
@@ -500,6 +528,21 @@ private:
     // バーの x 座標。run で最初に出した時点 (部分採用の後はその時点) の位置に固定する
     int barX_;
     bool barXFixed_;
+    // 表示中のバーを組み立てた候補 (作業領域で切る前) と予測候補、表示した caret の矩形。
+    // 並べ替えの結果でバーを組み直すときに使う (タイマーからは文書の矩形を取らない)
+    std::vector<BarCandidate> barBuilt_;
+    std::vector<PredictionCandidate> barPredictions_;
+    RECT barCaret_;
+
+    // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
+    std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)
+    std::wstring llmHistory_;      // IME が文書に入れた文字列の末尾 (追記のみの文書用)
+    unsigned long long rerankId_;  // 最新の依頼の ID (0 = 依頼なし)
+    ULONGLONG rerankTick_;         // 依頼した時刻 (問い合わせの打ち切り用)
+    std::wstring rerankKana_;      // 依頼したときの読みと前文脈
+    ConversionContext rerankContext_;
+    bool rerankDone_;              // 結果を受け取った
+    std::vector<SentenceCandidate> rerankResult_;
     // 採用で文書を書き換えた後に行うこと (追記のみの文書では目印の打鍵まで持ち越す)
     struct BarAdoption {
         std::vector<LearnEntry> learn;

@@ -21,6 +21,10 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_UI_Controls",
     "Win32_UI_Controls_Dialogs",
     "Win32_Globalization",
+    # LLM の子プロセスをジョブオブジェクトに入れてエンジンの終了に巻き込む (src/llm.rs)
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_Security",
 ] }
 # LLM 計測用の example (examples/llm_bench.rs) 専用。feature llm-bench を指定したときだけビルドする
 # openmp は llama.cpp 単体ビルドの既定 (GGML_OPENMP=ON) に揃えるため。common は使わないので外す

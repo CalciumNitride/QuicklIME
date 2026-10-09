@@ -12,6 +12,7 @@ mod dict;
 #[cfg(test)]
 mod import;
 mod learn;
+mod llm;
 mod matrix;
 mod pos;
 mod predict;
@@ -19,6 +20,7 @@ mod userdict;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
@@ -52,6 +54,8 @@ struct EngineData {
     learning: Mutex<LearningStore>,
     /// 設定 (RELOADCONFIG で差し替えるため Mutex で保護)
     config: Mutex<Config>,
+    /// LLM による並べ替えのワーカーと、接続ごとの依頼・結果
+    llm: llm::LlmManager,
 }
 
 fn main() -> std::io::Result<()> {
@@ -67,14 +71,17 @@ fn main() -> std::io::Result<()> {
     // ユーザ辞書の品詞名解決に品詞ID表を使うため、先に読み込んでおく
     let functional = load_functional_ids();
     let user = UserDict::load_default(&functional, learn::learned_word_path());
+    let config = Config::load_default();
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
         matrix: load_matrix(),
         functional,
         user: Mutex::new(user),
         learning: Mutex::new(LearningStore::load_default()),
-        config: Mutex::new(Config::load_default()),
+        config: Mutex::new(config),
+        llm: llm::LlmManager::new(Box::new(llm::ProcessLauncher)),
     });
+    data.llm.configure(config.llm, config.llm_backend);
 
     let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
     let listener = ListenerOptions::new().name(name).create_sync()?;
@@ -197,19 +204,92 @@ fn load_functional_ids() -> FunctionalIds {
     }
 }
 
+/// 接続ごとの状態 (RERANK の依頼 ID は接続ごとに振る)
+struct Session {
+    conn: u64,
+    /// 最後に受け付けた RERANK の ID
+    last_id: u64,
+}
+
+impl Session {
+    fn new() -> Self {
+        static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
+        Session { conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed), last_id: 0 }
+    }
+}
+
 /// 1つのクライアント接続を処理する。切断されるまで要求に応答し続ける
 fn handle_client(stream: Stream, data: &EngineData) {
     let (recv, mut send) = stream.split();
     let reader = BufReader::new(recv);
+    let mut session = Session::new();
 
     for line in reader.lines() {
         let Ok(line) = line else {
             break; // 読み取りエラー = 切断とみなす
         };
-        let response = handle_request(&line, data);
+        let response = handle_line(&line, data, &mut session);
         if send.write_all(response.as_bytes()).is_err() {
             break;
         }
+    }
+    data.llm.disconnect(session.conn);
+}
+
+/// 接続ごとの状態を使う要求 (RERANK・RERANKGET) を処理し、それ以外は handle_request に回す
+fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
+    let mut fields = line.split('\t');
+    match fields.next() {
+        Some("RERANK") => {
+            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな> : LLM による並べ替えを依頼する。
+            // LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
+            let llm_context = fields.next().unwrap_or("");
+            let ctx = fields.next().and_then(parse_context);
+            let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
+                return "ERR\tかなが空です\n".to_string();
+            };
+            if !data.config.lock().expect("config lock").llm {
+                return "OK\t0\n".to_string();
+            }
+            let candidates = {
+                let user = data.user.lock().expect("user lock");
+                let learning = data.learning.lock().expect("learning lock");
+                convert::convert_nbest(
+                    kana,
+                    ctx.as_ref(),
+                    &data.dictionary,
+                    &user,
+                    &data.matrix,
+                    &data.functional,
+                    &learning,
+                )
+            };
+            let job = llm::Job {
+                id: session.last_id + 1,
+                context: llm::preprocess_context(llm_context),
+                reading: kana.to_string(),
+                candidates,
+            };
+            if !data.llm.request(session.conn, job) {
+                return "OK\t0\n".to_string();
+            }
+            session.last_id += 1;
+            format!("OK\t{}\n", session.last_id)
+        }
+        Some("RERANKGET") => {
+            // RERANKGET\t<ID> : 並べ替えの結果を問い合わせる
+            let Some(id) = fields.next().and_then(|f| f.parse::<u64>().ok()) else {
+                return "ERR\tID が不正です\n".to_string();
+            };
+            match data.llm.poll(session.conn, id) {
+                llm::Poll::Pending => "OK\tPENDING\n".to_string(),
+                llm::Poll::Done(candidates) => {
+                    format!("OK\tDONE\t{}\n", format_candidates(&candidates))
+                }
+                llm::Poll::None => "OK\tNONE\n".to_string(),
+            }
+        }
+        _ => handle_request(line, data),
     }
 }
 
@@ -301,7 +381,12 @@ fn nbest_response(kana: &str, ctx: Option<&convert::Context>, data: &EngineData)
         &data.functional,
         &learning,
     );
-    let body = candidates
+    format!("OK\t{}\n", format_candidates(&candidates))
+}
+
+/// 入力全体の候補を CONVNBEST の応答の形 (候補はタブ区切り、文節は \x1e 区切り) にする
+fn format_candidates(candidates: &[convert::SentenceCandidate]) -> String {
+    candidates
         .iter()
         .map(|c| {
             c.segments
@@ -311,8 +396,7 @@ fn nbest_response(kana: &str, ctx: Option<&convert::Context>, data: &EngineData)
                 .join(&SEGMENT_SEPARATOR.to_string())
         })
         .collect::<Vec<_>>()
-        .join("\t");
-    format!("OK\t{body}\n")
+        .join("\t")
 }
 
 /// 1行の要求を解釈して1行の応答を作る
@@ -556,7 +640,10 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         }
         Some("RELOADCONFIG") => {
             // 設定ファイルを読み直す (設定ツールの保存時に呼ばれる)
-            *data.config.lock().expect("config lock") = Config::load_default();
+            let config = Config::load_default();
+            *data.config.lock().expect("config lock") = config;
+            // LLM の子プロセスは、llm 系の設定が変わったときに起動・終了する
+            data.llm.configure(config.llm, config.llm_backend);
             eprintln!("設定を再読込しました");
             "OK\n".to_string()
         }
@@ -576,7 +663,13 @@ mod tests {
             user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
             config: Mutex::new(Config::default()),
+            llm: test_llm(),
         }
+    }
+
+    /// テスト用の LLM ワーカー (偽の子プロセス。設定で有効にするまで起動しない)
+    fn test_llm() -> llm::LlmManager {
+        llm::tests::fake_manager(llm::tests::FakeBehavior::Normal, std::time::Duration::ZERO).0
     }
 
     fn sample_data() -> EngineData {
@@ -596,6 +689,7 @@ mod tests {
             user: Mutex::new(UserDict::empty()),
             learning: Mutex::new(LearningStore::in_memory()),
             config: Mutex::new(Config::default()),
+            llm: test_llm(),
         }
     }
 
@@ -961,6 +1055,51 @@ mod tests {
         assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
         // 記録されていないので履歴候補は出ない
         assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn llm無効ならrerankはid0を返す() {
+        let data = sample_data();
+        let mut session = Session::new();
+        assert_eq!(handle_line("RERANK\t\t\tきょうははれ", &data, &mut session), "OK\t0\n");
+        assert_eq!(handle_line("RERANKGET\t0", &data, &mut session), "OK\tNONE\n");
+        assert!(handle_line("RERANK\t\t\t", &data, &mut session).starts_with("ERR\t"));
+        assert!(handle_line("RERANKGET\tabc", &data, &mut session).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn rerankの結果はconvnbestと同じ形式で返る() {
+        let data = sample_data();
+        data.config.lock().unwrap().llm = true;
+        data.llm.configure(true, config::LlmBackend::Cpu);
+        llm::tests::wait_ready(&data.llm);
+        let mut session = Session::new();
+        // 読み込み済みなので ID を振る (接続ごとに 1 から)
+        assert_eq!(handle_line("RERANK\t熱が出て\t\tきょうははれ", &data, &mut session), "OK\t1\n");
+        let started = Instant::now();
+        let response = loop {
+            let response = handle_line("RERANKGET\t1", &data, &mut session);
+            if response != "OK\tPENDING\n" {
+                break response;
+            }
+            assert!(started.elapsed().as_secs() < 5, "DONE にならない");
+            thread::sleep(std::time::Duration::from_millis(5));
+        };
+        // 偽の子プロセスは後ろの候補ほど高い尤度を返すので、並びが変わる (候補の集合は同じ)
+        let nbest = handle_request("CONVNBEST\t\tきょうははれ", &data);
+        let body = response.strip_prefix("OK\tDONE\t").expect("DONE の応答");
+        let mut got: Vec<&str> = body.trim_end().split('\t').collect();
+        let mut expected: Vec<&str> =
+            nbest.strip_prefix("OK\t").unwrap().trim_end().split('\t').collect();
+        assert_ne!(got, expected);
+        got.sort();
+        expected.sort();
+        assert_eq!(got, expected);
+        // 古い ID・別の接続の ID は NONE
+        assert_eq!(handle_line("RERANK\t\t\tきょうは", &data, &mut session), "OK\t2\n");
+        assert_eq!(handle_line("RERANKGET\t1", &data, &mut session), "OK\tNONE\n");
+        let mut other = Session::new();
+        assert_eq!(handle_line("RERANKGET\t2", &data, &mut other), "OK\tNONE\n");
     }
 
     #[test]

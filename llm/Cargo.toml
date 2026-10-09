@@ -1,0 +1,21 @@
+[package]
+name = "quicklime-llm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# openmp は計測 (engine/examples/llm_bench.rs) と同じ構成に揃えるため。common は使わないので外す
+llama-cpp-2 = { version = "=0.1.158", default-features = false, features = ["openmp"] }
+
+[features]
+vulkan = ["llama-cpp-2/vulkan"]
+
+[[bin]]
+name = "quicklime-llm"
+path = "src/main.rs"
+
+# Vulkan 版は vulkan-1.dll に依存するため、CPU 版とは別の exe にする
+[[bin]]
+name = "quicklime-llm-vulkan"
+path = "src/bin/quicklime-llm-vulkan.rs"
+required-features = ["vulkan"]

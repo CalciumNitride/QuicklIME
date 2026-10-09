@@ -721,6 +721,39 @@ STDMETHODIMP MatchRunEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
+// ---- GetPrecedingTextEditSession ----
+
+GetPrecedingTextEditSession::GetPrecedingTextEditSession(ITfContext* context, ULONG maxLength,
+                                                         std::wstring* textOut)
+    : EditSessionBase(context), maxLength_(maxLength), textOut_(textOut)
+{
+    textOut_->clear();
+}
+
+STDMETHODIMP GetPrecedingTextEditSession::DoEditSession(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return hr;
+    }
+    ITfRange* range = selection.range;
+    range->Collapse(ec, TF_ANCHOR_START);
+    LONG shifted = 0;
+    hr = range->ShiftStart(ec, -static_cast<LONG>(maxLength_), &shifted, nullptr);
+    if (SUCCEEDED(hr) && shifted < 0) {
+        std::vector<WCHAR> buffer(maxLength_);
+        ULONG read = 0;
+        hr = range->GetText(ec, 0, buffer.data(), static_cast<ULONG>(buffer.size()), &read);
+        if (SUCCEEDED(hr)) {
+            textOut_->assign(buffer.data(), read);
+        }
+    }
+    range->Release();
+    return hr;
+}
+
 // ---- GetSelectionExtentEditSession ----
 
 GetSelectionExtentEditSession::GetSelectionExtentEditSession(ITfContext* context, RECT* rectOut,

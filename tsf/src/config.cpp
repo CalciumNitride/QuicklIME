@@ -376,6 +376,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseClamped(value, 1, 5, config.minSuggestChars);
     } else if (key == L"segment_ui") {
         ParseBool(value, config.segmentUi);
+    } else if (key == L"llm") {
+        ParseBool(value, config.llm);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

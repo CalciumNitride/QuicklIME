@@ -305,6 +305,10 @@ TextService::TextService()
       barIndex_(-1),
       barX_(0),
       barXFixed_(false),
+      barCaret_{},
+      rerankId_(0),
+      rerankTick_(0),
+      rerankDone_(false),
       surfaceCaret_(0),
       surfaceSelectLength_(0),
       promoted_(false),
@@ -1134,6 +1138,9 @@ void TextService::ClearContext()
 {
     contextReading_.clear();
     contextSurface_.clear();
+    // 前文脈を捨てる場面 (キャレット移動・フォーカス移動など) では、IME が入れた文字列も
+    // キャレットの前にあるとは限らない
+    llmHistory_.clear();
 }
 
 HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
@@ -1241,6 +1248,8 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
             composer_.Clear();
             return hr;
         }
+        // 新しい composition はまだ空なので、キャレットの前は確定した文字列で終わっている
+        CaptureLlmContext(context);
         return UpdateCompositionAndBar(context);
     }
 
@@ -1348,6 +1357,7 @@ HRESULT TextService::StartConversion(ITfContext* context)
 
 void TextService::BuildConversionSegments()
 {
+    // 並べ替えの結果は ClearBar の後も覚えている (候補の取得で使う)
     ClearBar();
 
     // 文節列をエンジンに問い合わせる。
@@ -1362,8 +1372,10 @@ void TextService::BuildConversionSegments()
     } else if (config_.Get().segmentUi) {
         ok = engine_.ConvertSegments(kana, CurrentContext(), &segments_);
     } else {
-        // 入力全体を1文節として候補を選ぶ。候補ごとの文節は確定時の学習に使う
-        ok = engine_.ConvertNBest(kana, CurrentContext(), &wholeCandidates_);
+        // 入力全体を1文節として候補を選ぶ。候補ごとの文節は確定時の学習に使う。
+        // この読みの並べ替えの結果が出ていればその並びを使う (待たない)
+        ok = TakeRerankedCandidates(kana, &wholeCandidates_) ||
+             engine_.ConvertNBest(kana, CurrentContext(), &wholeCandidates_);
         if (ok) {
             ConversionSegment segment;
             segment.reading = kana;
@@ -1835,6 +1847,35 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         predictions.clear();
     }
 
+    std::vector<BarCandidate> items = BuildBarItems(kana, sentences, predictions);
+    if (items.empty()) {
+        ClearBar();
+        return S_OK;
+    }
+
+    RECT caret = {};
+    if (!CaretRect(context, &caret)) {
+        ClearBar();
+        return S_OK;
+    }
+    if (!barXFixed_) {
+        barX_ = caret.left;
+        barXFixed_ = true;
+    }
+    if (!ShowBarItems(caret, std::move(items))) {
+        ClearBar();
+        return S_OK;
+    }
+    barKana_ = kana;
+    barPredictions_ = std::move(predictions);
+    RequestRerank(kana);
+    return S_OK;
+}
+
+std::vector<TextService::BarCandidate> TextService::BuildBarItems(
+    const std::wstring& kana, const std::vector<SentenceCandidate>& sentences,
+    const std::vector<PredictionCandidate>& predictions) const
+{
     std::vector<BarCandidate> items;
     const auto contains = [&items](const std::wstring& surface) {
         return std::any_of(items.begin(), items.end(),
@@ -1884,20 +1925,11 @@ HRESULT TextService::UpdateBar(ITfContext* context)
             items.push_back({BarKind::Head, surface, reading, {}});
         }
     }
-    if (items.empty()) {
-        ClearBar();
-        return S_OK;
-    }
+    return items;
+}
 
-    RECT caret = {};
-    if (!CaretRect(context, &caret)) {
-        ClearBar();
-        return S_OK;
-    }
-    if (!barXFixed_) {
-        barX_ = caret.left;
-        barXFixed_ = true;
-    }
+bool TextService::ShowBarItems(const RECT& caret, std::vector<BarCandidate> items)
+{
     std::vector<CandidateWindow::BarItem> labels;
     for (const BarCandidate& item : items) {
         labels.push_back({item.surface, item.kind == BarKind::Head});
@@ -1905,14 +1937,226 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     // selection に範囲外を渡し、どの候補も強調しない表示にする
     const size_t shown = candidateWindow_.ShowBar(caret, barX_, labels, labels.size());
     if (shown == 0) {
-        ClearBar();
-        return S_OK;
+        return false;
     }
+    barBuilt_ = items;
+    barCaret_ = caret;
     // 作業領域に収まらず表示しなかった候補は、選択の対象からも外す
     items.resize(shown);
     barItems_ = std::move(items);
-    barKana_ = kana;
-    return S_OK;
+    return true;
+}
+
+// ---- LLM による並べ替え ----
+
+namespace {
+
+// RERANKGET で結果を問い合わせる間隔と、問い合わせをやめるまでの時間
+constexpr UINT kLlmPollMs = 20;
+constexpr ULONGLONG kLlmPollLimitMs = 1000;
+// 読める文書で run の前を読む長さ (UTF-16 単位)
+constexpr ULONG kLlmContextRead = 80;
+// 追記のみの文書で覚えておく、IME が入れた文字列の長さ (エンジンの LLM_CONTEXT_CHARS と同じ)
+constexpr size_t kLlmContextChars = 40;
+
+// 最後の改行より後ろだけを残し、タブはスペースにする (行をまたぐ文脈と、行プロトコルの区切りを避ける)
+std::wstring TrimLlmContext(const std::wstring& text)
+{
+    const size_t newline = text.find_last_of(L"\r\n");
+    std::wstring line = newline == std::wstring::npos ? text : text.substr(newline + 1);
+    std::replace(line.begin(), line.end(), L'\t', L' ');
+    return line;
+}
+
+// 末尾 length 単位を残す。先頭がサロゲートペアの後ろ半分になるなら1単位多く削る
+std::wstring KeepTail(const std::wstring& text, size_t length)
+{
+    if (text.size() <= length) {
+        return text;
+    }
+    size_t start = text.size() - length;
+    if (IS_LOW_SURROGATE(text[start])) {
+        ++start;
+    }
+    return text.substr(start);
+}
+
+// transitory な文脈 (コモンコントロールの編集欄など) は文書が読めないので、親の文脈を返す
+// (Mozc と同じ。GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT)。戻り値は AddRef 済み
+ITfContext* ContextForReading(ITfContext* context)
+{
+    TF_STATUS status = {};
+    if (FAILED(context->GetStatus(&status)) || (status.dwStaticFlags & TS_SS_TRANSITORY) == 0) {
+        context->AddRef();
+        return context;
+    }
+    ITfContext* parent = nullptr;
+    ITfDocumentMgr* docMgr = nullptr;
+    if (SUCCEEDED(context->GetDocumentMgr(&docMgr)) && docMgr != nullptr) {
+        ITfCompartmentMgr* compartmentMgr = nullptr;
+        if (SUCCEEDED(docMgr->QueryInterface(IID_ITfCompartmentMgr,
+                                             reinterpret_cast<void**>(&compartmentMgr)))) {
+            ITfCompartment* compartment = nullptr;
+            if (SUCCEEDED(compartmentMgr->GetCompartment(
+                    GUID_COMPARTMENT_TRANSITORYEXTENSION_PARENT, &compartment)) &&
+                compartment != nullptr) {
+                VARIANT value;
+                VariantInit(&value);
+                if (SUCCEEDED(compartment->GetValue(&value)) && value.vt == VT_UNKNOWN &&
+                    value.punkVal != nullptr) {
+                    ITfDocumentMgr* parentDocMgr = nullptr;
+                    if (SUCCEEDED(value.punkVal->QueryInterface(
+                            IID_ITfDocumentMgr, reinterpret_cast<void**>(&parentDocMgr)))) {
+                        parentDocMgr->GetTop(&parent);
+                        parentDocMgr->Release();
+                    }
+                }
+                VariantClear(&value);
+                compartment->Release();
+            }
+            compartmentMgr->Release();
+        }
+        docMgr->Release();
+    }
+    if (parent == nullptr) {
+        context->AddRef();
+        return context;
+    }
+    return parent;
+}
+
+} // namespace
+
+void TextService::CaptureLlmContext(ITfContext* context)
+{
+    ResetRerank();
+    llmRunContext_.clear();
+    if (!config_.Get().llm || context == nullptr) {
+        return;
+    }
+    std::wstring text;
+    const wchar_t* source = L"履歴";
+    if (appendDocument_ == AppendDocument::Readable) {
+        source = L"文書";
+        ITfContext* target = ContextForReading(context);
+        RequestSync(target, new (std::nothrow) GetPrecedingTextEditSession(target, kLlmContextRead, &text),
+                    TF_ES_SYNC | TF_ES_READ);
+        target->Release();
+    } else {
+        text = llmHistory_;
+    }
+    llmRunContext_ = TrimLlmContext(text);
+    // 文脈そのものはログに書かない
+    DebugLog(std::wstring(L"LLM の左文脈: ") + source + L"、長さ " +
+             std::to_wstring(llmRunContext_.size()));
+}
+
+void TextService::AppendLlmHistory(const std::wstring& text)
+{
+    llmHistory_ = KeepTail(llmHistory_ + text, kLlmContextChars);
+}
+
+void TextService::ExtendLlmContext(const std::wstring& adopted)
+{
+    if (!config_.Get().llm) {
+        return;
+    }
+    // 部分採用を続けても run を始めたときに読む長さを超えて伸ばさない (エンジンは末尾だけを使う)
+    llmRunContext_ = KeepTail(TrimLlmContext(llmRunContext_ + adopted), kLlmContextRead);
+}
+
+void TextService::RequestRerank(const std::wstring& kana)
+{
+    ResetRerank();
+    if (!config_.Get().llm) {
+        return;
+    }
+    const unsigned long long id = engine_.Rerank(llmRunContext_, CurrentContext(), kana);
+    if (id == 0) {
+        return;
+    }
+    rerankId_ = id;
+    rerankTick_ = GetTickCount64();
+    rerankKana_ = kana;
+    rerankContext_ = CurrentContext();
+    if (!candidateWindow_.StartTimer(kLlmPollMs, [this] { OnRerankTimer(); })) {
+        rerankId_ = 0;
+    }
+}
+
+void TextService::StopRerankPolling()
+{
+    candidateWindow_.StopTimer();
+}
+
+void TextService::ResetRerank()
+{
+    StopRerankPolling();
+    rerankId_ = 0;
+    rerankDone_ = false;
+    rerankResult_.clear();
+    rerankKana_.clear();
+    rerankContext_.Clear();
+}
+
+void TextService::OnRerankTimer()
+{
+    if (rerankId_ == 0 || rerankDone_ || GetTickCount64() - rerankTick_ > kLlmPollLimitMs) {
+        StopRerankPolling();
+        return;
+    }
+    EngineClient::RerankStatus status = EngineClient::RerankStatus::None;
+    std::vector<SentenceCandidate> candidates;
+    if (!engine_.RerankGet(rerankId_, &status, &candidates) ||
+        status == EngineClient::RerankStatus::None) {
+        StopRerankPolling();
+        return;
+    }
+    if (status == EngineClient::RerankStatus::Pending) {
+        return;
+    }
+    StopRerankPolling();
+    rerankDone_ = true;
+    rerankResult_ = std::move(candidates);
+    DebugLog(L"並べ替えの結果を受信 id=" + std::to_wstring(rerankId_));
+
+    // 選んでいる候補・候補選択中の並びは動かさない。依頼の後にバーを作り直していれば
+    // ID が変わっているのでここには来ない
+    if (barIndex_ >= 0 || converting_ || barItems_.empty() || barKana_ != rerankKana_) {
+        return;
+    }
+    std::vector<BarCandidate> items = BuildBarItems(barKana_, rerankResult_, barPredictions_);
+    const auto same = [](const BarCandidate& a, const BarCandidate& b) {
+        return a.kind == b.kind && a.surface == b.surface && a.reading == b.reading &&
+               a.segments == b.segments;
+    };
+    if (items.empty() ||
+        std::equal(items.begin(), items.end(), barBuilt_.begin(), barBuilt_.end(), same)) {
+        return;
+    }
+    ShowBarItems(barCaret_, std::move(items));
+}
+
+bool TextService::TakeRerankedCandidates(const std::wstring& kana,
+                                         std::vector<SentenceCandidate>* candidates)
+{
+    const ConversionContext context = CurrentContext();
+    if (rerankId_ == 0 || kana != rerankKana_ || context.reading != rerankContext_.reading ||
+        context.surface != rerankContext_.surface) {
+        return false;
+    }
+    if (!rerankDone_) {
+        EngineClient::RerankStatus status = EngineClient::RerankStatus::None;
+        std::vector<SentenceCandidate> received;
+        if (!engine_.RerankGet(rerankId_, &status, &received) ||
+            status != EngineClient::RerankStatus::Done) {
+            return false;
+        }
+        rerankDone_ = true;
+        rerankResult_ = std::move(received);
+    }
+    *candidates = rerankResult_;
+    return !candidates->empty();
 }
 
 HRESULT TextService::UpdateCompositionAndBar(ITfContext* context)
@@ -1930,6 +2174,9 @@ void TextService::ClearBar()
     barItems_.clear();
     barKana_.clear();
     barIndex_ = -1;
+    barBuilt_.clear();
+    barPredictions_.clear();
+    StopRerankPolling();
     // 変換中は候補ウィンドウを変換側が使っているので触らない
     if (!converting_) {
         candidateWindow_.Hide();
@@ -2148,6 +2395,9 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
     }
     if (SUCCEEDED(hr) && composition_ == nullptr) {
         hr = E_FAIL;
+    }
+    if (SUCCEEDED(hr)) {
+        AppendLlmHistory(commitText);
     }
     return hr;
 }
@@ -2377,6 +2627,9 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     HRESULT hr = RequestSync(
         context, new (std::nothrow) EndCompositionEditSession(context, composition_, text),
         TF_ES_SYNC | TF_ES_READWRITE);
+    if (SUCCEEDED(hr)) {
+        AppendLlmHistory(text);
+    }
     composition_->Release();
     composition_ = nullptr;
     promoted_ = false;
@@ -2392,6 +2645,10 @@ HRESULT TextService::InsertText(ITfContext* context, const std::wstring& text)
     if (context == nullptr) {
         return E_INVALIDARG;
     }
-    return RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text),
-                       TF_ES_SYNC | TF_ES_READWRITE);
+    const HRESULT hr = RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text),
+                                   TF_ES_SYNC | TF_ES_READWRITE);
+    if (SUCCEEDED(hr)) {
+        AppendLlmHistory(text);
+    }
+    return hr;
 }

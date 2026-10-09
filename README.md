@@ -8,16 +8,20 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 |---|---|
 | `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL)。フェーズ1で作成 |
 | `engine/` | 変換エンジン (Rust / 常駐別プロセス) |
+| `llm/` | LLM による候補の並べ替えの子プロセス (Rust / llama.cpp。エンジンが起動する) |
+| `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](docs/protocol.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
-| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除) |
+| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド) |
 
 ## 開発環境
 
 - Visual Studio 2022 (C++ によるデスクトップ開発ワークロード、Windows SDK 含む)
 - Rust (stable-x86_64-pc-windows-msvc)
 - Windows 11
+- LLM の子プロセス (`llm/`) のビルドのみ: LLVM (`C:\Program Files\LLVM`)、Vulkan SDK
+  (既定は `C:\VulkanSDK\1.4.363.0`)
 
 ## ビルド
 
@@ -33,17 +37,31 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
   cmake --build tsf/build --config Debug
   ```
   成果物: `tsf/build/Debug/QuicklIME.dll`
+- LLM の子プロセス: `scripts\fetch-models.ps1` でモデルを `models\` に取得し (サイズと
+  SHA-256 を確かめる)、`scripts\build-llm.ps1` で CPU 版 `quicklime-llm.exe` と Vulkan 版
+  `quicklime-llm-vulkan.exe` を release ビルドする (成果物は `llm\target\release\`)。
+  llama.cpp のビルドに要る環境変数 (LIBCLANG_PATH、CMake・Ninja、VULKAN_SDK、vcvars64) と、
+  長いパスを避ける `subst` はスクリプトの中で設定する。エンジンの通常のビルドには要らない
+- LLM の並べ替えの計測 (エンジンを隔離して起動し、llm_cases.tsv の左文脈で RERANK を送る):
+  `cargo run --release --example nbest_eval -- --cases examples/data/llm_cases.tsv --llm cpu`
+  (`--llm vulkan` で Vulkan 版)
 
 ## インストーラでの導入
 
 `installer\build.ps1` を実行すると `installer\output\quicklime-<版>-setup.exe` が生成される
-(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書)。
+(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書、
+`scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル)。
 
 - 配置先は `%ProgramFiles%\QuicklIME\` (64bit DLL + エンジン・設定・単語登録の exe +
   辞書 `dict\`)。32bit アプリ用の DLL は `x86\` に入り、両方が IME として登録される
 - 初回インストールは再起動不要。更新時は DLL がロード中のため再起動を求められることがある
 - アンインストールしてもユーザデータ (`%APPDATA%\QuicklIME\` の設定・ユーザ辞書・学習) は残る
 - 同梱辞書は Mozc (BSD ライセンス) のもの。ライセンス文書 LICENSE-mozc.txt を同梱している
+- LLM の子プロセス (quicklime-llm.exe・quicklime-llm-vulkan.exe) と、モデル (`models\` に
+  zenz-v3.2-xsmall と zenz-v3.2-small) を同梱する。ライセンス文書 LICENSE-llama.cpp.txt (MIT)・
+  LICENSE-zenz.txt (Apache License 2.0) を同梱している。LLM の子プロセスは VC++ ランタイムを
+  動的にリンクするため、再頒布可能な DLL (msvcp140・vcruntime140・vcruntime140_1・vcomp140) を
+  exe と同じディレクトリに置く (ビルド環境の Visual Studio の `VC\Redist\MSVC\<版>\x64` から取る)
 
 登録後、Win+Space で「QuicklIME」を選択して使用する。
 
@@ -230,6 +248,30 @@ IME は自分が入れた文字列とその読み (run) を覚えておき、変
   終える。`min_suggest_chars` (設定ツールの「サジェスト開始文字数」、1〜5、既定 2) で
   バーを出す文字数を変えられる。`suggest` (「入力中にサジェストを表示する」) を 0 にすると
   予測候補だけが出なくなる (全体変換・先頭文節は出る)
+
+### AI による候補の並べ替え
+
+設定 `llm` (設定ツールの「AI で候補を並べ替える」、既定 0) を 1 にすると、候補バーと変換キーの
+候補 (入力全体の変換結果) を、かな漢字変換モデル (zenz) で文脈に合う順に並べ替える。
+
+- 候補バーは、まず統計変換の並びで出し、並べ替えの結果が出たら (多くは数十 ms 以内) 作り直す。
+  打鍵は待たない。バーの候補を選んでいる間・候補選択中は並びを変えない
+- 変換キーを押した時点で並べ替えの結果が出ていれば、縦の候補リストもその並びになる
+- 文脈は入力を始めた位置より前の、同じ行の文字列 (読める文書は文書から読み、ターミナルなどの
+  追記のみの文書は IME が入れた文字列を覚えて使う。Enter・キャレット移動・フォーカス移動などで
+  捨てる)。文脈はメモリ上だけで使い、ログやファイルには書かない
+- 並べ替えるのは変換結果の上位 10 件。読み全体を学習した表記・学習で表記が変わった変換結果・
+  ユーザ辞書の語を含む候補・英字を含む候補は位置を動かさない
+- `llm_backend` (設定ツールの「AI の実行環境」) で、`cpu` (既定。zenz-v3.2-xsmall) か
+  `vulkan` (GPU。zenz-v3.2-small) を選ぶ。Vulkan 版が動かない環境では CPU 版で動く
+- 推論はエンジンが起動する別プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) で行う。
+  子プロセスは起動時にモデルの読み込みと試しの推論を済ませ、それまでは統計変換の並びで動く。
+  応答が 2 秒を超えた依頼は統計変換の並びのままにする (子プロセスは止めずに応答を待ち、その間の
+  依頼も統計変換の並びにする)。60 秒応答しない・終了したときは 10 秒後に起動し直し、続けて3回
+  失敗したら設定を保存し直す (読み直す) まで使わない。その間も統計変換だけで入力できる
+- エンジンは子プロセスの exe を自分と同じディレクトリ → 開発レイアウトの `llm\target\release\`、
+  モデルを環境変数 `QUICKLIME_LLM_MODEL_DIR` → 自分と同じディレクトリの `models\` → 開発レイアウトの
+  リポジトリ直下の `models\` の順で探す
 
 ### キー割当
 

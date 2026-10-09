@@ -824,8 +824,10 @@ HRESULT TextService::ReconvertSelectionDirect(ITfContext* context)
     // ユーザの選択 = run 全体。最初の置換の前に選択を末尾へ潰す
     surfaceCaret_ = 0;
     surfaceSelectLength_ = surface_.size();
-    // 選択した文字列と直前の確定は無関係
+    // 選択した文字列と直前の確定は無関係。run を始める前の時点が無いので、LLM の左文脈も無しにする
     ClearContext();
+    ResetRerank();
+    llmRunContext_.clear();
     if (PromoteRun(context) == PromoteResult::Dropped) {
         return S_OK;
     }
@@ -959,7 +961,9 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
     // 採用した部分は run から外す (以後 IME はその文字列を書き換えない)
     composer_.RemoveFront(adoption_.readingLength);
+    const std::wstring adopted = adoption_.written.substr(0, adoption_.adoptedLength);
     const std::wstring rest = adoption_.written.substr(adoption_.adoptedLength);
+    AppendLlmHistory(adopted);
     ClearBar();
     // run の先頭が変わったので、次にバーを出す位置はその時点で取り直す
     barXFixed_ = false;
@@ -973,11 +977,13 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     }
     if (adoption_.endRun || composer_.Empty()) {
         // 採用した部分で run が終わる。確定アンドゥは採用前の読みに戻す
+        AppendLlmHistory(rest);
         lastCommitText_ = adoption_.written;
         lastComposer_ = adoption_.before;
         DropRun();
         return;
     }
+    ExtendLlmContext(adopted);
     surface_ = rest;
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
@@ -1019,6 +1025,7 @@ void TextService::EndRun()
         }
         lastCommitText_ = surface_;
         lastComposer_ = composer_;
+        AppendLlmHistory(surface_);
     }
     DropRun();
 }
@@ -1028,6 +1035,8 @@ void TextService::DropRun()
     pendingWindow_.Hide();
     ClearConversion();
     ClearBar();
+    ResetRerank();
+    llmRunContext_.clear();
     barXFixed_ = false;
     composer_.Clear();
     surface_.clear();
@@ -1051,8 +1060,11 @@ HRESULT TextService::UndoCommit(ITfContext* context)
     surface_ = commitText;
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
-    // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない
+    // 確定を取り消したので、その確定を前提にした文脈補正はもう使えない。
+    // run を始める前の時点が無いので、LLM の左文脈も無しにする
     ClearContext();
+    ResetRerank();
+    llmRunContext_.clear();
     const std::wstring text = composer_.ConfirmedKana();
     ClassifyAppendDocument(context);
     if (appendDocument_ == AppendDocument::Readable) {
@@ -1187,6 +1199,10 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
 {
     // 不一致で run を捨てるときに、この打鍵を含まない状態へ戻すための控え
     const RomajiComposer before = composer_;
+    if (!InRun()) {
+        // run の最初の文字を入れる前に左文脈を取る (run のかなは文書に入るため)
+        CaptureLlmContext(context);
+    }
     PushDirectKey(key);
     AppendResult result = SyncAppendRun(context);
     if (result == AppendResult::Mismatch) {
@@ -1197,6 +1213,7 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
         DiscardPendingRomaji();
         EndRun();
         ClearContext();
+        CaptureLlmContext(context);
         PushDirectKey(key);
         result = SyncAppendRun(context);
     }
@@ -1641,11 +1658,15 @@ void TextService::NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eate
     const bool tested = backspaceTested_;
     backspaceTested_ = false;
     keyEditExpected_ = false;
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    if (!eaten && (wparam == VK_RETURN || (ctrl && wparam == 'M'))) {
+        // 改行・送信をアプリへ渡したら、IME が入れた文字列はもう同じ行の前方ではない
+        llmHistory_.clear();
+    }
     if (eaten || Composing() || IsModifierKey(wparam)) {
         return;
     }
-    const bool ctrlOrAlt =
-        (GetKeyState(VK_CONTROL) & 0x8000) != 0 || (GetKeyState(VK_MENU) & 0x8000) != 0;
+    const bool ctrlOrAlt = ctrl || (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (wparam == VK_BACK && !ctrlOrAlt) {
         keyEditExpected_ = true;
         // 同じ打鍵で OnTestKeyDown と OnKeyDown の両方が呼ばれるホストで二重に削らない

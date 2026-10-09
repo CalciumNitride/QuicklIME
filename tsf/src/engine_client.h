@@ -79,6 +79,24 @@ public:
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
 
+    // RERANKGET の結果
+    enum class RerankStatus {
+        Pending,  // 推論中・順番待ち
+        Done,     // 並べ替えた候補がある
+        None,     // ID が古い・不明、推論に失敗、LLM が無効
+    };
+
+    // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。毎打鍵の候補バー用に、
+    // エンジンの自動起動や接続待ちはしない。受け付けた ID を返す (0 = 並べ替えをしない。未接続・
+    // LLM が無効・RERANK を知らない旧エンジンも 0)
+    unsigned long long Rerank(const std::wstring& llmContext, const ConversionContext& context,
+                              const std::wstring& kana);
+
+    // 並べ替えの結果を問い合わせる (RERANKGET)。Done のときは candidates に CONVNBEST と同じ形の
+    // 候補を入れる。通信に失敗したら false
+    bool RerankGet(unsigned long long id, RerankStatus* status,
+                   std::vector<SentenceCandidate>* candidates);
+
     // 読みに対する記号候補のみを取得する (CONVSYM、F4 の記号変換用)。
     // 通信に成功すれば true (記号が1つも無い場合も true で candidates は空)
     bool ConvertSymbols(const std::wstring& kana, std::vector<std::wstring>* candidates);
@@ -144,4 +162,6 @@ private:
     // CONVNBEST を知らないエンジンと判定したら以後は CONVCTX / CONVSEG で代用する
     // (CONVCTX には対応しているエンジンがあるため legacyEngine_ とは別に持つ)
     bool nbestUnsupported_ = false;
+    // RERANK を知らないエンジンと判定したら、この接続では以後送らない
+    bool rerankUnsupported_ = false;
 };

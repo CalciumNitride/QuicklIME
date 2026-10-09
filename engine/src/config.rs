@@ -26,6 +26,17 @@ pub struct Config {
     pub max_predictions: usize,
     /// 予測を出す最小の読み文字数
     pub min_suggest_chars: usize,
+    /// LLM による候補の並べ替え (RERANK) を使うか
+    pub llm: bool,
+    /// LLM の子プロセスのバックエンド
+    pub llm_backend: LlmBackend,
+}
+
+/// LLM の推論に使うバックエンド (docs/design/llm-rerank.md)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LlmBackend {
+    Cpu,
+    Vulkan,
 }
 
 impl Default for Config {
@@ -36,6 +47,8 @@ impl Default for Config {
             typo_correction: true,
             max_predictions: 8,
             min_suggest_chars: 2,
+            llm: false,
+            llm_backend: LlmBackend::Cpu,
         }
     }
 }
@@ -71,6 +84,12 @@ impl Config {
                 "typo_correction" => parse_bool(value, &mut config.typo_correction),
                 "max_predictions" => parse_clamped(value, 1, 8, &mut config.max_predictions),
                 "min_suggest_chars" => parse_clamped(value, 1, 5, &mut config.min_suggest_chars),
+                "llm" => parse_bool(value, &mut config.llm),
+                "llm_backend" => match value {
+                    "cpu" => config.llm_backend = LlmBackend::Cpu,
+                    "vulkan" => config.llm_backend = LlmBackend::Vulkan,
+                    _ => {}
+                },
                 _ => {} // 未知キー (TSF 層向けを含む) は無視
             }
         }
@@ -116,6 +135,18 @@ mod tests {
         assert!(config.typo_correction);
         assert_eq!(config.max_predictions, 8);
         assert_eq!(config.min_suggest_chars, 2);
+        assert!(!config.llm);
+        assert_eq!(config.llm_backend, LlmBackend::Cpu);
+    }
+
+    #[test]
+    fn llmの設定を読み込める() {
+        let config = Config::load_from(Cursor::new("llm\t1\nllm_backend\tvulkan\n"));
+        assert!(config.llm);
+        assert_eq!(config.llm_backend, LlmBackend::Vulkan);
+        // 不明なバックエンドは既定のまま
+        let config = Config::load_from(Cursor::new("llm_backend\tcuda\n"));
+        assert_eq!(config.llm_backend, LlmBackend::Cpu);
     }
 
     #[test]

@@ -56,6 +56,8 @@ const ID_COMBO_FONT_SIZE: i32 = 109;
 const ID_CHECK_MODELESS: i32 = 112;
 const ID_CHECK_CANDIDATE_BAR: i32 = 113;
 const ID_CHECK_SEGMENT_UI: i32 = 114;
+const ID_CHECK_LLM: i32 = 115;
+const ID_COMBO_LLM_BACKEND: i32 = 116;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
@@ -68,6 +70,9 @@ const ID_EDIT_REMOVE_BASE: i32 = 202;
 const ID_EDIT_OVERRIDE_BASE: i32 = 203;
 // キー取り込みダイアログ
 const ID_CAPTURE_MESSAGE: i32 = 300;
+
+/// LLM のバックエンド: (設定上の名前, 表示名)
+const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
 
 /// キー割当の照合に使う入力状態: (設定上の名前, 表示名)。
 /// 並びは TSF 層 (tsf/src/config.h の KeyState) と合わせる
@@ -353,6 +358,9 @@ struct Config {
     modeless: bool,
     candidate_bar: bool,
     segment_ui: bool,
+    llm: bool,
+    /// LLM のバックエンド ("cpu" / "vulkan")
+    llm_backend: String,
     candidate_font: String,
     candidate_font_size: u32, // 10-40
     keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
@@ -372,6 +380,8 @@ impl Default for Config {
             modeless: false,
             candidate_bar: true,
             segment_ui: false,
+            llm: false,
+            llm_backend: "cpu".to_string(),
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
             keys: default_key_assigns(),
@@ -446,6 +456,12 @@ impl Config {
             "modeless" => parse_bool(&mut self.modeless),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
             "segment_ui" => parse_bool(&mut self.segment_ui),
+            "llm" => parse_bool(&mut self.llm),
+            "llm_backend" => {
+                if LLM_BACKENDS.iter().any(|(name, _)| *name == value) {
+                    self.llm_backend = value.to_string();
+                }
+            }
             "punctuation" => {
                 if PUNCT_ITEMS.contains(&value) {
                     self.punctuation = value.to_string();
@@ -507,6 +523,8 @@ impl Config {
         text.push_str(&format!("typo_correction\t{}\n", self.typo_correction as u32));
         text.push_str(&format!("max_predictions\t{}\n", self.max_predictions));
         text.push_str(&format!("min_suggest_chars\t{}\n", self.min_suggest_chars));
+        text.push_str(&format!("llm\t{}\n", self.llm as u32));
+        text.push_str(&format!("llm_backend\t{}\n", self.llm_backend));
         text.push_str("\n# 入力挙動\n");
         text.push_str(&format!("space\t{}\n", if self.space_full { "full" } else { "half" }));
         text.push_str(&format!("punctuation\t{}\n", self.punctuation));
@@ -649,9 +667,9 @@ fn main() {
         let right_x = margin + left_w + col_gap;
         let right_w = scale(440);
         let client_w = right_x + right_w + margin;
-        // 左カラム: 見出し3 + 項目12行 + 見出し前の隙間、右カラム: 見出し1 + キー割当の一覧。
+        // 左カラム: 見出し3 + 項目15行 + 見出し前の隙間、右カラム: 見出し1 + キー割当の一覧。
         // 高さは左カラム基準で、一覧は残りの高さに合わせる
-        let left_rows = 16;
+        let left_rows = 18;
         let client_h =
             margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
 
@@ -785,6 +803,16 @@ fn main() {
         add_combo(ctrl_x, y, ID_COMBO_MIN_CHARS, &chars_refs, &config.min_suggest_chars.to_string());
         y += row_h + row_gap;
         check("文節単位で変換する", y, ID_CHECK_SEGMENT_UI, config.segment_ui);
+        y += row_h + row_gap;
+        check("AI で候補を並べ替える", y, ID_CHECK_LLM, config.llm);
+        y += row_h + row_gap;
+        create_control("STATIC", "AI の実行環境:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        let backend_labels: Vec<&str> = LLM_BACKENDS.iter().map(|(_, label)| *label).collect();
+        let current_backend = LLM_BACKENDS
+            .iter()
+            .find(|(name, _)| *name == config.llm_backend)
+            .map_or(LLM_BACKENDS[0].1, |(_, label)| *label);
+        add_combo(ctrl_x, y, ID_COMBO_LLM_BACKEND, &backend_labels, current_backend);
 
         y += row_h + row_gap + section_gap;
         create_control("STATIC", "入力", label_style, 0, margin, y, left_w, row_h, 0);
@@ -1075,6 +1103,11 @@ fn collect(hwnd: HWND) -> Config {
     config.modeless = checked(ID_CHECK_MODELESS);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
+    config.llm = checked(ID_CHECK_LLM);
+    let backend = combo_text(ID_COMBO_LLM_BACKEND);
+    if let Some((name, _)) = LLM_BACKENDS.iter().find(|(_, label)| *label == backend) {
+        config.llm_backend = name.to_string();
+    }
     let font = combo_text(ID_COMBO_FONT);
     if !font.is_empty() && font.encode_utf16().count() < 32 {
         config.candidate_font = font;
@@ -1611,6 +1644,18 @@ mod tests {
             assert_eq!(parse_key_list(value), Some(vec![key(value)]), "{value}");
         }
         assert_eq!(parse_key_list("none"), Some(Vec::new()));
+    }
+
+    #[test]
+    fn reads_llm_settings() {
+        let mut config = Config::default();
+        config.apply("llm", "1");
+        config.apply("llm_backend", "vulkan");
+        assert!(config.llm);
+        assert_eq!(config.llm_backend, "vulkan");
+        // 未対応のバックエンドは読み飛ばす
+        config.apply("llm_backend", "cuda");
+        assert_eq!(config.llm_backend, "vulkan");
     }
 
     #[test]

@@ -13,6 +13,7 @@
 ; - 更新時にロード中の DLL は restartreplace で再起動時置換になる
 ;   (初回インストールは未ロードなので再起動不要。AlwaysRestart にはしない)
 ; - %APPDATA%\QuicklIME (設定・ユーザ辞書・学習) には触れない (アンインストールでも残す)
+; - LLM の子プロセス (quicklime-llm*.exe) はエンジンが起動する。モデルは {app}\models\ に置く
 
 #define MyAppName "QuicklIME"
 #define MyAppVersion "0.1.0"
@@ -49,10 +50,20 @@ Source: "{#Staging}\x86\QuicklIME.dll"; DestDir: "{app}\x86"; Flags: {#CommonFil
 Source: "{#Staging}\quicklime-engine.exe"; DestDir: "{app}"; Flags: {#CommonFileFlags}
 Source: "{#Staging}\quicklime-config.exe"; DestDir: "{app}"; Flags: {#CommonFileFlags}
 Source: "{#Staging}\quicklime-regword.exe"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+Source: "{#Staging}\quicklime-llm.exe"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+Source: "{#Staging}\quicklime-llm-vulkan.exe"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+; quicklime-llm*.exe が使う VC++ ランタイム (exe と同じディレクトリに置く app-local 配置)
+Source: "{#Staging}\msvcp140.dll"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+Source: "{#Staging}\vcruntime140.dll"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+Source: "{#Staging}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: {#CommonFileFlags}
+Source: "{#Staging}\vcomp140.dll"; DestDir: "{app}"; Flags: {#CommonFileFlags}
 ; 辞書類はエンジン停止後ならロックされないため restartreplace は不要
 Source: "{#Staging}\dict\*"; DestDir: "{app}\dict"; Flags: ignoreversion
 Source: "{#Staging}\presets\*"; DestDir: "{app}\presets"; Flags: ignoreversion
+Source: "{#Staging}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozc.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Staging}\LICENSE-llama.cpp.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Staging}\LICENSE-zenz.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\QuicklIME 設定"; Filename: "{app}\quicklime-config.exe"
@@ -69,6 +80,10 @@ begin
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM quicklime-config.exe', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM quicklime-regword.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM quicklime-llm.exe', '',
+       SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM quicklime-llm-vulkan.exe', '',
        SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 

@@ -1,5 +1,7 @@
 #include "engine_client.h"
 
+#include <cstdlib>
+
 #include "globals.h"
 
 namespace {
@@ -163,6 +165,8 @@ void EngineClient::Disconnect()
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
     }
+    // 次の接続の相手は RERANK に対応したエンジンに入れ替わっているかもしれない
+    rerankUnsupported_ = false;
 }
 
 bool EngineClient::Transact(const std::string& request, std::string* response)
@@ -438,6 +442,66 @@ bool EngineClient::ParseNBestResponse(std::string response,
         candidates->push_back(std::move(candidate));
     }
     return !candidates->empty();
+}
+
+unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
+                                        const ConversionContext& context,
+                                        const std::wstring& kana)
+{
+    if (kana.empty() || rerankUnsupported_ || legacyEngine_) {
+        return 0;
+    }
+    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return 0;
+    }
+    const std::string contextField =
+        context.Empty() ? std::string()
+                        : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+    const std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
+                                WideToUtf8(kana) + "\n";
+    std::string response;
+    if (!SendReceive(request, &response)) {
+        return 0;
+    }
+    if (IsUnknownCommandError(response)) {
+        rerankUnsupported_ = true;
+        return 0;
+    }
+    // 応答: "OK\t<ID>\n"
+    if (response.rfind("OK\t", 0) != 0) {
+        return 0;
+    }
+    return std::strtoull(response.c_str() + 3, nullptr, 10);
+}
+
+bool EngineClient::RerankGet(unsigned long long id, RerankStatus* status,
+                             std::vector<SentenceCandidate>* candidates)
+{
+    if (status == nullptr || candidates == nullptr || id == 0 ||
+        pipe_ == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("RERANKGET\t" + std::to_string(id) + "\n", &response)) {
+        return false;
+    }
+    // 応答: "OK\tPENDING\n" / "OK\tNONE\n" / "OK\tDONE\t<CONVNBEST と同じ形の候補>\n"
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response == "OK\tPENDING") {
+        *status = RerankStatus::Pending;
+        return true;
+    }
+    constexpr char kDone[] = "OK\tDONE\t";
+    if (response.rfind(kDone, 0) == 0 &&
+        ParseNBestResponse("OK\t" + response.substr(sizeof(kDone) - 1), candidates)) {
+        *status = RerankStatus::Done;
+        return true;
+    }
+    *status = RerankStatus::None;
+    return response.rfind("OK", 0) == 0;
 }
 
 bool EngineClient::ConvertSymbols(const std::wstring& kana,

@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -45,6 +46,11 @@ public:
     // 作成に失敗したときは現在のフォントを維持する
     void SetFont(const std::wstring& face, int height);
 
+    // 表示中のウィンドウに intervalMs 間隔のタイマーを付け、callback を呼ぶ (付け直すと前のものを
+    // 置き換える)。非表示なら付けずに false。Hide で破棄されたタイマーは止まる
+    bool StartTimer(UINT intervalMs, std::function<void()> callback);
+    void StopTimer();
+
     void Hide();
 
     // 表示中かどうか (Hide 済み・未表示なら false)
@@ -64,7 +70,8 @@ private:
     void PaintBar(HDC hdc);
 
     HWND hwnd_;
-    HFONT font_;        // 候補文字列用フォント
+    std::function<void()> timerCallback_;  // StartTimer の callback (空ならタイマーなし)
+    HFONT font_;       // 候補文字列用フォント
     HFONT numberFont_;  // 候補番号用フォント (候補文字列より控えめな小さいサイズ)
     std::vector<std::wstring> items_;
     size_t selection_;

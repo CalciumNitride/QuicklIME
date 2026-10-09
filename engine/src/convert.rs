@@ -71,6 +71,9 @@ struct PathWord {
 /// 入力全体の候補 (CONVNBEST の1件)。文節ごとの (読み, 表記) を持つ
 pub struct SentenceCandidate {
     pub segments: Vec<(String, String)>,
+    /// LLM の並べ替えで位置を動かさない候補 (読み全体の学習表記、学習で表記が変わった 1-best、
+    /// ユーザ辞書の語を含む候補、英字を含む候補。docs/design/llm-rerank.md)
+    pub protected: bool,
 }
 
 impl SentenceCandidate {
@@ -550,12 +553,14 @@ pub fn convert_nbest(
 
     let mut result: Vec<SentenceCandidate> = Vec::new();
     let mut surfaces: Vec<String> = Vec::new();
-    let mut add = |segments: Vec<(String, String)>| -> bool {
-        let candidate = SentenceCandidate { segments };
+    // protected は学習・ユーザ辞書語の印。英字を含むかは表記から決まるのでここで足す
+    let mut add = |segments: Vec<(String, String)>, protected: bool| -> bool {
+        let mut candidate = SentenceCandidate { segments, protected };
         let surface = candidate.surface();
         if surfaces.contains(&surface) {
             return false;
         }
+        candidate.protected |= surface.chars().any(|c| c.is_ascii_alphabetic());
         surfaces.push(surface);
         result.push(candidate);
         true
@@ -563,35 +568,53 @@ pub fn convert_nbest(
     let whole = |surface: &str| vec![(kana.to_string(), surface.to_string())];
 
     if let Some(learned) = learning.get(kana) {
-        add(whole(learned));
+        add(whole(learned), true);
     }
     if let Some(indices) = best_path(&lattice, matrix) {
-        let segments =
-            segments_from_path(lattice.path_words(&indices), ctx, dict, user, functional, learning);
-        add(segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect());
+        let words = lattice.path_words(&indices);
+        let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
+        // 数字列の結合で区切り記号の表記が変わるため、学習の有無は結合後の表記どうしで比べる
+        let raw: String = merge_digit_runs(lattice.path_words(&indices))
+            .iter()
+            .map(|w| w.surface.as_str())
+            .collect();
+        let segments = segments_from_path(words, ctx, dict, user, functional, learning);
+        let segments: Vec<(String, String)> =
+            segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect();
+        let learned = segments.iter().map(|(_, surface)| surface.as_str()).collect::<String>() != raw;
+        add(segments, learned || has_user);
     }
-    for (_, path) in nbest_paths(&lattice, matrix, functional) {
-        add(path.into_iter().map(|s| (s.reading, s.surface)).collect());
+    for (_, path, words) in nbest_paths(&lattice, matrix, functional) {
+        let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
+        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user);
     }
 
     // 縦の候補リストで、読みそのものの別表記を選べるようにする (CONVERT の並びと同じ)
     let mut dict_count = 0;
-    let shortcuts = user.lookup_shortcuts(kana).into_iter();
-    let exact = exact_candidates(kana, dict, user).into_iter().map(|(_, surface)| surface);
-    for surface in shortcuts.chain(exact) {
+    let shortcuts = user.lookup_shortcuts(kana).into_iter().map(|surface| (surface, true));
+    let exact = exact_candidates(kana, dict, user)
+        .into_iter()
+        .map(|(_, surface)| (surface, is_user_word(kana, surface, user)));
+    for (surface, from_user) in shortcuts.chain(exact) {
         if dict_count >= MAX_DICT_CANDIDATES {
             break;
         }
-        if add(whole(surface)) {
+        if add(whole(surface), from_user) {
             dict_count += 1;
         }
     }
     for symbol in dict.lookup_symbols(kana) {
-        add(whole(symbol));
+        add(whole(symbol), false);
     }
-    add(whole(&to_katakana(kana)));
-    add(whole(kana));
+    add(whole(&to_katakana(kana)), false);
+    add(whole(kana), false);
     result
+}
+
+/// (読み, 表記) がユーザ辞書 (手動登録・学習した複合語・インポート辞書) の名詞系の語か
+fn is_user_word(reading: &str, surface: &str, user: &UserDict) -> bool {
+    user.lookup_words(reading).iter().any(|w| w.surface == surface)
+        || user.imported_words(reading).iter().any(|e| e.surface == surface)
 }
 
 /// 後ろ向き探索の部分経路 (node から EOS まで)
@@ -604,13 +627,13 @@ struct Partial {
 }
 
 /// 前向きの最小コストを見積もりにして文末から A* 探索し、取り出した経路を最大 MAX_NBEST 件、
-/// (総コスト, 文節列) で返す。表記の連結が同じ経路は1件にまとめ、1-best と違う文節が同じ
+/// (総コスト, 文節列, 単語列) で返す。表記の連結が同じ経路は1件にまとめ、1-best と違う文節が同じ
 /// 分類の中は並べ直して MAX_NBEST_PER_CLASS 件だけ残す (分類どうしの並びはコスト順)
 fn nbest_paths(
     lattice: &Lattice,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
-) -> Vec<(i64, Vec<PathSegment>)> {
+) -> Vec<(i64, Vec<PathSegment>, Vec<PathSegment>)> {
     let nodes = &lattice.nodes;
     let n = lattice.ending_at.len() - 1;
 
@@ -714,8 +737,8 @@ fn nbest_paths(
         }
     }
     order.truncate(MAX_NBEST);
-    let mut slots: Vec<Option<(i64, Vec<PathSegment>)>> =
-        found.into_iter().map(|(cost, segments, _)| Some((cost, segments))).collect();
+    let mut slots: Vec<Option<(i64, Vec<PathSegment>, Vec<PathSegment>)>> =
+        found.into_iter().map(Some).collect();
     order.into_iter().filter_map(|i| slots[i].take()).collect()
 }
 
@@ -1038,7 +1061,7 @@ fn best_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<Vec<usize>>
 }
 
 /// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
-fn to_katakana(kana: &str) -> String {
+pub(crate) fn to_katakana(kana: &str) -> String {
     kana.chars()
         .map(|c| {
             // ひらがな (ぁ U+3041 〜 ゖ U+3096) はカタカナと 0x60 差で並んでいる
@@ -1888,7 +1911,9 @@ mod tests {
         let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None).unwrap();
         nbest_paths(&lattice, matrix, functional)
             .into_iter()
-            .map(|(cost, segments)| (cost, segments.iter().map(|s| s.surface.as_str()).collect()))
+            .map(|(cost, segments, _)| {
+                (cost, segments.iter().map(|s| s.surface.as_str()).collect())
+            })
             .collect()
     }
 
@@ -2038,6 +2063,53 @@ mod tests {
         unique.sort();
         unique.dedup();
         assert_eq!(unique.len(), surfaces.len());
+    }
+
+    #[test]
+    fn 学習で決まった候補に保護の印が付く() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("きょうははれです", "今日は晴れデス");
+        learning.record("きょうは", "京は");
+        let got = convert_nbest(
+            "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning);
+        // 読み全体の学習表記と、学習で表記が変わった 1-best は保護する
+        assert!(got[0].protected && got[1].protected);
+        assert_eq!(got[2].surface(), "今日は晴れです");
+        assert!(!got[2].protected);
+
+        // 学習で表記が変わらなければ 1-best は保護しない
+        let got = convert_nbest(
+            "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory());
+        assert_eq!(got[0].surface(), "今日は晴れです");
+        assert!(!got[0].protected);
+    }
+
+    #[test]
+    fn ユーザ辞書の語と英字を含む候補に保護の印が付く() {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "きょう\t1\t1\t2000\t今日\nきょう\t1\t1\t4000\t京\nは\t2\t2\t500\tは\n\
+             はれ\t1\t1\t3000\t晴れ\nはれ\t1\t1\t3500\tHARE\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        let mut user = UserDict::empty();
+        user.load_from("はれ\t腫れ\t名詞\n".as_bytes(), &sample_functional());
+        let got = convert_nbest(
+            "きょうははれ", None, &dict, &user, &ConnectionMatrix::empty(), &sample_functional(),
+            &LearningStore::in_memory());
+        let find = |surface: &str| {
+            got.iter().find(|c| c.surface() == surface).unwrap_or_else(|| {
+                panic!("{surface} が候補に無い: {:?}", surfaces_of(&got))
+            })
+        };
+        assert!(find("今日は腫れ").protected);
+        assert!(find("今日はHARE").protected);
+        assert!(!find("今日は晴れ").protected);
+        assert!(!find("京は晴れ").protected);
     }
 
     #[test]

@@ -11,6 +11,7 @@ constexpr int kNumberGap = 6;     // 番号列と候補文字列の間の余白
 constexpr int kBarItemPadding = 4;  // 候補バーの各候補の左右の余白 (選択の強調に含める)
 constexpr int kBarItemGap = 4;      // 候補バーの候補どうしの間隔
 constexpr size_t kPageSize = CandidateWindow::kPageSize; // 1ページに表示する候補数
+constexpr UINT_PTR kTimerId = 1;    // StartTimer のタイマー (ウィンドウごとに1つ)
 
 // 候補番号のフォント高を候補文字列より一回り小さくして控えめにする
 // (候補文字列を主役として見やすくするため)
@@ -304,12 +305,35 @@ void CandidateWindow::SetSelection(size_t selection)
     }
 }
 
+bool CandidateWindow::StartTimer(UINT intervalMs, std::function<void()> callback)
+{
+    if (hwnd_ == nullptr) {
+        return false;
+    }
+    timerCallback_ = std::move(callback);
+    if (SetTimer(hwnd_, kTimerId, intervalMs, nullptr) == 0) {
+        timerCallback_ = nullptr;
+        return false;
+    }
+    return true;
+}
+
+void CandidateWindow::StopTimer()
+{
+    if (hwnd_ != nullptr) {
+        KillTimer(hwnd_, kTimerId);
+    }
+    timerCallback_ = nullptr;
+}
+
 void CandidateWindow::Hide()
 {
     if (hwnd_ != nullptr) {
+        // ウィンドウと一緒にタイマーも破棄される
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
     }
+    timerCallback_ = nullptr;
     items_.clear();
     selection_ = 0;
 }
@@ -338,6 +362,13 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     case WM_MOUSEACTIVATE:
         // クリックされてもフォーカスを奪わない
         return MA_NOACTIVATE;
+    case WM_TIMER:
+        if (self != nullptr && wparam == kTimerId && self->timerCallback_) {
+            // callback の中で StopTimer・Hide されても呼び出し中の関数が消えないよう、写しを呼ぶ
+            const std::function<void()> callback = self->timerCallback_;
+            callback();
+        }
+        return 0;
     default:
         break;
     }

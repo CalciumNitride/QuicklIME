@@ -250,6 +250,18 @@ private:
     ReplaceRunResult* resultOut_;
 };
 
+// 選択開始より前の最大 maxLength 文字 (UTF-16 単位) を読み取り専用で読む (LLM の左文脈用)。
+// 文書の先頭に近ければ短くなる。読めなければ textOut は空のまま
+class GetPrecedingTextEditSession : public EditSessionBase {
+public:
+    GetPrecedingTextEditSession(ITfContext* context, ULONG maxLength, std::wstring* textOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    ULONG maxLength_;
+    std::wstring* textOut_;
+};
+
 // 現在の選択範囲の画面上の矩形 (スクリーン座標) を取得する (direct 方式の候補
 // ウィンドウ・未完成ローマ字の小窓の位置決め用。composition が無いため選択範囲を基準にする)。
 // SetText 直後は同じロック内でレイアウトが更新されていないアプリがあるため、

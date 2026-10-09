@@ -19,6 +19,9 @@ Release/
 # Rust
 target/
 
+# LLM のモデル (scripts/fetch-models.ps1 で取得する)
+/models/
+
 # Adobe Illustrator の一時ファイル
 ~ai-*
 

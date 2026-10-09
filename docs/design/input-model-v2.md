@@ -69,13 +69,13 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 ### LLM
 
-- llama.cpp をエンジンプロセス内で動かす。TSF 層 (全アプリにロードされる DLL) には入れない
+- llama.cpp はエンジンが起動する別プロセス (quicklime-llm) で動かす。TSF 層 (全アプリにロードされる DLL) には入れない
 - GPU は特定のベンダーに依存させない (CPU と Vulkan。CUDA 専用にはしない)
 - 主な役割は、入力全体の N-best 候補の順位補正とする。結果は候補バーへ非同期に反映し、
   打鍵を止めない
 - 段階5で採用する。計測結果 (docs/design/experiment-0b-llm-results.md) で、遅延・メモリ・
   精度のいずれも見込みがある構成が確認できた。オプションとし、無効でも従来の統計変換だけで動く
-- 構成は段階5で次の候補から選ぶ: CPU + zenz-v3.2-xsmall、Vulkan + zenz-v3.2-small / xsmall
+- 構成は CPU + zenz-v3.2-xsmall と Vulkan + zenz-v3.2-small を設定で選ぶ (docs/design/llm-rerank.md)
 
 ## 段階
 
@@ -87,7 +87,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | docs/design/nbest.md |
-| 5 | LLM による順位補正 | エンジン | 未作成 |
+| 5 | LLM による順位補正 | エンジン・TSF | docs/design/llm-rerank.md |
 
 - 0a・0b は互いに独立しており、段階1とも並行して進められる
 - モードレス判定強化のうち、文脈の利用と綴りのヒューリスティクスは他の段階から独立して
@@ -145,7 +145,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 - 段階4の N-best を LLM で並べ替え、候補バーへ非同期に反映する
 - ユーザ辞書語や英字混じりの表記は保護し、LLM の出力で上書きしない
-- 読みなしの後続語予測 (候補バーが空のときに次の語を出す) は、段階5の中で別途検討する
+- 読みなしの後続語予測 (候補バーが空のときに次の語を出す) と右文脈は、段階5では扱わない
 
 ## 変更対象ファイル (概略)
 
@@ -174,7 +174,6 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 ## 未決事項
 
-- 段階5の LLM の構成 (CPU / Vulkan、モデル規模)
 - CUAS での採用の方法 (段階2)
 
 ## 参考
