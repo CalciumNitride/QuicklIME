@@ -227,8 +227,6 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 
 ## 未決事項
 
-- `MAX_NBEST`・`NBEST_COST_MARGIN`・`MAX_NBEST_EXPANSIONS`・重複の分類あたりの件数 (2) の値。
-  `nbest_eval` の計測で決める
 - N-best の経路に文節ごとの学習を当てるか。今回は 1-best にだけ当てる。2位以降で学習した
   表記が出ずに困る場面があれば検討する
 - 段階3から持ち越した、打鍵ごとの往復2回の遅延 (CONVNBEST は CONVCTX より重い)。

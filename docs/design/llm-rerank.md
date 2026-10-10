@@ -285,6 +285,5 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 
 ## 未決事項
 
-- 定数 (`RERANK_TOP`・`LLM_POLL_MS`・`LLM_POLL_LIMIT_MS`・`LLM_TIMEOUT_MS`) の値。計測と実機テストで決める
 - 統計の並びから並べ替えた並びへ変わるときのバーの見え方 (チラつき・並びが変わることへの違和感)。
   実機テストで気になれば対処を検討する

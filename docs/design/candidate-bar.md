@@ -115,7 +115,7 @@
 ### 設定
 
 - `candidate_bar` (既定 1) を新設する。0 なら次のとおり動く
-  - バーを出さず、毎打鍵の PREDICT・CONVSEG を呼ばない
+  - バーを出さず、毎打鍵の PREDICT・CONVNBEST を呼ばない
   - 「バー選択中」の状態に入らない。run 中の Tab・↑↓ は、他の編集キーと同じく run を終えて
     アプリへ渡す
   - 確定キーは、かなのまま run を終える (段階2の挙動)
@@ -148,7 +148,7 @@
 
 1. `RomajiComposer` の先頭切り離しと、config の `candidate_bar`・`min_suggest_chars`
 2. `CandidateWindow` の横一列表示
-3. バーの作り直し: 打鍵ごとの CONVSEG/CONVCTX・PREDICT から候補を組み立てて表示する
+3. バーの作り直し: 打鍵ごとの CONVNBEST・PREDICT から候補を組み立てて表示する
    (採用はまだ既存のサジェスト採用の経路のまま)。縦の予測ウィンドウを置き換える
 4. 選択で文書を書き換えないようにする (読める文書の置換経路の削除)
 5. 採用: 全体変換・予測候補 (確定キー・Enter・印字キー・Space)

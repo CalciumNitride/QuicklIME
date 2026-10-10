@@ -121,8 +121,8 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 - 0a で選んだ方式を本実装する
 - フォールバック判定 (direct-input.md の「フォールバック判定」) を、追記型入力に合わせて
   作り直す
-- 置換できない文書 (CUAS) での採用の方法を決める。最終手段は、Backspace の擬似打鍵を
-  送ってから文字列を入れる方法
+- 置換できない文書 (CUAS など、追記のみの文書) での採用は、Backspace の擬似打鍵で
+  run の文字列を消してから文字列を追記する
 - composition 方式と設定 `input_style` を廃止する
 
 ### 段階3: 候補バー
@@ -132,7 +132,8 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 - ライブ変換の結果は文書に入れず、候補バーに表示する (P1)。採用した部分だけが
   文書上で置き換わり、以後は変わらない
 - 予測サジェストの縦の候補ウィンドウは候補バーに統合する
-- 採用キーは変換キー・Tab 系・確定キーを基本にし、キーマップで変えられるようにする
+- 採用キーは確定キーを基本にし、Tab 系・↑↓ で選んだ候補は Enter・Space・印字キーでも
+  採用する。変換キーは採用ではなく候補選択に入る。キーマップで変えられるようにする
 
 ### 段階4: 入力全体の N-best
 
@@ -153,15 +154,22 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 | ファイル | 関係する段階 |
 |---|---|
-| tsf/src/config.h, tsf/src/config.cpp | 1 (キーマップ) |
-| engine/src/bin/quicklime-config.rs | 1 (キー入力欄) |
-| tsf/src/text_service_direct.cpp | 0a, 1, 2, 3 |
-| tsf/src/text_service.cpp | 1, 2 (composition 方式の廃止) |
-| tsf/src/romaji.cpp, tsf/src/romaji.h | 0a, 2 |
-| tsf/src/candidate_window.cpp | 3 (横並び表示) |
+| tsf/src/config.h, tsf/src/config.cpp | 1 (キーマップ), 2, 3, 4, 5 (設定項目の追加・廃止) |
+| engine/src/bin/quicklime-config.rs | 1 (キー割当の一覧), 2, 3, 4, 5 (設定項目の追加・廃止) |
+| tsf/src/text_service_direct.cpp | 0a, 1, 2, 3, 4, 5 |
+| tsf/src/text_service.cpp, tsf/src/text_service.h | 1, 2 (composition 方式の廃止), 3, 4, 5 |
+| tsf/src/edit_session.h, tsf/src/edit_session.cpp | 2, 5 (左文脈の読み取り) |
+| tsf/src/engine_client.h, tsf/src/engine_client.cpp | 4 (CONVNBEST), 5 (RERANK) |
+| tsf/src/romaji.cpp, tsf/src/romaji.h | 0a, 2, 3 (先頭の切り離し) |
+| tsf/src/candidate_window.cpp | 3 (横並び表示), 5 (ポーリングのタイマー) |
 | engine/src/convert.rs | 4, 5 |
+| engine/src/main.rs | 4, 5 |
+| engine/src/llm.rs, engine/src/config.rs | 5 |
+| llm/ (quicklime-llm) | 5 |
+| scripts/fetch-models.ps1, scripts/build-llm.ps1 | 5 |
+| installer/build.ps1, installer/installer.iss | 5 |
 | docs/protocol.md | 4, 5 |
-| docs/design/direct-input.md | 2 (フォールバック判定・composition 方式の記述を更新) |
+| docs/design/direct-input.md | 1, 2 (フォールバック判定・composition 方式の記述を更新), 3 |
 
 ## 検証方法
 
@@ -174,7 +182,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 
 ## 未決事項
 
-- CUAS での採用の方法 (段階2)
+- なし
 
 ## 参考
 
