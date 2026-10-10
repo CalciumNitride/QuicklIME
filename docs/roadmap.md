@@ -304,6 +304,16 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
   - [ ] LLM の右文脈の利用
   - [ ] LLM の並べ替えのフィードバック学習 (採用・却下を、生の文脈を保存せずに記録して
         候補コストに反映する。docs/archive/llm-rerank-notes.md)
+- [ ] アプリ・ゲームとの互換
+  - [x] 入力位置がウィンドウの外を指すアプリ (マビノギなど) での候補ウィンドウ類の位置
+        (2026-10-10 実装、docs/design/candidate-position-fallback.md)。文書のウィンドウの外なら
+        ウィンドウ中央に出し、縦の候補一覧と小窓をモニタの作業領域に収める
+  - [ ] マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない。
+        ゲームは OnTestKeyDown を呼び、IME が食べると答えても OnKeyDown を呼ばない
+        (Ctrl なしのキーでは呼ぶ)。key-up では OnTestKeyUp だけ呼ばれ、OnKeyUp は来ない。
+        案: OnTestKeyDown で食べると答えたキーの OnKeyDown が来ないまま OnTestKeyUp が来たら、
+        その時点で機能を実行する。他のアプリで二重実行にならないかの確認が要る。
+        当面はマビノギでは Convert キーを使う
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点
