@@ -53,6 +53,10 @@ public:
 
     void Hide();
 
+    // 診断ログの出力先 (表示位置・ウィンドウの状態・WM_PAINT の受信などを1行ずつ渡す)。
+    // 未設定ならログの文字列も組み立てない
+    void SetLogger(std::function<void(const std::wstring&)> logger) { logger_ = std::move(logger); }
+
     // 表示中かどうか (Hide 済み・未表示なら false)
     bool Visible() const { return hwnd_ != nullptr; }
 
@@ -68,6 +72,9 @@ private:
 
     void Paint(HDC hdc);
     void PaintBar(HDC hdc);
+    // Show 系の呼び出しの結果を1行に出す。hwnd_ が null なら CreateWindowExW の失敗 (createError)
+    void LogShow(const wchar_t* kind, const RECT& anchor, int x, int y, int width, int height,
+                 bool created, DWORD createError, unsigned paints) const;
 
     HWND hwnd_;
     std::function<void()> timerCallback_;  // StartTimer の callback (空ならタイマーなし)
@@ -81,4 +88,8 @@ private:
     int lineHeight_;
     int numberColumnWidth_;  // 番号列の幅 (px)。kPageSize<=9 のため番号は常に1桁
     int numberFontHeight_;   // 番号フォントの文字高 (px、行内の垂直中央揃えに使う)
+    std::function<void(const std::wstring&)> logger_;  // 診断ログ (空なら出さない)
+    unsigned paintCount_;     // 前回の Show 系の呼び出し以降に受けた WM_PAINT の回数
+    bool firstPaintLogged_;   // 今の hwnd_ で最初の WM_PAINT をログに出したか
+    bool destroying_;         // Hide の DestroyWindow 中 (WM_DESTROY の由来の区別に使う)
 };

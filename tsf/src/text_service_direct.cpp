@@ -1386,21 +1386,28 @@ void TextService::UpdateAppendPending(ITfContext* context, const std::wstring& p
         return;
     }
     RECT rect = {};
-    if (!CaretRect(context, &rect)) {
+    const wchar_t* source = nullptr;
+    if (!CaretRect(context, &rect, &source)) {
         pendingWindow_.Hide();
         DebugLog(L"キャレットの矩形が取れないため小窓を出さない");
         return;
     }
+    if (!config_.Get().debugLog.empty()) {
+        DebugLog(std::wstring(L"小窓の位置: ") + source + L" " + DebugRectText(rect));
+    }
     pendingWindow_.ShowInline(rect, pending);
 }
 
-bool TextService::CaretRect(ITfContext* context, RECT* rect)
+bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** source)
 {
     bool succeeded = false;
     if (context != nullptr) {
         RequestSync(context,
                     new (std::nothrow) GetSelectionExtentEditSession(context, rect, &succeeded),
                     TF_ES_SYNC | TF_ES_READ);
+    }
+    if (succeeded && source != nullptr) {
+        *source = L"選択範囲の矩形";
     }
     if (!succeeded) {
         // 選択範囲の矩形を返さない文書でも、システムキャレットがあればその位置に出す
@@ -1410,9 +1417,59 @@ bool TextService::CaretRect(ITfContext* context, RECT* rect)
             *rect = info.rcCaret;
             MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(rect), 2);
             succeeded = true;
+            if (source != nullptr) {
+                *source = L"キャレット (GetGUIThreadInfo、選択範囲の矩形は取得失敗)";
+            }
         }
     }
+    if (succeeded) {
+        FallbackIfOutsideWindow(context, rect, L"小窓・候補バーの位置");
+    }
     return succeeded;
+}
+
+void TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
+                                          const wchar_t* where) const
+{
+    HWND root = nullptr;
+    if (context != nullptr) {
+        ITfContextView* view = nullptr;
+        if (SUCCEEDED(context->GetActiveView(&view)) && view != nullptr) {
+            HWND hwnd = nullptr;
+            if (SUCCEEDED(view->GetWnd(&hwnd)) && hwnd != nullptr) {
+                root = GetAncestor(hwnd, GA_ROOT);
+            }
+            view->Release();
+        }
+    }
+    if (root == nullptr) {
+        // CUAS 経由などビューがウィンドウを返さない文書では、入力を受けているスレッドの
+        // フォーカス (無ければアクティブ) のウィンドウを文書のウィンドウとみなす
+        GUITHREADINFO info = {};
+        info.cbSize = sizeof(info);
+        if (GetGUIThreadInfo(GetCurrentThreadId(), &info)) {
+            HWND target = info.hwndFocus != nullptr ? info.hwndFocus : info.hwndActive;
+            if (target != nullptr) {
+                root = GetAncestor(target, GA_ROOT);
+            }
+        }
+    }
+    RECT rootRect = {};
+    if (root == nullptr || !GetWindowRect(root, &rootRect)) {
+        return;
+    }
+    // 幅・高さ 0 の矩形も来るため、矩形の重なりではなく左上の点で判定する
+    const POINT origin = {rect->left, rect->top};
+    if (PtInRect(&rootRect, origin)) {
+        return;
+    }
+    const RECT original = *rect;
+    const LONG x = rootRect.left + (rootRect.right - rootRect.left) / 2;
+    const LONG y = rootRect.top + (rootRect.bottom - rootRect.top) / 2;
+    *rect = {x, y, x, y};
+    DebugLog(std::wstring(where) + L": 文書のウィンドウの外のため代わりの位置を使う 元=" +
+             DebugRectText(original) + L" ウィンドウ=" + DebugRectText(rootRect) + L" 代わり=" +
+             DebugRectText(*rect));
 }
 
 void TextService::DiscardPendingRomaji()

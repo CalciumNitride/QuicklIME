@@ -35,3 +35,9 @@ void WriteDebugLog(const std::wstring& path, const std::wstring& message)
     WriteFile(file, utf8.data(), static_cast<DWORD>(utf8.size()), &written, nullptr);
     CloseHandle(file);
 }
+
+std::wstring DebugRectText(const RECT& rect)
+{
+    return L"(" + std::to_wstring(rect.left) + L"," + std::to_wstring(rect.top) + L"," +
+           std::to_wstring(rect.right) + L"," + std::to_wstring(rect.bottom) + L")";
+}

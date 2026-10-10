@@ -257,7 +257,13 @@ private:
     HRESULT CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii);
     // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
     // システムキャレットの矩形)。どちらも取れなければ false
-    bool CaretRect(ITfContext* context, RECT* rect);
+    // source には位置の出所 (診断ログ用の説明) を返す
+    bool CaretRect(ITfContext* context, RECT* rect, const wchar_t** source = nullptr);
+    // 文字位置から得た rect の左上が文書のルートウィンドウの外なら、ルートウィンドウの中央の点
+    // (幅・高さ 0) に置き換える。TSF が入力欄と無関係な位置 (モニタの隅に丸めた値など) を返す
+    // アプリでも候補ウィンドウ等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
+    // where は置き換えたときのデバッグログの見出し
+    void FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
 
     // ---- LLM による並べ替え (docs/design/llm-rerank.md) ----
     // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
@@ -461,6 +467,10 @@ private:
         Adopt,    // バーの採用 (adoption_.written) を追記して FinishBarAdoption を行う
     };
     void DebugLog(const std::wstring& message) const;
+    // キー押下の診断ログ。state・match は処理前に取ったもの
+    void LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state, const KeyMatch& match,
+                    BOOL eaten) const;
+    void LogKeyUp(const wchar_t* where, WPARAM wparam, BOOL eaten) const;
     void SetAppendDocument(AppendDocument document, const wchar_t* reason);
     // 文書に入っていない未完成のローマ字 (小窓に出す文字列)
     std::wstring AppendPendingText() const;

@@ -1,5 +1,6 @@
 #include "candidate_window.h"
 
+#include "debug_log.h"
 #include "globals.h"
 
 namespace {
@@ -43,11 +44,41 @@ bool EnsureWindowClass()
     return true;
 }
 
+// 基準矩形 anchor を基準に (x, y) に置く width x height のウィンドウを、anchor を含むモニタの
+// 作業領域に収めた位置を返す。下にはみ出すなら anchor の上側、それでも収まらなければ (anchor が
+// タスクバーに重なる位置にあるときなど) 作業領域の下端に寄せる
+POINT FitToWorkArea(const RECT& anchor, int x, int y, int width, int height)
+{
+    RECT work = {};
+    MONITORINFO monitor = {};
+    monitor.cbSize = sizeof(monitor);
+    const POINT origin = {anchor.left, anchor.top};
+    if (GetMonitorInfoW(MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST), &monitor)) {
+        work = monitor.rcWork;
+    } else {
+        SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    }
+
+    if (x + width > work.right) {
+        x = static_cast<int>(work.right) - width;
+    }
+    x = max(x, static_cast<int>(work.left));
+    if (y + height > work.bottom) {
+        y = static_cast<int>(anchor.top) - height - 2;
+        if (y < work.top || y + height > work.bottom) {
+            y = static_cast<int>(work.bottom) - height;
+        }
+    }
+    y = max(y, static_cast<int>(work.top));
+    return {x, y};
+}
+
 } // namespace
 
 CandidateWindow::CandidateWindow()
     : hwnd_(nullptr), font_(nullptr), numberFont_(nullptr), selection_(0),
-      layout_(Layout::Vertical), lineHeight_(0), numberColumnWidth_(0), numberFontHeight_(0)
+      layout_(Layout::Vertical), lineHeight_(0), numberColumnWidth_(0), numberFontHeight_(0),
+      paintCount_(0), firstPaintLogged_(false), destroying_(false)
 {
     SetFont(L"Yu Gothic UI", 18);
 }
@@ -83,6 +114,8 @@ void CandidateWindow::SetFont(const std::wstring& face, int height)
 
 CandidateWindow::~CandidateWindow()
 {
+    // ロガーは所有者 (TextService) のメンバを参照するため、所有者の破棄中には呼ばない
+    logger_ = nullptr;
     Hide();
     if (font_ != nullptr) {
         DeleteObject(font_);
@@ -95,9 +128,17 @@ CandidateWindow::~CandidateWindow()
 bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& items,
                            size_t selection)
 {
-    if (items.empty() || !EnsureWindowClass()) {
+    if (items.empty()) {
         return false;
     }
+    if (!EnsureWindowClass()) {
+        if (logger_) {
+            logger_(L"Show: ウィンドウクラスの登録に失敗 error=" + std::to_wstring(GetLastError()));
+        }
+        return false;
+    }
+    const unsigned paints = paintCount_;
+    paintCount_ = 0;
     items_ = items;
     selection_ = selection;
     layout_ = Layout::Vertical;
@@ -134,29 +175,44 @@ bool CandidateWindow::Show(const RECT& anchor, const std::vector<std::wstring>& 
     const int width = kPadding * 2 + numberColumnWidth_ + kNumberGap + maxItemWidth;
     const int height =
         static_cast<int>(rows + (showPageIndicator ? 1 : 0)) * lineHeight_ + kPadding * 2;
-    const int x = anchor.left;
-    const int y = anchor.bottom + 2;
+    const POINT position = FitToWorkArea(anchor, anchor.left, anchor.bottom + 2, width, height);
+    const int x = position.x;
+    const int y = position.y;
 
+    bool created = false;
     if (hwnd_ == nullptr) {
+        firstPaintLogged_ = false;
         hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                                 kWindowClassName, L"", WS_POPUP | WS_BORDER, x, y, width, height,
                                 nullptr, nullptr, globals::dllInstance, this);
         if (hwnd_ == nullptr) {
+            LogShow(L"Show", anchor, x, y, width, height, false, GetLastError(), paints);
             return false;
         }
+        created = true;
     }
 
     SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
     ShowWindow(hwnd_, SW_SHOWNA);
     InvalidateRect(hwnd_, nullptr, TRUE);
+    LogShow(L"Show", anchor, x, y, width, height, created, ERROR_SUCCESS, paints);
     return true;
 }
 
 bool CandidateWindow::ShowInline(const RECT& caret, const std::wstring& text)
 {
-    if (text.empty() || !EnsureWindowClass()) {
+    if (text.empty()) {
         return false;
     }
+    if (!EnsureWindowClass()) {
+        if (logger_) {
+            logger_(L"ShowInline: ウィンドウクラスの登録に失敗 error=" +
+                    std::to_wstring(GetLastError()));
+        }
+        return false;
+    }
+    const unsigned paints = paintCount_;
+    paintCount_ = 0;
     items_.assign(1, text);
     selection_ = 0;
     layout_ = Layout::Inline;
@@ -173,31 +229,47 @@ bool CandidateWindow::ShowInline(const RECT& caret, const std::wstring& text)
 
     const int width = kPadding * 2 + static_cast<int>(size.cx);
     const int height = lineHeight_ + kPadding * 2;
-    const int x = caret.left;
-    const int y = caret.top;
+    const POINT position = FitToWorkArea(caret, caret.left, caret.top, width, height);
+    const int x = position.x;
+    const int y = position.y;
 
+    bool created = false;
     if (hwnd_ == nullptr) {
+        firstPaintLogged_ = false;
         hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                                 kWindowClassName, L"", WS_POPUP | WS_BORDER, x, y, width, height,
                                 nullptr, nullptr, globals::dllInstance, this);
         if (hwnd_ == nullptr) {
+            LogShow(L"ShowInline", caret, x, y, width, height, false, GetLastError(), paints);
             return false;
         }
+        created = true;
     }
 
     SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
     ShowWindow(hwnd_, SW_SHOWNA);
     InvalidateRect(hwnd_, nullptr, TRUE);
+    LogShow(L"ShowInline", caret, x, y, width, height, created, ERROR_SUCCESS, paints);
     return true;
 }
 
 size_t CandidateWindow::ShowBar(const RECT& caret, int x, const std::vector<BarItem>& items,
                                 size_t selection)
 {
-    if (items.empty() || !EnsureWindowClass()) {
+    if (items.empty()) {
         Hide();
         return 0;
     }
+    if (!EnsureWindowClass()) {
+        if (logger_) {
+            logger_(L"ShowBar: ウィンドウクラスの登録に失敗 error=" +
+                    std::to_wstring(GetLastError()));
+        }
+        Hide();
+        return 0;
+    }
+    const unsigned paints = paintCount_;
+    paintCount_ = 0;
 
     HDC hdc = GetDC(nullptr);
     HGDIOBJ oldFont = SelectObject(hdc, numberFont_);
@@ -277,18 +349,23 @@ size_t CandidateWindow::ShowBar(const RECT& caret, int x, const std::vector<BarI
         y = static_cast<int>(caret.top) - height - 2;
     }
 
+    bool created = false;
     if (hwnd_ == nullptr) {
+        firstPaintLogged_ = false;
         hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
                                 kWindowClassName, L"", WS_POPUP | WS_BORDER, x, y, width, height,
                                 nullptr, nullptr, globals::dllInstance, this);
         if (hwnd_ == nullptr) {
+            LogShow(L"ShowBar", caret, x, y, width, height, false, GetLastError(), paints);
             return 0;
         }
+        created = true;
     }
 
     SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
     ShowWindow(hwnd_, SW_SHOWNA);
     InvalidateRect(hwnd_, nullptr, TRUE);
+    LogShow(L"ShowBar", caret, x, y, width, height, created, ERROR_SUCCESS, paints);
     return count;
 }
 
@@ -329,8 +406,15 @@ void CandidateWindow::StopTimer()
 void CandidateWindow::Hide()
 {
     if (hwnd_ != nullptr) {
+        if (logger_) {
+            wchar_t text[64] = {};
+            swprintf_s(text, L"Hide: ウィンドウを破棄 hwnd=%p", static_cast<void*>(hwnd_));
+            logger_(text);
+        }
         // ウィンドウと一緒にタイマーも破棄される
+        destroying_ = true;
         DestroyWindow(hwnd_);
+        destroying_ = false;
         hwnd_ = nullptr;
     }
     timerCallback_ = nullptr;
@@ -351,6 +435,15 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
     auto* self = reinterpret_cast<CandidateWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
     switch (msg) {
     case WM_PAINT: {
+        if (self != nullptr) {
+            ++self->paintCount_;
+            if (!self->firstPaintLogged_ && self->logger_) {
+                wchar_t text[64] = {};
+                swprintf_s(text, L"最初の WM_PAINT を受信 hwnd=%p", static_cast<void*>(hwnd));
+                self->logger_(text);
+            }
+            self->firstPaintLogged_ = true;
+        }
         PAINTSTRUCT ps = {};
         HDC hdc = BeginPaint(hwnd, &ps);
         if (self != nullptr) {
@@ -359,6 +452,14 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         EndPaint(hwnd, &ps);
         return 0;
     }
+    case WM_DESTROY:
+        if (self != nullptr && self->logger_) {
+            wchar_t text[96] = {};
+            swprintf_s(text, L"WM_DESTROY を受信 hwnd=%p (%s)", static_cast<void*>(hwnd),
+                       self->destroying_ ? L"Hide による破棄" : L"外部からの破棄");
+            self->logger_(text);
+        }
+        break;
     case WM_MOUSEACTIVATE:
         // クリックされてもフォーカスを奪わない
         return MA_NOACTIVATE;
@@ -373,6 +474,49 @@ LRESULT CALLBACK CandidateWindow::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LP
         break;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+void CandidateWindow::LogShow(const wchar_t* kind, const RECT& anchor, int x, int y, int width,
+                              int height, bool created, DWORD createError, unsigned paints) const
+{
+    if (!logger_) {
+        return;
+    }
+    const std::wstring line = std::wstring(kind) + L": anchor=" + DebugRectText(anchor) +
+                              L" pos=(" + std::to_wstring(x) + L"," + std::to_wstring(y) +
+                              L") size=(" + std::to_wstring(width) + L"," +
+                              std::to_wstring(height) + L") 前回からの WM_PAINT=" +
+                              std::to_wstring(paints);
+    if (hwnd_ == nullptr) {
+        logger_(line + L" CreateWindowExW 失敗 error=" + std::to_wstring(createError));
+        return;
+    }
+
+    RECT windowRect = {};
+    const bool gotRect = GetWindowRect(hwnd_, &windowRect) != FALSE;
+    const bool offMonitor =
+        gotRect && MonitorFromRect(&windowRect, MONITOR_DEFAULTTONULL) == nullptr;
+    const DWORD windowThread = GetWindowThreadProcessId(hwnd_, nullptr);
+
+    HWND foreground = GetForegroundWindow();
+    DWORD foregroundProcess = 0;
+    bool foregroundTopmost = false;
+    if (foreground != nullptr) {
+        GetWindowThreadProcessId(foreground, &foregroundProcess);
+        foregroundTopmost = (GetWindowLongPtrW(foreground, GWL_EXSTYLE) & WS_EX_TOPMOST) != 0;
+    }
+
+    const std::wstring rectText = gotRect ? DebugRectText(windowRect) : L"(取得失敗)";
+    wchar_t text[512] = {};
+    swprintf_s(text,
+               L" %s hwnd=%p visible=%d rect=%s monitor=%s wndTid=%lu curTid=%lu fg=%p "
+               L"fgTopmost=%d fgSameProcess=%d",
+               created ? L"新規作成" : L"既存", static_cast<void*>(hwnd_),
+               IsWindowVisible(hwnd_) ? 1 : 0, rectText.c_str(),
+               !gotRect ? L"不明" : (offMonitor ? L"なし" : L"あり"), windowThread,
+               GetCurrentThreadId(), static_cast<void*>(foreground), foregroundTopmost ? 1 : 0,
+               (foreground != nullptr && foregroundProcess == GetCurrentProcessId()) ? 1 : 0);
+    logger_(line + text);
 }
 
 void CandidateWindow::Paint(HDC hdc)

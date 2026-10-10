@@ -333,6 +333,12 @@ TextService::TextService()
       langBarButton_(nullptr)
 {
     globals::DllAddRef();
+    candidateWindow_.SetLogger([this](const std::wstring& message) {
+        DebugLog(L"候補 " + message);
+    });
+    pendingWindow_.SetLogger([this](const std::wstring& message) {
+        DebugLog(L"小窓 " + message);
+    });
 }
 
 TextService::~TextService()
@@ -752,12 +758,18 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    const bool logging = !config_.Get().debugLog.empty();
+    const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
+    const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
     if (!HandlePseudoKey(context, wparam, false, eaten)) {
         // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
         // run の終了はここでも行う
         EndRunIfPassthroughKey(context, wparam);
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
         NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
+    }
+    if (logging) {
+        LogKeyDown(L"OnTestKeyDown", wparam, state, match, *eaten);
     }
     UpdateMouseHook();
     return S_OK;
@@ -771,13 +783,22 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    const bool logging = !config_.Get().debugLog.empty();
+    const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
+    const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
     if (HandlePseudoKey(context, wparam, true, eaten)) {
+        if (logging) {
+            LogKeyDown(L"OnKeyDown (擬似キー)", wparam, state, match, *eaten);
+        }
         UpdateMouseHook();
         return S_OK;
     }
     EndRunIfPassthroughKey(context, wparam);
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
     NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
+    if (logging) {
+        LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten);
+    }
     if (*eaten == FALSE) {
         UpdateMouseHook();
         return S_OK;
@@ -805,6 +826,9 @@ STDMETHODIMP TextService::OnTestKeyUp(ITfContext* context, WPARAM wparam, LPARAM
         return E_INVALIDARG;
     }
     *eaten = (wparam < pendingKeyUps_.size() && pendingKeyUps_.test(wparam)) ? TRUE : FALSE;
+    if (!config_.Get().debugLog.empty()) {
+        LogKeyUp(L"OnTestKeyUp", wparam, *eaten);
+    }
     return S_OK;
 }
 
@@ -822,13 +846,54 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* context, WPARAM wparam, LPARAM lpa
     } else {
         *eaten = FALSE;
     }
+    if (!config_.Get().debugLog.empty()) {
+        LogKeyUp(L"OnKeyUp", wparam, *eaten);
+    }
     return S_OK;
+}
+
+void TextService::LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state,
+                             const KeyMatch& match, BOOL eaten) const
+{
+    // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=14 は割当なし)
+    wchar_t text[256] = {};
+    swprintf_s(text,
+               L"%s vk=0x%02X ctrl=%d alt=%d shift=%d state=%d func=%d shiftAdded=%d eaten=%d",
+               where, static_cast<unsigned>(wparam),
+               (GetKeyState(VK_CONTROL) & 0x8000) != 0 ? 1 : 0,
+               (GetKeyState(VK_MENU) & 0x8000) != 0 ? 1 : 0, IsShiftPressed() ? 1 : 0,
+               static_cast<int>(state), static_cast<int>(match.func), match.shiftAdded ? 1 : 0,
+               eaten != FALSE ? 1 : 0);
+    DebugLog(text);
+}
+
+void TextService::LogKeyUp(const wchar_t* where, WPARAM wparam, BOOL eaten) const
+{
+    wchar_t text[160] = {};
+    swprintf_s(text, L"%s vk=0x%02X ctrl=%d alt=%d shift=%d eaten=%d", where,
+               static_cast<unsigned>(wparam), (GetKeyState(VK_CONTROL) & 0x8000) != 0 ? 1 : 0,
+               (GetKeyState(VK_MENU) & 0x8000) != 0 ? 1 : 0, IsShiftPressed() ? 1 : 0,
+               eaten != FALSE ? 1 : 0);
+    DebugLog(text);
 }
 
 STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOOL* eaten)
 {
     if (eaten == nullptr) {
         return E_INVALIDARG;
+    }
+    if (!config_.Get().debugLog.empty()) {
+        const wchar_t* name = L"不明";
+        if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
+            name = L"F10";
+        } else if (IsEqualGUID(rguid, globals::kPreservedKeyToggleGuid)) {
+            name = L"IMEオン/オフ切替";
+        } else if (IsEqualGUID(rguid, globals::kPreservedKeyImeOnGuid)) {
+            name = L"IMEオン";
+        } else if (IsEqualGUID(rguid, globals::kPreservedKeyImeOffGuid)) {
+            name = L"IMEオフ";
+        }
+        DebugLog(std::wstring(L"OnPreservedKey: ") + name);
     }
 
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
@@ -2558,16 +2623,20 @@ RECT TextService::CandidateAnchor(ITfContext* context)
     // (run では選択範囲 = 昇格できなかった run の現在文節、それ以外は末尾に潰した選択)
     RECT rect = {};
     bool succeeded = false;
+    const wchar_t* source = L"なし";
     if (Composing()) {
         RequestSync(context,
                     new (std::nothrow) GetTextExtentEditSession(context, composition_, &rect,
                                                                 &succeeded),
                     TF_ES_SYNC | TF_ES_READ);
+        source = L"composition の矩形";
     } else if (InRun()) {
         RequestSync(context,
                     new (std::nothrow) GetSelectionExtentEditSession(context, &rect, &succeeded),
                     TF_ES_SYNC | TF_ES_READ);
+        source = L"選択範囲の矩形";
     }
+    const wchar_t* failedSource = succeeded ? nullptr : source;
 
     if (!succeeded) {
         // 取得できないアプリではキャレット位置、それも無ければマウス位置へフォールバック
@@ -2576,16 +2645,29 @@ RECT TextService::CandidateAnchor(ITfContext* context)
         if (GetGUIThreadInfo(0, &info) && info.hwndCaret != nullptr) {
             rect = info.rcCaret;
             MapWindowPoints(info.hwndCaret, HWND_DESKTOP, reinterpret_cast<POINT*>(&rect), 2);
+            source = L"キャレット (GetGUIThreadInfo)";
         } else {
             POINT pt = {};
             GetCursorPos(&pt);
             rect = {pt.x, pt.y, pt.x, pt.y};
+            source = L"マウス位置";
         }
     }
+    if (!config_.Get().debugLog.empty()) {
+        std::wstring message = std::wstring(L"候補ウィンドウの位置: ") + source + L" " +
+                               DebugRectText(rect);
+        if (failedSource != nullptr) {
+            message += std::wstring(L" (取得失敗: ") + failedSource + L")";
+        }
+        DebugLog(message);
+    }
+    FallbackIfOutsideWindow(context, &rect, L"候補ウィンドウの位置");
     // 未完成ローマ字の小窓はキャレットに重ねて出すので、候補ウィンドウはその下に出す
     RECT pendingRect = {};
     if (pendingWindow_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
         rect.bottom = pendingRect.bottom;
+        DebugLog(L"候補ウィンドウの位置: 小窓の下端に合わせる bottom=" +
+                 std::to_wstring(rect.bottom));
     }
     return rect;
 }
