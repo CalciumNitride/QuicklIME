@@ -23,6 +23,7 @@ enum class KeyFunc {
     UndoCommit,      // 確定アンドゥ (既定 Ctrl+Backspace)
     RegisterWord,    // 単語登録ツール起動 (既定 Ctrl+F7)
     OpenConfig,      // 設定ツール起動 (既定 Ctrl+F12)
+    InsertNewline,   // 改行 (既定 Ctrl+J。対象アプリで Shift+Enter を送る)
     None,            // 割当なし (照合の「該当なし」も表す)
 };
 
@@ -90,6 +91,8 @@ struct TsfConfig {
     // LLM による候補の並べ替え (RERANK) を使う (docs/design/llm-rerank.md)。
     // バックエンドの選択 (llm_backend) はエンジンだけが読む
     bool llm = false;
+    // 改行キー (InsertNewline) が働くアプリの exe 名 (docs/design/newline-key.md)
+    std::vector<std::wstring> newlineApps = DefaultNewlineApps();
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();
@@ -100,6 +103,7 @@ struct TsfConfig {
     KeyMatch FindFunc(KeyState state, const KeyBinding& pressed) const;
 
     static std::array<KeyAssignment, kKeyFuncCount> DefaultKeyAssignments();
+    static std::vector<std::wstring> DefaultNewlineApps();
 };
 
 // config.tsv (QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv) のローダ。

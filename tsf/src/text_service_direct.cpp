@@ -499,7 +499,16 @@ HRESULT TextService::CommitAndResendEnter(ITfContext* context, WPARAM vk, bool c
     appendResendVk_ = vk;
     appendResendCtrl_ = ctrl;
     appendResendShift_ = shifted;
-    const HRESULT hr = Composing() ? CommitComposition(context) : CommitRunDirect(context);
+    HRESULT hr = S_OK;
+    if (Composing()) {
+        hr = CommitComposition(context);
+    } else if (converting_ || barIndex_ >= 0) {
+        hr = CommitRunDirect(context);
+    } else {
+        // 候補選択もバー選択もしていない run (改行キーでだけ来る) は、食べずにアプリへ渡す
+        // Enter と同じ終え方にする (未完成のローマ字を文書に残す)
+        EndAppendRunForPassthroughKey(context, false, false);
+    }
     if (!awaitingMarker_) {
         SendResendKey();
     }
@@ -517,6 +526,19 @@ void TextService::SendResendKey()
     if (!SendKeyWithModifiers(static_cast<WORD>(vk), appendResendCtrl_, appendResendShift_)) {
         DebugLog(L"打鍵の送り直しに失敗 (SendInput)");
     }
+}
+
+HRESULT TextService::InsertNewline(ITfContext* context)
+{
+    if (CurrentKeyState() != KeyState::Idle) {
+        // 確定より先に改行が届かないよう、常に食べて確定の後に送り直す
+        return CommitAndResendEnter(context, VK_RETURN, false, true);
+    }
+    DebugLog(L"改行キー: Shift+Enter を送る");
+    if (!SendKeyWithModifiers(VK_RETURN, false, true)) {
+        DebugLog(L"Shift+Enter の送信に失敗 (SendInput)");
+    }
+    return S_OK;
 }
 
 HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)

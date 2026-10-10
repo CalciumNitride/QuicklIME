@@ -112,6 +112,8 @@ private:
     bool CanRunKeyFunc(ITfContext* context, KeyFunc func) const;
     // 割当に一致した機能を実行する
     HRESULT RunKeyFunc(ITfContext* context, const KeyMatch& match);
+    // ホストの exe 名が改行キーの対象アプリ (設定 newline_apps) にあるか
+    bool IsNewlineApp() const;
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
@@ -391,10 +393,12 @@ private:
     // Enter (Ctrl+M) を食べて確定し、確定の後に元の打鍵を送り直す (読めると判定されていない
     // 文書の候補選択中と、擬似 Backspace が要るバーの採用)。composition の有無によらない
     bool EnterNeedsResend() const;
-    // 食べた Enter (Ctrl+M) の確定を行い、確定の後で元の打鍵 vk をアプリへ送り直す
+    // 食べた Enter (Ctrl+M)・改行キーの確定を行い、確定の後で打鍵 vk をアプリへ送り直す
     HRESULT CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted);
     // 食べた Enter (Ctrl+M) を、確定 (擬似 Backspace による書き換えを含む) の後でアプリへ送り直す
     void SendResendKey();
+    // 改行キー: 入力中なら Enter と同じく確定してから、アプリへ Shift+Enter を送る
+    HRESULT InsertNewline(ITfContext* context);
     // 打鍵を分類する。印字キー (英字・記号・数字・テンキー) でなければ false
     bool ClassifyDirectKey(WPARAM wparam, bool shifted, DirectKey* key) const;
     void PushDirectKey(const DirectKey& key);
@@ -657,7 +661,7 @@ private:
     DirectKey appendFollowKey_;
     bool appendFollowKeyPending_;
     // 確定の後にアプリへ送り直す打鍵 (0 なら無し) とその修飾キー
-    // (EnterNeedsResend のときの Enter・Ctrl+M)
+    // (EnterNeedsResend のときの Enter・Ctrl+M と、改行キーの Shift+Enter)
     WPARAM appendResendVk_;
     bool appendResendCtrl_;
     bool appendResendShift_;
@@ -685,4 +689,6 @@ private:
     // key-down を食べたキー。端末エミュレータは key-up もアプリへ転送するため、
     // 食べたキーの key-up も食べて確定キーなどが漏れないようにする
     std::bitset<256> pendingKeyUps_;
+    // ホストプロセスの exe 名 (改行キーの対象アプリの判定用。プロセスごとに不変)
+    std::wstring hostExeName_;
 };

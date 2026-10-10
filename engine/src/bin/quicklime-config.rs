@@ -14,24 +14,35 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::ptr::{null, null_mut};
 
-use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows_sys::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
     COLOR_BTNFACE, CreateFontW, EnumFontFamiliesExW, GetDC, HFONT, LOGFONTW, ReleaseDC,
     TEXTMETRICW,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    QueryFullProcessImageNameW,
+};
 use windows_sys::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, SetProcessDpiAwarenessContext,
 };
+use windows_sys::Win32::UI::Controls::Dialogs::{
+    GetOpenFileNameW, OFN_FILEMUSTEXIST, OFN_NOCHANGEDIR, OFN_PATHMUSTEXIST, OPENFILENAMEW,
+};
 use windows_sys::Win32::UI::Controls::{
-    BST_CHECKED, ICC_LISTVIEW_CLASSES, INITCOMMONCONTROLSEX, InitCommonControlsEx, LVCF_TEXT,
-    LVCF_WIDTH, LVCOLUMNW, LVIF_STATE, LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW,
-    LVM_DELETEALLITEMS, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+    BST_CHECKED, ICC_LISTVIEW_CLASSES, ICC_TAB_CLASSES, INITCOMMONCONTROLSEX,
+    InitCommonControlsEx, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_STATE, LVIF_TEXT, LVIR_BOUNDS,
+    LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE,
+    LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
     LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED,
     LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL,
+    NM_DBLCLK, NMHDR, NMITEMACTIVATE, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT, TCM_GETCURSEL,
+    TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    EnableWindow, GetFocus, GetKeyState, SetFocus, VK_ESCAPE, VK_RETURN,
+    EnableWindow, GetFocus, GetKeyState, IsWindowEnabled, SetFocus, VK_CONTROL, VK_ESCAPE,
+    VK_RETURN, VK_SHIFT, VK_TAB,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
@@ -61,6 +72,12 @@ const ID_COMBO_LLM_BACKEND: i32 = 116;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
+const ID_LIST_APPS: i32 = 123;
+const ID_BUTTON_APP_RUNNING: i32 = 124;
+const ID_BUTTON_APP_FILE: i32 = 125;
+const ID_BUTTON_APP_REMOVE: i32 = 126;
+const ID_BUTTON_APP_DEFAULT: i32 = 127;
+const ID_TAB: i32 = 130;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -70,6 +87,11 @@ const ID_EDIT_REMOVE_BASE: i32 = 202;
 const ID_EDIT_OVERRIDE_BASE: i32 = 203;
 // キー取り込みダイアログ
 const ID_CAPTURE_MESSAGE: i32 = 300;
+// 実行中のアプリから選ぶダイアログ
+const ID_PICK_LIST: i32 = 400;
+
+/// メイン画面のタブ (並びが TAB_PAGES の添字)
+const TAB_NAMES: [&str; 5] = ["変換", "入力", "表示", "キー割当", "アプリ"];
 
 /// LLM のバックエンド: (設定上の名前, 表示名)
 const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
@@ -90,7 +112,7 @@ const IN_INPUT: u8 = IN_RUN | IN_CANDIDATE | IN_SUGGEST;
 
 /// キー割当の機能一覧: (設定キー名, 表示名, 働く状態, 既定の割当)。
 /// 並び・働く状態・既定は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
-const KEY_ITEMS: [(&str, &str, u8, &str); 14] = [
+const KEY_ITEMS: [(&str, &str, u8, &str); 15] = [
     ("key.convert", "変換", IN_IDLE | IN_INPUT, "Convert"),
     ("key.next_candidate", "次候補", IN_CANDIDATE, "Space"),
     ("key.prev_candidate", "前候補", IN_CANDIDATE, "Shift+Space"),
@@ -105,7 +127,11 @@ const KEY_ITEMS: [(&str, &str, u8, &str); 14] = [
     ("key.undo_commit", "確定アンドゥ", IN_IDLE, "Ctrl+Backspace"),
     ("key.register_word", "単語登録", IN_IDLE, "Ctrl+F7"),
     ("key.open_config", "設定を開く", IN_IDLE, "Ctrl+F12"),
+    ("key.insert_newline", "改行", IN_IDLE | IN_INPUT, "Ctrl+J"),
 ];
+
+/// 改行キーが働くアプリの既定 (設定 newline_apps の行が無いとき。TSF 層と合わせる)
+const DEFAULT_NEWLINE_APPS: &str = "Discord.exe,slack.exe,ms-teams.exe,Teams.exe,LINE.exe";
 
 /// 英字・数字・F1〜F24 以外の名前を持つキー: (表記, 仮想キーコード)
 const NAMED_KEYS: [(&str, u16); 18] = [
@@ -364,6 +390,8 @@ struct Config {
     candidate_font: String,
     candidate_font_size: u32, // 10-40
     keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
+    /// 改行キーが働くアプリの exe 名
+    newline_apps: Vec<String>,
 }
 
 impl Default for Config {
@@ -385,8 +413,61 @@ impl Default for Config {
             candidate_font: "Yu Gothic UI".to_string(),
             candidate_font_size: 18,
             keys: default_key_assigns(),
+            newline_apps: parse_app_list(DEFAULT_NEWLINE_APPS),
         }
     }
+}
+
+/// exe 名が同じアプリか (TSF 層の照合と同じく大文字小文字を区別しない)
+fn same_app(a: &str, b: &str) -> bool {
+    a.to_lowercase() == b.to_lowercase()
+}
+
+/// apps に exe 名 name を足す (すでにあれば足さない)。足した、またはすでにあった位置を返す
+fn add_app(apps: &mut Vec<String>, name: &str) -> usize {
+    if let Some(index) = apps.iter().position(|app| same_app(app, name)) {
+        return index;
+    }
+    apps.push(name.to_string());
+    apps.len() - 1
+}
+
+/// newline_apps の値 (exe 名のカンマ区切り) を読む。TSF 層 (tsf/src/config.cpp の
+/// ParseAppList) と同じく前後の空白・タブを除き、空の項目は捨てる
+fn parse_app_list(value: &str) -> Vec<String> {
+    let mut apps = Vec::new();
+    for item in value.split(',') {
+        let item = item.trim_matches([' ', '\t']);
+        if !item.is_empty() {
+            add_app(&mut apps, item);
+        }
+    }
+    apps
+}
+
+/// パスのファイル名部分
+fn exe_file_name(path: &str) -> Option<String> {
+    let name = std::path::Path::new(path).file_name()?.to_str()?;
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// 実行中のアプリから選ぶダイアログの選択肢: exe 名で重複をまとめ (タイトルは最初に
+/// 見つかったもの)、登録済みの exe を除いて exe 名順に並べる
+fn running_app_choices(
+    windows: Vec<(String, String)>,
+    registered: &[String],
+) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> = Vec::new();
+    for (exe, title) in windows {
+        if registered.iter().any(|app| same_app(app, &exe))
+            || choices.iter().any(|(chosen, _)| same_app(chosen, &exe))
+        {
+            continue;
+        }
+        choices.push((exe, title));
+    }
+    choices.sort_by_key(|(exe, _)| exe.to_lowercase());
+    choices
 }
 
 /// 設定ファイルのパス。優先順: QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv
@@ -478,6 +559,8 @@ impl Config {
                     self.candidate_font_size = n.clamp(10, 40);
                 }
             }
+            // 空の値は「対象なし」としてそのまま持つ
+            "newline_apps" => self.newline_apps = parse_app_list(value),
             _ => self.apply_key(key, value),
         }
     }
@@ -544,6 +627,8 @@ impl Config {
                 }
             }
         }
+        text.push_str("\n# 改行キー (key.insert_newline) が働くアプリの exe 名 (カンマ区切り)\n");
+        text.push_str(&format!("newline_apps\t{}\n", self.newline_apps.join(",")));
         std::fs::write(&path, text.as_bytes())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
 
@@ -615,10 +700,11 @@ fn main() {
 
         let config = Config::load();
         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = config.keys.clone());
+        NEWLINE_APPS.with(|apps| *apps.borrow_mut() = config.newline_apps.clone());
 
         let controls = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
-            dwICC: ICC_LISTVIEW_CLASSES,
+            dwICC: ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES,
         };
         InitCommonControlsEx(&controls);
 
@@ -649,6 +735,13 @@ fn main() {
             lpszClassName: capture_class.as_ptr(),
             ..wc
         });
+        let pick_class = wide(APP_PICK_CLASS);
+        RegisterClassW(&WNDCLASSW {
+            lpfnWndProc: Some(app_pick_wndproc),
+            hIcon: null_mut(),
+            lpszClassName: pick_class.as_ptr(),
+            ..wc
+        });
 
         // レイアウト (96dpi 基準の論理ピクセルを DPI でスケールする)
         let dpi = GetDpiForSystem();
@@ -656,46 +749,28 @@ fn main() {
         let margin = scale(16);
         let row_h = scale(24);
         let row_gap = scale(8);
-        let section_gap = scale(16);
         let label_w = scale(130);
         let ctrl_w = scale(170);
         let button_w = scale(88);
         let button_h = scale(28);
-        let col_gap = scale(32);
+        // タブの枠から中身までの余白
+        let page_pad = scale(12);
+        let column_w = label_w + row_gap + ctrl_w;
+        let key_list_w = scale(440);
+        let page_w = column_w.max(key_list_w);
 
-        let left_w = label_w + row_gap + ctrl_w;
-        let right_x = margin + left_w + col_gap;
-        let right_w = scale(440);
-        let client_w = right_x + right_w + margin;
-        // 左カラム: 見出し3 + 項目15行 + 見出し前の隙間、右カラム: 見出し1 + キー割当の一覧。
-        // 高さは左カラム基準で、一覧は残りの高さに合わせる
-        let left_rows = 18;
-        let client_h =
-            margin + left_rows * (row_h + row_gap) + section_gap * 2 + button_h + margin;
-
+        // 大きさはタブの中身を作ってから決める
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-        let mut rect = windows_sys::Win32::Foundation::RECT {
-            left: 0,
-            top: 0,
-            right: client_w,
-            bottom: client_h,
-        };
-        AdjustWindowRectEx(&mut rect, style, 0, 0);
-        let win_w = rect.right - rect.left;
-        let win_h = rect.bottom - rect.top;
-        let screen_w = GetSystemMetrics(SM_CXSCREEN);
-        let screen_h = GetSystemMetrics(SM_CYSCREEN);
-
         let title = wide("QuicklIME 設定");
         let hwnd = CreateWindowExW(
             0,
             class_name.as_ptr(),
             title.as_ptr(),
             style,
-            (screen_w - win_w) / 2,
-            (screen_h - win_h) / 2,
-            win_w,
-            win_h,
+            0,
+            0,
+            0,
+            0,
             null_mut(),
             null_mut(),
             instance,
@@ -726,6 +801,9 @@ fn main() {
         UI_FONT.set(font);
         UI_DPI.set(dpi);
 
+        // 作るコントロールが属するタブ (None はタブによらず常に表示する)
+        let current_page: Cell<Option<usize>> = Cell::new(None);
+        let pages: RefCell<Vec<Vec<HWND>>> = RefCell::new(vec![Vec::new(); TAB_NAMES.len()]);
         let create_control = |class: &str,
                               text: &str,
                               ctrl_style: u32,
@@ -752,13 +830,43 @@ fn main() {
                 null(),
             );
             SendMessageW(ctrl, WM_SETFONT, font as usize, 1);
+            if let Some(page) = current_page.get() {
+                pages.borrow_mut()[page].push(ctrl);
+            }
             ctrl
         };
         let label_style = WS_CHILD | WS_VISIBLE;
         let check_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX as u32;
         let combo_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST as u32;
+        let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
         // コンボの高さはドロップダウン一覧の分を含める
         let combo_list_h = scale(280);
+
+        // タブの項目はタブコントロールに重ねて置く兄弟ウィンドウなので、タブコントロールが
+        // 項目の上を塗らないよう WS_CLIPSIBLINGS を付ける
+        let tab = create_control(
+            "SysTabControl32",
+            "",
+            WS_CHILD | WS_VISIBLE | WS_CLIPSIBLINGS,
+            0,
+            margin,
+            margin,
+            scale(400),
+            scale(300),
+            ID_TAB,
+        );
+        for (i, name) in TAB_NAMES.iter().enumerate() {
+            let mut text = wide(name);
+            let item = TCITEMW { mask: TCIF_TEXT, pszText: text.as_mut_ptr(), ..Default::default() };
+            SendMessageW(tab, TCM_INSERTITEMW, i, &item as *const _ as LPARAM);
+        }
+        SendMessageW(tab, TCM_SETCURSEL, 0, 0);
+        // 見出しの高さはフォントで決まるため、枠と表示領域の差はフォントを設定してから測る
+        let probe = scale(1000);
+        let mut display = RECT { left: 0, top: 0, right: probe, bottom: probe };
+        SendMessageW(tab, TCM_ADJUSTRECT, 0, &mut display as *mut _ as LPARAM);
+        let page_x = margin + display.left + page_pad;
+        let page_y = margin + display.top + page_pad;
 
         // コンボを作って項目を入れ、現在値を選択する共通処理
         let add_combo = |x: i32, y: i32, id: i32, items: &[&str], current: &str| {
@@ -775,29 +883,27 @@ fn main() {
             }
             combo
         };
-
-        // ---- 左カラム ----
-        let ctrl_x = margin + label_w + row_gap;
-        let mut y = margin;
-
-        create_control("STATIC", "変換", label_style, 0, margin, y, left_w, row_h, 0);
-        y += row_h + row_gap;
         let check = |text: &str, y: i32, id: i32, value: bool| {
-            let ctrl = create_control("BUTTON", text, check_style, 0, margin, y, left_w, row_h, id);
+            let ctrl = create_control("BUTTON", text, check_style, 0, page_x, y, column_w, row_h, id);
             SendMessageW(ctrl, BM_SETCHECK, value as usize, 0);
         };
+        let ctrl_x = page_x + label_w + row_gap;
+
+        // ---- 変換 ----
+        current_page.set(Some(0));
+        let mut y = page_y;
         check("学習する (確定した表記を優先する)", y, ID_CHECK_LEARNING, config.learning);
         y += row_h + row_gap;
         check("入力中にサジェストを表示する", y, ID_CHECK_SUGGEST, config.suggest);
         y += row_h + row_gap;
         check("タイプミス補正 (曖昧一致の補充)", y, ID_CHECK_TYPO, config.typo_correction);
         y += row_h + row_gap;
-        create_control("STATIC", "サジェスト件数:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "サジェスト件数:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let pred_items: Vec<String> = (1..=8).map(|n| n.to_string()).collect();
         let pred_refs: Vec<&str> = pred_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_MAX_PRED, &pred_refs, &config.max_predictions.to_string());
         y += row_h + row_gap;
-        create_control("STATIC", "サジェスト開始文字数:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "サジェスト開始文字数:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let chars_items: Vec<String> = (1..=5).map(|n| n.to_string()).collect();
         let chars_refs: Vec<&str> = chars_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_MIN_CHARS, &chars_refs, &config.min_suggest_chars.to_string());
@@ -806,18 +912,19 @@ fn main() {
         y += row_h + row_gap;
         check("AI で候補を並べ替える", y, ID_CHECK_LLM, config.llm);
         y += row_h + row_gap;
-        create_control("STATIC", "AI の実行環境:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "AI の実行環境:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let backend_labels: Vec<&str> = LLM_BACKENDS.iter().map(|(_, label)| *label).collect();
         let current_backend = LLM_BACKENDS
             .iter()
             .find(|(name, _)| *name == config.llm_backend)
             .map_or(LLM_BACKENDS[0].1, |(_, label)| *label);
         add_combo(ctrl_x, y, ID_COMBO_LLM_BACKEND, &backend_labels, current_backend);
+        let convert_h = y + row_h - page_y;
 
-        y += row_h + row_gap + section_gap;
-        create_control("STATIC", "入力", label_style, 0, margin, y, left_w, row_h, 0);
-        y += row_h + row_gap;
-        create_control("STATIC", "スペースキー:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        // ---- 入力 ----
+        current_page.set(Some(1));
+        let mut y = page_y;
+        create_control("STATIC", "スペースキー:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         add_combo(
             ctrl_x,
             y,
@@ -826,10 +933,10 @@ fn main() {
             if config.space_full { "全角スペース" } else { "半角スペース" },
         );
         y += row_h + row_gap;
-        create_control("STATIC", "句読点:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "句読点:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         add_combo(ctrl_x, y, ID_COMBO_PUNCT, &PUNCT_ITEMS, &config.punctuation);
         y += row_h + row_gap;
-        create_control("STATIC", "数字:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "数字:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         add_combo(
             ctrl_x,
             y,
@@ -845,12 +952,12 @@ fn main() {
             config.modeless,
         );
 
-        y += row_h + row_gap + section_gap;
-        create_control("STATIC", "候補ウィンドウ", label_style, 0, margin, y, left_w, row_h, 0);
-        y += row_h + row_gap;
+        // ---- 表示 ----
+        current_page.set(Some(2));
+        let mut y = page_y;
         check("候補バーを表示する", y, ID_CHECK_CANDIDATE_BAR, config.candidate_bar);
         y += row_h + row_gap;
-        create_control("STATIC", "フォント:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
         let font_combo = create_control(
             "COMBOBOX",
@@ -876,34 +983,30 @@ fn main() {
             SendMessageW(font_combo, CB_SETCURSEL, index as usize, 0);
         }
         y += row_h + row_gap;
-        create_control("STATIC", "サイズ:", label_style, 0, margin, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "サイズ:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let size_items: Vec<String> = (10..=40).map(|n| n.to_string()).collect();
         let size_refs: Vec<&str> = size_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_FONT_SIZE, &size_refs, &config.candidate_font_size.to_string());
 
-        // ---- 右カラム: キー割当 ----
-        let button_y = client_h - margin - button_h;
-        let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
-        let y = margin;
-        create_control("STATIC", "キー割当", label_style, 0, right_x, y, right_w, row_h, 0);
-        let list_y = y + row_h + row_gap;
-        let key_button_y = button_y - section_gap - button_h;
+        // ---- キー割当 ----
+        current_page.set(Some(3));
+        let list_style = WS_CHILD
+            | WS_VISIBLE
+            | WS_TABSTOP
+            | WS_BORDER
+            | LVS_REPORT
+            | LVS_SINGLESEL
+            | LVS_SHOWSELALWAYS
+            | LVS_NOSORTHEADER;
         let list = create_control(
             "SysListView32",
             "",
-            WS_CHILD
-                | WS_VISIBLE
-                | WS_TABSTOP
-                | WS_BORDER
-                | LVS_REPORT
-                | LVS_SINGLESEL
-                | LVS_SHOWSELALWAYS
-                | LVS_NOSORTHEADER,
+            list_style,
             0,
-            right_x,
-            list_y,
-            right_w,
-            key_button_y - row_gap - list_y,
+            page_x,
+            page_y,
+            key_list_w,
+            scale(300),
             ID_LIST_KEYS,
         );
         SendMessageW(
@@ -928,12 +1031,24 @@ fn main() {
         }
         refresh_key_list(list);
         select_list_row(list, 0);
+        // 全行がスクロールなしで収まる高さにする。行と見出しの高さはフォントで決まるため、
+        // 行を入れてから先頭行の位置 (上端 = 見出しの高さ) と高さを測る
+        let mut item_rect = RECT { left: LVIR_BOUNDS as i32, top: 0, right: 0, bottom: 0 };
+        let key_rows = KEY_ITEMS.len() as i32;
+        let key_list_h =
+            if SendMessageW(list, LVM_GETITEMRECT, 0, &mut item_rect as *mut _ as LPARAM) != 0 {
+                item_rect.top + (item_rect.bottom - item_rect.top) * key_rows
+            } else {
+                scale(24) + scale(20) * key_rows
+            } + scale(4); // 枠線の分と余裕
+        MoveWindow(list, page_x, page_y, key_list_w, key_list_h, 0);
+        let key_button_y = page_y + key_list_h + row_gap;
         create_control(
             "BUTTON",
             "編集",
             button_style,
             0,
-            right_x,
+            page_x,
             key_button_y,
             button_w,
             button_h,
@@ -944,14 +1059,94 @@ fn main() {
             "既定に戻す",
             button_style,
             0,
-            right_x + button_w + row_gap,
+            page_x + button_w + row_gap,
             key_button_y,
             button_w,
             button_h,
             ID_BUTTON_KEY_DEFAULT,
         );
+        let keys_h = key_button_y + button_h - page_y;
 
-        // ---- 下部ボタン (右寄せ) ----
+        // ---- アプリ ----
+        // 見出し・説明の下に、左に一覧、右に縦に並べたボタン
+        let app_button_w = scale(190);
+        let app_list_w = page_w - row_gap - app_button_w;
+        let app_list_y = page_y + row_h * 2 + row_gap;
+        let app_buttons: [(&str, i32); 4] = [
+            ("実行中のアプリから追加...", ID_BUTTON_APP_RUNNING),
+            ("ファイルから追加...", ID_BUTTON_APP_FILE),
+            ("削除", ID_BUTTON_APP_REMOVE),
+            ("既定に戻す", ID_BUTTON_APP_DEFAULT),
+        ];
+        let app_button_count = app_buttons.len() as i32;
+        let apps_min_h = app_list_y - page_y + app_button_count * (button_h + row_gap) - row_gap;
+        let page_h = convert_h.max(keys_h).max(apps_min_h);
+
+        current_page.set(Some(4));
+        create_control("STATIC", "改行キーの対象アプリ", label_style, 0, page_x, page_y, page_w, row_h, 0);
+        create_control(
+            "STATIC",
+            "Ctrl+J などの改行キーで Shift+Enter を送るアプリ",
+            label_style,
+            0,
+            page_x,
+            page_y + row_h,
+            page_w,
+            row_h,
+            0,
+        );
+        let app_list = create_control(
+            "SysListView32",
+            "",
+            list_style,
+            0,
+            page_x,
+            app_list_y,
+            app_list_w,
+            page_y + page_h - app_list_y,
+            ID_LIST_APPS,
+        );
+        SendMessageW(
+            app_list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            LVS_EX_FULLROWSELECT as usize,
+            LVS_EX_FULLROWSELECT as isize,
+        );
+        let mut column_text = wide("exe 名");
+        let column = LVCOLUMNW {
+            mask: LVCF_TEXT | LVCF_WIDTH,
+            // 縦スクロールバーが出ても横スクロールにならない幅
+            cx: app_list_w - scale(24),
+            pszText: column_text.as_mut_ptr(),
+            ..Default::default()
+        };
+        SendMessageW(app_list, LVM_INSERTCOLUMNW, 0, &column as *const _ as LPARAM);
+        refresh_app_list(app_list, Some(0));
+        let app_button_x = page_x + app_list_w + row_gap;
+        for (i, (text, id)) in app_buttons.iter().enumerate() {
+            create_control(
+                "BUTTON",
+                text,
+                button_style,
+                0,
+                app_button_x,
+                app_list_y + i as i32 * (button_h + row_gap),
+                app_button_w,
+                button_h,
+                *id,
+            );
+        }
+        current_page.set(None);
+
+        // ---- タブの枠と下部ボタン (右寄せ) ----
+        let tab_w = display.left + page_pad + page_w + page_pad + (probe - display.right);
+        let tab_h = display.top + page_pad + page_h + page_pad + (probe - display.bottom);
+        MoveWindow(tab, margin, margin, tab_w, tab_h, 0);
+        // 作った順では最前面になるため、項目の下に隠れるよう最背面へ回す
+        SetWindowPos(tab, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+        let client_w = margin + tab_w + margin;
+        let button_y = margin + tab_h + page_pad;
+        let client_h = button_y + button_h + margin;
         create_control(
             "BUTTON",
             "保存",
@@ -974,6 +1169,24 @@ fn main() {
             button_h,
             ID_BUTTON_CANCEL,
         );
+        TAB_PAGES.with(|tab_pages| *tab_pages.borrow_mut() = pages.take());
+        show_tab(hwnd, 0);
+
+        let mut rect = RECT { left: 0, top: 0, right: client_w, bottom: client_h };
+        AdjustWindowRectEx(&mut rect, style, 0, 0);
+        let win_w = rect.right - rect.left;
+        let win_h = rect.bottom - rect.top;
+        let screen_w = GetSystemMetrics(SM_CXSCREEN);
+        let screen_h = GetSystemMetrics(SM_CYSCREEN);
+        SetWindowPos(
+            hwnd,
+            null_mut(),
+            (screen_w - win_w) / 2,
+            (screen_h - win_h) / 2,
+            win_w,
+            win_h,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        );
 
         ShowWindow(hwnd, SW_SHOW);
         SetForegroundWindow(hwnd);
@@ -987,6 +1200,18 @@ fn main() {
                 !focus.is_null() && SendMessageW(focus, CB_GETDROPPEDSTATE, 0, 0) != 0
             };
             if msg.message == WM_KEYDOWN && !dropped_combo {
+                let pressed = |vk: u16| (GetKeyState(vk as i32) as u16 & 0x8000) != 0;
+                // Ctrl+Tab は IsDialogMessageW に渡すとフォーカス移動として扱われるため先に取る
+                if msg.wParam == VK_TAB as usize && pressed(VK_CONTROL) {
+                    let tab = GetDlgItem(hwnd, ID_TAB);
+                    let count = TAB_NAMES.len() as isize;
+                    let current = SendMessageW(tab, TCM_GETCURSEL, 0, 0).max(0);
+                    let step = if pressed(VK_SHIFT) { count - 1 } else { 1 };
+                    let next = ((current + step) % count) as usize;
+                    SendMessageW(tab, TCM_SETCURSEL, next, 0);
+                    show_tab(hwnd, next);
+                    continue;
+                }
                 if msg.wParam == VK_RETURN as usize {
                     SendMessageW(hwnd, WM_COMMAND, ID_BUTTON_SAVE as usize, 0);
                     continue;
@@ -1020,7 +1245,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = default_key_assigns());
                         refresh_key_list(GetDlgItem(hwnd, ID_LIST_KEYS));
                     }
+                    ID_BUTTON_APP_RUNNING => on_add_running_app(hwnd),
+                    ID_BUTTON_APP_FILE => on_add_app_file(hwnd),
+                    ID_BUTTON_APP_REMOVE => on_remove_app(hwnd),
+                    ID_BUTTON_APP_DEFAULT => {
+                        NEWLINE_APPS
+                            .with(|apps| *apps.borrow_mut() = parse_app_list(DEFAULT_NEWLINE_APPS));
+                        refresh_app_list(GetDlgItem(hwnd, ID_LIST_APPS), Some(0));
+                    }
                     _ => {}
+                }
+                0
+            }
+            WM_NOTIFY => {
+                let header = &*(lparam as *const NMHDR);
+                if header.idFrom == ID_TAB as usize && header.code == TCN_SELCHANGE {
+                    let index = SendMessageW(header.hwndFrom, TCM_GETCURSEL, 0, 0);
+                    if index >= 0 {
+                        show_tab(hwnd, index as usize);
+                    }
                 }
                 0
             }
@@ -1116,7 +1359,115 @@ fn collect(hwnd: HWND) -> Config {
         config.candidate_font_size = n.clamp(10, 40);
     }
     config.keys = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
+    config.newline_apps = NEWLINE_APPS.with(|apps| apps.borrow().clone());
     config
+}
+
+/// タブ index の項目だけを表示する。フォーカスが隠した項目に残っていれば、表示したタブの
+/// 先頭の項目へ移す (隠れた項目にフォーカスがあると打鍵が見えない項目に届く)
+fn show_tab(hwnd: HWND, index: usize) {
+    TAB_PAGES.with(|pages| {
+        let pages = pages.borrow();
+        unsafe {
+            for (i, page) in pages.iter().enumerate() {
+                for &ctrl in page {
+                    ShowWindow(ctrl, if i == index { SW_SHOW } else { SW_HIDE });
+                }
+            }
+            let focus = GetFocus();
+            if focus.is_null() || IsWindowVisible(focus) != 0 {
+                return;
+            }
+            let first = pages.get(index).and_then(|page| {
+                page.iter().copied().find(|&ctrl| {
+                    GetWindowLongW(ctrl, GWL_STYLE) as u32 & WS_TABSTOP != 0
+                        && IsWindowEnabled(ctrl) != 0
+                })
+            });
+            SetFocus(first.unwrap_or_else(|| GetDlgItem(hwnd, ID_BUTTON_SAVE)));
+        }
+    });
+}
+
+/// 「アプリ」タブの一覧を作り直し、select の行を選ぶ
+fn refresh_app_list(list: HWND, select: Option<usize>) {
+    let apps = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    unsafe {
+        SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
+        for (i, app) in apps.iter().enumerate() {
+            let mut text = wide(app);
+            let item = LVITEMW {
+                mask: LVIF_TEXT,
+                iItem: i as i32,
+                pszText: text.as_mut_ptr(),
+                ..Default::default()
+            };
+            SendMessageW(list, LVM_INSERTITEMW, 0, &item as *const _ as LPARAM);
+        }
+        if let Some(row) = select.filter(|&row| row < apps.len()) {
+            select_list_row(list, row);
+            SendMessageW(list, LVM_ENSUREVISIBLE, row, 0);
+        }
+    }
+}
+
+/// 対象アプリに exe 名を足し (すでにあれば足さない)、その行を選ぶ
+fn add_app_to_list(hwnd: HWND, name: &str) {
+    let index = NEWLINE_APPS.with(|apps| add_app(&mut apps.borrow_mut(), name));
+    refresh_app_list(unsafe { GetDlgItem(hwnd, ID_LIST_APPS) }, Some(index));
+}
+
+/// 「実行中のアプリから追加」ボタン
+fn on_add_running_app(hwnd: HWND) {
+    if let Some(exe) = open_app_pick_dialog(hwnd) {
+        add_app_to_list(hwnd, &exe);
+    }
+    unsafe { SetFocus(GetDlgItem(hwnd, ID_LIST_APPS)) };
+}
+
+/// 「ファイルから追加」ボタン: 選んだ exe のファイル名部分を足す
+fn on_add_app_file(hwnd: HWND) {
+    let filter: Vec<u16> = "実行ファイル (*.exe)\0*.exe\0\0".encode_utf16().collect();
+    let title = wide("ファイルから追加");
+    let mut file = vec![0u16; 32768];
+    let mut dialog = OPENFILENAMEW {
+        lStructSize: size_of::<OPENFILENAMEW>() as u32,
+        hwndOwner: hwnd,
+        lpstrFilter: filter.as_ptr(),
+        lpstrFile: file.as_mut_ptr(),
+        nMaxFile: file.len() as u32,
+        lpstrTitle: title.as_ptr(),
+        Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR,
+        ..Default::default()
+    };
+    if unsafe { GetOpenFileNameW(&mut dialog) } == 0 {
+        return;
+    }
+    let length = file.iter().position(|&c| c == 0).unwrap_or(file.len());
+    if let Some(name) = exe_file_name(&String::from_utf16_lossy(&file[..length])) {
+        add_app_to_list(hwnd, &name);
+    }
+    unsafe { SetFocus(GetDlgItem(hwnd, ID_LIST_APPS)) };
+}
+
+/// 「削除」ボタン: 選んでいる exe 名を外し、次の行を選ぶ
+fn on_remove_app(hwnd: HWND) {
+    unsafe {
+        let list = GetDlgItem(hwnd, ID_LIST_APPS);
+        let selected = SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+        if selected < 0 {
+            return;
+        }
+        let row = selected as usize;
+        let remaining = NEWLINE_APPS.with(|apps| {
+            let mut apps = apps.borrow_mut();
+            if row < apps.len() {
+                apps.remove(row);
+            }
+            apps.len()
+        });
+        refresh_app_list(list, (remaining > 0).then(|| row.min(remaining - 1)));
+    }
 }
 
 fn message_box(hwnd: HWND, text: &str, icon: u32) {
@@ -1132,6 +1483,12 @@ const KEY_CAPTURE_CLASS: &str = "QuicklimeKeyCapture";
 const CAPTURE_PROMPT: &str = "割り当てるキーを押してください。修飾キーと組み合わせるときは、\
                               修飾キーを押したまま押します。\n(やめるときは「キャンセル」)";
 
+/// 実行中のアプリから選ぶダイアログの選択肢 ((exe 名, ウィンドウタイトル)) と選んだ exe 名
+struct AppPick {
+    choices: Vec<(String, String)>,
+    picked: Option<String>,
+}
+
 /// 編集ダイアログで編集中の機能と割当
 struct KeyEdit {
     assign: KeyAssign,
@@ -1141,6 +1498,11 @@ struct KeyEdit {
 thread_local! {
     /// 画面上のキー割当 (保存で書き出す。KEY_ITEMS の並び順)
     static KEY_ASSIGNS: RefCell<Vec<KeyAssign>> = const { RefCell::new(Vec::new()) };
+    /// 画面上の改行キーの対象アプリ (保存で書き出す)
+    static NEWLINE_APPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// タブごとの項目 (TAB_NAMES の並び順)
+    static TAB_PAGES: RefCell<Vec<Vec<HWND>>> = const { RefCell::new(Vec::new()) };
+    static APP_PICK: RefCell<Option<AppPick>> = const { RefCell::new(None) };
     /// ダイアログの子ウィンドウに使うフォントと DPI (main で設定する)
     static UI_FONT: Cell<HFONT> = const { Cell::new(null_mut()) };
     static UI_DPI: Cell<u32> = const { Cell::new(96) };
@@ -1630,6 +1992,244 @@ unsafe fn on_capture_key(hwnd: HWND, vk: u16) {
     unsafe { SetWindowTextW(GetDlgItem(hwnd, ID_CAPTURE_MESSAGE), text.as_ptr()) };
 }
 
+// ---- 実行中のアプリから選ぶダイアログ ----
+
+const APP_PICK_CLASS: &str = "QuicklimeAppPick";
+
+/// プロセス pid の exe のファイル名。取れない (権限不足など) なら None
+fn process_exe_name(pid: u32) -> Option<String> {
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0u16; 32768];
+        let mut size = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(process, PROCESS_NAME_WIN32, buffer.as_mut_ptr(), &mut size);
+        CloseHandle(process);
+        if ok == 0 {
+            return None;
+        }
+        exe_file_name(&String::from_utf16_lossy(&buffer[..size as usize]))
+    }
+}
+
+fn window_process_id(hwnd: HWND) -> u32 {
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+    pid
+}
+
+/// parent のトップレベルウィンドウ (parent が null のとき) または子ウィンドウの一覧
+fn list_windows(parent: HWND) -> Vec<HWND> {
+    unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> windows_sys::core::BOOL {
+        let windows = unsafe { &mut *(lparam as *mut Vec<HWND>) };
+        windows.push(hwnd);
+        1
+    }
+
+    let mut windows: Vec<HWND> = Vec::new();
+    let lparam = &mut windows as *mut _ as LPARAM;
+    unsafe {
+        if parent.is_null() {
+            EnumWindows(Some(enum_proc), lparam);
+        } else {
+            EnumChildWindows(parent, Some(enum_proc), lparam);
+        }
+    }
+    windows
+}
+
+/// 見えているトップレベルウィンドウ (表示中・所有者なし・タイトルが空でない) を持つ
+/// プロセスの (exe 名, ウィンドウタイトル)。設定ツール自身は除く。重複はまとめない
+fn visible_app_windows() -> Vec<(String, String)> {
+    let own_pid = unsafe { GetCurrentProcessId() };
+    let mut apps = Vec::new();
+    for hwnd in list_windows(null_mut()) {
+        let title = unsafe {
+            if IsWindowVisible(hwnd) == 0 || !GetWindow(hwnd, GW_OWNER).is_null() {
+                continue;
+            }
+            let length = GetWindowTextLengthW(hwnd);
+            if length <= 0 {
+                continue;
+            }
+            let mut buffer = vec![0u16; length as usize + 1];
+            let copied = GetWindowTextW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
+            String::from_utf16_lossy(&buffer[..copied.max(0) as usize])
+        };
+        if title.is_empty() {
+            continue;
+        }
+        let pid = window_process_id(hwnd);
+        if pid == own_pid {
+            continue;
+        }
+        let Some(mut exe) = process_exe_name(pid) else {
+            continue;
+        };
+        // ストアアプリの枠のウィンドウは ApplicationFrameHost.exe が持ち、アプリ本体は
+        // 別プロセスの子ウィンドウとして入っている
+        if same_app(&exe, "ApplicationFrameHost.exe") {
+            let app = list_windows(hwnd)
+                .into_iter()
+                .map(window_process_id)
+                .find(|&child| child != 0 && child != pid)
+                .and_then(process_exe_name);
+            let Some(app) = app else {
+                continue;
+            };
+            exe = app;
+        }
+        apps.push((exe, title));
+    }
+    apps
+}
+
+/// 実行中のアプリから exe を1つ選ぶダイアログ。選んだ exe 名を返す (キャンセルなら None)
+fn open_app_pick_dialog(owner: HWND) -> Option<String> {
+    let registered = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    let choices = running_app_choices(visible_app_windows(), &registered);
+    let margin = scaled(16);
+    let gap = scaled(8);
+    let list_w = scaled(480);
+    let list_h = scaled(280);
+    let exe_column_w = scaled(160);
+    let button_w = scaled(88);
+    let button_h = scaled(28);
+    let client_w = margin + list_w + margin;
+    let client_h = margin + list_h + gap + button_h + margin;
+    unsafe {
+        let hwnd = create_modal_window(owner, APP_PICK_CLASS, "実行中のアプリから追加", client_w, client_h);
+        if hwnd.is_null() {
+            return None;
+        }
+        let list = create_child(
+            hwnd,
+            "SysListView32",
+            "",
+            WS_CHILD
+                | WS_VISIBLE
+                | WS_TABSTOP
+                | WS_BORDER
+                | LVS_REPORT
+                | LVS_SINGLESEL
+                | LVS_SHOWSELALWAYS
+                | LVS_NOSORTHEADER,
+            margin,
+            margin,
+            list_w,
+            list_h,
+            ID_PICK_LIST,
+        );
+        SendMessageW(
+            list,
+            LVM_SETEXTENDEDLISTVIEWSTYLE,
+            LVS_EX_FULLROWSELECT as usize,
+            LVS_EX_FULLROWSELECT as isize,
+        );
+        // タイトルの列は、縦スクロールバーが出ても横スクロールにならない幅
+        let columns = [("exe 名", exe_column_w), ("ウィンドウタイトル", list_w - exe_column_w - scaled(24))];
+        for (i, (title, width)) in columns.iter().enumerate() {
+            let mut text = wide(title);
+            let column = LVCOLUMNW {
+                mask: LVCF_TEXT | LVCF_WIDTH,
+                cx: *width,
+                pszText: text.as_mut_ptr(),
+                ..Default::default()
+            };
+            SendMessageW(list, LVM_INSERTCOLUMNW, i, &column as *const _ as LPARAM);
+        }
+        for (i, (exe, title)) in choices.iter().enumerate() {
+            for (column, text) in [exe, title].iter().enumerate() {
+                let mut text = wide(text);
+                let item = LVITEMW {
+                    mask: LVIF_TEXT,
+                    iItem: i as i32,
+                    iSubItem: column as i32,
+                    pszText: text.as_mut_ptr(),
+                    ..Default::default()
+                };
+                let message = if column == 0 { LVM_INSERTITEMW } else { LVM_SETITEMTEXTW };
+                SendMessageW(list, message, i, &item as *const _ as LPARAM);
+            }
+        }
+        if !choices.is_empty() {
+            select_list_row(list, 0);
+        }
+        APP_PICK.with(|pick| *pick.borrow_mut() = Some(AppPick { choices, picked: None }));
+        let button_style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+        let button_y = client_h - margin - button_h;
+        create_child(
+            hwnd,
+            "BUTTON",
+            "追加",
+            button_style | BS_DEFPUSHBUTTON as u32,
+            client_w - margin - button_w * 2 - gap,
+            button_y,
+            button_w,
+            button_h,
+            IDOK,
+        );
+        create_child(hwnd, "BUTTON", "キャンセル", button_style, client_w - margin - button_w, button_y, button_w, button_h, IDCANCEL);
+        run_modal(owner, hwnd, true);
+    }
+    APP_PICK.with(|pick| pick.borrow_mut().take())?.picked
+}
+
+/// 選択肢の row 行目を選んだ exe としてダイアログを閉じる
+unsafe fn accept_app_pick(hwnd: HWND, row: usize) {
+    APP_PICK.with(|pick| {
+        if let Some(pick) = pick.borrow_mut().as_mut() {
+            pick.picked = pick.choices.get(row).map(|(exe, _)| exe.clone());
+        }
+    });
+    unsafe { close_modal(hwnd) };
+}
+
+unsafe extern "system" fn app_pick_wndproc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    unsafe {
+        match msg {
+            WM_COMMAND => {
+                match (wparam & 0xFFFF) as i32 {
+                    IDOK => {
+                        let list = GetDlgItem(hwnd, ID_PICK_LIST);
+                        let selected =
+                            SendMessageW(list, LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize);
+                        if selected >= 0 {
+                            accept_app_pick(hwnd, selected as usize);
+                        }
+                    }
+                    IDCANCEL => close_modal(hwnd),
+                    _ => {}
+                }
+                0
+            }
+            WM_NOTIFY => {
+                let header = &*(lparam as *const NMHDR);
+                if header.idFrom == ID_PICK_LIST as usize && header.code == NM_DBLCLK {
+                    // 空いている所のダブルクリック (iItem が -1) では選ばない
+                    let activate = &*(lparam as *const NMITEMACTIVATE);
+                    if activate.iItem >= 0 {
+                        accept_app_pick(hwnd, activate.iItem as usize);
+                    }
+                }
+                0
+            }
+            WM_CLOSE => {
+                close_modal(hwnd);
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1656,6 +2256,74 @@ mod tests {
         // 未対応のバックエンドは読み飛ばす
         config.apply("llm_backend", "cuda");
         assert_eq!(config.llm_backend, "vulkan");
+    }
+
+    #[test]
+    fn reads_newline_settings() {
+        // 行が無ければ既定のリスト
+        let mut config = Config::default();
+        assert_eq!(
+            config.newline_apps,
+            ["Discord.exe", "slack.exe", "ms-teams.exe", "Teams.exe", "LINE.exe"]
+        );
+        let index = KEY_ITEMS.iter().position(|item| item.0 == "key.insert_newline").unwrap();
+        assert_eq!(config.keys[index].keys, vec![key("Ctrl+J")]);
+        // 全状態で働くので、どの状態でも上書きできる
+        for (s, (state, _)) in STATES.iter().enumerate() {
+            config.apply(&format!("key.insert_newline@{state}"), "Ctrl+Enter");
+            assert_eq!(config.keys[index].overrides[s], Some(vec![key("Ctrl+Enter")]));
+        }
+        config.apply("newline_apps", "Discord.exe, notepad.exe");
+        assert_eq!(config.newline_apps, ["Discord.exe", "notepad.exe"]);
+        // 空の値は対象なしとして既定に戻さない
+        config.apply("newline_apps", "");
+        assert!(config.newline_apps.is_empty());
+    }
+
+    #[test]
+    fn parses_app_list_like_tsf() {
+        // 前後の空白・タブを除き、空の項目を捨て、大文字小文字だけ違う重複はまとめる
+        assert_eq!(
+            parse_app_list(" Discord.exe ,\tslack.exe\t,, ,DISCORD.EXE,notepad.exe"),
+            ["Discord.exe", "slack.exe", "notepad.exe"]
+        );
+        assert!(parse_app_list(" , ").is_empty());
+        assert_eq!(parse_app_list(DEFAULT_NEWLINE_APPS).join(","), DEFAULT_NEWLINE_APPS);
+    }
+
+    #[test]
+    fn adds_app_ignoring_case() {
+        let mut apps = parse_app_list("Discord.exe,Notepad.exe");
+        assert_eq!(add_app(&mut apps, "notepad.exe"), 1);
+        assert_eq!(add_app(&mut apps, "NOTEPAD.EXE"), 1);
+        assert_eq!(apps, ["Discord.exe", "Notepad.exe"]);
+        assert_eq!(add_app(&mut apps, "CalculatorApp.exe"), 2);
+        assert_eq!(apps, ["Discord.exe", "Notepad.exe", "CalculatorApp.exe"]);
+    }
+
+    #[test]
+    fn takes_exe_file_name() {
+        assert_eq!(exe_file_name(r"C:\Windows\System32\notepad.exe").as_deref(), Some("notepad.exe"));
+        assert_eq!(exe_file_name("notepad.exe").as_deref(), Some("notepad.exe"));
+        assert_eq!(exe_file_name(r"C:\"), None);
+    }
+
+    #[test]
+    fn makes_running_app_choices() {
+        let window = |exe: &str, title: &str| (exe.to_string(), title.to_string());
+        let windows = vec![
+            window("Notepad.exe", "メモ 1"),
+            window("explorer.exe", "ドキュメント"),
+            window("notepad.exe", "メモ 2"),
+            window("discord.exe", "Discord"),
+            window("Code.exe", "VS Code"),
+        ];
+        let registered = parse_app_list("Discord.exe");
+        // exe 名でまとめて最初のタイトルを残し、登録済みを除き、大文字小文字によらず exe 名順
+        assert_eq!(
+            running_app_choices(windows, &registered),
+            [window("Code.exe", "VS Code"), window("explorer.exe", "ドキュメント"), window("Notepad.exe", "メモ 1")]
+        );
     }
 
     #[test]

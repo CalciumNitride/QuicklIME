@@ -104,6 +104,7 @@ const wchar_t* const kKeyFuncNames[kKeyFuncCount] = {
     L"key.undo_commit",
     L"key.register_word",
     L"key.open_config",
+    L"key.insert_newline",
 };
 
 // 状態別の上書きの接尾辞 (key.<機能>@<状態>。KeyState の並び順)
@@ -309,6 +310,26 @@ bool ParseKeyList(const std::wstring& value, std::vector<KeyBinding>* out)
     return !out->empty();
 }
 
+// exe 名のカンマ区切りを読む (前後の空白は無視)。空の値は対象なし
+void ParseAppList(const std::wstring& value, std::vector<std::wstring>* out)
+{
+    out->clear();
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t comma = value.find(L',', start);
+        if (comma == std::wstring::npos) {
+            comma = value.size();
+        }
+        const std::wstring item = value.substr(start, comma - start);
+        const size_t first = item.find_first_not_of(L" \t");
+        if (first != std::wstring::npos) {
+            const size_t last = item.find_last_not_of(L" \t");
+            out->push_back(item.substr(first, last - first + 1));
+        }
+        start = comma + 1;
+    }
+}
+
 // key.<機能>[@<状態>] の行を反映する。上書きはその機能が働く状態にだけ書ける
 void ApplyKeyLine(const std::wstring& key, const std::wstring& value, TsfConfig& config)
 {
@@ -378,6 +399,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.segmentUi);
     } else if (key == L"llm") {
         ParseBool(value, config.llm);
+    } else if (key == L"newline_apps") {
+        ParseAppList(value, &config.newlineApps);
     }
     // 未知キー (エンジン向けを含む) は無視
 }
@@ -428,6 +451,8 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
     case KeyFunc::ToHalfAscii:
         // 入力なしでは、選択範囲かキャレット直前のかなを対象にする
         return true;
+    case KeyFunc::InsertNewline:
+        return true;
     case KeyFunc::NextCandidate:
     case KeyFunc::PrevCandidate:
         return state == KeyState::Candidate;
@@ -464,7 +489,14 @@ std::array<KeyAssignment, kKeyFuncCount> TsfConfig::DefaultKeyAssignments()
     set(KeyFunc::UndoCommit, {true, false, false, VK_BACK});
     set(KeyFunc::RegisterWord, {true, false, false, VK_F7});
     set(KeyFunc::OpenConfig, {true, false, false, VK_F12});
+    set(KeyFunc::InsertNewline, {true, false, false, 'J'});
     return keys;
+}
+
+std::vector<std::wstring> TsfConfig::DefaultNewlineApps()
+{
+    // ブラウザは Ctrl+J (ダウンロード) を奪うため入れない
+    return {L"Discord.exe", L"slack.exe", L"ms-teams.exe", L"Teams.exe", L"LINE.exe"};
 }
 
 KeyMatch TsfConfig::FindFunc(KeyState state, const KeyBinding& pressed) const

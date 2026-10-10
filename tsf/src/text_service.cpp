@@ -290,6 +290,25 @@ const wchar_t kImeOnKeyDesc[] = L"IMEオン";
 const wchar_t kImeOffKeyDesc[] = L"IMEオフ";
 const wchar_t kF10KeyDesc[] = L"半角英字変換 (F10)";
 
+// このプロセスの exe のファイル名部分 (取れなければ空)
+std::wstring HostExeName()
+{
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD len = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (len == 0) {
+            return {};
+        }
+        if (len < path.size()) {
+            path.resize(len);
+            break;
+        }
+        path.resize(path.size() * 2);
+    }
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? path : path.substr(slash + 1);
+}
+
 } // namespace
 
 TextService::TextService()
@@ -334,7 +353,8 @@ TextService::TextService()
       textEditSinkCookie_(TF_INVALID_COOKIE),
       openCloseCookie_(TF_INVALID_COOKIE),
       threadMgrEventCookie_(TF_INVALID_COOKIE),
-      langBarButton_(nullptr)
+      langBarButton_(nullptr),
+      hostExeName_(HostExeName())
 {
     globals::DllAddRef();
     candidateWindow_.SetLogger([this](const std::wstring& message) {
@@ -682,8 +702,26 @@ KeyMatch TextService::MatchKeyFunc(WPARAM wparam) const
     return config_.Get().FindFunc(state, pressed);
 }
 
+bool TextService::IsNewlineApp() const
+{
+    if (hostExeName_.empty()) {
+        return false;
+    }
+    for (const std::wstring& app : config_.Get().newlineApps) {
+        if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.c_str(), -1, TRUE) == CSTR_EQUAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
 {
+    // 対象外のアプリでは割当なしと同じく食べない (ターミナルや Excel では Shift+Enter が
+    // 改行にならず、ブラウザなどでは Ctrl+J のショートカットを奪うため)
+    if (func == KeyFunc::InsertNewline) {
+        return IsNewlineApp();
+    }
     if (CurrentKeyState() != KeyState::Idle) {
         return true;
     }
@@ -870,7 +908,7 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* context, WPARAM wparam, LPARAM lpa
 void TextService::LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state,
                              const KeyMatch& match, BOOL eaten) const
 {
-    // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=14 は割当なし)
+    // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=15 は割当なし)
     wchar_t text[256] = {};
     swprintf_s(text,
                L"%s vk=0x%02X ctrl=%d alt=%d shift=%d state=%d func=%d shiftAdded=%d eaten=%d",
@@ -1310,6 +1348,8 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         return LaunchWordRegister(context);
     case KeyFunc::OpenConfig:
         return LaunchConfigTool();
+    case KeyFunc::InsertNewline:
+        return InsertNewline(context);
     case KeyFunc::None:
         return S_OK;
     default:
