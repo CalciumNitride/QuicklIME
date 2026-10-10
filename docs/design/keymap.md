@@ -52,13 +52,13 @@
 
 | 機能 (`KeyFunc`) | 設定キー | 働く状態 | 既定の割当 | 動作 |
 |---|---|---|---|---|
-| `Convert` | `key.convert` | 全状態 | `Convert` | 入力なし: 後置再変換。run 中・サジェスト選択中: 変換開始。候補選択中: 次候補 |
+| `Convert` | `key.convert` | 全状態 | `Convert` | 入力なし: 後置再変換 (選択範囲、無ければキャレット直前のかな。docs/design/conversion-range.md)。run 中・サジェスト選択中: 変換開始。候補選択中: 次候補 |
 | `NextCandidate` | `key.next_candidate` | 候補選択中 | `Space` | 次候補 |
 | `PrevCandidate` | `key.prev_candidate` | 候補選択中 | `Shift+Space` | 前候補 |
 | `CommitRun` | `key.commit_run` | run 中・候補選択中・サジェスト選択中 | `NonConvert` | 下記「確定キー」 |
 | `ConvertSymbol` | `key.convert_symbol` | run 中・候補選択中・サジェスト選択中 | `F4` | 記号・日付変換 |
 | `ConvertUser` | `key.convert_user` | 同上 | `F5` | ユーザ登録語変換 |
-| `ToHiragana` | `key.to_hiragana` | 同上 | `F6` | ひらがな変換 |
+| `ToHiragana` | `key.to_hiragana` | 全状態 | `F6` | ひらがな変換 (入力なしでは後置再変換と同じ対象) |
 | `ToKatakana` | `key.to_katakana` | 同上 | `F7` | カタカナ変換 |
 | `ToHalfKatakana` | `key.to_half_katakana` | 同上 | `F8` | 半角カタカナ変換 |
 | `ToFullAscii` | `key.to_full_ascii` | 同上 | `F9` | 全角英字変換 |
@@ -81,8 +81,9 @@
 - 同じ状態で同じキーが複数の機能に割り当てられているときは、状態別の上書きを基本の割当より
   優先し、それでも重なる場合は上の表の並び順で先の機能を採る。設定ツールでは重なりを保存させない
 - 入力なしの状態では、機能を実行できるときだけ打鍵を食べ、実行できなければアプリへ渡す
-  (`Convert`: 後置再変換できる選択があるとき。`UndoCommit`: 確定アンドゥの記憶があるとき。
-  他は常に食べる)。他の状態では、割当に一致した打鍵は常に食べる
+  (`Convert`・F6〜F10 の文字種変換: 後置再変換の対象 (選択か、読める文書のキャレット直前のかな) が
+  あるとき。`UndoCommit`: 確定アンドゥの記憶があるとき。他は常に食べる)。他の状態では、
+  割当に一致した打鍵は常に食べる
 - 割当に一致しない打鍵は、キー本来の処理に進む (コア操作・印字キー・Space のスペース挿入・
   アプリへの受け渡し)。たとえば候補選択中の Space の割当を外すと、Space は
   「確定してスペースを入れる」(サジェスト選択中と同じ) になる
@@ -100,7 +101,7 @@
 | Backspace / Ctrl+H | 1字削除 | 変換を取り消す | 1字削除 (既存どおり) |
 | Tab / Shift+Tab | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 変換を取り消してバーの先頭を選ぶ | 次 / 前の候補 |
 | ↑ / ↓ | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 前候補 / 次候補 | 前 / 次の候補 |
-| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | 確定してアプリへ渡す (`segment_ui` 1 では文節の移動 / 伸縮) | run を終えてアプリへ渡す |
+| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | ← / → は変換の範囲の伸縮 (docs/design/conversion-range.md。伸縮しない run・文書では確定してアプリへ渡す)、Shift+← / Shift+→ は確定してアプリへ渡す。`segment_ui` 1 では ← / → で文節の移動、Shift+← / Shift+→ で文節の伸縮 | run を終えてアプリへ渡す |
 | PgUp / PgDn | run を終えてアプリへ渡す | 確定してアプリへ渡す (`segment_ui` 1 では先頭 / 末尾の文節へ) | run を終えてアプリへ渡す |
 | Home / End / Delete | run を終えてアプリへ渡す | 確定してアプリへ渡す | run を終えてアプリへ渡す |
 | 1〜9 | 数字を入力 | 候補番号で選択 | 候補番号で選択 |
@@ -227,7 +228,7 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 | 13 | メモ帳と Chrome の textarea | `kyouha` → 変換キー → Tab | 変換を取り消してサジェスト選択に移る。どちらの文書でも同じ |
 | 14 | メモ帳 | `key.next_candidate@candidate none` を設定。`kyouha` → 変換キー → Space | 確定してスペースが入る |
 | 15 | メモ帳 | `key.convert Convert,Ctrl+Space` | 変換キーと Ctrl+Space の両方で変換・次候補。Shift+どちらかで前候補 |
-| 16 | メモ帳 | `key.to_katakana F7,Ctrl+K` | run 中の F7・Ctrl+K の両方でカタカナになる。run が無いときの Ctrl+K はアプリへ渡る |
+| 16 | メモ帳 | `key.to_katakana F7,Ctrl+K` | run 中の F7・Ctrl+K の両方でカタカナになる。run が無いときの Ctrl+K は、変換の対象 (選択・キャレット直前のかな) が無ければアプリへ渡る |
 | 17 | メモ帳 | `key.commit_run@candidate Ctrl+Enter` | 候補選択中は Ctrl+Enter で確定し、無変換は効かない (アプリへ渡る)。run 中は無変換で確定する |
 | 18 | メモ帳 | `key.to_half_ascii none` | run 中の F10 がアプリへ渡る (メニューへフォーカス) |
 | 19 | メモ帳 | `key.convert_symbol F4,Alt+S` | Alt+S は無視され、run 中の Alt+S はアプリへ渡る。F4 は記号変換になる |
@@ -237,7 +238,7 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 | 23 | 設定ツール | 2つの機能の候補選択中に同じキーを割り当てて保存 | 重なりが表示され保存されない |
 | 24 | 設定ツール | 割当と上書きを変えて保存し、開き直す | 保存した割当が表示され、config.tsv が本書の書式になっている |
 | 25 | メモ帳 | 候補選択中に ←→・Shift+←→・PgUp/PgDn・↑↓・1〜9・Esc・Backspace | 既存どおり |
-| 26 | メモ帳 | run が無いときに Ctrl+Backspace (記憶なし)・変換キー (選択なし) | アプリへ渡る |
+| 26 | メモ帳 | run が無いときに Ctrl+Backspace (記憶なし)・変換キー (選択なし・キャレット直前がかなでない) | アプリへ渡る |
 
 ## 未決事項
 

@@ -600,6 +600,21 @@ void RomajiComposer::RemoveFront(size_t count)
     asciiStart_ -= (std::min)(count, asciiStart_);
 }
 
+void RomajiComposer::PrependKana(const std::wstring& kana)
+{
+    std::vector<std::wstring> raw;
+    raw.reserve(kana.size());
+    for (const wchar_t c : kana) {
+        raw.emplace_back(1, c);
+    }
+    kana_.insert(0, kana);
+    raw_.insert(raw_.begin(), raw.begin(), raw.end());
+    // 英字モードでなければ開始位置は 0 のまま (AsciiStart の約束)
+    if (asciiMode_) {
+        asciiStart_ += kana.size();
+    }
+}
+
 void RomajiComposer::Clear()
 {
     kana_.clear();

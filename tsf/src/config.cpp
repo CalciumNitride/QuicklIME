@@ -421,6 +421,12 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
 {
     switch (func) {
     case KeyFunc::Convert:
+    case KeyFunc::ToHiragana:
+    case KeyFunc::ToKatakana:
+    case KeyFunc::ToHalfKatakana:
+    case KeyFunc::ToFullAscii:
+    case KeyFunc::ToHalfAscii:
+        // 入力なしでは、選択範囲かキャレット直前のかなを対象にする
         return true;
     case KeyFunc::NextCandidate:
     case KeyFunc::PrevCandidate:
@@ -432,7 +438,8 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
     case KeyFunc::None:
         return false;
     default:
-        // CommitRun と文字種変換・記号変換・ユーザ語変換
+        // CommitRun と記号変換・ユーザ語変換。F4・F5 を入力なしで働かせると、キャレットが
+        // かなの直後にあるだけでブラウザの再読み込みなどを奪うため
         return state != KeyState::Idle;
     }
 }

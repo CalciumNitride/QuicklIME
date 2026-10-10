@@ -76,6 +76,10 @@ public:
     // 英字区間の開始位置は取り除いた分だけ前へずらす)
     void RemoveFront(size_t count);
 
+    // 確定済みのかなの先頭に kana を足す。打鍵列は文字そのもの (文書から読んだかなで変換の範囲を
+    // 左へ広げる。RemoveFront の逆で、英字区間の開始位置は足した分だけ後ろへずらす)
+    void PrependKana(const std::wstring& kana);
+
     void Clear();
     bool Empty() const;
 

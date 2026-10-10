@@ -312,6 +312,10 @@ TextService::TextService()
       surfaceCaret_(0),
       surfaceSelectLength_(0),
       promoted_(false),
+      rangeTracked_(false),
+      rangeKeepsExcluded_(false),
+      rangeShift_(0),
+      rangeFunc_(KeyFunc::Convert),
       appendDocument_(AppendDocument::Unknown),
       awaitingMarker_(false),
       appendAction_(PseudoKeyAction::None),
@@ -684,9 +688,14 @@ bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
         return true;
     }
     switch (func) {
-    case KeyFunc::Convert: {
-        std::wstring selection;
-        return ReadReconvertibleSelection(context, &selection);
+    case KeyFunc::Convert:
+    case KeyFunc::ToHiragana:
+    case KeyFunc::ToKatakana:
+    case KeyFunc::ToHalfKatakana:
+    case KeyFunc::ToFullAscii:
+    case KeyFunc::ToHalfAscii: {
+        IdleTarget target;
+        return ReadIdleTarget(context, &target);
     }
     case KeyFunc::UndoCommit:
         return !lastCommitText_.empty();
@@ -737,6 +746,12 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
         return true;
     case VK_LEFT:
     case VK_RIGHT:
+        // 入力全体の候補選択の ←→ は変換の範囲の伸縮 (伸縮できなくても食べる)。伸縮しない
+        // run・文書では PgUp/PgDn と同じ扱い
+        if (!shifted && RangeResizable()) {
+            return true;
+        }
+        [[fallthrough]];
     case VK_PRIOR:
     case VK_NEXT:
         // ←→・PgUp/PgDn も文節 UI では同じく常に食べる。入力全体の候補選択には文節の
@@ -897,8 +912,8 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     }
 
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
-        // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき、入力なしの
-        // 状態など) はアプリへ再送する
+        // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき) と、入力なしで
+        // 変換の対象が無いときはアプリへ再送する
         const KeyFunc func = (context != nullptr && IsKeyboardOpen())
                                  ? MatchKeyFunc(VK_F10).func
                                  : KeyFunc::None;
@@ -1049,6 +1064,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     barXFixed_ = false;
     composer_.Clear();
     promoted_ = false;
+    rangeTracked_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
@@ -1168,7 +1184,7 @@ HRESULT TextService::CommitComposition(ITfContext* context)
     }
     // 昇格した composition は変換状態を抜けると run に戻るので、ここに来るのは
     // 後始末が間に合わなかったときだけ。表示どおりのかなで確定する
-    return EndComposition(context, composer_.Commit());
+    return EndComposition(context, RangeExcludedInComposition() + composer_.Commit());
 }
 
 void TextService::ApplyModelessCommitRule()
@@ -1303,6 +1319,10 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         if (Composing() || converting_) {
             return ApplyFunctionKey(context, match.func);
         }
+        if (!InRun()) {
+            // 入力なしで働くのは F6〜F10 だけ (KeyFuncWorksIn)
+            return ConvertIdleTarget(context, match.func);
+        }
         return BeginAppendConversion(context, match.func);
     }
 }
@@ -1398,15 +1418,23 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
     case VK_UP:
         return converting_ ? CycleCandidate(context, -1) : S_OK;
     case VK_LEFT:
+        // 入力全体の候補選択では ← で範囲を広げる。文節 UI では
         // Shift+← は現在文節を1文字縮める、← は文節移動
         if (!converting_) {
             return S_OK;
         }
+        if (!shifted && RangeResizable()) {
+            return ResizeConversionRange(context, -1);
+        }
         return shifted ? ResizeSegment(context, -1) : MoveSegment(context, -1);
     case VK_RIGHT:
+        // 入力全体の候補選択では → で範囲を縮める。文節 UI では
         // Shift+→ は現在文節を1文字伸ばす、→ は文節移動
         if (!converting_) {
             return S_OK;
+        }
+        if (!shifted && RangeResizable()) {
+            return ResizeConversionRange(context, +1);
         }
         return shifted ? ResizeSegment(context, +1) : MoveSegment(context, +1);
     case VK_PRIOR:
@@ -1422,6 +1450,13 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
 
 HRESULT TextService::ApplyFunctionKey(ITfContext* context, KeyFunc func)
 {
+    // 範囲を変えたときは F6〜F10 なら同じ文字種変換を、記号変換・ユーザ語変換の後は
+    // 通常の変換をやり直す
+    if (func >= KeyFunc::ToHiragana && func <= KeyFunc::ToHalfAscii) {
+        rangeFunc_ = func;
+    } else if (func == KeyFunc::ConvertSymbol || func == KeyFunc::ConvertUser) {
+        rangeFunc_ = KeyFunc::Convert;
+    }
     switch (func) {
     case KeyFunc::ConvertSymbol:
         return ConvertToSymbols(context);
@@ -1449,6 +1484,7 @@ HRESULT TextService::StartConversion(ITfContext* context)
     if (!Composing() && !InRun()) {
         return E_UNEXPECTED;
     }
+    rangeFunc_ = KeyFunc::Convert;
     BuildConversionSegments();
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
@@ -1911,6 +1947,7 @@ HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
     ClearConversion();
+    RestoreExcludedKana();
     // かな入力に戻るので、バーも作り直して復活させる
     if (!Composing()) {
         return UpdateRunAndBar(context);
@@ -2163,6 +2200,17 @@ void TextService::CaptureLlmContext(ITfContext* context)
              std::to_wstring(llmRunContext_.size()));
 }
 
+void TextService::CaptureLlmContextFrom(const std::wstring& preceding)
+{
+    ResetRerank();
+    llmRunContext_.clear();
+    if (!config_.Get().llm) {
+        return;
+    }
+    llmRunContext_ = KeepTail(TrimLlmContext(preceding), kLlmContextRead);
+    DebugLog(L"LLM の左文脈: 範囲の前の文書、長さ " + std::to_wstring(llmRunContext_.size()));
+}
+
 void TextService::AppendLlmHistory(const std::wstring& text)
 {
     llmHistory_ = KeepTail(llmHistory_ + text, kLlmContextChars);
@@ -2367,7 +2415,8 @@ std::wstring TextService::PrepareConversionCommit()
     if (!committed.empty()) {
         SetCommitContext(committed.back().first, committed.back().second);
     }
-    return ConvertedText();
+    // 追記のみの文書で外したかなは学習せず、確定文字列には含める
+    return RangeExcludedInComposition() + ConvertedText();
 }
 
 std::vector<LearnEntry> TextService::SentenceLearnEntries(
@@ -2473,11 +2522,13 @@ void TextService::FinishConversionState(const std::wstring& commitText)
     if (!commitText.empty()) {
         lastCommitText_ = commitText;
         lastComposer_ = composer_;
+        lastComposer_.PrependKana(RangeExcludedInComposition());
     }
     ClearConversion();
     ClearBar();
     barXFixed_ = false;
     composer_.Clear();
+    rangeTracked_ = false;
 }
 
 HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring& commitText)
@@ -2610,9 +2661,13 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
         return ReplaceRunDisplay(context, ConvertedText(), static_cast<size_t>(targetStart),
                                  static_cast<size_t>(targetLength));
     }
+    // 追記のみの文書で範囲を縮めて外したかなは、文書に戻さず composition の先頭に入力中の属性で
+    // 残す (強調は範囲の変換結果だけ)
+    const std::wstring excluded = RangeExcludedInComposition();
+    targetStart += static_cast<LONG>(excluded.size());
     return RequestSync(context,
                        new (std::nothrow) UpdateCompositionEditSession(
-                           context, composition_, ConvertedText(), inputAttribute_,
+                           context, composition_, excluded + ConvertedText(), inputAttribute_,
                            targetAttribute_, targetStart, targetLength),
                        TF_ES_SYNC | TF_ES_READWRITE);
 }
@@ -2746,6 +2801,8 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     if (!text.empty()) {
         lastCommitText_ = text;
         lastComposer_ = composer_;
+        // 確定アンドゥは、追記のみの文書で外したかなを含む run 全体の読みに戻す
+        lastComposer_.PrependKana(RangeExcludedInComposition());
     }
 
     // 変換状態・バーと候補ウィンドウの後始末
@@ -2763,6 +2820,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     composition_ = nullptr;
     promoted_ = false;
     composer_.Clear();
+    rangeTracked_ = false;
     return hr;
 }
 

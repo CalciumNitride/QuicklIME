@@ -269,6 +269,9 @@ private:
     // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
     // IME が文書に入れた文字列の履歴を使う (設定 llm が無効なら何もしない)
     void CaptureLlmContext(ITfContext* context);
+    // 呼び出し側が文書から読んだ、範囲の先頭より前の文字列を LLM の左文脈にする
+    // (設定 llm が無効なら何もしない)
+    void CaptureLlmContextFrom(const std::wstring& preceding);
     // IME が文書に入れた文字列を履歴 (追記のみの文書の左文脈) に足す
     void AppendLlmHistory(const std::wstring& text);
     // 部分採用の後も run は続く。文書は読み直さず、run を始めたときの左文脈に採用した文字列を足す
@@ -397,12 +400,39 @@ private:
     void PushDirectKey(const DirectKey& key);
     HRESULT SpaceDirect(ITfContext* context, bool shifted);
     // 変換 (KeyFunc::Convert): run 中は変換開始 / 次候補 (previous なら前候補)、
-    // run が無ければ後置再変換
+    // run が無ければ入力なしの対象 (ReadIdleTarget) の変換
     HRESULT ConvertKeyDirect(ITfContext* context, bool previous);
-    // 後置再変換: 選択テキスト (ひらがな・カタカナ・ー のみ) を読みとして run を作り変換開始
-    HRESULT ReconvertSelectionDirect(ITfContext* context);
-    // 現在の選択テキストが後置再変換の対象なら true (対象なら textOut に入れる)
-    bool ReadReconvertibleSelection(ITfContext* context, std::wstring* textOut) const;
+    // 入力なしの変換キー・F6〜F10 の対象 (docs/design/conversion-range.md)
+    struct IdleTarget {
+        std::wstring text;    // 対象の文字列 (読みはひらがなに正規化して作る)
+        // 対象の先頭より前の文書の文字列 (キャレット直前のかなのときだけ読む)
+        std::wstring before;
+        bool selection = false;  // 選択範囲 (後置再変換) か、キャレット直前のかなか
+    };
+    // 選択があれば、ひらがな・カタカナ・ー だけの選択 (後置再変換)。選択が空なら、読める文書で
+    // キャレット直前のひらがな・ー の連続。どちらも kMaxReconvertLength 文字まで。対象が無ければ false
+    bool ReadIdleTarget(ITfContext* context, IdleTarget* target) const;
+    // 入力なしの対象を読みとして run を作り、昇格して func (Convert か F6〜F10) の変換に入る
+    HRESULT ConvertIdleTarget(ITfContext* context, KeyFunc func);
+    // キャレット (選択の開始) より前の文書の文字列を読み、直前の inRange を除いた残りを before に
+    // 返す。キャレットの直前が inRange で終わっていなければ false
+    bool ReadTextBeforeCaret(ITfContext* context, const std::wstring& inRange,
+                             std::wstring* before) const;
+    // 昇格した直後に、変換の範囲の伸縮に使う状態を始める (before は範囲の前の文書の文字列)。
+    // keepExcluded なら (追記のみの文書) 縮めて外したかなを composition の先頭に残す
+    void BeginRangeTracking(const std::wstring& before, bool keepExcluded);
+    // 候補選択中の ←→ で変換の範囲を伸縮できるか (入力全体の候補選択・英字を含まない run・
+    // 範囲の前を読めた読める文書か、composition の候補選択中の追記のみの文書)
+    bool RangeResizable() const;
+    // 追記のみの文書で縮めて外し、composition の先頭に残しているかな (無ければ空)
+    std::wstring RangeExcludedInComposition() const;
+    // 範囲を変えた後の前文脈を決める (外したかな、または範囲を始めたときの前文脈)
+    void ApplyRangeContext();
+    // 変換の取消: composition の先頭に残した外したかなを読みに戻す (run 全体のかなに戻る)
+    void RestoreExcludedKana();
+    // 範囲の右端をキャレットに固定し、左端を1文字動かして変換をやり直す
+    // (delta < 0 で広げ、delta > 0 で縮める)。できないときは何もしない
+    HRESULT ResizeConversionRange(ITfContext* context, int delta);
     // 候補選択中の確定 (選択を末尾に潰して run を終える)、バー選択中の確定 (選択中の候補を
     // 採用して run を終える)
     HRESULT CommitRunDirect(ITfContext* context);
@@ -599,6 +629,19 @@ private:
     // composition_ が run から昇格したもの (変換状態を抜けたら run に戻す) か。
     // 候補選択中の印字キーで確定して始まった次の composition にも引き継ぐ
     bool promoted_;
+
+    // 変換の範囲の伸縮 (docs/design/conversion-range.md)。範囲を作って昇格したときに始める
+    bool rangeTracked_;                   // 範囲の前を読めて、伸縮できる状態か
+    // 追記のみの文書の伸縮: 外したかなを文書に残さず composition の先頭に残す。このとき
+    // rangeBefore_ は空から始まり、外したかなだけを持つ
+    bool rangeKeepsExcluded_;
+    std::wstring rangeBefore_;            // 範囲の先頭より前の文書の文字列
+    // 範囲の先頭が始めたときから何文字右へ動いたか (正: 縮めた、負: 広げた)。
+    // 正のときは rangeBefore_ の末尾 rangeShift_ 文字が縮めて外したかな
+    int rangeShift_;
+    ConversionContext rangeBaseContext_;  // 範囲を始めたときの前文脈
+    // 範囲を変えたときにやり直す変換 (Convert は通常の変換、それ以外は F6〜F10)
+    KeyFunc rangeFunc_;
 
     // 追記型入力の状態
     AppendDocument appendDocument_;          // フォーカス中の文書の分類

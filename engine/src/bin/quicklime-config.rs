@@ -97,11 +97,11 @@ const KEY_ITEMS: [(&str, &str, u8, &str); 14] = [
     ("key.commit_run", "確定", IN_INPUT, "NonConvert"),
     ("key.convert_symbol", "記号・日付変換", IN_INPUT, "F4"),
     ("key.convert_user", "ユーザ語変換", IN_INPUT, "F5"),
-    ("key.to_hiragana", "ひらがな変換", IN_INPUT, "F6"),
-    ("key.to_katakana", "カタカナ変換", IN_INPUT, "F7"),
-    ("key.to_half_katakana", "半角カタカナ変換", IN_INPUT, "F8"),
-    ("key.to_full_ascii", "全角英字変換", IN_INPUT, "F9"),
-    ("key.to_half_ascii", "半角英字変換", IN_INPUT, "F10"),
+    ("key.to_hiragana", "ひらがな変換", IN_IDLE | IN_INPUT, "F6"),
+    ("key.to_katakana", "カタカナ変換", IN_IDLE | IN_INPUT, "F7"),
+    ("key.to_half_katakana", "半角カタカナ変換", IN_IDLE | IN_INPUT, "F8"),
+    ("key.to_full_ascii", "全角英字変換", IN_IDLE | IN_INPUT, "F9"),
+    ("key.to_half_ascii", "半角英字変換", IN_IDLE | IN_INPUT, "F10"),
     ("key.undo_commit", "確定アンドゥ", IN_IDLE, "Ctrl+Backspace"),
     ("key.register_word", "単語登録", IN_IDLE, "Ctrl+F7"),
     ("key.open_config", "設定を開く", IN_IDLE, "Ctrl+F12"),
@@ -1705,11 +1705,16 @@ mod tests {
         config.apply("key.undo_commit@run", "F1");
         config.apply("key.to_katakana@bogus", "F1");
         config.apply("key.to_katakana", "Enter");
+        config.apply("key.to_hiragana@idle", "Ctrl+K");
+        config.apply("key.convert_symbol@idle", "Ctrl+J");
         config.apply("key.convert", "Convert,Ctrl+Space");
         assert_eq!(config.keys[1].overrides[2], Some(Vec::new()));
         assert_eq!(config.keys[3].overrides[2], Some(vec![key("Ctrl+Enter")]));
         assert_eq!(config.keys[11].overrides[1], None);
         assert_eq!(config.keys[7], KeyAssign { keys: vec![key("F7")], overrides: Default::default() });
+        // F6〜F10 は入力なしでも働くので上書きでき、F4・F5 は入力なしでは働かない
+        assert_eq!(config.keys[6].overrides[0], Some(vec![key("Ctrl+K")]));
+        assert_eq!(config.keys[4].overrides[0], None);
         assert_eq!(config.keys[0].keys, vec![key("Convert"), key("Ctrl+Space")]);
     }
 
@@ -1717,9 +1722,16 @@ mod tests {
     fn detects_conflicts_per_state() {
         let mut assigns = default_key_assigns();
         assert_eq!(find_key_conflict(&assigns), None);
-        // 働く状態が重ならなければ重なりではない (Ctrl+F7 は単語登録 = 入力なし のみ)
-        assigns[7].keys = vec![key("F7"), key("Ctrl+F7")];
+        // 働く状態が重ならなければ重なりではない (Ctrl+F7 は単語登録 = 入力なし のみ、
+        // 記号・日付変換は入力なしでは働かない)
+        assigns[4].keys = vec![key("F4"), key("Ctrl+F7")];
         assert_eq!(find_key_conflict(&assigns), None);
+        // カタカナ変換は入力なしでも働くので、単語登録と重なる
+        assigns[4].keys = vec![key("F4")];
+        assigns[7].keys = vec![key("F7"), key("Ctrl+F7")];
+        let conflict = find_key_conflict(&assigns).unwrap();
+        assert!(conflict.contains("入力なし") && conflict.contains("単語登録"), "{conflict}");
+        assigns[7].keys = vec![key("F7")];
         // 候補選択中だけ Space を記号変換にも割り当てる
         assigns[4].overrides[2] = Some(vec![key("Space")]);
         let conflict = find_key_conflict(&assigns).unwrap();

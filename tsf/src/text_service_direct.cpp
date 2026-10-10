@@ -360,7 +360,25 @@ wchar_t KatakanaToHiragana(wchar_t c)
 
 // GetSelectionTextEditSession が読める上限。これ以上の選択は末尾が切れて
 // 選択全体を置き換えられないため、後置再変換の対象にしない
+// (キャレット直前のかなの変換と、範囲を広げる上限もこれに揃える)
 constexpr size_t kMaxReconvertLength = 127;
+
+// 変換の範囲の前を読む長さ (UTF-16 単位)。範囲を広げる余地 (kMaxReconvertLength まで) と、
+// 前文脈の照合・LLM の左文脈 (80) に足りる長さ
+constexpr size_t kRangeBeforeRead = 128;
+
+bool EndsWith(const std::wstring& text, const std::wstring& suffix)
+{
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
+
+// キャレット直前のかなの変換と範囲を広げる対象の文字。カタカナは意図して入れたものが多いので
+// 区切りにする (カタカナを含めたいときは選択して変換する)
+bool IsHiraganaOrChoon(wchar_t c)
+{
+    return (c >= 0x3041 && c <= 0x309F) || c == 0x30FC;
+}
 
 } // namespace
 
@@ -410,6 +428,11 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
             return converting_ || !barItems_.empty();
         case VK_LEFT:
         case VK_RIGHT:
+            // 入力全体の候補選択の ←→ は変換の範囲の伸縮 (伸縮できなくても食べる)
+            if (!shifted && RangeResizable()) {
+                return true;
+            }
+            [[fallthrough]];
         case VK_PRIOR:
         case VK_NEXT:
             // 文節の操作は文節 UI のときだけ。入力全体の候補選択では確定してアプリへ渡す
@@ -587,10 +610,16 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         if (!converting_) {
             return S_OK;
         }
+        if (!shifted && RangeResizable()) {
+            return ResizeConversionRange(context, -1);
+        }
         return shifted ? ResizeSegment(context, -1) : MoveSegment(context, -1);
     case VK_RIGHT:
         if (!converting_) {
             return S_OK;
+        }
+        if (!shifted && RangeResizable()) {
+            return ResizeConversionRange(context, +1);
         }
         return shifted ? ResizeSegment(context, +1) : MoveSegment(context, +1);
     case VK_PRIOR:
@@ -805,7 +834,7 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
 HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool previous)
 {
     if (!InRun()) {
-        return ReconvertSelectionDirect(context);
+        return ConvertIdleTarget(context, KeyFunc::Convert);
     }
     if (converting_) {
         return CycleCandidate(context, previous ? -1 : +1);
@@ -813,46 +842,241 @@ HRESULT TextService::ConvertKeyDirect(ITfContext* context, bool previous)
     return BeginAppendConversion(context, KeyFunc::Convert);
 }
 
-bool TextService::ReadReconvertibleSelection(ITfContext* context, std::wstring* textOut) const
+bool TextService::ReadIdleTarget(ITfContext* context, IdleTarget* target) const
 {
-    textOut->clear();
+    *target = IdleTarget{};
     if (context == nullptr) {
         return false;
     }
     std::wstring selection;
     RequestSync(context, new (std::nothrow) GetSelectionTextEditSession(context, &selection),
                 TF_ES_SYNC | TF_ES_READ);
-    if (selection.size() > kMaxReconvertLength || !IsKanaOnly(selection)) {
+    if (!selection.empty()) {
+        if (selection.size() > kMaxReconvertLength || !IsKanaOnly(selection)) {
+            return false;
+        }
+        target->text = selection;
+        target->selection = true;
+        return true;
+    }
+    // 追記のみの文書はキャレット直前を読めず、未判定の文書は読めるかどうかが分からない
+    if (!DocumentReadable()) {
         return false;
     }
-    *textOut = selection;
+    std::wstring preceding;
+    RequestSync(context,
+                new (std::nothrow) GetPrecedingTextEditSession(
+                    context, static_cast<ULONG>(kMaxReconvertLength + kRangeBeforeRead),
+                    &preceding),
+                TF_ES_SYNC | TF_ES_READ);
+    size_t start = preceding.size();
+    while (start > 0 && preceding.size() - start < kMaxReconvertLength &&
+           IsHiraganaOrChoon(preceding[start - 1])) {
+        --start;
+    }
+    if (start == preceding.size()) {
+        return false;
+    }
+    target->text = preceding.substr(start);
+    target->before = preceding.substr(0, start);
     return true;
 }
 
-HRESULT TextService::ReconvertSelectionDirect(ITfContext* context)
+HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
 {
-    std::wstring selection;
-    if (!ReadReconvertibleSelection(context, &selection)) {
+    IdleTarget target;
+    if (!ReadIdleTarget(context, &target)) {
         return S_OK;
     }
-    // 選択文字列を読みとして run を作る。エンジンに渡す読みはひらがなに正規化し、
+    // 対象を読みとして run を作る。エンジンに渡す読みはひらがなに正規化し、
     // 打鍵列は元の文字 (F7-F10 の文字種変換で元の形へ戻せるように) にする
     composer_.Clear();
-    for (wchar_t c : selection) {
+    for (wchar_t c : target.text) {
         composer_.PushKana(std::wstring(1, KatakanaToHiragana(c)), std::wstring(1, c));
     }
-    surface_ = selection;
-    // ユーザの選択 = run 全体。最初の置換の前に選択を末尾へ潰す
-    surfaceCaret_ = 0;
-    surfaceSelectLength_ = surface_.size();
-    // 選択した文字列と直前の確定は無関係。run を始める前の時点が無いので、LLM の左文脈も無しにする
-    ClearContext();
-    ResetRerank();
-    llmRunContext_.clear();
+    surface_ = target.text;
+    std::wstring before = target.before;
+    bool tracked = DocumentReadable();
+    if (target.selection) {
+        // ユーザの選択 = run 全体。最初の置換の前に選択を末尾へ潰す
+        surfaceCaret_ = 0;
+        surfaceSelectLength_ = surface_.size();
+        // 選択した文字列と直前の確定は無関係。run を始める前の時点が無いので、LLM の左文脈も無しにする
+        ClearContext();
+        ResetRerank();
+        llmRunContext_.clear();
+        if (tracked) {
+            tracked = ReadTextBeforeCaret(context, L"", &before);
+        }
+    } else {
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+        // 文書の漢字の読みは分からないので、範囲の直前が直前の確定の表記で終わるときだけ
+        // その確定を前文脈にする
+        if (contextSurface_.empty() || !EndsWith(before, contextSurface_)) {
+            ClearContext();
+        }
+        CaptureLlmContextFrom(before);
+    }
     if (PromoteRun(context) == PromoteResult::Dropped) {
         return S_OK;
     }
-    return StartConversion(context);
+    if (tracked) {
+        BeginRangeTracking(before, false);
+    }
+    return func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
+}
+
+bool TextService::ReadTextBeforeCaret(ITfContext* context, const std::wstring& inRange,
+                                      std::wstring* before) const
+{
+    before->clear();
+    if (context == nullptr) {
+        return false;
+    }
+    std::wstring preceding;
+    RequestSync(context,
+                new (std::nothrow) GetPrecedingTextEditSession(
+                    context, static_cast<ULONG>(inRange.size() + kRangeBeforeRead), &preceding),
+                TF_ES_SYNC | TF_ES_READ);
+    if (!EndsWith(preceding, inRange)) {
+        return false;
+    }
+    *before = preceding.substr(0, preceding.size() - inRange.size());
+    return true;
+}
+
+void TextService::BeginRangeTracking(const std::wstring& before, bool keepExcluded)
+{
+    rangeTracked_ = true;
+    rangeKeepsExcluded_ = keepExcluded;
+    rangeBefore_ = before;
+    rangeShift_ = 0;
+    // 昇格 (StartComposition) で前文脈が捨てられていればそれを反映した後の値
+    rangeBaseContext_ = CurrentContext();
+}
+
+bool TextService::RangeResizable() const
+{
+    // 英字を含む run は、打鍵したローマ字の候補 (apple / Apple / APPLE) が範囲を変えると
+    // 成り立たない。追記のみの文書は、張った composition の中だけで伸縮する (擬似 Backspace で
+    // 張り直すと、目印を待つ間に続けて押した ←→ がアプリへ渡ってキャレットを動かすため)。
+    // 未判定の文書は伸縮しない
+    if (!converting_ || config_.Get().segmentUi || !rangeTracked_ ||
+        ContainsAsciiLetter(composer_.Commit())) {
+        return false;
+    }
+    return rangeKeepsExcluded_ ? appendDocument_ == AppendDocument::AppendOnly && Composing()
+                               : DocumentReadable();
+}
+
+std::wstring TextService::RangeExcludedInComposition() const
+{
+    if (!rangeTracked_ || !rangeKeepsExcluded_ || rangeShift_ <= 0) {
+        return L"";
+    }
+    return rangeBefore_.substr(rangeBefore_.size() - static_cast<size_t>(rangeShift_));
+}
+
+void TextService::ApplyRangeContext()
+{
+    // 縮めて外したかなは読み = 表記の前文脈にする。外したかなが無ければ範囲を始めたときの
+    // 前文脈を、始めたときより広げた後は、範囲の直前がその表記で終わるときだけ使う
+    ConversionContext conversionContext;
+    if (rangeShift_ > 0) {
+        const std::wstring excluded =
+            rangeBefore_.substr(rangeBefore_.size() - static_cast<size_t>(rangeShift_));
+        conversionContext = {excluded, excluded};
+    } else if (rangeShift_ == 0 || (!rangeBaseContext_.surface.empty() &&
+                                    EndsWith(rangeBefore_, rangeBaseContext_.surface))) {
+        conversionContext = rangeBaseContext_;
+    }
+    contextReading_ = conversionContext.reading;
+    contextSurface_ = conversionContext.surface;
+}
+
+void TextService::RestoreExcludedKana()
+{
+    const std::wstring excluded = RangeExcludedInComposition();
+    if (excluded.empty()) {
+        return;
+    }
+    composer_.PrependKana(excluded);
+    rangeBefore_.erase(rangeBefore_.size() - excluded.size());
+    rangeShift_ = 0;
+    contextReading_ = rangeBaseContext_.reading;
+    contextSurface_ = rangeBaseContext_.surface;
+}
+
+HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
+{
+    if (delta < 0) {
+        // 追記のみの文書は run より前を読めないので、外したかなを戻すところまで
+        const bool canWiden = rangeKeepsExcluded_ ? rangeShift_ > 0 : !rangeBefore_.empty();
+        if (!canWiden || composer_.Commit().size() >= kMaxReconvertLength ||
+            !IsHiraganaOrChoon(rangeBefore_.back())) {
+            return S_OK;
+        }
+    } else if (composer_.ConfirmedKana().size() < 2) {
+        // 未完成のローマ字 (n) は文書に入っていないので数えない。縮めた後も文書に範囲の文字を残す
+        return S_OK;
+    }
+    const KeyFunc func = rangeFunc_;
+    if (rangeKeepsExcluded_) {
+        // 外したかなは composition の先頭に残し (UpdateConvertingDisplay)、文書は確定まで変えない
+        ClearConversion();
+        if (delta < 0) {
+            const std::wstring added(1, rangeBefore_.back());
+            rangeBefore_.pop_back();
+            composer_.PrependKana(added);
+            --rangeShift_;
+        } else {
+            rangeBefore_ += composer_.ConfirmedKana()[0];
+            composer_.RemoveFront(1);
+            ++rangeShift_;
+        }
+        ApplyRangeContext();
+        DebugLog(std::wstring(delta < 0 ? L"変換の範囲を広げる (composition 内): "
+                                        : L"変換の範囲を縮める (composition 内): ") +
+                 composer_.Commit());
+        return func == KeyFunc::Convert ? StartConversion(context)
+                                        : ApplyFunctionKey(context, func);
+    }
+    // ITfComposition::ShiftStart で composition の先頭を動かすと、広げるときに確定済みの文字列を
+    // composition に取り込むことになり、Discord で確定時に元のかなが残る。変換を取り消して
+    // run に戻し、新しい範囲の run を昇格し直す
+    const HRESULT hr = CancelConversion(context);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    DemoteIfLeftConversion(context);
+    if (Composing() || surface_.empty() || surface_ != composer_.ConfirmedKana()) {
+        return S_OK; // 取消・降格で run を捨てた
+    }
+    if (delta < 0) {
+        const std::wstring added(1, rangeBefore_.back());
+        rangeBefore_.pop_back();
+        composer_.PrependKana(added);
+        surface_.insert(0, added);
+        --rangeShift_;
+    } else {
+        // 外したかなは文書に残り、run から外れる (確定しても学習しない)
+        rangeBefore_ += surface_[0];
+        composer_.RemoveFront(1);
+        surface_.erase(0, 1);
+        ++rangeShift_;
+    }
+    surfaceCaret_ = surface_.size();
+    surfaceSelectLength_ = 0;
+    ApplyRangeContext();
+    CaptureLlmContextFrom(rangeBefore_);
+    DebugLog(std::wstring(delta < 0 ? L"変換の範囲を広げる: " : L"変換の範囲を縮める: ") +
+             surface_);
+
+    if (PromoteRun(context) == PromoteResult::Dropped) {
+        return S_OK;
+    }
+    return func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
 }
 
 HRESULT TextService::CommitRunDirect(ITfContext* context)
@@ -1095,6 +1319,7 @@ void TextService::DropRun()
     surface_.clear();
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
+    rangeTracked_ = false;
 }
 
 HRESULT TextService::UndoCommit(ITfContext* context)
@@ -1616,15 +1841,22 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, 
 HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
 {
     pendingWindow_.Hide();
+    rangeTracked_ = false;
     if (surface_.empty()) {
         // 文書にはまだ何も入っていない (未完成のローマ字だけ) ので、消さずに composition を張る
         return ScheduleAppendAction(context, PseudoKeyAction::Compose, func, L"", false);
     }
     ClassifyAppendDocument(context);
     if (appendDocument_ == AppendDocument::Readable) {
+        // 範囲を伸縮するときの広げる先と前文脈の照合に、run より前の文書の文字列を覚えておく
+        std::wstring before;
+        const bool tracked = ReadTextBeforeCaret(context, surface_, &before);
         const PromoteResult promoted = PromoteRun(context);
         if (promoted == PromoteResult::Dropped) {
             return S_OK;
+        }
+        if (tracked) {
+            BeginRangeTracking(before, false);
         }
         // 昇格できなかった run は、現在文節の選択による強調で候補選択する
         return func == KeyFunc::Convert ? StartConversion(context)
@@ -1698,6 +1930,10 @@ void TextService::RunAppendAction(ITfContext* context)
         // 読める文書の昇格と同じく、composition の候補選択に入る
         promoted_ = true;
         ClearBar();
+        if (appendDocument_ == AppendDocument::AppendOnly) {
+            // run より前は読めないので、範囲を広げられるのは外したかなを戻すところまで
+            BeginRangeTracking(L"", true);
+        }
         if (appendActionFunc_ == KeyFunc::Convert) {
             StartConversion(context);
         } else {
