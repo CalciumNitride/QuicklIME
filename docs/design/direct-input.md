@@ -125,9 +125,19 @@ composition の変換経路と表示属性 (入力中の下線・現在文節の
 
 - 昇格の契機: run 中の変換キー、run 中の F4〜F10 (`ApplyFunctionKey`。変換状態に入る
   キー)、後置再変換 (選択したかなを読みにした run の変換開始)
-- 読める文書の昇格の edit session (`PromoteRunEditSession`): `MatchRunRange` で run の範囲を
-  特定・照合し (`surface_` / `surfaceCaret_`。後置再変換では選択開始が run 先頭)、
-  その範囲で `StartComposition` し、入力中の表示属性を付けて末尾に潰す。文字列は変えない
+- 読める文書の昇格 (`PromoteRun`) は、run の文字列を消してから空の composition を張る。
+  既存の文字列の範囲に `StartComposition` すると、composition を独自に解釈するエディタ
+  (Discord の入力欄) が「確定済みの文字列が composition に変わった」ことを内部モデルに
+  反映せず、確定時に元のかなが確定文字列の手前に残るため。手順は次のとおり:
+  1. `ReplaceRunText(surface_, L"")` で run の文字列を消す (照合込みの置換経路。
+     後置再変換のように選択が潰れていないときは `ReplaceRunRange` が先に末尾へ潰す)。
+     不一致なら run を捨てる
+  2. `StartComposition` でキャレット位置に空の composition を開始する
+  3. 未確定文字列は呼び出し元の表示更新 (`StartConversion` / `ApplyFunctionKey`) が
+     別の edit session で設定する (開始と同じ session で SetText すると CUAS が
+     WM_IME_COMPOSITION を生成しない制約と同じ形にそろえる)
+  4. composition を張れなければ、消した文字列を `AppendRunText` で入れ直して run を続け、
+     選択による文節強調で変換する。入れ直しにも失敗したら run を捨てる
 - 追記のみの文書では、Backspace の擬似打鍵で run の文字列を文書から消してから、
   run の読みで composition を張る (docs/design/append-input.md)
 - 昇格に成功したら run の文書上の状態 (`surface_` / `surfaceCaret_` /
@@ -138,7 +148,7 @@ composition の変換経路と表示属性 (入力中の下線・現在文節の
   `ApplyFunctionKey` を呼ぶ
 - 昇格の照合が不一致なら、追記前の照合の不一致と同じく run を捨てる (文書は触らない)。
   `StartComposition` が失敗・拒否されたら、選択による文節強調で変換する
-  (後述「置換 edit session」)
+  (後述「置換 edit session」。消した文字列は上記手順 4 で入れ直してある)
 - 確定 (Enter・候補番号・Ctrl+M) は composition の確定処理 (学習・文脈・確定アンドゥの
   記憶) を使う。確定後は composition が無いので run の経路に戻る
 - 降格: `promoted_` の composition が生きていて変換状態でなくなったとき (Esc・Backspace
@@ -337,6 +347,10 @@ Backspace の擬似打鍵で確定文字列を消してから読みのかなを�
 | 17 | 候補選択中に `a` | 確定して `あ` が下線なしの direct の run として続く |
 | 18 | 候補選択中に Tab (候補バーあり) | direct の run に戻ってバーの先頭を選ぶ |
 | 19 | メモ帳で 13〜18 | 同じ挙動 (回帰確認) |
+| 20 | Discord の入力欄で `kyouha` 変換キー → 候補選択 → 確定キー / 次の文字を打鍵 / Enter | どの確定でも漢字だけが入る (元のかなが手前に残らない)。Enter は漢字だけで送信される |
+| 21 | Discord でかなを選択して変換キー → 確定 | 選択したかなが漢字に置き換わる |
+| 22 | Discord で変換中に Esc | かなが1回だけ残り、run として入力を続けられる |
+| 23 | Word・Chrome の textarea・Gmail 本文で 13〜18 | 同じ挙動 (回帰確認。文字の重複・消失がない) |
 
 ## 未決事項
 

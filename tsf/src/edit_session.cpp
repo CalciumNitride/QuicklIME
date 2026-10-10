@@ -581,64 +581,6 @@ STDMETHODIMP SelectRunRangeEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
-// ---- PromoteRunEditSession ----
-
-PromoteRunEditSession::PromoteRunEditSession(ITfContext* context, std::wstring expected,
-                                             size_t caretOffset, ITfCompositionSink* sink,
-                                             TfGuidAtom displayAttribute,
-                                             ITfComposition** compositionOut,
-                                             ReplaceRunResult* matchOut)
-    : EditSessionBase(context),
-      expected_(std::move(expected)),
-      caretOffset_(caretOffset),
-      sink_(sink),
-      displayAttribute_(displayAttribute),
-      compositionOut_(compositionOut),
-      matchOut_(matchOut)
-{
-    *compositionOut_ = nullptr;
-    *matchOut_ = ReplaceRunResult::Unsupported;
-}
-
-STDMETHODIMP PromoteRunEditSession::DoEditSession(TfEditCookie ec)
-{
-    TF_SELECTION selection = {};
-    ULONG fetched = 0;
-    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    if (FAILED(hr) || fetched == 0) {
-        return hr;
-    }
-    ITfRange* range = selection.range;
-
-    const ReplaceRunResult match = MatchRunRange(ec, range, expected_, caretOffset_, &hr);
-    if (match == ReplaceRunResult::Succeeded) {
-        ITfContextComposition* contextComposition = nullptr;
-        hr = context_->QueryInterface(IID_ITfContextComposition,
-                                      reinterpret_cast<void**>(&contextComposition));
-        if (SUCCEEDED(hr)) {
-            hr = contextComposition->StartComposition(ec, range, sink_, compositionOut_);
-            contextComposition->Release();
-        }
-        if (FAILED(hr) && *compositionOut_ != nullptr) {
-            (*compositionOut_)->Release();
-            *compositionOut_ = nullptr;
-        }
-        // StartComposition はアプリの拒否時に S_OK + nullptr を返すことがある
-        if (*compositionOut_ != nullptr) {
-            ITfRange* compRange = nullptr;
-            if (SUCCEEDED((*compositionOut_)->GetRange(&compRange))) {
-                ApplyDisplayAttribute(ec, context_, compRange, displayAttribute_);
-                CollapseSelectionToEnd(ec, context_, compRange);
-                compRange->Release();
-            }
-        }
-    }
-
-    *matchOut_ = match;
-    range->Release();
-    return hr;
-}
-
 // ---- AppendRunEditSession ----
 
 AppendRunEditSession::AppendRunEditSession(ITfContext* context, std::wstring expected,

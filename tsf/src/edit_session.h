@@ -196,26 +196,6 @@ private:
     ReplaceRunResult* resultOut_;
 };
 
-// direct 方式の run を composition に昇格する。照合は ReplaceRunEditSession と同じで、
-// 一致した run の範囲でそのまま composition を開始し (文字列は変えない)、入力中の
-// 表示属性を付けて選択を末尾に潰す。照合結果を *matchOut に、開始した composition を
-// *compositionOut に返す (照合が一致しても StartComposition が失敗・拒否されれば nullptr)
-class PromoteRunEditSession : public EditSessionBase {
-public:
-    PromoteRunEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
-                          ITfCompositionSink* sink, TfGuidAtom displayAttribute,
-                          ITfComposition** compositionOut, ReplaceRunResult* matchOut);
-    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
-
-private:
-    std::wstring expected_;
-    size_t caretOffset_;
-    ITfCompositionSink* sink_;         // 呼び出し元 (TextService) が所有
-    TfGuidAtom displayAttribute_;
-    ITfComposition** compositionOut_;  // 開始した composition の受け取り先
-    ReplaceRunResult* matchOut_;
-};
-
 // 追記型入力の追記を1つの edit session で行う。書き込み位置は選択範囲。
 // verify を立てると、書き込み位置の直前が expected (run の文字列) と一致するかを
 // MatchRunRange と同じ方法で確かめて *matchOut に返す (立てなければ Succeeded)。

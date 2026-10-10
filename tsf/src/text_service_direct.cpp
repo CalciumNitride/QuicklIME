@@ -1139,33 +1139,37 @@ HRESULT TextService::UndoCommit(ITfContext* context)
 
 TextService::PromoteResult TextService::PromoteRun(ITfContext* context)
 {
-    ReplaceRunResult match = ReplaceRunResult::Unsupported;
-    ITfComposition* composition = nullptr;
-    RequestSync(context,
-                new (std::nothrow) PromoteRunEditSession(context, surface_, surfaceCaret_,
-                                                         static_cast<ITfCompositionSink*>(this),
-                                                         inputAttribute_, &composition, &match),
-                TF_ES_SYNC | TF_ES_READWRITE);
-    if (match == ReplaceRunResult::Unreadable && DocumentReadable()) {
-        // ReplaceRunRange と同じく、読める文書で範囲が作れないのはキャレットが動いたため
-        match = ReplaceRunResult::Mismatch;
-    }
+    // 既存の文字列の範囲に composition を張ると、composition を独自に解釈するエディタ
+    // (Discord の入力欄) が確定済みの文字列を内部モデルから消さず、確定時に元のかなが
+    // 残る。そのため run の文字列を消してから空の composition を張る
+    const std::wstring deleted = surface_;
+    const ReplaceRunResult match =
+        ReplaceRunRange(context, surface_, surfaceCaret_, surfaceSelectLength_, L"", 0, 0);
     if (match != ReplaceRunResult::Succeeded) {
         // 置換の不一致と同じく、文書と食い違った run は文書を触らずに捨てる
         DropRun();
         ClearContext();
         return PromoteResult::Dropped;
     }
-    if (composition == nullptr) {
-        return PromoteResult::Refused;
-    }
-    composition_ = composition;
-    promoted_ = true;
-    // 文書上の位置は以後 composition が持つ。composer_・文脈はそのまま候補選択へ
-    // 引き継ぐ (確定ではないので学習・確定アンドゥの記憶はしない)
     surface_.clear();
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
+    const HRESULT hr = StartComposition(context);
+    if (FAILED(hr) || !Composing()) {
+        DebugLog(L"昇格の composition を開始できない: 消した文字列を戻す");
+        if (AppendRunText(context, deleted) != AppendResult::Done) {
+            DropRun();
+            ClearContext();
+            return PromoteResult::Dropped;
+        }
+        surface_ = deleted;
+        surfaceCaret_ = surface_.size();
+        surfaceSelectLength_ = 0;
+        return PromoteResult::Refused;
+    }
+    promoted_ = true;
+    // 文書上の位置は以後 composition が持つ。composer_・文脈はそのまま候補選択へ
+    // 引き継ぐ (確定ではないので学習・確定アンドゥの記憶はしない)
     ClearBar();
     return PromoteResult::Promoted;
 }

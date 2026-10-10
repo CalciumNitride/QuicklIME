@@ -431,11 +431,13 @@ private:
     // run を composition に昇格した結果
     enum class PromoteResult {
         Promoted,  // composition_ に移った (run の文書上の状態は捨てた)
-        Dropped,   // 照合が文書と食い違った等で run を捨てた (文書は触らない)
-        Refused,   // StartComposition が失敗・拒否された (run はそのまま。選択による強調で変換する)
+        Dropped,   // 照合が文書と食い違った・入れ直しに失敗した等で run を捨てた
+        Refused,   // StartComposition が失敗・拒否された (消した文字列を入れ直して run を
+                   // 続ける。選択による強調で変換する)
     };
-    // 変換状態に入る直前に、run の範囲に composition を張る (文字列は変えない)。
-    // 候補選択中の表示 (下線・現在文節の強調) を composition の経路で行うため
+    // 変換状態に入る直前に、run の文字列を消してキャレット位置に空の composition を張る。
+    // 候補選択中の表示 (下線・現在文節の強調) を composition の経路で行うため。
+    // 未確定文字列は呼び出し元の表示更新 (StartConversion / ApplyFunctionKey) が設定する
     PromoteResult PromoteRun(ITfContext* context);
     // 昇格した composition が変換状態でなくなっていれば、確定したかなのまま
     // composition を終えて run に戻す (学習はしない)
