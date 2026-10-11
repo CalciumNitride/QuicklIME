@@ -1103,6 +1103,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     composer_.Clear();
     promoted_ = false;
     rangeTracked_ = false;
+    rangeStates_.clear();
     if (composition_ != nullptr) {
         composition_->Release();
         composition_ = nullptr;
@@ -2569,6 +2570,7 @@ void TextService::FinishConversionState(const std::wstring& commitText)
     barXFixed_ = false;
     composer_.Clear();
     rangeTracked_ = false;
+    rangeStates_.clear();
 }
 
 HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring& commitText)
@@ -2861,6 +2863,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     promoted_ = false;
     composer_.Clear();
     rangeTracked_ = false;
+    rangeStates_.clear();
     return hr;
 }
 

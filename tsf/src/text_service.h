@@ -241,22 +241,15 @@ private:
     HRESULT DeselectBar();
     // バーの index の候補を採用する。run の文字列を「採用部分 + 残りのかな」(run を終えるときは
     // 未完成のローマ字と suffix も) に作り直す (追記のみの文書では擬似 Backspace の後に追記する)。
-    // followKey があれば、採用の後にその打鍵を入れる。restFromReading なら、採用部分の後ろは
-    // 文書の run の文字列ではなく読みの表示から作る (読みを英字に直した後、文書がまだ直っていないとき)
+    // followKey があれば、採用の後にその打鍵を入れる
     HRESULT AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
-                         const std::wstring& suffix, const DirectKey* followKey,
-                         bool restFromReading = false);
+                         const std::wstring& suffix, const DirectKey* followKey);
     // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
     // 継続)。updateBar なら run を続けるときにバーを作り直す
     void FinishBarAdoption(ITfContext* context, bool updateBar);
-    // 確定キー (バー未選択): run 終了時の判定 (ルール3・6・7) で英字になれば CommitAsciiRunKey で
-    // 終える。ならなければ全体変換があれば採用して run を終え、無ければアプリへ渡すキーと同じ
-    // 救済を通して run を終える。区間分割した run は日本語区間の全体変換に英字区間を付けて終える
+    // 確定キー (バー未選択): アプリへ渡すキーと同じ救済を通して、見えているとおりに run を終える
+    // (run 終了時の判定 (ルール3・6・7) も全体変換も適用しない)
     HRESULT CommitRunKey(ITfContext* context);
-    // 確定キーで run 終了時の判定が成立した run (ascii は英字区間を確定した読み) を、文書を1回だけ書き換えて
-    // 終える。区間分割なら日本語区間の全体変換の1件目 + 英字区間 (全体変換が無ければ日本語区間は
-    // かなのまま)、run 全体が英字なら英字のまま (全体変換は採用しない)
-    HRESULT CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii);
     // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
     // システムキャレットの矩形)。どちらも取れなければ false
     // source には位置の出所 (診断ログ用の説明) を返す
@@ -292,17 +285,17 @@ private:
                                 std::vector<SentenceCandidate>* candidates);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
-    // 無変換のまま確定する直前に、自動英字判定の run 終了時の判定 (ルール3・6・7) を
-    // 適用する。変換結果で確定する経路 (候補選択中・バー選択中) では読みを英字へ
-    // 作り直せないため何もしない。
-    // 読みが英字へ変わると表示も変わるため、文書の表示を同時に直せる経路からのみ呼ぶ
-    // (フォーカス移動などの run 終了では呼ばない)
+    // 自動英字判定の run 終了時の判定 (ルール3・6・7) を適用する。変換結果で確定する経路
+    // (候補選択中・バー選択中) では読みを英字へ作り直せないため何もしない。
+    // 英文を打ち続ける途中のキー (Space・語の区切りの記号キー) からだけ呼ぶ。確定キー・
+    // アプリへ渡すキー・フォーカス移動では、見えている文字と確定・送信される文字を
+    // 食い違わせないため呼ばない
     void ApplyModelessCommitRule();
     // ルール6 の文脈: 直前の確定文字列の末尾 (スペースを除く) が ASCII 英字か
     // (数字は英語の文脈にしない)
     bool PrecedingCommitEndsWithLetter() const;
     // 自動英字判定の成立 (RomajiComposer::AsciiRequested) を、英単語辞書の問い合わせ
-    // (ASCIISTART) の結果で決着させる。composer (composer_ か確定キーのプローブ) に打鍵を
+    // (ASCIISTART) の結果で決着させる。composer に打鍵を
     // 入れた直後・run 終了時の判定を適用した直後に呼ぶ
     void ResolveAsciiRequest(RomajiComposer* composer);
     // モードレス入力で、日本語区間を残して英字区間に分かれている run か
@@ -425,7 +418,8 @@ private:
     // 昇格した直後に、変換の範囲の伸縮に使う状態を始める (before は範囲の前の文書の文字列)。
     // keepExcluded なら (追記のみの文書) 縮めて外したかなを composition の先頭に残す
     void BeginRangeTracking(const std::wstring& before, bool keepExcluded);
-    // 候補選択中の ←→ で変換の範囲を伸縮できるか (入力全体の候補選択・英字を含まない run・
+    // 候補選択中の ←→ で変換の範囲を伸縮できるか (入力全体の候補選択・英字を含まない run か
+    // F6〜F10 の文字種変換中・
     // 範囲の前を読めた読める文書か、composition の候補選択中の追記のみの文書)
     bool RangeResizable() const;
     // 追記のみの文書で縮めて外し、composition の先頭に残しているかな (無ければ空)
@@ -536,7 +530,7 @@ private:
     HRESULT BackspaceAppend(ITfContext* context);
     HRESULT SpaceAppend(ITfContext* context, bool shifted);
     // 食べずにアプリへ渡すキー (Enter・矢印など) の前に run を終える
-    void EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, bool alt);
+    void EndAppendRunForPassthroughKey(ITfContext* context);
     // 変換キー・F4〜F10: 読める文書は昇格、追記のみの文書は擬似 Backspace の後に composition
     HRESULT BeginAppendConversion(ITfContext* context, KeyFunc func);
     // run の文字列 (surface_) の先頭 keep 文字より後ろを擬似 Backspace で文書から消してから
@@ -643,6 +637,9 @@ private:
     // 範囲の先頭が始めたときから何文字右へ動いたか (正: 縮めた、負: 広げた)。
     // 正のときは rangeBefore_ の末尾 rangeShift_ 文字が縮めて外したかな
     int rangeShift_;
+    // 縮めるたびに積む、縮める直前の読みの状態。← で戻すときに外した文字の打鍵と
+    // 英字区間の開始位置ごと戻すため。積んだ順に rangeBefore_ の末尾の文字と対応する
+    std::vector<RomajiComposer> rangeStates_;
     ConversionContext rangeBaseContext_;  // 範囲を始めたときの前文脈
     // 範囲を変えたときにやり直す変換 (Convert は通常の変換、それ以外は F6〜F10)
     KeyFunc rangeFunc_;

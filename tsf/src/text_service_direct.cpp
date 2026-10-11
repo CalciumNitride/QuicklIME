@@ -473,7 +473,7 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
         CommitRunDirect(context);
         return;
     }
-    EndAppendRunForPassthroughKey(context, ctrl, alt);
+    EndAppendRunForPassthroughKey(context);
 }
 
 bool TextService::AdoptionNeedsPseudoBackspace() const
@@ -507,7 +507,7 @@ HRESULT TextService::CommitAndResendEnter(ITfContext* context, WPARAM vk, bool c
     } else {
         // 候補選択もバー選択もしていない run (改行キーでだけ来る) は、食べずにアプリへ渡す
         // Enter と同じ終え方にする (未完成のローマ字を文書に残す)
-        EndAppendRunForPassthroughKey(context, false, false);
+        EndAppendRunForPassthroughKey(context);
     }
     if (!awaitingMarker_) {
         SendResendKey();
@@ -974,18 +974,24 @@ void TextService::BeginRangeTracking(const std::wstring& before, bool keepExclud
     rangeKeepsExcluded_ = keepExcluded;
     rangeBefore_ = before;
     rangeShift_ = 0;
+    rangeStates_.clear();
     // 昇格 (StartComposition) で前文脈が捨てられていればそれを反映した後の値
     rangeBaseContext_ = CurrentContext();
 }
 
 bool TextService::RangeResizable() const
 {
-    // 英字を含む run は、打鍵したローマ字の候補 (apple / Apple / APPLE) が範囲を変えると
-    // 成り立たない。追記のみの文書は、張った composition の中だけで伸縮する (擬似 Backspace で
-    // 張り直すと、目印を待つ間に続けて押した ←→ がアプリへ渡ってキャレットを動かすため)。
-    // 未判定の文書は伸縮しない
-    if (!converting_ || config_.Get().segmentUi || !rangeTracked_ ||
-        ContainsAsciiLetter(composer_.Commit())) {
+    // 英字を含む run の変換キーでの変換は、打鍵したローマ字の候補 (apple / Apple / APPLE) が
+    // 範囲を変えると成り立たない。F6〜F10 の文字種変換は、かな1文字ごとの打鍵から残りを
+    // 作り直せるので英字を含んでいても伸縮する。追記のみの文書は、張った composition の中だけで
+    // 伸縮する (擬似 Backspace で張り直すと、目印を待つ間に続けて押した ←→ がアプリへ渡って
+    // キャレットを動かすため)。未判定の文書は伸縮しない
+    if (!converting_ || config_.Get().segmentUi || !rangeTracked_) {
+        return false;
+    }
+    const bool formConversion =
+        rangeFunc_ >= KeyFunc::ToHiragana && rangeFunc_ <= KeyFunc::ToHalfAscii;
+    if (!formConversion && ContainsAsciiLetter(composer_.Commit())) {
         return false;
     }
     return rangeKeepsExcluded_ ? appendDocument_ == AppendDocument::AppendOnly && Composing()
@@ -1023,7 +1029,14 @@ void TextService::RestoreExcludedKana()
     if (excluded.empty()) {
         return;
     }
-    composer_.PrependKana(excluded);
+    // 追記のみの文書では rangeBefore_ が外したかなだけを持つので、積んだ状態は外した文字と
+    // 同じ数だけあり、最初に積んだものが縮める前の run 全体の読み
+    if (rangeStates_.empty()) {
+        composer_.PrependKana(excluded);
+    } else {
+        composer_ = rangeStates_.front();
+    }
+    rangeStates_.clear();
     rangeBefore_.erase(rangeBefore_.size() - excluded.size());
     rangeShift_ = 0;
     contextReading_ = rangeBaseContext_.reading;
@@ -1033,10 +1046,12 @@ void TextService::RestoreExcludedKana()
 HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
 {
     if (delta < 0) {
+        // 縮めて外した文字を戻すだけなら、文字の種類も上限も問わない (縮める前の範囲に戻る)。
         // 追記のみの文書は run より前を読めないので、外したかなを戻すところまで
-        const bool canWiden = rangeKeepsExcluded_ ? rangeShift_ > 0 : !rangeBefore_.empty();
-        if (!canWiden || composer_.Commit().size() >= kMaxReconvertLength ||
-            !IsHiraganaOrChoon(rangeBefore_.back())) {
+        if (rangeStates_.empty() &&
+            (rangeKeepsExcluded_ || rangeBefore_.empty() ||
+             composer_.Commit().size() >= kMaxReconvertLength ||
+             !IsHiraganaOrChoon(rangeBefore_.back()))) {
             return S_OK;
         }
     } else if (composer_.ConfirmedKana().size() < 2) {
@@ -1048,11 +1063,12 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
         // 外したかなは composition の先頭に残し (UpdateConvertingDisplay)、文書は確定まで変えない
         ClearConversion();
         if (delta < 0) {
-            const std::wstring added(1, rangeBefore_.back());
             rangeBefore_.pop_back();
-            composer_.PrependKana(added);
+            composer_ = std::move(rangeStates_.back());
+            rangeStates_.pop_back();
             --rangeShift_;
         } else {
+            rangeStates_.push_back(composer_);
             rangeBefore_ += composer_.ConfirmedKana()[0];
             composer_.RemoveFront(1);
             ++rangeShift_;
@@ -1078,11 +1094,17 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
     if (delta < 0) {
         const std::wstring added(1, rangeBefore_.back());
         rangeBefore_.pop_back();
-        composer_.PrependKana(added);
+        if (rangeStates_.empty()) {
+            composer_.PrependKana(added);
+        } else {
+            composer_ = std::move(rangeStates_.back());
+            rangeStates_.pop_back();
+        }
         surface_.insert(0, added);
         --rangeShift_;
     } else {
         // 外したかなは文書に残り、run から外れる (確定しても学習しない)
+        rangeStates_.push_back(composer_);
         rangeBefore_ += surface_[0];
         composer_.RemoveFront(1);
         surface_.erase(0, 1);
@@ -1090,6 +1112,9 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
     }
     surfaceCaret_ = surface_.size();
     surfaceSelectLength_ = 0;
+    // 降格で小窓に戻した未完成のローマ字は、昇格し直した変換の表示に含まれる
+    // (変換の開始時と同じく小窓を閉じる)
+    pendingWindow_.Hide();
     ApplyRangeContext();
     CaptureLlmContextFrom(rangeBefore_);
     DebugLog(std::wstring(delta < 0 ? L"変換の範囲を広げる: " : L"変換の範囲を縮める: ") +
@@ -1130,56 +1155,15 @@ HRESULT TextService::CommitRunKey(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
-    // 確定キーは IME が食べるキーなので、追記のみの文書でも run 終了時の判定 (ルール3・6・7) を
-    // 適用できる (擬似 Backspace より先にアプリへ届くキーが無い)
-    RomajiComposer probe = composer_;
-    probe.FinishForCommit(PrecedingCommitEndsWithLetter());
-    ResolveAsciiRequest(&probe);
-    if (probe.AsciiMode() != composer_.AsciiMode()) {
-        return CommitAsciiRunKey(context, probe);
-    }
-    for (size_t i = 0; i < barItems_.size(); ++i) {
-        if (barItems_[i].kind == BarKind::Whole) {
-            return AdoptBarItem(context, i, BarAdopt::End, L"", nullptr);
-        }
-    }
-    // 全体変換が無ければ、アプリへ渡すキーで run を終えるときと同じ救済を通す
-    // (未完成のローマ字は文書に残す)
-    EndAppendRunForPassthroughKey(context, false, false);
+    // run 終了時の判定 (ルール3・6・7) も全体変換も適用せず、見えているとおりに終える
+    // (Enter で送信するアプリで、見えている文字と送られる文字を食い違わせないため)。
+    // 未完成のローマ字は文書に残す
+    EndAppendRunForPassthroughKey(context);
     return S_OK;
 }
 
-HRESULT TextService::CommitAsciiRunKey(ITfContext* context, const RomajiComposer& ascii)
-{
-    // 文書はまだ英字に直していない。追記のみの文書で擬似 Backspace の処理を2つ続けると
-    // 目印の打鍵の対応が食い違うため、書き換えは組み立てた文字列で1回だけ行う
-    composer_ = ascii;
-    if (SplitAsciiRun()) {
-        // 表示中のバーは分割前のかな全体に対するもので使えないので、日本語区間の全体変換を取り直す
-        const std::wstring kana = BarReading();
-        std::vector<SentenceCandidate> sentences;
-        if (config_.Get().candidateBar &&
-            kana.size() >= static_cast<size_t>(config_.Get().minSuggestChars) &&
-            engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
-            std::vector<BarCandidate> items = BuildBarItems(kana, sentences, {});
-            for (BarCandidate& item : items) {
-                if (item.kind == BarKind::Whole) {
-                    barItems_.assign(1, std::move(item));
-                    barKana_ = kana;
-                    barIndex_ = -1;
-                    return AdoptBarItem(context, 0, BarAdopt::End, L"", nullptr, true);
-                }
-            }
-        }
-    }
-    // run 全体が英字のとき、日本語区間の全体変換が無いときは、英字にした読みのまま終える
-    return RewriteAppendRun(context, composer_.Display(), true) == AppendResult::Failed ? E_FAIL
-                                                                                         : S_OK;
-}
-
 HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
-                                  const std::wstring& suffix, const DirectKey* followKey,
-                                  bool restFromReading)
+                                  const std::wstring& suffix, const DirectKey* followKey)
 {
     // 採用できないときは選択を解除する (Enter を送り直す経路が、選択中のまま再び
     // 採用を試みて送り直しを繰り返さないように)
@@ -1217,13 +1201,10 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     adoption.readingLength = readingLength;
     adoption.adoptedLength = item.surface.size();
     adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !head);
-    // restFromReading のときは、読みが文書より先に変わっている (英字区間をまだ文書に
-    // 反映していない) ので、残りは文書ではなく読みの表示から作る
-    adoption.written = item.surface + (restFromReading ? composer_.Display().substr(readingLength)
-                                                       : surface_.substr(readingLength));
+    adoption.written = item.surface + surface_.substr(readingLength);
     if (adoption.endRun) {
         // run を終えるので、未完成のローマ字も文書に残す (確定キー・Enter の救済と同じ)
-        adoption.written += (restFromReading ? L"" : AppendPendingText()) + suffix;
+        adoption.written += AppendPendingText() + suffix;
     }
     adoption.before = composer_;
     adoption_ = std::move(adoption);
@@ -1342,6 +1323,7 @@ void TextService::DropRun()
     surfaceCaret_ = 0;
     surfaceSelectLength_ = 0;
     rangeTracked_ = false;
+    rangeStates_.clear();
 }
 
 HRESULT TextService::UndoCommit(ITfContext* context)
@@ -1813,7 +1795,7 @@ HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
     return S_OK;
 }
 
-void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, bool alt)
+void TextService::EndAppendRunForPassthroughKey(ITfContext* context)
 {
     if (converting_) {
         // 候補選択中は現在文節が選択されたままなので、アプリにキーを渡す前に
@@ -1822,35 +1804,10 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context, bool ctrl, 
         return;
     }
     // バーの選択は採用せず、かなのまま run を終える (P1。追記のみの文書では、このキーが
-    // 擬似 Backspace より先にアプリへ届くので、作り直すと別の文字を消してしまう)
+    // 擬似 Backspace より先にアプリへ届くので、作り直すと別の文字を消してしまう)。
+    // run 終了時の判定 (ルール3・6・7) も適用しない。Enter で送信するアプリで、見えている
+    // 文字と送られる文字を食い違わせないため
     barIndex_ = -1;
-    const RomajiComposer before = composer_;
-    // 追記のみの文書ではルール3 を適用しない (理由は上の採用と同じ)。Ctrl/Alt 併用
-    // (Undo など) は確定ではないため、ルール3 で文書を書き換えずに終える
-    // (直後の Undo が書き換えの方を取り消してしまう)
-    if (!ctrl && !alt && appendDocument_ == AppendDocument::Readable) {
-        ApplyModelessCommitRule();
-    }
-    const std::wstring display = composer_.Display();
-    if (display != before.Display()) {
-        pendingWindow_.Hide();
-        // 英字区間に入らなかった日本語区間は書き換えない
-        const size_t keep = CommonPrefixLength(surface_, display);
-        if (ReplaceRunText(context, surface_.substr(keep), display.substr(keep)) ==
-            ReplaceRunResult::Succeeded) {
-            surface_ = display;
-            surfaceCaret_ = surface_.size();
-            surfaceSelectLength_ = 0;
-            EndRun();
-        } else {
-            // 置換できなかったときはルール3 を捨てて文書に合わせる (学習・確定アンドゥを
-            // 文書と食い違わせない)
-            composer_ = before;
-            EndRun();
-            ClearContext();
-        }
-        return;
-    }
     // 未完成のローマ字は、そのまま文書に残して run を終える
     if (FlushAppendPending(context) == AppendResult::Mismatch) {
         EndRun();
@@ -1864,6 +1821,7 @@ HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
 {
     pendingWindow_.Hide();
     rangeTracked_ = false;
+    rangeStates_.clear();
     if (surface_.empty()) {
         // 文書にはまだ何も入っていない (未完成のローマ字だけ) ので、消さずに composition を張る
         return ScheduleAppendAction(context, PseudoKeyAction::Compose, func, L"", false);
