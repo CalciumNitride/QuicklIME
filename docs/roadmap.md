@@ -306,8 +306,13 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
         候補バーの先頭の英字候補として出し、選んだときだけ英字にする (ルール3 は英単語辞書に一致した
         ときだけ)。あわせて、自動判定のきっかけの打鍵を Backspace で消すと判定前の日本語の状態に戻す。
         ルール1 で辞書に一致しない未変換ローマ字は4文字まで小窓に保留する (`python` の `pyt`)
-  - [ ] パスワード欄の扱い。候補バーを出さない・LLM の左文脈を読まない判定
-        (InputScope など) が要るか、アプリ側の IME 無効化で足りるかを確かめる
+  - [x] パスワード欄の扱い (2026-10-15 実装)。アプリ側の IME 無効化で足りる。
+        フォーカス中の文書・context が無い、または context の compartment
+        KEYBOARD_DISABLED・EMPTYCONTEXT が立っているときはキーを食べず、残っている run は
+        学習・LLM の履歴・確定文脈に残さずに捨てる (SampleIME・CorvusSKK と同じ判定)。
+        Chrome のパスワード欄は両方の compartment を立てる。InputScope は IS_PASSWORD ではなく
+        IS_PRIVATE を返すため、InputScope による判定はしない。
+        診断ログ (設定 debug_log) にフォーカス先の無効化の状態と InputScope を出す
   - [x] run が終わった後の変換対象の拡張 (2026-10-10 実装、docs/design/conversion-range.md)。
         run が無く選択も無いときの変換キー・F6〜F10 は、読める文書ではキャレット直前の
         ひらがな・ー の連続 (127 文字まで) を対象にする。候補選択中の ←→ で範囲の左端を

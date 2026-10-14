@@ -3,6 +3,7 @@
 // 他の翻訳単位からは extern 宣言として参照され、リンク時にここへ解決される。
 #include <windows.h>
 #include <initguid.h>
+#include <inputscope.h>
 
 #include "globals.h"
 

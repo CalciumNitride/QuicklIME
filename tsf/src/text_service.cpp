@@ -290,6 +290,37 @@ const wchar_t kImeOnKeyDesc[] = L"IMEオン";
 const wchar_t kImeOffKeyDesc[] = L"IMEオフ";
 const wchar_t kF10KeyDesc[] = L"半角英字変換 (F10)";
 
+// context の compartment の値 (VT_I4)。未設定・取得失敗なら false
+bool ReadContextCompartment(ITfContext* context, REFGUID guid, LONG* value)
+{
+    ITfCompartmentMgr* compartmentMgr = nullptr;
+    if (FAILED(context->QueryInterface(IID_ITfCompartmentMgr,
+                                       reinterpret_cast<void**>(&compartmentMgr)))) {
+        return false;
+    }
+    bool found = false;
+    ITfCompartment* compartment = nullptr;
+    if (SUCCEEDED(compartmentMgr->GetCompartment(guid, &compartment)) && compartment != nullptr) {
+        VARIANT current;
+        VariantInit(&current);
+        if (SUCCEEDED(compartment->GetValue(&current)) && current.vt == VT_I4) {
+            *value = current.lVal;
+            found = true;
+        }
+        VariantClear(&current);
+        compartment->Release();
+    }
+    compartmentMgr->Release();
+    return found;
+}
+
+// 診断ログ用の compartment の値 (未設定・取得失敗は "未設定")
+std::wstring CompartmentLogText(ITfContext* context, REFGUID guid)
+{
+    LONG value = 0;
+    return ReadContextCompartment(context, guid, &value) ? std::to_wstring(value) : L"未設定";
+}
+
 // このプロセスの exe のファイル名部分 (取れなければ空)
 std::wstring HostExeName()
 {
@@ -637,7 +668,47 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 直前の確定文脈はここでは信用しない
     ClearContext();
     UpdateMouseHook();
+    if (!config_.Get().debugLog.empty()) {
+        LogFocusDocument(focus);
+    }
     return S_OK;
+}
+
+void TextService::LogFocusDocument(ITfDocumentMgr* focus)
+{
+    std::wstring message = std::wstring(L"フォーカスの文書: document=") + (focus ? L"1" : L"0");
+    ITfContext* context = nullptr;
+    if (focus == nullptr || FAILED(focus->GetTop(&context)) || context == nullptr) {
+        DebugLog(message + L" context=0");
+        return;
+    }
+    message += L" context=1 KEYBOARD_DISABLED=" +
+               CompartmentLogText(context, GUID_COMPARTMENT_KEYBOARD_DISABLED) +
+               L" EMPTYCONTEXT=" + CompartmentLogText(context, GUID_COMPARTMENT_EMPTYCONTEXT) +
+               L" InputScope=";
+    auto* session = new (std::nothrow) GetInputScopeEditSession(context);
+    if (session == nullptr) {
+        message += L"取得失敗 (メモリ不足)";
+    } else {
+        // フォーカス通知の中では読み取りのロックを同期で取れないことがあるため、
+        // そのときは後から走らせて結果を別の行に出す
+        HRESULT hrSession = S_OK;
+        const HRESULT hr = context->RequestEditSession(
+            clientId_, session, TF_ES_ASYNCDONTCARE | TF_ES_READ, &hrSession);
+        if (FAILED(hr)) {
+            message += L"取得失敗 (RequestEditSession) hr=" + DebugHResultText(hr);
+        } else if (session->Done()) {
+            message += session->Result();
+        } else if (hrSession == TF_S_ASYNC) {
+            session->SetDeferredLog(config_.Get().debugLog);
+            message += L"後から取得 (別の行に出す)";
+        } else {
+            message += L"取得失敗 (edit session が走らない) hr=" + DebugHResultText(hrSession);
+        }
+        session->Release();
+    }
+    context->Release();
+    DebugLog(message);
 }
 
 STDMETHODIMP TextService::OnPushContext(ITfContext* context)
@@ -814,7 +885,14 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
     const bool logging = !config_.Get().debugLog.empty();
     const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
-    if (!HandlePseudoKey(context, wparam, false, eaten)) {
+    bool disabled = false;
+    if (HandlePseudoKey(context, wparam, false, eaten)) {
+        disabled = logging && IsKeyboardDisabled();
+    } else if (IsKeyboardDisabled()) {
+        disabled = true;
+        DiscardRunWhileDisabled();
+        *eaten = FALSE;
+    } else {
         // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
         // run の終了はここでも行う
         EndRunIfPassthroughKey(context, wparam);
@@ -822,7 +900,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
     }
     if (logging) {
-        LogKeyDown(L"OnTestKeyDown", wparam, state, match, *eaten);
+        LogKeyDown(L"OnTestKeyDown", wparam, state, match, *eaten, disabled);
     }
     UpdateMouseHook();
     return S_OK;
@@ -841,7 +919,17 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
     if (HandlePseudoKey(context, wparam, true, eaten)) {
         if (logging) {
-            LogKeyDown(L"OnKeyDown (擬似キー)", wparam, state, match, *eaten);
+            LogKeyDown(L"OnKeyDown (擬似キー)", wparam, state, match, *eaten,
+                       IsKeyboardDisabled());
+        }
+        UpdateMouseHook();
+        return S_OK;
+    }
+    if (IsKeyboardDisabled()) {
+        DiscardRunWhileDisabled();
+        *eaten = FALSE;
+        if (logging) {
+            LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, true);
         }
         UpdateMouseHook();
         return S_OK;
@@ -850,7 +938,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
     NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
     if (logging) {
-        LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten);
+        LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, false);
     }
     if (*eaten == FALSE) {
         UpdateMouseHook();
@@ -906,17 +994,18 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* context, WPARAM wparam, LPARAM lpa
 }
 
 void TextService::LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state,
-                             const KeyMatch& match, BOOL eaten) const
+                             const KeyMatch& match, BOOL eaten, bool disabled) const
 {
     // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=15 は割当なし)
     wchar_t text[256] = {};
     swprintf_s(text,
-               L"%s vk=0x%02X ctrl=%d alt=%d shift=%d state=%d func=%d shiftAdded=%d eaten=%d",
+               L"%s vk=0x%02X ctrl=%d alt=%d shift=%d state=%d func=%d shiftAdded=%d eaten=%d "
+               L"disabled=%d",
                where, static_cast<unsigned>(wparam),
                (GetKeyState(VK_CONTROL) & 0x8000) != 0 ? 1 : 0,
                (GetKeyState(VK_MENU) & 0x8000) != 0 ? 1 : 0, IsShiftPressed() ? 1 : 0,
                static_cast<int>(state), static_cast<int>(match.func), match.shiftAdded ? 1 : 0,
-               eaten != FALSE ? 1 : 0);
+               eaten != FALSE ? 1 : 0, disabled ? 1 : 0);
     DebugLog(text);
 }
 
@@ -1043,6 +1132,37 @@ void TextService::SetKeyboardOpen(bool open)
     value.lVal = open ? 1 : 0;
     compartment->SetValue(clientId_, &value);
     compartment->Release();
+}
+
+bool TextService::IsKeyboardDisabled() const
+{
+    ITfDocumentMgr* docMgr = nullptr;
+    if (threadMgr_ == nullptr || FAILED(threadMgr_->GetFocus(&docMgr)) || docMgr == nullptr) {
+        return true;
+    }
+    ITfContext* context = nullptr;
+    const bool hasContext = SUCCEEDED(docMgr->GetTop(&context)) && context != nullptr;
+    docMgr->Release();
+    if (!hasContext) {
+        return true;
+    }
+    LONG value = 0;
+    const bool disabled =
+        (ReadContextCompartment(context, GUID_COMPARTMENT_KEYBOARD_DISABLED, &value) &&
+         value != 0) ||
+        (ReadContextCompartment(context, GUID_COMPARTMENT_EMPTYCONTEXT, &value) && value != 0);
+    context->Release();
+    return disabled;
+}
+
+void TextService::DiscardRunWhileDisabled()
+{
+    if (!InRun() && !(converting_ && !Composing())) {
+        return;
+    }
+    DebugLog(L"キー入力が無効な文書で run を学習せずに捨てる");
+    CancelAppendAction();
+    DropRun();
 }
 
 // ---- ITfCompartmentEventSink ----

@@ -124,6 +124,14 @@ private:
     ITfCompartment* OpenCloseCompartment() const;
     bool IsKeyboardOpen() const;
     void SetKeyboardOpen(bool open);
+    // フォーカス中の文書でキー入力が無効か (フォーカス中の文書・最上位 context が無い、または
+    // context の KEYBOARD_DISABLED・EMPTYCONTEXT compartment が立っている。パスワード欄など)
+    bool IsKeyboardDisabled() const;
+    // キー入力が無効な文書でキーを受けたとき、残っている run (昇格できなかった run の候補選択を
+    // 含む) と目印待ちを、学習・LLM の履歴・確定文脈に残さずに捨てる
+    void DiscardRunWhileDisabled();
+    // フォーカスが移った文書の無効化の状態と InputScope を診断ログに出す
+    void LogFocusDocument(ITfDocumentMgr* focus);
 
     // 食べたキーを状態機械に従って処理する (候補選択中の composition とそれ以外で
     // 振り分け、処理後に昇格した composition の降格を判定する)
@@ -507,7 +515,7 @@ private:
     void DebugLog(const std::wstring& message) const;
     // キー押下の診断ログ。state・match は処理前に取ったもの
     void LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state, const KeyMatch& match,
-                    BOOL eaten) const;
+                    BOOL eaten, bool disabled) const;
     void LogKeyUp(const wchar_t* where, WPARAM wparam, BOOL eaten) const;
     void SetAppendDocument(AppendDocument document, const wchar_t* reason);
     // 文書に入っていない未完成のローマ字 (小窓に出す文字列)

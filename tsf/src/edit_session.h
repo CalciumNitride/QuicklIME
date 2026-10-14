@@ -255,3 +255,23 @@ private:
     RECT* rectOut_;
     bool* succeededOut_;
 };
+
+// 選択範囲の InputScope (GUID_PROP_INPUTSCOPE) を数値の一覧の文字列にして読む (診断ログ用)。
+// 取れなかったときは理由と HRESULT を入れる。同期で走らずに後から走る場合に備え、
+// SetDeferredLog でログのパスを渡しておくと、走った時点で結果をそのパスへ1行書く
+class GetInputScopeEditSession : public EditSessionBase {
+public:
+    explicit GetInputScopeEditSession(ITfContext* context);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+    bool Done() const { return done_; }
+    const std::wstring& Result() const { return result_; }
+    void SetDeferredLog(std::wstring logPath) { logPath_ = std::move(logPath); }
+
+private:
+    std::wstring ReadInputScopes(TfEditCookie ec);
+
+    std::wstring result_;
+    bool done_;
+    std::wstring logPath_;
+};

@@ -41,3 +41,10 @@ std::wstring DebugRectText(const RECT& rect)
     return L"(" + std::to_wstring(rect.left) + L"," + std::to_wstring(rect.top) + L"," +
            std::to_wstring(rect.right) + L"," + std::to_wstring(rect.bottom) + L")";
 }
+
+std::wstring DebugHResultText(HRESULT hr)
+{
+    wchar_t text[16] = {};
+    swprintf_s(text, L"0x%08lX", static_cast<unsigned long>(hr));
+    return text;
+}

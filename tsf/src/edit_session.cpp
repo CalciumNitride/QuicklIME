@@ -1,6 +1,10 @@
 #include "edit_session.h"
 
+#include <inputscope.h>
+
 #include <vector>
+
+#include "debug_log.h"
 
 namespace {
 
@@ -724,4 +728,73 @@ STDMETHODIMP GetSelectionExtentEditSession::DoEditSession(TfEditCookie ec)
     }
     selection.range->Release();
     return hr;
+}
+
+// ---- GetInputScopeEditSession ----
+
+GetInputScopeEditSession::GetInputScopeEditSession(ITfContext* context)
+    : EditSessionBase(context), done_(false)
+{
+}
+
+STDMETHODIMP GetInputScopeEditSession::DoEditSession(TfEditCookie ec)
+{
+    result_ = ReadInputScopes(ec);
+    done_ = true;
+    WriteDebugLog(logPath_, L"InputScope (後から取得): " + result_);
+    return S_OK;
+}
+
+std::wstring GetInputScopeEditSession::ReadInputScopes(TfEditCookie ec)
+{
+    TF_SELECTION selection = {};
+    ULONG fetched = 0;
+    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
+    if (FAILED(hr) || fetched == 0) {
+        return L"取得失敗 (選択なし) hr=" + DebugHResultText(hr);
+    }
+    std::wstring result;
+    ITfReadOnlyProperty* property = nullptr;
+    hr = context_->GetAppProperty(GUID_PROP_INPUTSCOPE, &property);
+    if (FAILED(hr) || property == nullptr) {
+        result = L"取得失敗 (プロパティなし) hr=" + DebugHResultText(hr);
+    } else {
+        VARIANT value;
+        VariantInit(&value);
+        hr = property->GetValue(ec, selection.range, &value);
+        if (FAILED(hr)) {
+            result = L"取得失敗 (GetValue) hr=" + DebugHResultText(hr);
+        } else if (value.vt != VT_UNKNOWN || value.punkVal == nullptr) {
+            result = L"未設定 (vt=" + std::to_wstring(value.vt) + L")";
+        } else {
+            ITfInputScope* inputScope = nullptr;
+            hr = value.punkVal->QueryInterface(IID_ITfInputScope,
+                                               reinterpret_cast<void**>(&inputScope));
+            if (FAILED(hr) || inputScope == nullptr) {
+                result = L"取得失敗 (ITfInputScope なし) hr=" + DebugHResultText(hr);
+            } else {
+                InputScope* scopes = nullptr;
+                UINT count = 0;
+                hr = inputScope->GetInputScopes(&scopes, &count);
+                if (FAILED(hr)) {
+                    result = L"取得失敗 (GetInputScopes) hr=" + DebugHResultText(hr);
+                } else {
+                    result = L"[";
+                    for (UINT i = 0; i < count && scopes != nullptr; ++i) {
+                        if (i > 0) {
+                            result += L",";
+                        }
+                        result += std::to_wstring(static_cast<int>(scopes[i]));
+                    }
+                    result += L"]";
+                }
+                CoTaskMemFree(scopes);
+                inputScope->Release();
+            }
+        }
+        VariantClear(&value);
+        property->Release();
+    }
+    selection.range->Release();
+    return result;
 }
