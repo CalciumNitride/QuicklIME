@@ -129,11 +129,14 @@ fn load_dictionary() -> Dictionary {
         eprintln!("辞書ディレクトリを特定できません。辞書なしで起動します");
         return Dictionary::empty();
     };
+    let extra: Vec<PathBuf> = ut_dictionary_path(&dir).into_iter().collect();
     let started = Instant::now();
-    let mut dict = match Dictionary::load(&dir) {
+    let mut dict = match Dictionary::load(&dir, &extra) {
         Ok(dict) => {
+            let extra_list: String =
+                extra.iter().map(|p| format!(" + [{}]", p.display())).collect();
             eprintln!(
-                "辞書を読み込みました: {} エントリ ({:.1}秒) [{}]",
+                "辞書を読み込みました: {} エントリ ({:.1}秒) [{}]{extra_list}",
                 dict.entry_count(),
                 started.elapsed().as_secs_f64(),
                 dir.display()
@@ -146,7 +149,56 @@ fn load_dictionary() -> Dictionary {
         }
     };
     load_symbols(&mut dict, &dir);
+    load_single_kanji(&mut dict, &dir);
     dict
+}
+
+/// UT 辞書 (dictionary_ut.txt) の場所。辞書ディレクトリ直下 (インストール先のレイアウト) を
+/// 優先し、無ければプロジェクトルートの references/mozcdic-ut/
+/// (exe が engine/target/{debug,release}/ にある前提で相対解決)。どちらにも無ければ None。
+/// QUICKLIME_DICT_DIR の指定は「この辞書一式で動かす」意味なので、そのときはプロジェクトルートを
+/// 見ない (隔離起動のテストに本物の UT 辞書が混ざると候補も読み込み時間も変わる)
+fn ut_dictionary_path(dictionary_dir: &Path) -> Option<PathBuf> {
+    let bundled = dictionary_dir.join("dictionary_ut.txt");
+    if bundled.is_file() {
+        return Some(bundled);
+    }
+    if std::env::var_os("QUICKLIME_DICT_DIR").is_some() {
+        eprintln!("UT 辞書 (dictionary_ut.txt) がありません。Mozc 辞書だけで動作します");
+        return None;
+    }
+    let exe = std::env::current_exe().ok()?;
+    let project_root = exe.parent()?.parent()?.parent()?.parent()?;
+    let dev = project_root.join("references/mozcdic-ut/dictionary_ut.txt");
+    if dev.is_file() {
+        return Some(dev);
+    }
+    eprintln!("UT 辞書 (dictionary_ut.txt) がありません。Mozc 辞書だけで動作します");
+    None
+}
+
+/// 単漢字辞書 (Mozc の single_kanji.tsv) を読み込む。無くても単漢字候補なしで続行する。
+/// 辞書ディレクトリ直下の single_kanji.tsv を優先し、無ければ Mozc の配置
+/// (dictionary_oss と並ぶ single_kanji/) から探す
+fn load_single_kanji(dict: &mut Dictionary, dictionary_dir: &Path) {
+    let candidates = [
+        dictionary_dir.join("single_kanji.tsv"),
+        dictionary_dir.parent().map(|p| p.join("single_kanji/single_kanji.tsv")).unwrap_or_default(),
+    ];
+    let Some(path) = candidates.iter().find(|p| p.is_file()) else {
+        eprintln!("単漢字辞書 (single_kanji.tsv) がありません。単漢字候補なしで動作します");
+        return;
+    };
+    match dict.load_single_kanji(path) {
+        Ok(()) => eprintln!(
+            "単漢字辞書を読み込みました: {} エントリ [{}]",
+            dict.single_kanji_count(),
+            path.display()
+        ),
+        Err(e) => {
+            eprintln!("単漢字辞書の読み込みに失敗しました ({e})。単漢字候補なしで動作します")
+        }
+    }
 }
 
 /// 記号辞書 (Mozc の symbol.tsv) を読み込む。無くても記号候補なしで続行する。

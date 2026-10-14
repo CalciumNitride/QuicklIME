@@ -442,6 +442,14 @@ fn segment_from_group(
         }
     }
 
+    // 単漢字候補 (「あられ」→ 霰 など)。記号と同じ理由で MAX_DICT_CANDIDATES の枠に数えない
+    // (「ひょう」のように単漢字が数十字ある読みで通常語が押し出されるため)
+    for kanji in dict.lookup_single_kanji(&reading) {
+        if !result.contains(kanji) {
+            result.push(kanji.clone());
+        }
+    }
+
     // 記号候補 (「やじるし」→「→」など)。通常語より後ろに置きたいので
     // 辞書候補の末尾に追記し、MAX_DICT_CANDIDATES の枠には数えない
     // (数えると記号が多い読みで通常語が押し出されるため)
@@ -507,7 +515,12 @@ pub fn candidates(
         }
     }
 
-    // 記号候補 (文節候補と同様、通常語の後ろに追記する)
+    // 単漢字・記号候補 (文節候補と同様、通常語の後ろに追記する)
+    for kanji in dict.lookup_single_kanji(kana) {
+        if !result.contains(kanji) {
+            result.push(kanji.clone());
+        }
+    }
     for symbol in dict.lookup_symbols(kana) {
         if !result.contains(symbol) {
             result.push(symbol.clone());
@@ -537,7 +550,7 @@ pub fn convert_sentence(
 
 /// かな文字列に対する入力全体の候補 (CONVNBEST) を返す。ctx は直前に確定した文節。
 /// 並び: 読み全体の学習表記 → 文節ごとの学習を当てた 1-best → N-best の残り (コスト順)
-///       → 短縮よみ・読み全体の辞書完全一致 → 記号・カタカナ・ひらがな。
+///       → 短縮よみ・読み全体の辞書完全一致 → 単漢字・記号・カタカナ・ひらがな。
 /// 表記が同じ候補は先勝ちで除く
 pub fn convert_nbest(
     kana: &str,
@@ -606,6 +619,9 @@ pub fn convert_nbest(
         if add(whole(surface), from_user) {
             dict_count += 1;
         }
+    }
+    for kanji in dict.lookup_single_kanji(kana) {
+        add(whole(kanji), false);
     }
     for symbol in dict.lookup_symbols(kana) {
         add(whole(symbol), false);
@@ -1207,6 +1223,105 @@ mod tests {
         let katakana = c.iter().position(|s| s == "キョウ").unwrap();
         assert!(c.iter().position(|s| s == "今日").unwrap() < symbol);
         assert!(symbol < katakana);
+    }
+
+    /// sample_dict に単漢字 (京 は辞書候補と重複) と記号を足した辞書
+    fn dict_with_single_kanji() -> Dictionary {
+        let mut dict = sample_dict();
+        dict.load_single_kanji_from("きょう\t今京凶\nは\t葉刃\n".as_bytes()).unwrap();
+        dict.load_symbols_from("記号\t↑\tきょう\t上矢印 (テスト用の読み)\n".as_bytes()).unwrap();
+        dict
+    }
+
+    #[test]
+    fn 単漢字が文節候補の辞書候補の後_記号の前に重複なく入る() {
+        let segments = convert_segments(
+            "きょう",
+            None,
+            &dict_with_single_kanji(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].candidates, ["今日", "京", "今", "凶", "↑", "キョウ", "きょう"]);
+    }
+
+    #[test]
+    fn 単漢字が全文候補と入力全体の候補にも入る() {
+        let dict = dict_with_single_kanji();
+        let got = candidates(
+            "きょう", &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(got, ["今日", "京", "今", "凶", "↑", "キョウ", "きょう"]);
+
+        let got = convert_nbest(
+            "きょう", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            &LearningStore::in_memory());
+        assert_eq!(surfaces_of(&got), ["今日", "京", "今", "凶", "↑", "キョウ", "きょう"]);
+        assert!(got.iter().all(|c| !c.protected));
+    }
+
+    #[test]
+    fn 単漢字は辞書候補の枠に数えない() {
+        // 辞書候補だけで MAX_DICT_CANDIDATES を超える読みでも、辞書候補の並びは
+        // 単漢字が無いときと同じで、単漢字はその後ろにすべて入る
+        let mut data = String::new();
+        for i in 0..MAX_DICT_CANDIDATES + 5 {
+            data.push_str(&format!("かん\t1\t1\t{}\t缶{i}\n", 100 + i));
+        }
+        let build = |kanji: bool| {
+            let mut dict = Dictionary::empty();
+            dict.load_from(data.as_bytes()).unwrap();
+            dict.finalize();
+            if kanji {
+                dict.load_single_kanji_from("かん\t甲乙丙丁戊己庚辛壬癸\n".as_bytes()).unwrap();
+            }
+            dict
+        };
+        let segment = |dict: &Dictionary| {
+            convert_segments(
+                "かん",
+                None,
+                dict,
+                &no_user(),
+                &ConnectionMatrix::empty(),
+                &sample_functional(),
+                &LearningStore::in_memory(),
+            )
+            .remove(0)
+            .candidates
+        };
+        let without = segment(&build(false));
+        let with = segment(&build(true));
+        let dict_part = &without[..without.len() - 2]; // カタカナ・ひらがなを除く
+        assert_eq!(dict_part.len(), MAX_DICT_CANDIDATES);
+        assert_eq!(&with[..dict_part.len()], dict_part);
+        assert_eq!(
+            &with[dict_part.len()..dict_part.len() + 10],
+            ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
+        );
+
+        let nbest = |dict: &Dictionary| {
+            surfaces_of(&convert_nbest(
+                "かん", None, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+                &LearningStore::in_memory()))
+        };
+        let without = nbest(&build(false));
+        let with = nbest(&build(true));
+        let dict_part = &without[..without.len() - 2];
+        assert_eq!(&with[..dict_part.len()], dict_part);
+        assert_eq!(with.len(), without.len() + 10);
+    }
+
+    #[test]
+    fn 単漢字はラティスに入らず第1候補を変えない() {
+        // 「は」の単漢字 (葉・刃) があっても経路は助詞「は」のまま
+        let dict = dict_with_single_kanji();
+        let best = convert_sentence(
+            "きょうははれです", &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        assert_eq!(best.unwrap(), "今日は晴れです");
+        assert_eq!(dict.lookup("は").len(), 1);
     }
 
     /// 短縮よみだけを持つユーザ辞書を作る

@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fst::automaton::Str;
 use fst::raw::Output;
@@ -214,6 +214,11 @@ pub struct Dictionary {
     /// 連接情報を持たないため Viterbi には載せず、文節候補の末尾に追記する
     symbols: HashMap<String, Vec<String>>,
     symbol_count: usize,
+    /// 単漢字辞書 (読み → 漢字のリスト、single_kanji.tsv の記載順)。
+    /// ラティスに入れると「あ」→ 亜 のような1字が経路に割り込んで区切りが崩れるため、
+    /// 記号と同じく候補リストへの追記だけに使う
+    single_kanji: HashMap<String, Vec<String>>,
+    single_kanji_count: usize,
 }
 
 impl Dictionary {
@@ -226,11 +231,14 @@ impl Dictionary {
             entry_count: 0,
             symbols: HashMap::new(),
             symbol_count: 0,
+            single_kanji: HashMap::new(),
+            single_kanji_count: 0,
         }
     }
 
-    /// ディレクトリから dictionary00.txt 〜 dictionary09.txt を読み込む
-    pub fn load(dir: &Path) -> io::Result<Self> {
+    /// ディレクトリから dictionary00.txt 〜 dictionary09.txt を読み込み、続けて
+    /// 追加の辞書 extra (同じ書式。UT 辞書など) を積む。存在しない extra は読み飛ばす
+    pub fn load(dir: &Path, extra: &[PathBuf]) -> io::Result<Self> {
         let mut dict = Dictionary::empty();
         let mut found = false;
         for i in 0..10 {
@@ -246,6 +254,11 @@ impl Dictionary {
                 io::ErrorKind::NotFound,
                 format!("辞書ファイルが見つかりません: {}", dir.display()),
             ));
+        }
+        for path in extra {
+            if path.is_file() {
+                dict.load_from(BufReader::new(File::open(path)?))?;
+            }
         }
         dict.finalize();
         Ok(dict)
@@ -354,6 +367,42 @@ impl Dictionary {
             }
         }
         Ok(())
+    }
+
+    /// Mozc の single_kanji.tsv (単漢字辞書) を読み込む。
+    /// フォーマット: 読み\t漢字を連結した文字列 (# で始まる行と空行は読み飛ばす)
+    pub fn load_single_kanji(&mut self, path: &Path) -> io::Result<()> {
+        self.load_single_kanji_from(BufReader::new(File::open(path)?))
+    }
+
+    /// 1ファイル分の単漢字エントリを読み込む (テストからも使う)
+    pub fn load_single_kanji_from(&mut self, reader: impl BufRead) -> io::Result<()> {
+        for line in reader.lines() {
+            let line = line?;
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((reading, kanji)) = line.split_once('\t') else {
+                continue; // 列が足りない行は無視
+            };
+            if reading.is_empty() {
+                continue;
+            }
+            let list = self.single_kanji.entry(reading.to_string()).or_default();
+            for c in kanji.chars() {
+                let c = c.to_string();
+                if !list.contains(&c) {
+                    list.push(c);
+                    self.single_kanji_count += 1;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 読みに対応する単漢字の一覧を返す (single_kanji.tsv の記載順)
+    pub fn lookup_single_kanji(&self, reading: &str) -> &[String] {
+        self.single_kanji.get(reading).map_or(&[], |list| list.as_slice())
     }
 
     /// 読みに完全一致するエントリ一覧を返す (finalize が未実行なら空)
@@ -500,6 +549,10 @@ impl Dictionary {
 
     pub fn symbol_count(&self) -> usize {
         self.symbol_count
+    }
+
+    pub fn single_kanji_count(&self) -> usize {
+        self.single_kanji_count
     }
 }
 
@@ -728,5 +781,43 @@ mod tests {
         assert_eq!(dict.lookup_symbols("［"), ["（", "［"]);
         assert_eq!(dict.lookup_symbols("”"), ["”"]);
         assert!(dict.lookup_symbols("ない").is_empty());
+    }
+
+    #[test]
+    fn 単漢字を読みで記載順に引ける() {
+        let mut dict = Dictionary::empty();
+        let data = "# コメント行\n\
+                    \n\
+                    あられ\t霰\n\
+                    ひょう\t氷表雹\n\
+                    壊れた行\n\
+                    ひょう\t豹雹\n";
+        dict.load_single_kanji_from(data.as_bytes()).unwrap();
+        assert_eq!(dict.lookup_single_kanji("あられ"), ["霰"]);
+        // 同じ読みの2行目は後ろに足し、既出の字は重ねない
+        assert_eq!(dict.lookup_single_kanji("ひょう"), ["氷", "表", "雹", "豹"]);
+        assert!(dict.lookup_single_kanji("ない").is_empty());
+        assert!(dict.lookup_single_kanji("# コメント行").is_empty());
+        assert_eq!(dict.single_kanji_count(), 5);
+    }
+
+    #[test]
+    fn 追加の辞書を積んで読み込み存在しないものは読み飛ばす() {
+        let dir = std::env::temp_dir().join(format!("quicklime-dict-extra-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("dictionary00.txt"), "かんべ\t1851\t1851\t5000\t神戸\n").unwrap();
+        let extra = dir.join("extra.txt");
+        std::fs::write(&extra, "かんべ\t1921\t1921\t8000\t寛部\nあられ\t1851\t1851\t8999\t霰\n")
+            .unwrap();
+        let dict = Dictionary::load(&dir, &[extra.clone(), dir.join("missing.txt")]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(dict.entry_count(), 3);
+        // 同じ読みは Mozc 辞書 → extra の順
+        let entries = dict.lookup("かんべ");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].surface, "神戸");
+        assert_eq!((entries[1].surface.as_str(), entries[1].left_id), ("寛部", 1921));
+        assert_eq!(dict.lookup("あられ")[0].surface, "霰");
     }
 }

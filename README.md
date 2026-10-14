@@ -49,14 +49,25 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 ## インストーラでの導入
 
 `installer\build.ps1` を実行すると `installer\output\quicklime-<版>-setup.exe` が生成される
-(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書、
+(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書と
+単漢字辞書 (`git -C references/mozc sparse-checkout add src/data/single_kanji` で取得)、
+`scripts\fetch-ut-dict.ps1` で生成した UT 辞書 (`references\mozcdic-ut\dictionary_ut.txt`)、
 `scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル)。
 
 - 配置先は `%ProgramFiles%\QuicklIME\` (64bit DLL + エンジン・設定・単語登録の exe +
   辞書 `dict\`)。32bit アプリ用の DLL は `x86\` に入り、両方が IME として登録される
 - 初回インストールは再起動不要。更新時は DLL がロード中のため再起動を求められることがある
 - アンインストールしてもユーザデータ (`%APPDATA%\QuicklIME\` の設定・ユーザ辞書・学習) は残る
-- 同梱辞書は Mozc (BSD ライセンス) のもの。ライセンス文書 LICENSE-mozc.txt を同梱している
+- 同梱辞書は Mozc (BSD ライセンス) のもの。ライセンス文書 LICENSE-mozc.txt を同梱している。
+  単漢字辞書 (`dict\single_kanji.tsv`) も Mozc の `src/data/single_kanji/` のもので、候補リストの
+  辞書候補の後ろに単漢字を足すのに使う
+- UT 辞書 (`dict\dictionary_ut.txt`) は、Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) のうち
+  SudachiDict (一般語。Apache License 2.0、一部 UniDic 由来で BSD ライセンス)・日本郵便の
+  郵便番号データ (地名。日本郵便は著作権を主張しない)・人名 (Apache License 2.0) から、Mozc 辞書と
+  重複する語などを除いて生成したもの。`scripts\fetch-ut-dict.ps1` が元データをリビジョン固定で
+  `references\mozcdic-ut\` に取得し (サイズと SHA-256 を確かめる)、`engine/examples/build_ut_dict.rs`
+  で生成する。元データの説明と SudachiDict の LEGAL・LICENSE-2.0.txt の全文をまとめた
+  LICENSE-mozcdic-ut.txt を同梱している
 - モードレス入力の英単語辞書 (`dict\english-words.txt`) は SCOWL (English Speller Database、
   https://github.com/en-wl/wordlist) から生成したもの。著作権表示と許諾文 LICENSE-SCOWL.txt を
   同梱している。生成の手順と条件はファイル先頭のコメントにある。固有名詞・技術用語の

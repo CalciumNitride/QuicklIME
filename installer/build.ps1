@@ -8,7 +8,8 @@
 #   4. ISCC (Inno Setup) で installer/output/quicklime-<ver>-setup.exe を生成
 #
 # 前提: Visual Studio 2022 Community、Rust ツールチェーン、Inno Setup 6
-#       (winget install -e --id JRSoftware.InnoSetup)、references/mozc の辞書、
+#       (winget install -e --id JRSoftware.InnoSetup)、references/mozc の辞書と単漢字辞書、
+#       scripts\fetch-ut-dict.ps1 で生成した UT 辞書、
 #       scripts\build-llm.ps1 でビルドした LLM の exe、scripts\fetch-models.ps1 で取得したモデル
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +19,10 @@ $staging = Join-Path $PSScriptRoot 'staging'
 $cmake = 'C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 $dictSrc = Join-Path $root 'references\mozc\src\data\dictionary_oss'
 $symbolSrc = Join-Path $root 'references\mozc\src\data\symbol\symbol.tsv'
+$singleKanjiSrc = Join-Path $root 'references\mozc\src\data\single_kanji\single_kanji.tsv'
+$utDir = Join-Path $root 'references\mozcdic-ut'
+$utDict = Join-Path $utDir 'dictionary_ut.txt'
+$sudachiLicenses = @('SudachiDict-LEGAL', 'SudachiDict-LICENSE-2.0.txt')
 $mozcLicense = Join-Path $root 'references\mozc\LICENSE'
 $vs = 'C:\Program Files\Microsoft Visual Studio\2022\Community'
 $llmRelease = Join-Path $root 'llm\target\release'
@@ -32,6 +37,17 @@ if (-not (Test-Path $dictSrc)) {
 }
 if (-not (Test-Path $mozcLicense)) {
     throw "Mozc の LICENSE がありません: $mozcLicense"
+}
+if (-not (Test-Path $singleKanjiSrc)) {
+    throw "単漢字辞書がありません: $singleKanjiSrc (git -C references/mozc sparse-checkout add src/data/single_kanji で取得してください)"
+}
+if (-not (Test-Path $utDict)) {
+    throw "UT 辞書がありません: $utDict (scripts\fetch-ut-dict.ps1 で生成してください)"
+}
+foreach ($license in $sudachiLicenses) {
+    if (-not (Test-Path (Join-Path $utDir $license))) {
+        throw "SudachiDict のライセンス文書がありません: $license (scripts\fetch-ut-dict.ps1 で取得してください)"
+    }
 }
 if (-not (Test-Path $cmake)) {
     throw "VS 同梱 cmake がありません: $cmake"
@@ -133,17 +149,45 @@ foreach ($dll in $redistDlls) {
 }
 
 # 辞書一式 (エンジンの load_dictionary / load_matrix / load_functional_ids /
-# load_symbols が読むファイル。symbol.tsv は dict 直下が最優先で読まれる)
+# load_symbols / load_single_kanji が読むファイル。symbol.tsv・single_kanji.tsv・
+# dictionary_ut.txt は dict 直下が最優先で読まれる)
 Copy-Item (Join-Path $dictSrc 'dictionary0*.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'connection_single_column.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'id.def') "$staging\dict\"
 Copy-Item $symbolSrc "$staging\dict\"
+Copy-Item $singleKanjiSrc "$staging\dict\"
+Copy-Item $utDict "$staging\dict\"
 # 英単語辞書 (エンジンの load_english が exe と同じディレクトリの dict\ から読む)
 Copy-Item (Join-Path $root 'data\english-words.txt') "$staging\dict\"
 Copy-Item (Join-Path $root 'data\english-names.txt') "$staging\dict\"
 
 Copy-Item (Join-Path $root 'data\romaji-azik.tsv') "$staging\presets\"
 Copy-Item $mozcLicense "$staging\LICENSE-mozc.txt"
+# UT 辞書の元データの説明と、SudachiDict のライセンス文書の全文を 1 ファイルにまとめる
+$utLicense = @'
+QuicklIME の dict\dictionary_ut.txt は、Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) の
+次の元データから、Mozc 辞書と重複する語などを除いて生成したものです。
+
+- SudachiDict (一般語)
+  取得元: https://github.com/utuhiro78/mozcdic-ut-sudachidict
+  ライセンス: Apache License 2.0 (一部 UniDic 由来の部分は BSD ライセンス)。
+  SudachiDict の LEGAL と LICENSE-2.0.txt の全文を下に収録します。
+
+- 日本郵便の郵便番号データ (地名)
+  取得元: https://github.com/utuhiro78/mozcdic-ut-place-names
+  日本郵便株式会社は、郵便番号データに限っては著作権を主張しないと述べています。
+  https://www.post.japanpost.jp/zipcode/dl/readme.html
+
+- 人名
+  取得元: https://github.com/utuhiro78/mozcdic-ut-personal-names
+  ライセンス: Apache License 2.0
+
+'@
+foreach ($license in $sudachiLicenses) {
+    $utLicense += "`n==== $license ====`n`n"
+    $utLicense += [IO.File]::ReadAllText((Join-Path $utDir $license))
+}
+[IO.File]::WriteAllText("$staging\LICENSE-mozcdic-ut.txt", $utLicense, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-zenz.txt') $staging
