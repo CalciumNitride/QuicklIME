@@ -34,6 +34,9 @@ use windows_sys::Win32::UI::WindowsAndMessaging::*;
 #[path = "../import.rs"]
 mod import;
 
+#[path = "../edit_keys.rs"]
+mod edit_keys;
+
 /// 品詞コンボの項目 (ADDWORD の品詞フィールドにそのまま使う)
 const POS_ITEMS: [&str; 8] = ["名詞", "固有名詞", "人名", "姓", "名", "地名", "組織", "短縮よみ"];
 
@@ -211,6 +214,9 @@ fn main() {
                     DestroyWindow(hwnd);
                     continue;
                 }
+            }
+            if edit_keys::handle_key(&msg) {
+                continue;
             }
             // Tab でのフォーカス移動
             if IsDialogMessageW(hwnd, &msg) != 0 {

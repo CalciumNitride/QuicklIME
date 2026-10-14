@@ -46,6 +46,9 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
+#[path = "../edit_keys.rs"]
+mod edit_keys;
+
 #[link(name = "imm32")]
 unsafe extern "system" {
     // キー取り込みダイアログで IME を無効にする (IME が打鍵を食べると WM_KEYDOWN で
@@ -77,6 +80,8 @@ const ID_BUTTON_APP_RUNNING: i32 = 124;
 const ID_BUTTON_APP_FILE: i32 = 125;
 const ID_BUTTON_APP_REMOVE: i32 = 126;
 const ID_BUTTON_APP_DEFAULT: i32 = 127;
+const ID_CHECK_DEBUG_LOG: i32 = 128;
+const ID_EDIT_DEBUG_LOG: i32 = 129;
 const ID_TAB: i32 = 130;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
@@ -91,7 +96,7 @@ const ID_CAPTURE_MESSAGE: i32 = 300;
 const ID_PICK_LIST: i32 = 400;
 
 /// メイン画面のタブ (並びが TAB_PAGES の添字)
-const TAB_NAMES: [&str; 5] = ["変換", "入力", "表示", "キー割当", "アプリ"];
+const TAB_NAMES: [&str; 6] = ["変換", "入力", "表示", "キー割当", "アプリ", "開発用"];
 
 /// LLM のバックエンド: (設定上の名前, 表示名)
 const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
@@ -392,6 +397,8 @@ struct Config {
     keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
     /// 改行キーが働くアプリの exe 名
     newline_apps: Vec<String>,
+    /// 診断ログの出力先 (空なら出さない)
+    debug_log: String,
 }
 
 impl Default for Config {
@@ -414,6 +421,7 @@ impl Default for Config {
             candidate_font_size: 18,
             keys: default_key_assigns(),
             newline_apps: parse_app_list(DEFAULT_NEWLINE_APPS),
+            debug_log: String::new(),
         }
     }
 }
@@ -477,6 +485,16 @@ fn config_path() -> Result<PathBuf, String> {
     }
     let appdata = std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
     Ok(PathBuf::from(appdata).join("QuicklIME").join("config.tsv"))
+}
+
+/// 診断ログの既定の出力先 (%APPDATA%\QuicklIME\debug.log)。QUICKLIME_CONFIG_FILE で
+/// 設定ファイルを移していても同じ場所にする。APPDATA が無ければ空
+fn default_debug_log_path() -> String {
+    std::env::var("APPDATA")
+        .map(|appdata| {
+            PathBuf::from(appdata).join("QuicklIME").join("debug.log").to_string_lossy().into_owned()
+        })
+        .unwrap_or_default()
 }
 
 impl Config {
@@ -561,6 +579,7 @@ impl Config {
             }
             // 空の値は「対象なし」としてそのまま持つ
             "newline_apps" => self.newline_apps = parse_app_list(value),
+            "debug_log" => self.debug_log = value.to_string(),
             _ => self.apply_key(key, value),
         }
     }
@@ -629,6 +648,10 @@ impl Config {
         }
         text.push_str("\n# 改行キー (key.insert_newline) が働くアプリの exe 名 (カンマ区切り)\n");
         text.push_str(&format!("newline_apps\t{}\n", self.newline_apps.join(",")));
+        text.push_str("\n# 開発用 (debug_log は診断ログの出力先。行が無ければ出さない)\n");
+        if !self.debug_log.is_empty() {
+            text.push_str(&format!("debug_log\t{}\n", self.debug_log));
+        }
         std::fs::write(&path, text.as_bytes())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
 
@@ -1080,7 +1103,10 @@ fn main() {
         ];
         let app_button_count = app_buttons.len() as i32;
         let apps_min_h = app_list_y - page_y + app_button_count * (button_h + row_gap) - row_gap;
-        let page_h = convert_h.max(keys_h).max(apps_min_h);
+        // 「開発用」タブの注意書きは折り返すため2行分の高さを取る
+        let debug_note_h = row_h * 2;
+        let debug_h = (row_h + row_gap) * 2 + debug_note_h;
+        let page_h = convert_h.max(keys_h).max(apps_min_h).max(debug_h);
 
         current_page.set(Some(4));
         create_control("STATIC", "改行キーの対象アプリ", label_style, 0, page_x, page_y, page_w, row_h, 0);
@@ -1136,6 +1162,41 @@ fn main() {
                 *id,
             );
         }
+
+        // ---- 開発用 ----
+        current_page.set(Some(5));
+        let mut y = page_y;
+        check("診断ログを出力する", y, ID_CHECK_DEBUG_LOG, !config.debug_log.is_empty());
+        y += row_h + row_gap;
+        let debug_path = if config.debug_log.is_empty() {
+            default_debug_log_path()
+        } else {
+            config.debug_log.clone()
+        };
+        create_control(
+            "EDIT",
+            &debug_path,
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL as u32,
+            WS_EX_CLIENTEDGE,
+            page_x,
+            y,
+            page_w,
+            row_h,
+            ID_EDIT_DEBUG_LOG,
+        );
+        y += row_h + row_gap;
+        create_control(
+            "STATIC",
+            "診断ログは全アプリのキー入力 (パスワード欄の打鍵も含む) を記録します。\
+             調査が終わったらオフにしてください。",
+            label_style,
+            0,
+            page_x,
+            y,
+            page_w,
+            debug_note_h,
+            0,
+        );
         current_page.set(None);
 
         // ---- タブの枠と下部ボタン (右寄せ) ----
@@ -1220,6 +1281,9 @@ fn main() {
                     DestroyWindow(hwnd);
                     continue;
                 }
+            }
+            if edit_keys::handle_key(&msg) {
+                continue;
             }
             // Tab でのフォーカス移動
             if IsDialogMessageW(hwnd, &msg) != 0 {
@@ -1360,7 +1424,29 @@ fn collect(hwnd: HWND) -> Config {
     }
     config.keys = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
     config.newline_apps = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    if checked(ID_CHECK_DEBUG_LOG) {
+        let path = window_text(unsafe { GetDlgItem(hwnd, ID_EDIT_DEBUG_LOG) });
+        let path = path.trim();
+        config.debug_log =
+            if path.is_empty() { default_debug_log_path() } else { path.to_string() };
+    }
     config
+}
+
+/// コントロールのテキスト
+fn window_text(ctrl: HWND) -> String {
+    unsafe {
+        let length = GetWindowTextLengthW(ctrl);
+        if length <= 0 {
+            return String::new();
+        }
+        let mut buffer = vec![0u16; length as usize + 1];
+        let copied = GetWindowTextW(ctrl, buffer.as_mut_ptr(), buffer.len() as i32);
+        if copied <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&buffer[..copied as usize])
+    }
 }
 
 /// タブ index の項目だけを表示する。フォーカスが隠した項目に残っていれば、表示したタブの

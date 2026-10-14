@@ -70,7 +70,7 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state);
 // ユーザ設定 (config.tsv) のうち TSF 層で使う項目。
 // エンジン向けのキー (learning, suggest など) はエンジンが同じファイルを読む
 struct TsfConfig {
-    // 診断用ログの出力先 (隠し設定 debug_log。空なら出さない)
+    // 診断用ログの出力先 (設定 debug_log。空なら出さない)
     std::wstring debugLog;
     bool spaceFullwidth = true;    // run が無い Space で全角スペースを入れる
     bool digitsFullwidth = false;  // 数字キー・テンキーの数字を全角で入れる
