@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 // ローマ字入力を逐次かなへ変換するコンポーザ。
@@ -33,8 +34,8 @@ public:
     // 入力ごとに設定を渡し直さなくて済むよう、Clear() ではこのフラグを維持する
     void SetModeless(bool enabled) { modeless_ = enabled; }
 
-    // 自動英字判定のうち、run を終える直前にだけ効く判定。打ち途中で暴発しないよう、
-    // Space で run を終える経路と、語の区切りになる記号キーからのみ呼ぶ
+    // 自動英字判定のうち、run を終えたら成り立つ判定。打ち途中で暴発しないよう、
+    // 候補バーの英字候補を作るときに複製に対してだけ呼ぶ (読みそのものは書き換えない)
     // - ルール3: 未変換ローマ字として n 以外の英小文字が1文字残っていれば英字と判定する
     //   (「want」の t)。境界は英単語辞書で決めるので要求にする
     // - ルール7: 打鍵列の全体、または末尾 (かなの境目から始まる5文字以上) が語リストの語と
@@ -63,21 +64,41 @@ public:
     // 一致) で要求を決着させる。一致しなかったときは判定の種類で扱いが変わる:
     // 根拠の強い判定 (ルール1〜3) は run 全体を英字にし、根拠の弱い判定 (ルール4・5) は
     // 英字にせずにかなへの変換を続け、ルール6 は先頭から一致したときだけ run 全体を英字にし、
-    // c で始まる未変換ローマ字の保留中は保留を続ける
+    // 未変換ローマ字の保留中 (c で始まるもの、ルール1 で未変換ローマ字が4文字未満のもの) は保留を続ける
     void ResolveAscii(bool matched, size_t element);
+
+    // 開いている英字区間の文字列 (英字モードでなければ空)
+    std::wstring AsciiSection() const;
+    // 英字区間の先頭 length 文字で区間を閉じ、残り + c を日本語区間の打鍵として打ち直せるか:
+    // 残り + c が、自動英字判定を止めたローマ字の照合で素通しの英字を出さずに読めること
+    bool CanCloseAscii(size_t length, wchar_t c) const;
+    // 英字区間を先頭 length 文字で閉じ、残りを自動英字判定を止めて打ち直してから c を通常どおり
+    // Push する (docs/design/mixed-conversion.md)。c で自動英字判定の要求が出ることがあるので、
+    // 呼び出し側は Push と同じく直後に ResolveAscii で決着させる
+    void CloseAscii(size_t length, wchar_t c);
+    // 閉じた英字区間があるか
+    bool HasClosedAscii() const { return !closedAscii_.empty(); }
+    // 英字区間 (開いている・閉じたもの) と、どの英字区間にも入らない日本語区間の両方がある run か
+    bool MixedAscii() const;
 
     // 末尾の1文字を削除する (未変換ローマ字があればそちらを優先)。
     // モードレス入力が有効なときは、英字区間が空になったら英字モードを解除し、
-    // 日本語区間の末尾から入力を続ける
+    // 日本語区間の末尾から入力を続ける。閉じた位置まで戻ったら、最後に閉じた英字区間を開き直す。
+    // 自動判定で英字にした後、判定のきっかけの打鍵まで消したら判定前の日本語の状態に戻す。
+    // 消した後は残った未変換ローマ字に打鍵中の判定をやり直すので、呼び出し側は Push と同じく
+    // 直後に ResolveAscii で決着させる
     void Backspace();
+    // Backspace で判定前の日本語の状態に戻るか (文書の英字を IME が書き換える必要がある)
+    bool BackspaceRestores() const;
 
     // 確定済みのかなの先頭 count 文字と、対応する打鍵列を取り除く
     // (候補バーで採用した部分を読みから外す。未変換ローマ字と英字モードは維持し、
-    // 英字区間の開始位置は取り除いた分だけ前へずらす)
+    // 英字区間の開始位置と閉じた英字区間の位置は取り除いた分だけ前へずらす)
     void RemoveFront(size_t count);
 
     // 確定済みのかなの先頭に kana を足す。打鍵列は文字そのもの (文書から読んだかなで変換の範囲を
-    // 左へ広げる。RemoveFront の逆で、英字区間の開始位置は足した分だけ後ろへずらす)
+    // 左へ広げる。RemoveFront の逆で、英字区間の開始位置と閉じた英字区間の位置は足した分だけ
+    // 後ろへずらす)
     void PrependKana(const std::wstring& kana);
 
     void Clear();
@@ -123,19 +144,48 @@ private:
     // 未変換ローマ字の要素は kana_.size() とする
     std::vector<size_t> ElementPositions() const;
 
+    // 閉じた位置 (最後に閉じた英字区間の終わりの kana_ の位置。無ければ 0)。
+    // これより前は自動英字判定の対象外
+    size_t ClosedEnd() const { return closedAscii_.empty() ? 0 : closedAscii_.back().second; }
+    // 閉じた位置より後ろの打鍵列 (+ 未変換ローマ字)
+    std::wstring RawAfterClosed() const;
+    // 閉じた位置より後ろのかなと未変換ローマ字が空なら、最後に閉じた英字区間を開き直す
+    void ReopenClosedAscii();
+    // Backspace の1回分 (判定前の状態への復元と判定のやり直しを除く)
+    void BackspaceStep();
+
     std::wstring kana_;            // 確定済みのかな
     std::vector<std::wstring> raw_; // kana_ の各文字に対応する打鍵列
     std::wstring pending_;          // 未変換のローマ字
     bool asciiMode_ = false;        // 英字モード (Shift+英字以降はアルファベットのまま)
     size_t asciiStart_ = 0;         // 英字区間の開始位置 (kana_ の位置。英字モードでなければ 0)
+    // 閉じた英字区間の (開始位置, 終わり) の積み (kana_ の位置。前から順)。Backspace で開き直すと
+    // 1つ前の区間の終わりが閉じた位置に戻るため、最後の1つだけでなく積んで持つ
+    std::vector<std::pair<size_t, size_t>> closedAscii_;
+    // 自動判定で英字に切り替える直前の読みの状態と、そのときの打鍵数 (Raw() の文字数) の積み
+    struct Snapshot {
+        std::wstring kana;
+        std::vector<std::wstring> raw;
+        std::wstring pending;
+        bool asciiMode;
+        size_t asciiStart;
+        std::vector<std::pair<size_t, size_t>> closedAscii;
+    };
+    struct AutoSwitch {
+        Snapshot state;
+        size_t rawCount;
+    };
+    std::vector<AutoSwitch> autoSwitches_;
     // 自動英字判定が成立し、ResolveAscii を待っている判定の種類
     enum class AsciiRequest {
         None,
-        Strong,   // 打鍵中の根拠の強い判定 (ルール1・2)
+        Strong,   // 打鍵中の根拠の強い判定 (ルール2、未変換ローマ字が4文字以上のルール1)
         Weak,     // 打鍵中の根拠の弱い判定 (ルール4・5)
         Commit,   // run 終了時の判定 (ルール3)
         Context,  // 直前の確定が英字 (ルール6)
-        Hold,     // c で始まる未変換ローマ字の保留中に、3文字で英単語と完全一致するか
+        // 未変換ローマ字の保留中 (c で始まるもの・ルール1 で辞書に一致しなかったもの) に英単語と
+        // 一致するか。一致しなければ保留を続ける
+        Hold,
     };
     AsciiRequest asciiRequest_ = AsciiRequest::None;
     bool modeless_ = false;         // モードレス入力 (自動英字判定) が有効か

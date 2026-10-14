@@ -201,6 +201,7 @@ private:
         Whole,       // 全体変換 (確定済みかな全体の CONVNBEST の上位)
         Prediction,  // 予測候補
         Head,        // 先頭文節 (部分採用)
+        Ascii,       // 英字候補 (今 run を終えたら英字になる形。barAscii_ の確定文字列)
     };
     struct BarCandidate {
         BarKind kind;
@@ -244,6 +245,10 @@ private:
     // followKey があれば、採用の後にその打鍵を入れる
     HRESULT AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
                          const std::wstring& suffix, const DirectKey* followKey);
+    // 英字候補の採用: 読みを英字候補の複製に置き換え、文書の run を英字に書き換える。
+    // run を終えるとき (Space・確定キー・Enter) は suffix を付けて終え、印字キーは英字区間に続ける
+    HRESULT AdoptAsciiCandidate(ITfContext* context, BarAdopt mode, const std::wstring& suffix,
+                                const DirectKey* followKey);
     // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
     // 継続)。updateBar なら run を続けるときにバーを作り直す
     void FinishBarAdoption(ITfContext* context, bool updateBar);
@@ -285,12 +290,10 @@ private:
                                 std::vector<SentenceCandidate>* candidates);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
-    // 自動英字判定の run 終了時の判定 (ルール3・6・7) を適用する。変換結果で確定する経路
-    // (候補選択中・バー選択中) では読みを英字へ作り直せないため何もしない。
-    // 英文を打ち続ける途中のキー (Space・語の区切りの記号キー) からだけ呼ぶ。確定キー・
-    // アプリへ渡すキー・フォーカス移動では、見えている文字と確定・送信される文字を
-    // 食い違わせないため呼ばない
-    void ApplyModelessCommitRule();
+    // 候補バーの英字候補 (docs/design/modeless-commit-candidate.md): composer_ の複製に run 終了時の
+    // 判定 (ルール3・6・7) を当て、英字になればその複製を result に入れて true。composer_ は変えない。
+    // ルール3 が英単語辞書に一致しなかったとき (run 全体を英字にする扱い) は候補にしない
+    bool BuildAsciiCandidate(RomajiComposer* result);
     // ルール6 の文脈: 直前の確定文字列の末尾 (スペースを除く) が ASCII 英字か
     // (数字は英語の文脈にしない)
     bool PrecedingCommitEndsWithLetter() const;
@@ -298,6 +301,13 @@ private:
     // (ASCIISTART) の結果で決着させる。composer に打鍵を
     // 入れた直後・run 終了時の判定を適用した直後に呼ぶ
     void ResolveAsciiRequest(RomajiComposer* composer);
+    // モードレス入力の英字区間で英小文字 c を打ったとき、英単語辞書の問い合わせ (ASCIIWORD) で
+    // 英字区間を閉じられれば閉じて、c を日本語区間の打鍵として入れる (docs/design/mixed-conversion.md)。
+    // 閉じなかったら false (c はまだ入れていない)
+    bool CloseAsciiSection(wchar_t c);
+    // モードレス入力で、英字区間と日本語区間の両方を含む run か (変換キーで英字を含む読みを
+    // 1文節に固定せずに変換する)
+    bool MixedAsciiRun() const;
     // モードレス入力で、日本語区間を残して英字区間に分かれている run か
     // (モードレスが無効なら英字モードでも区間分割の扱いはしない)
     bool SplitAsciiRun() const;
@@ -594,6 +604,10 @@ private:
     std::vector<BarCandidate> barBuilt_;
     std::vector<PredictionCandidate> barPredictions_;
     RECT barCaret_;
+    // 英字候補を作った読みの複製 (採用でこれに置き換える) と、作ったときの composer_ の表示
+    bool barHasAscii_ = false;
+    RomajiComposer barAscii_;
+    std::wstring barAsciiSource_;
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)

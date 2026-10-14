@@ -404,6 +404,43 @@ bool EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, Asc
     return true;
 }
 
+bool EngineClient::AsciiWordLive(const std::wstring& text, bool* prefix,
+                                 std::vector<size_t>* lengths)
+{
+    if (text.empty() || prefix == nullptr || lengths == nullptr ||
+        (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("ASCIIWORD\t" + WideToUtf8(text) + "\n", &response)) {
+        return false;
+    }
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK\t", 0) != 0) {
+        return false;
+    }
+    // SplitFields は空のフィールドを落とすので、長さの一覧が空なら要素は1つになる
+    const std::vector<std::string> fields = SplitFields(response.substr(3), '\t');
+    if (fields.empty() || fields.size() > 2 || (fields[0] != "0" && fields[0] != "1")) {
+        return false;
+    }
+    std::vector<size_t> parsed;
+    if (fields.size() == 2) {
+        for (const std::string& field : SplitFields(fields[1], ',')) {
+            if (field.find_first_not_of("0123456789") != std::string::npos) {
+                return false;
+            }
+            parsed.push_back(static_cast<size_t>(std::strtoul(field.c_str(), nullptr, 10)));
+        }
+    }
+    *prefix = fields[0] == "1";
+    *lengths = std::move(parsed);
+    return true;
+}
+
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
                                 bool live, std::vector<SentenceCandidate>* candidates)
 {

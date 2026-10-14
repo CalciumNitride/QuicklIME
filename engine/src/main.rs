@@ -678,6 +678,26 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 None => "OK\tNONE\n".to_string(),
             }
         }
+        Some("ASCIIWORD") => {
+            // ASCIIWORD\t<文字列> : 英字区間を閉じるかの判定用に、文字列全体が英単語の前方一致か
+            // (1/0) と、先頭部分のうち英単語と完全一致するものの長さ (カンマ区切り) を返す
+            let Some(text) = fields.next().filter(|f| !f.is_empty()) else {
+                return "ERR\t文字列が空です\n".to_string();
+            };
+            if !english::is_ascii_word(text) {
+                return "ERR\t英字以外を含みます\n".to_string();
+            }
+            // 辞書が無いと何も一致せず、英字区間を誤って閉じてしまうため「前方一致あり」にする
+            if data.english.is_empty() {
+                return "OK\t1\t\n".to_string();
+            }
+            let user = data.user.lock().expect("user lock");
+            let (prefix, lengths) = english::ascii_word(text, |t, m| {
+                data.english.matches(t, m) || user.english_matches(t, m)
+            });
+            let lengths: Vec<String> = lengths.iter().map(usize::to_string).collect();
+            format!("OK\t{}\t{}\n", u8::from(prefix), lengths.join(","))
+        }
         Some("RELOADUSER") => {
             // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
             let mut user = data.user.lock().expect("user lock");
@@ -1251,6 +1271,34 @@ mod tests {
             handle_request("ASCIISTART\tprefix\tko\x1fre\x1fha\x1fmail", &data),
             "OK\tNONE\n"
         );
+    }
+
+    #[test]
+    fn asciiwordは前方一致と先頭部分の完全一致の長さを返す() {
+        let mut data = english_data();
+        data.english = EnglishDict::load_from(["git\ngithub\nmake\nmaker\npython\n".as_bytes()]);
+        assert_eq!(handle_request("ASCIIWORD\tgithubd", &data), "OK\t0\t3,6\n");
+        assert_eq!(handle_request("ASCIIWORD\tmaker", &data), "OK\t1\t4,5\n");
+        assert_eq!(handle_request("ASCIIWORD\tpythonw", &data), "OK\t0\t6\n");
+        assert_eq!(handle_request("ASCIIWORD\txyzwa", &data), "OK\t0\t\n");
+        assert_eq!(handle_request("ASCIIWORD\tMaker", &data), "OK\t1\t4,5\n");
+        // ユーザ辞書の英字の語も使う
+        assert_eq!(handle_request("ADDWORD\tくいっくらいむ\tQuicklIME\t固有名詞", &data), "OK\n");
+        assert_eq!(handle_request("ASCIIWORD\tquicklimed", &data), "OK\t0\t9\n");
+    }
+
+    #[test]
+    fn asciiwordは辞書が無ければ前方一致ありを返す() {
+        assert_eq!(handle_request("ASCIIWORD\tgithubd", &sample_data()), "OK\t1\t\n");
+    }
+
+    #[test]
+    fn asciiwordの要求が不正ならエラー() {
+        let data = english_data();
+        assert!(handle_request("ASCIIWORD", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIWORD\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIWORD\tgit-hub", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIWORD\tきょう", &data).starts_with("ERR\t"));
     }
 
     #[test]

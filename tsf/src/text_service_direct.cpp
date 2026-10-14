@@ -392,8 +392,10 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     // Backspace は、未完成のローマ字が無ければアプリへ渡して文書の文字を消させる
-    // (run は NoteKeyForAppend で追従させる)
-    const bool backspaceEaten = converting_ || !AppendPendingText().empty();
+    // (run は NoteKeyForAppend で追従させる)。自動判定で英字にした部分を判定前の日本語に戻す
+    // Backspace は、文書の英字を IME が書き換えるので食べる
+    const bool backspaceEaten = converting_ || !AppendPendingText().empty() ||
+                                (config_.Get().modeless && composer_.BackspaceRestores());
     if (ctrl || alt) {
         if (!ctrl || alt || !InRun()) {
             return false;
@@ -709,14 +711,10 @@ void TextService::PushDirectKey(const DirectKey& key)
     if (key.enterAscii) {
         composer_.EnterAsciiMode();
     }
-    // 語の区切りになる記号の前で run 終了時の判定を適用する。英字になれば記号は英字モード中と
-    // 同じく半角で入る (「pen.」)。記号キーは IME が食べるので、追記のみの文書でも作り直せる
-    if (key.romaji == 0 && !composer_.AsciiMode() && key.raw.size() == 1 &&
-        std::wstring(L".,!?:;").find(key.raw[0]) != std::wstring::npos) {
-        ApplyModelessCommitRule();
-    }
     if (composer_.AsciiMode()) {
-        composer_.PushKana(key.raw, key.raw);
+        if (key.romaji == 0 || !CloseAsciiSection(key.romaji)) {
+            composer_.PushKana(key.raw, key.raw);
+        }
     } else if (key.romaji != 0) {
         composer_.Push(key.romaji);
         ResolveAsciiRequest(&composer_);
@@ -827,8 +825,11 @@ HRESULT TextService::SpaceDirect(ITfContext* context, bool shifted)
         return SpaceAppend(context, shifted);
     }
     // run 中の Space は幅によらず IME が入れる (run の終了と1つの edit session で行う)。
-    // モードレスが有効なときだけ、英字モード中は英文の語の区切りとして半角にする
-    const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
+    // モードレスが有効なときだけ、英字モード中と英字候補の採用は英文の語の区切りとして半角にする
+    const bool asciiCandidate = !converting_ && barIndex_ >= 0 &&
+                                static_cast<size_t>(barIndex_) < barItems_.size() &&
+                                barItems_[static_cast<size_t>(barIndex_)].kind == BarKind::Ascii;
+    const bool asciiWord = config_.Get().modeless && (composer_.AsciiMode() || asciiCandidate);
     const std::wstring space =
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
     if (!converting_) {
@@ -1173,6 +1174,9 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
         return E_UNEXPECTED;
     }
     const BarCandidate item = barItems_[index];
+    if (item.kind == BarKind::Ascii) {
+        return AdoptAsciiCandidate(context, mode, suffix, followKey);
+    }
     const bool head = item.kind == BarKind::Head;
     const size_t readingLength = head ? item.reading.size() : kana.size();
     // 文書の run の文字列は確定済みかなで始まる (Backspace で末尾の英字が未完成の
@@ -1233,6 +1237,40 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
         appendFollowKeyPending_ = false;
     }
     return hr;
+}
+
+HRESULT TextService::AdoptAsciiCandidate(ITfContext* context, BarAdopt mode,
+                                         const std::wstring& suffix, const DirectKey* followKey)
+{
+    if (!barHasAscii_ || barAsciiSource_ != composer_.Display()) {
+        DeselectBar();
+        return E_UNEXPECTED;
+    }
+    // 読みを英字候補を作った複製に置き換える。採用した部分は英字区間になり、学習は変換せずに
+    // 確定したときと同じ (EndRun が英字を含む読みを 読み = 表記 で送る)
+    const bool endRun = mode != BarAdopt::Continue;
+    composer_ = barAscii_;
+    ClearBar();
+    std::wstring text = composer_.Commit();
+    if (endRun) {
+        text += suffix;
+    }
+    DebugLog(L"英字候補を採用: " + text);
+    ClassifyAppendDocument(context);
+    const bool readable = appendDocument_ == AppendDocument::Readable;
+    // 追記のみの文書では、擬似 Backspace より先に打鍵を追記すると消されるので目印の後に回す
+    if (!readable && followKey != nullptr) {
+        appendFollowKey_ = *followKey;
+        appendFollowKeyPending_ = true;
+    }
+    if (RewriteAppendRun(context, text, endRun) == AppendResult::Failed) {
+        appendFollowKeyPending_ = false;
+        return E_FAIL;
+    }
+    if (readable && followKey != nullptr && InRun()) {
+        return TypeAppend(context, *followKey);
+    }
+    return S_OK;
 }
 
 void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
@@ -1747,25 +1785,35 @@ HRESULT TextService::BackspaceAppend(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
-    // 未完成のローマ字だけを削る (文書の文字はアプリへ渡した Backspace で消える)
-    if (AppendPendingText().empty()) {
+    // 未完成のローマ字だけを削る (文書の文字はアプリへ渡した Backspace で消える)。
+    // 判定前の日本語に戻るときは、文書の英字も書き換える
+    const bool restores = config_.Get().modeless && composer_.BackspaceRestores();
+    if (!restores && AppendPendingText().empty()) {
         return S_OK;
     }
     composer_.Backspace();
+    ResolveAsciiRequest(&composer_);
     if (surface_.empty() && composer_.Empty()) {
         UpdateAppendPending(context, L"");
         DropRun();
         return S_OK;
     }
-    UpdateAppendPending(context, AppendPendingText());
+    // 残った未変換ローマ字の判定のやり直しで、かなが増えたり英字に切り替わったりすることがある
+    const AppendResult result = SyncAppendRun(context);
+    if (result == AppendResult::Failed) {
+        return E_FAIL;
+    }
+    if (result == AppendResult::Mismatch) {
+        EndRun();
+        ClearContext();
+        return S_OK;
+    }
     UpdateBar(context);
     return S_OK;
 }
 
 HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
 {
-    // 確定文字列を作る前に自動英字判定ルール3を適用する (「わんt」→「want」)
-    ApplyModelessCommitRule();
     const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
     const std::wstring space =
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
@@ -1787,8 +1835,8 @@ HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
         }
         return E_FAIL;
     }
-    // ルール3 で英字に切り替わり、入れたかなが書き換わる (Space は食べているので、
-    // 追記のみの文書でも擬似 Backspace の後に入れ直せる)
+    // Backspace で末尾の素通しの英字が未完成のローマ字に戻ったときなど、確定文字列が文書の run と
+    // 食い違う (Space は食べているので、追記のみの文書でも擬似 Backspace の後に入れ直せる)
     if (RewriteAppendRun(context, text, true) == AppendResult::Failed) {
         return InsertText(context, space);
     }

@@ -26,6 +26,10 @@ const MAX_READING_CHARS: usize = 16;
 /// 辞書語の経路が常に優先されるよう十分大きくする
 const UNKNOWN_WORD_COST: i32 = 12000;
 
+/// 読みの中の ASCII 英字の連続 (英単語) を1語にしたノードの単語コスト。
+/// 英字混じりの読みで英単語が日本語の部分の変換を邪魔しないよう、一般的な名詞程度にする
+const ASCII_WORD_COST: i32 = 5000;
+
 /// 文節境界ペナルティ。自立語 (付属語でない語) ごとに Viterbi のコストへ加算する。
 /// 辞書にはコスト0の短いかな語が多く、素のコストでは「き+き+無+れ」のような
 /// 細切れ経路が複合語 (聞き慣れ) より安くなるため、文節数が少ない経路を優先させる。
@@ -921,12 +925,25 @@ fn build_lattice(
     let mut ending_at: Vec<Vec<usize>> = vec![Vec::new(); n + 1];
     ending_at[0].push(0);
 
+    // inside_ascii[p] = 位置 p が英字の連続の途中 (前後の文字がともに英字)。
+    // ここで始まる・終わるノードを作らず、英単語が途中で割れないようにする
+    let is_ascii_alpha = |c: char| c.is_ascii_alphabetic();
+    let inside_ascii: Vec<bool> = (0..=n)
+        .map(|p| p > 0 && p < n && is_ascii_alpha(chars[p - 1]) && is_ascii_alpha(chars[p]))
+        .collect();
+
     // 辞書語ノードと未知語ノードを生成する
     for start in 0..n {
+        if inside_ascii[start] {
+            continue;
+        }
         // start から始まる登録語を1回のトライ走査でまとめて引く
         // (一致文字数の短い順に返るため、ノード生成順は旧来の end 昇順と同じ)
         for (len, entries) in dict.common_prefix_search(&chars[start..], MAX_READING_CHARS) {
             let end = start + len;
+            if inside_ascii[end] {
+                continue;
+            }
             let reading: String = chars[start..end].iter().collect();
             for entry in entries {
                 nodes.push(Node {
@@ -946,6 +963,9 @@ fn build_lattice(
         // ユーザ登録の名詞系単語とインポート辞書も通常の辞書語と同様にノードにする
         for (len, word) in user.common_prefix_words(&chars[start..]) {
             let end = start + len;
+            if inside_ascii[end] {
+                continue;
+            }
             nodes.push(Node {
                 start,
                 reading: word.reading.clone(),
@@ -961,6 +981,9 @@ fn build_lattice(
         }
         for (len, entries) in user.imported_common_prefix(&chars[start..], MAX_READING_CHARS) {
             let end = start + len;
+            if inside_ascii[end] {
+                continue;
+            }
             let reading: String = chars[start..end].iter().collect();
             for entry in entries {
                 nodes.push(Node {
@@ -977,20 +1000,27 @@ fn build_lattice(
                 ending_at[end].push(nodes.len() - 1);
             }
         }
-        // 未知語ノード (1文字をそのまま出力)。どんな入力でも経路が成立する保険
-        let ch = chars[start].to_string();
+        // 英字の連続の先頭では連続全体を1語にする (未知語ノードの代わり)
+        let (end, word_cost) = if is_ascii_alpha(chars[start]) {
+            let len = chars[start..].iter().take_while(|&&c| is_ascii_alpha(c)).count();
+            (start + len, ASCII_WORD_COST)
+        } else {
+            // 未知語ノード (1文字をそのまま出力)。どんな入力でも経路が成立する保険
+            (start + 1, UNKNOWN_WORD_COST)
+        };
+        let reading: String = chars[start..end].iter().collect();
         nodes.push(Node {
             start,
-            reading: ch.clone(),
+            reading: reading.clone(),
             left_id: DEFAULT_NOUN_ID,
             right_id: DEFAULT_NOUN_ID,
-            word_cost: UNKNOWN_WORD_COST,
-            surface: ch,
+            word_cost,
+            surface: reading,
             penalty: 0,
             best_cost: i64::MAX,
             best_prev: 0,
         });
-        ending_at[start + 1].push(nodes.len() - 1);
+        ending_at[end].push(nodes.len() - 1);
     }
 
     // Viterbi: ノードを開始位置順に処理し、直前ノード群から最小コストを選ぶ。
@@ -1367,6 +1397,59 @@ mod tests {
             "きょうはx", &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
             &sample_functional());
         assert_eq!(result.unwrap(), "今日はx");
+    }
+
+    /// 英字混じりの読みのテスト用の辞書。英字の連続の一部だけに一致する語 (ub・hub) を入れて、
+    /// 英単語が途中で割れないことを確かめる
+    fn mixed_dict() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        let data = "きょう\t1\t1\t2000\t今日\n\
+                    は\t2\t2\t500\tは\n\
+                    で\t2\t2\t500\tで\n\
+                    さぎょう\t1\t1\t3000\t作業\n\
+                    ub\t1\t1\t100\tUB\n\
+                    hub\t1\t1\t100\tハブ\n";
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 英字の連続は割れずに1語として変換される() {
+        let segments = convert_segments(
+            "きょうはgithubでさぎょう",
+            None,
+            &mixed_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
+        assert_eq!(readings, vec!["きょうは", "githubで", "さぎょう"]);
+        let best: String = segments.iter().map(|s| s.candidates[0].as_str()).collect();
+        assert_eq!(best, "今日はgithubで作業");
+
+        let got = convert_nbest(
+            "きょうはgithubでさぎょう", None, &mixed_dict(), &no_user(),
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "今日はgithubで作業");
+        // 英字の連続の一部だけに一致する語 (UB・ハブ) で割れた候補は出ない
+        assert!(surfaces.iter().all(|s| !s.contains("UB") && !s.contains("ハブ")), "{surfaces:?}");
+    }
+
+    #[test]
+    fn 英字だけの読みも変換できる() {
+        let result = convert_sentence(
+            "github", &mixed_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional());
+        assert_eq!(result.unwrap(), "github");
+        // 連続全体にちょうど一致する辞書語は残る
+        let got = convert_nbest(
+            "hub", None, &mixed_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory());
+        assert!(surfaces_of(&got).contains(&"ハブ".to_string()));
     }
 
     #[test]

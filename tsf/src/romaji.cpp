@@ -211,9 +211,9 @@ bool IsSmallVowelKana(const std::wstring& kana)
 // ルール4 を判定する打鍵列の最小の長さ (短い語は誤判定を避けるため対象外)
 constexpr size_t kCRowMinRawChars = 5;
 
-// c + 母音で始まる未変換ローマ字を保留する長さ (英単語辞書の前方一致の最小の長さ)。
-// これより1文字短い時点でも、英単語に完全一致すれば英字にする
-constexpr size_t kCHoldChars = 4;
+// c + 母音で始まる未変換ローマ字と、ルール1 で英単語辞書に一致しなかった未変換ローマ字を
+// 保留する長さ (英単語辞書の前方一致の最小の長さ)。これより短い間も、英単語に一致すれば英字にする
+constexpr size_t kHoldChars = 4;
 
 // ローマ字テーブルに c 行のかな (ca = か など) があるか。既定のテーブルには無い
 bool TableHasCRow()
@@ -386,17 +386,20 @@ void RomajiComposer::Convert()
         // 辞書と照合できる長さになるまで小窓に保留する。すぐ判定すると「ca」の2文字では英単語の
         // 始まりを決められず、run 全体を英字にしてしまうため
         if (modeless_ && !asciiMode_ && pending_.size() >= 2 && pending_[0] == L'c' &&
-            IsVowel(pending_[1]) && pending_.size() < kCHoldChars) {
-            if (pending_.size() == kCHoldChars - 1) {
+            IsVowel(pending_[1]) && pending_.size() < kHoldChars) {
+            if (pending_.size() == kHoldChars - 1) {
                 asciiRequest_ = AsciiRequest::Hold;
             }
             return;
         }
 
         // 自動英字判定ルール1: ローマ字として成立しない英小文字の素通しは
-        // 英語特有の子音連続 (apple の pl、str、th など) とみなして英字と判定する
+        // 英語特有の子音連続 (apple の pl、str、th など) とみなして英字と判定する。
+        // 未変換ローマ字が前方一致の最小の長さに満たない間は、辞書に一致しなくても英字にせず
+        // 保留する (python の pyt で英単語の始まりを決められず、run 全体が英字になるのを避ける)
         if (modeless_ && !asciiMode_ && IsAsciiLower(pending_[0])) {
-            asciiRequest_ = AsciiRequest::Strong;
+            asciiRequest_ =
+                pending_.size() < kHoldChars ? AsciiRequest::Hold : AsciiRequest::Strong;
             return;
         }
 
@@ -432,7 +435,7 @@ void RomajiComposer::FinishForCommit(bool afterAsciiCommit)
     }
     // ルール7 は境界がその場で決まるので、エンジンに問い合わせるルール6 より先に見る
     if (IsListedEnglishWord(raw)) {
-        SwitchToAscii(0);
+        SwitchToAscii(ClosedEnd());
         return;
     }
     // 最も前の境目を採る (後ろの短い打鍵列ほど偶然に一致しやすい)
@@ -450,7 +453,8 @@ void RomajiComposer::FinishForCommit(bool afterAsciiCommit)
             return;
         }
     }
-    if (afterAsciiCommit && !IsParticleWord(raw)) {
+    // ルール6 は run 全体が対象なので、閉じた英字区間のある run には適用しない
+    if (afterAsciiCommit && !HasClosedAscii() && !IsParticleWord(raw)) {
         // 1文字の語は英文中で使う a と i だけ (エンジンの長さの制限を外して照合するため、
         // それ以外の1文字を送ると u・o などまで英字になる)
         if (raw.size() == 1) {
@@ -468,7 +472,7 @@ bool RomajiComposer::HasWeakAsciiSpelling() const
     if (!modeless_ || asciiMode_) {
         return false;
     }
-    const std::wstring raw = Raw();
+    const std::wstring raw = RawAfterClosed();
     return (TableHasCRow() && raw.size() >= kCRowMinRawChars && HasCRowSpelling(raw)) ||
            HasThVowelSpelling(raw);
 }
@@ -476,8 +480,9 @@ bool RomajiComposer::HasWeakAsciiSpelling() const
 std::vector<size_t> RomajiComposer::ElementPositions() const
 {
     std::vector<size_t> positions;
-    for (size_t i = 0; i < raw_.size(); ++i) {
-        if (i == 0 || !raw_[i].empty()) {
+    const size_t begin = ClosedEnd();
+    for (size_t i = begin; i < raw_.size(); ++i) {
+        if (i == begin || !raw_[i].empty()) {
             positions.push_back(i);
         }
     }
@@ -490,8 +495,9 @@ std::vector<size_t> RomajiComposer::ElementPositions() const
 std::vector<std::wstring> RomajiComposer::AsciiRequestElements() const
 {
     std::vector<std::wstring> elements;
-    for (size_t i = 0; i < raw_.size(); ++i) {
-        if (i == 0 || !raw_[i].empty()) {
+    const size_t begin = ClosedEnd();
+    for (size_t i = begin; i < raw_.size(); ++i) {
+        if (i == begin || !raw_[i].empty()) {
             elements.push_back(raw_[i]);
         } else {
             elements.back() += raw_[i];
@@ -515,7 +521,7 @@ void RomajiComposer::ResolveAscii(bool matched, size_t element)
     case AsciiRequest::Strong:
     case AsciiRequest::Commit:
         // 英語でしかありえない綴りなので、辞書に無い語 (固有名詞・略語など) でも英字にする
-        SwitchToAscii(matched ? start : 0);
+        SwitchToAscii(matched ? start : ClosedEnd());
         return;
     case AsciiRequest::Weak:
         if (matched) {
@@ -540,7 +546,10 @@ void RomajiComposer::ResolveAscii(bool matched, size_t element)
 
 void RomajiComposer::SwitchToAscii(size_t start)
 {
-    start = (std::min)(start, kana_.size());
+    // Backspace で判定のきっかけの打鍵を消したときに、判定前の日本語の状態へ戻すための記録
+    autoSwitches_.push_back({Snapshot{kana_, raw_, pending_, asciiMode_, asciiStart_, closedAscii_},
+                             Raw().size()});
+    start = (std::min)((std::max)(start, ClosedEnd()), kana_.size());
     // 2文字以上のかな (「きょ」など) は打鍵列を先頭の文字だけが持つため、途中では
     // 打鍵列を分けられない。かたまりの先頭まで戻して、かたまりごと英字区間に入れる
     while (start > 0 && start < raw_.size() && raw_[start].empty()) {
@@ -563,8 +572,46 @@ void RomajiComposer::SwitchToAscii(size_t start)
 
 void RomajiComposer::Backspace()
 {
+    asciiRequest_ = AsciiRequest::None;
+    BackspaceStep();
+    if (!autoSwitches_.empty() && Raw().size() < autoSwitches_.back().rawCount) {
+        // 積んだ状態の未変換ローマ字の末尾は判定のきっかけの打鍵なので、戻した状態から
+        // それを1回分消すと判定の前に戻る
+        const Snapshot& state = autoSwitches_.back().state;
+        kana_ = state.kana;
+        raw_ = state.raw;
+        pending_ = state.pending;
+        asciiMode_ = state.asciiMode;
+        asciiStart_ = state.asciiStart;
+        closedAscii_ = state.closedAscii;
+        autoSwitches_.pop_back();
+        BackspaceStep();
+    }
+    // 残った未変換ローマ字に打鍵中の判定をやり直す (ルール1 の保留に入る・抜ける、英字にする)
+    if (modeless_ && !asciiMode_ && !pending_.empty()) {
+        if (HasWeakAsciiSpelling()) {
+            asciiRequest_ = AsciiRequest::Weak;
+        } else {
+            Convert();
+        }
+    }
+}
+
+bool RomajiComposer::BackspaceRestores() const
+{
+    if (autoSwitches_.empty()) {
+        return false;
+    }
+    RomajiComposer copy = *this;
+    copy.BackspaceStep();
+    return copy.Raw().size() < autoSwitches_.back().rawCount;
+}
+
+void RomajiComposer::BackspaceStep()
+{
     if (!pending_.empty()) {
         pending_.pop_back();
+        ReopenClosedAscii();
         return;
     }
     if (kana_.empty()) {
@@ -584,12 +631,92 @@ void RomajiComposer::Backspace()
         asciiMode_ = false;
         asciiStart_ = 0;
     }
-    while (!kana_.empty() && kana_.back() >= L'a' && kana_.back() <= L'z' &&
+    // 閉じた英字区間の文字も素通しの英字と同じ形なので、閉じた位置より前は戻さない
+    while (kana_.size() > ClosedEnd() && kana_.back() >= L'a' && kana_.back() <= L'z' &&
            raw_.back() == std::wstring(1, kana_.back())) {
         pending_.insert(pending_.begin(), kana_.back());
         kana_.pop_back();
         raw_.pop_back();
     }
+    ReopenClosedAscii();
+}
+
+void RomajiComposer::ReopenClosedAscii()
+{
+    if (closedAscii_.empty() || asciiMode_ || !pending_.empty() || kana_.size() != ClosedEnd()) {
+        return;
+    }
+    asciiStart_ = closedAscii_.back().first;
+    asciiMode_ = true;
+    closedAscii_.pop_back();
+}
+
+std::wstring RomajiComposer::RawAfterClosed() const
+{
+    std::wstring raw;
+    for (size_t i = ClosedEnd(); i < raw_.size(); ++i) {
+        raw += raw_[i];
+    }
+    return raw + pending_;
+}
+
+bool RomajiComposer::MixedAscii() const
+{
+    if (closedAscii_.empty() && !asciiMode_) {
+        return false;
+    }
+    size_t japaneseFrom = 0;
+    for (const auto& [start, end] : closedAscii_) {
+        if (start > japaneseFrom) {
+            return true;
+        }
+        japaneseFrom = end;
+    }
+    const size_t openStart = asciiMode_ ? asciiStart_ : kana_.size();
+    return openStart > japaneseFrom || (!asciiMode_ && !pending_.empty());
+}
+
+std::wstring RomajiComposer::AsciiSection() const
+{
+    return asciiMode_ ? kana_.substr((std::min)(asciiStart_, kana_.size())) : std::wstring();
+}
+
+bool RomajiComposer::CanCloseAscii(size_t length, wchar_t c) const
+{
+    if (!asciiMode_ || length == 0 || asciiStart_ + length > kana_.size()) {
+        return false;
+    }
+    // modeless 無効のコンポーザでは、ローマ字として読めない打鍵 (ルール1 にあたるもの) が
+    // 素通しの英字としてかなに残る
+    RomajiComposer probe;
+    for (const wchar_t ch : kana_.substr(asciiStart_ + length) + c) {
+        probe.Push(ch);
+    }
+    return std::none_of(probe.kana_.begin(), probe.kana_.end(), [](wchar_t ch) {
+        return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
+    });
+}
+
+void RomajiComposer::CloseAscii(size_t length, wchar_t c)
+{
+    if (!CanCloseAscii(length, c)) {
+        return;
+    }
+    const size_t end = asciiStart_ + length;
+    const std::wstring rest = kana_.substr(end);
+    closedAscii_.emplace_back(asciiStart_, end);
+    kana_.erase(end);
+    raw_.erase(raw_.begin() + static_cast<std::ptrdiff_t>(end), raw_.end());
+    asciiMode_ = false;
+    asciiStart_ = 0;
+    // 英字区間で打った部分は判定を止めて流し、今の打鍵 c だけを通常の打鍵と同じく判定に通す
+    const bool modeless = modeless_;
+    modeless_ = false;
+    for (const wchar_t ch : rest) {
+        Push(ch);
+    }
+    modeless_ = modeless;
+    Push(c);
 }
 
 void RomajiComposer::RemoveFront(size_t count)
@@ -598,6 +725,15 @@ void RomajiComposer::RemoveFront(size_t count)
     kana_.erase(0, count);
     raw_.erase(raw_.begin(), raw_.begin() + static_cast<std::ptrdiff_t>(count));
     asciiStart_ -= (std::min)(count, asciiStart_);
+    // 記録した状態は位置がずれて戻せなくなる
+    autoSwitches_.clear();
+    for (auto& [start, end] : closedAscii_) {
+        start -= (std::min)(count, start);
+        end -= (std::min)(count, end);
+    }
+    closedAscii_.erase(std::remove_if(closedAscii_.begin(), closedAscii_.end(),
+                                      [](const auto& section) { return section.second == 0; }),
+                       closedAscii_.end());
 }
 
 void RomajiComposer::PrependKana(const std::wstring& kana)
@@ -613,6 +749,11 @@ void RomajiComposer::PrependKana(const std::wstring& kana)
     if (asciiMode_) {
         asciiStart_ += kana.size();
     }
+    for (auto& [start, end] : closedAscii_) {
+        start += kana.size();
+        end += kana.size();
+    }
+    autoSwitches_.clear();
 }
 
 void RomajiComposer::Clear()
@@ -622,6 +763,8 @@ void RomajiComposer::Clear()
     pending_.clear();
     asciiMode_ = false;
     asciiStart_ = 0;
+    closedAscii_.clear();
+    autoSwitches_.clear();
     asciiRequest_ = AsciiRequest::None;
     // modeless_ は設定由来のため維持する
 }

@@ -85,6 +85,23 @@ impl EnglishDict {
     pub fn matches(&self, text: &str, mode: MatchMode) -> bool {
         sorted_matches(&self.words, text, mode)
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.words.is_empty()
+    }
+}
+
+/// ASCIIWORD の照合 (docs/design/mixed-conversion.md): text (小文字にして照合する) 全体が
+/// 英単語の前方一致 (完全一致を含む) か、と、text の先頭部分のうち英単語と完全一致するものの
+/// 長さ (MIN_EXACT_CHARS 以上、昇順) を返す。
+/// 前方一致には ASCIISTART の長さの制限を当てない (英字区間を閉じない根拠にするため)
+pub fn ascii_word(text: &str, matches: impl Fn(&str, MatchMode) -> bool) -> (bool, Vec<usize>) {
+    let lowered = text.to_ascii_lowercase();
+    let prefix = matches(&lowered, MatchMode::Prefix);
+    let lengths = (MIN_EXACT_CHARS..=lowered.len())
+        .filter(|&k| matches(&lowered[..k], MatchMode::Exact))
+        .collect();
+    (prefix, lengths)
 }
 
 /// 空でなく ASCII 英字だけからなる語か
@@ -220,5 +237,20 @@ mod tests {
         // exact では同じ短い語が一致しない
         assert_eq!(start(&d, MatchMode::Exact, &["i", "s"]), None);
         assert_eq!(MatchMode::parse("exact-any"), Some(MatchMode::ExactAny));
+    }
+
+    #[test]
+    fn ascii_wordは前方一致と先頭部分の完全一致の長さを返す() {
+        let d = dict("ab\napple\ngithub\nmake\nmaker\n");
+        let word = |text: &str| ascii_word(text, |t, m| d.matches(t, m));
+        assert_eq!(word("githubd"), (false, vec![6]));
+        assert_eq!(word("maker"), (true, vec![4, 5]));
+        assert_eq!(word("makeru"), (false, vec![4, 5]));
+        assert_eq!(word("apples"), (false, vec![5]));
+        // 前方一致に長さの制限は無い。2文字の語 (ab) は長さの一覧に入れない
+        assert_eq!(word("a"), (true, vec![]));
+        assert_eq!(word("abx"), (false, vec![]));
+        // 大文字は小文字にして照合する
+        assert_eq!(word("GitHubD"), (false, vec![6]));
     }
 }

@@ -93,6 +93,12 @@ public:
     bool AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
                         size_t* element);
 
+    // 英字区間の文字列 + 打った文字が英単語の前方一致か (prefix) と、先頭部分のうち英単語と
+    // 完全一致するものの長さ (lengths、昇順) を問い合わせる (ASCIIWORD)。打鍵中に呼ぶため、
+    // エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIIWORD を知らない旧エンジンの
+    // ときは false (呼び出し側は英字区間を閉じない)
+    bool AsciiWordLive(const std::wstring& text, bool* prefix, std::vector<size_t>* lengths);
+
     // RERANKGET の結果
     enum class RerankStatus {
         Pending,  // 推論中・順番待ち

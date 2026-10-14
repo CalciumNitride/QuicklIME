@@ -28,9 +28,9 @@
 ### 自動英字判定 (RomajiComposer)
 
 判定ルールの追加 (ルール4〜7)、判定が成立したときに英単語の部分だけを英字にする区間分割、
-英単語の始まりの決め方、ルール3 を適用する場所の追加 (確定キー・記号キー) は
-docs/design/modeless-detection.md にある。本節の「run 全体を英字モードへ遷移させる」
-「Backspace で空になるまで英字モード」は、そちらの区間分割で置き換えている。
+英単語の始まりの決め方は docs/design/modeless-detection.md にある。本節の「run 全体を英字モードへ
+遷移させる」「Backspace で空になるまで英字モード」は、そちらの区間分割と、
+docs/design/modeless-commit-candidate.md の Backspace で判定前の日本語に戻す動作で置き換えている。
 
 判定は打鍵ごとに `Convert()` の中で行い、成立した時点でその run を
 英字モードへ自動遷移させる。遷移時は打鍵列 `Raw()` + 未変換ローマ字からかな列を
@@ -45,17 +45,11 @@ docs/design/modeless-detection.md にある。本節の「run 全体を英字モ
 2. 促音「っ」の直後に l/x 由来の小書き母音 (ぁぃぅぇぉ) が来た。
    例: hello → へっぉ → 英字
 3. 確定文字列を作るときに、未変換ローマ字として n 以外の子音が1文字残っている。
-   例: want → わんt → 英字 (Space で確定するときに want になる)
+   例: want → わんt → 英字 (run を終えたら want になる)
 
-ルール3 は、英文を打ち続ける途中のキーで run を終えるときにだけ適用する: Space と、
-語の区切りになる記号キー (docs/design/modeless-detection.md)。書き換わった結果は、
-送信などより前に画面で確かめられる。
-
-確定キーと、アプリへ渡すキー (Enter・矢印・Tab・Home/End・Ctrl/Alt 併用など) では
-適用せず、見えているとおり (`わんt`) に run を終える。Enter で送信するアプリで、
-見えている文字と送られる文字が食い違わないようにするため。英字にしたいときは、
-確定前に F10 (と ←→ での範囲の調整。docs/design/conversion-range.md) で直す。
-フォーカス移動・IME オフでの run 終了でも適用しない。
+ルール3 で run を書き換えて確定することはしない。どのキーで run を終えても見えているとおり
+(`わんt`) に確定し、run を終えたら英字になる形は候補バーの英字候補として打鍵中に見せる
+(docs/design/modeless-commit-candidate.md)。
 
 判定しないもの (日本語優先。従来どおり Shift 頭文字か生ローマ字候補で対応):
 
@@ -117,8 +111,8 @@ run が無いときの Space は、直前の run の surface が英字のみな�
 |---|---|---|
 | 1 | `apple` | `あっp` の次の `l` で英字と判定され `appl` に置き換わり、以後 `apple` |
 | 2 | `hello world` | `hello` の `へっ` + `ぉ` で英字へ。Space で半角スペースが入り run 終了。`world` は `を` → `wor` の時点で英字へ |
-| 3 | `this is a pen.` | `this` と `is` は Space でルール3 が効いて英字になり、スペースは半角。`pen` はローマ字として成立するため `ぺん` のままで、`.` も全角の `。` になる (ローマ字として読める語を判定しない設計上の限界) |
-| 4 | `want ` (Space) | `わんt` から Space で `want` + 半角スペース (ルール3) |
+| 3 | `this is a pen.` | run 終了時の判定は英字候補で行う (docs/design/modeless-commit-candidate.md のテスト) |
+| 4 | `want` | `わんt` の時点のバーに英字候補 `want` が出る。Space だけなら見えているとおり確定 (docs/design/modeless-commit-candidate.md) |
 | 5 | `sake ` | 日本語優先で `さけ　` (全角スペース、space=full)。変換キーで候補選択に入ると生ローマ字候補 sake が出る |
 | 6 | `kyouha` | 日本語のまま (誤判定しない) |
 | 7 | `Apple` (Shift) | 従来どおり英字モード、Space で半角スペース付きで終了 |

@@ -1226,13 +1226,29 @@ HRESULT TextService::CommitComposition(ITfContext* context)
     return EndComposition(context, RangeExcludedInComposition() + composer_.Commit());
 }
 
-void TextService::ApplyModelessCommitRule()
+bool TextService::BuildAsciiCandidate(RomajiComposer* result)
 {
-    if (converting_ || barIndex_ >= 0) {
-        return;
+    if (!config_.Get().modeless || composer_.AsciiMode()) {
+        return false;
     }
-    composer_.FinishForCommit(PrecedingCommitEndsWithLetter());
-    ResolveAsciiRequest(&composer_);
+    RomajiComposer copy = composer_;
+    copy.FinishForCommit(PrecedingCommitEndsWithLetter());
+    if (copy.AsciiRequested() && copy.AsciiRequestAtCommit() && !copy.AsciiRequestAnyLength()) {
+        // ルール3 で辞書に一致しないと run 全体 (閉じた位置から後ろ) が英字になる。日本語の
+        // 打ち途中で子音を打つたびにその候補が出てしまうので、一致したときだけ候補にする
+        size_t element = 0;
+        if (!engine_.AsciiStartLive(copy.AsciiRequestElements(), EngineClient::AsciiMatch::Exact,
+                                    &element)) {
+            return false;
+        }
+        copy.ResolveAscii(true, element);
+    }
+    ResolveAsciiRequest(&copy);
+    if (!copy.AsciiMode()) {
+        return false;
+    }
+    *result = std::move(copy);
+    return true;
 }
 
 bool TextService::PrecedingCommitEndsWithLetter() const
@@ -1261,6 +1277,54 @@ void TextService::ResolveAsciiRequest(RomajiComposer* composer)
         DebugLog(matched ? L"英単語辞書の一致: 要素 " + std::to_wstring(element)
                          : std::wstring(L"英単語辞書の一致なし"));
     }
+}
+
+bool TextService::CloseAsciiSection(wchar_t c)
+{
+    if (!config_.Get().modeless || !composer_.AsciiMode()) {
+        return false;
+    }
+    const std::wstring section = composer_.AsciiSection();
+    const std::wstring word = section + c;
+    // ASCIIWORD は英字以外を含む文字列を受け付けない
+    if (!std::all_of(word.begin(), word.end(), [](wchar_t ch) {
+            return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
+        })) {
+        return false;
+    }
+    bool prefix = true;
+    std::vector<size_t> lengths;
+    if (!engine_.AsciiWordLive(word, &prefix, &lengths) || prefix) {
+        return false;
+    }
+    // 残りが子音で始まる切れ目を優先し、その中で最長のもの。英単語に続く日本語は
+    // ほとんどが子音で始まる (を・で・の・が) ため、maker + u は make|る にする
+    size_t chosen = 0;
+    bool chosenConsonant = false;
+    for (const size_t length : lengths) {
+        if (length == 0 || length > section.size() || !composer_.CanCloseAscii(length, c)) {
+            continue;
+        }
+        const wchar_t head = length < section.size() ? section[length] : c;
+        const bool consonant = std::wstring(L"aiueoAIUEO").find(head) == std::wstring::npos;
+        if (chosen == 0 || consonant || !chosenConsonant) {
+            chosen = length;
+            chosenConsonant = consonant;
+        }
+    }
+    if (chosen == 0) {
+        return false;
+    }
+    composer_.CloseAscii(chosen, c);
+    DebugLog(L"英字区間を閉じる: " + section.substr(0, chosen) + L" | " + section.substr(chosen) +
+             std::wstring(1, c));
+    ResolveAsciiRequest(&composer_);
+    return true;
+}
+
+bool TextService::MixedAsciiRun() const
+{
+    return config_.Get().modeless && composer_.MixedAscii();
 }
 
 bool TextService::SplitAsciiRun() const
@@ -1540,11 +1604,13 @@ void TextService::BuildConversionSegments()
     // 文節列をエンジンに問い合わせる。
     // エンジンが起動していない場合はひらがな1文節のみで動作を継続する。
     // 英字が残っている入力 (英単語の打鍵など) は文節分割しても意味を
-    // 成さないため、全体を1文節に固定して変換する
+    // 成さないため、全体を1文節に固定して変換する。モードレスの英字区間と日本語区間が混じる run は、
+    // エンジンが英字の連続を1語として扱うので、日本語の部分だけを変換できる
     const std::wstring kana = composer_.Commit();
+    const bool fixedAscii = ContainsAsciiLetter(kana) && !MixedAsciiRun();
     wholeCandidates_.clear();
     bool ok;
-    if (ContainsAsciiLetter(kana)) {
+    if (fixedAscii) {
         ok = engine_.ConvertSegmentsFixed(kana, {kana.size()}, CurrentContext(), &segments_);
     } else if (config_.Get().segmentUi) {
         ok = engine_.ConvertSegments(kana, CurrentContext(), &segments_);
@@ -1574,9 +1640,9 @@ void TextService::BuildConversionSegments()
     // (「apple」と打って apple / Apple / APPLE を選べるようにする)。
     // 英字を含む入力ではかな漢字候補が役に立たないため先頭候補の直後へ、
     // 通常のかな入力では邪魔にならないよう末尾へ入れる
-    if (segments_.size() == 1) {
-        const size_t position =
-            ContainsAsciiLetter(kana) ? 1 : segments_[0].candidates.size();
+    // 英字混じりの run は打鍵のローマ字全体の候補を入れない (run 全体を英字にするなら F10)
+    if (segments_.size() == 1 && !MixedAsciiRun()) {
+        const size_t position = fixedAscii ? 1 : segments_[0].candidates.size();
         InsertRawCandidates(&segments_[0], composer_.Raw(), position);
     }
     selected_.assign(segments_.size(), 0);
@@ -2010,22 +2076,31 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         return S_OK;
     }
     const std::wstring kana = BarReading();
-    if (kana.size() < static_cast<size_t>(config.minSuggestChars)) {
+    // 英字候補は採用で読みを複製に置き換えるので、昇格した composition (候補選択の後始末中) では作らない
+    RomajiComposer ascii;
+    const bool hasAscii = !Composing() && BuildAsciiCandidate(&ascii);
+    // 英字候補は min_suggest_chars によらず出す (pen は「ぺん」、want は「わんt」で2文字)
+    const bool suggest = kana.size() >= static_cast<size_t>(config.minSuggestChars);
+    if (!suggest && !hasAscii) {
         ClearBar();
         return S_OK;
     }
 
     // どちらもエンジン未接続なら即 false を返す (自動起動・接続待ちで打鍵を止めない)
     std::vector<SentenceCandidate> sentences;
-    if (!engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
+    if (!suggest || !engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
         sentences.clear();
     }
     // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
     std::vector<PredictionCandidate> predictions;
-    if (SplitAsciiRun() || !engine_.Predict(kana, &predictions)) {
+    if (!suggest || SplitAsciiRun() || !engine_.Predict(kana, &predictions)) {
         predictions.clear();
     }
 
+    // BuildBarItems が英字候補を先頭に入れる (並べ替えの結果で組み直すときも同じ)
+    barHasAscii_ = hasAscii;
+    barAscii_ = std::move(ascii);
+    barAsciiSource_ = composer_.Display();
     std::vector<BarCandidate> items = BuildBarItems(kana, sentences, predictions);
     if (items.empty()) {
         ClearBar();
@@ -2047,7 +2122,9 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     }
     barKana_ = kana;
     barPredictions_ = std::move(predictions);
-    RequestRerank(kana);
+    if (suggest) {
+        RequestRerank(kana);
+    }
     return S_OK;
 }
 
@@ -2067,13 +2144,18 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
         return std::any_of(items.begin(), items.end(),
                            [&surface](const BarCandidate& item) { return item.surface == surface; });
     };
+    if (barHasAscii_) {
+        items.push_back({BarKind::Ascii, barAscii_.Commit(), L"", {}});
+    }
     constexpr size_t kMaxWholes = 3;
+    size_t wholeCount = 0;
     for (const SentenceCandidate& sentence : sentences) {
-        if (items.size() >= kMaxWholes) {
+        if (wholeCount >= kMaxWholes) {
             break;
         }
         if (sentence.surface != kana && !contains(sentence.surface)) {
             items.push_back({BarKind::Whole, sentence.surface, kana, sentence.segments});
+            ++wholeCount;
         }
     }
     // 先頭文節は上位の候補から順に、2文節以上の候補の第1文節を (読み, 表記) の重複なく集める
@@ -2122,7 +2204,8 @@ bool TextService::ShowBarItems(const RECT& caret, std::vector<BarCandidate> item
     std::vector<CandidateWindow::BarItem> labels;
     for (const BarCandidate& item : items) {
         const bool head = item.kind == BarKind::Head;
-        labels.push_back({head ? item.surface : item.surface + asciiTail, head});
+        const bool tail = !head && item.kind != BarKind::Ascii;
+        labels.push_back({tail ? item.surface + asciiTail : item.surface, head});
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
     const size_t shown = candidateWindow_.ShowBar(caret, barX_, labels, labels.size());
@@ -2377,6 +2460,9 @@ void TextService::ClearBar()
     barIndex_ = -1;
     barBuilt_.clear();
     barPredictions_.clear();
+    barHasAscii_ = false;
+    barAscii_.Clear();
+    barAsciiSource_.clear();
     StopRerankPolling();
     // 変換中は候補ウィンドウを変換側が使っているので触らない
     if (!converting_) {
