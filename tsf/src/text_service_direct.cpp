@@ -511,6 +511,12 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
     if (!ctrl && !alt && !IsEditingKey(wparam)) {
         return;
     }
+    // パネルの run は Alt 併用では終えない。Alt 併用の打鍵は key event sink に届かないアプリ
+    // (WezTerm・メモ帳) があり、そこでは run が続くので、届くアプリでもキャレット移動と同じく
+    // run を続けて採用・確定時のキャレット位置に挿入する (読みは文書に無いので壊れない)
+    if (alt && InRun() && panelRun_ && !Composing()) {
+        return;
+    }
     if (Composing()) {
         // 昇格した候補選択中も、昇格できなかった run と同じく確定してからアプリへ渡す
         CommitComposition(context);
@@ -2829,8 +2835,7 @@ bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
     }
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
-    // Alt 併用は送り直さない (SendKeyWithModifiers は Ctrl・Shift しか押し直さないため)。
-    // 挿入の後にそのまま渡すので、CUAS 経由のアプリでは挿入より先に処理されうる
+    // Alt 併用はパネルの run を終えずにアプリへ渡す (EndRunIfPassthroughKey) ので送り直さない
     if (alt) {
         return false;
     }
