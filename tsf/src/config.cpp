@@ -395,6 +395,14 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.modeless);
     } else if (key == L"candidate_bar") {
         ParseBool(value, config.candidateBar);
+    } else if (key == L"candidate_position") {
+        if (value == L"caret") {
+            config.candidateCenter = false;
+        } else if (value == L"center") {
+            config.candidateCenter = true;
+        }
+    } else if (key == L"panel_input") {
+        ParseBool(value, config.panelInput);
     } else if (key == L"min_suggest_chars") {
         ParseClamped(value, 1, 5, config.minSuggestChars);
     } else if (key == L"next_word") {

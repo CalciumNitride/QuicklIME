@@ -375,6 +375,7 @@ TextService::TextService()
       barX_(0),
       barXFixed_(false),
       barCaret_{},
+      barCaretValid_(false),
       nextWordBar_(false),
       nextWordPending_(false),
       rerankId_(0),
@@ -415,7 +416,10 @@ TextService::TextService()
     candidateWindow_.SetLogger([this](const std::wstring& message) {
         DebugLog(L"候補 " + message);
     });
-    pendingWindow_.SetLogger([this](const std::wstring& message) {
+    suggestPanel_.SetLogger([this](const std::wstring& message) {
+        DebugLog(L"パネル " + message);
+    });
+    pendingPanel_.SetLogger([this](const std::wstring& message) {
         DebugLog(L"小窓 " + message);
     });
 }
@@ -585,7 +589,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
 STDMETHODIMP TextService::Deactivate()
 {
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     CancelAppendAction();
     UpdateTextEditSink(nullptr);
     ClearConversion();
@@ -673,7 +677,7 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     UNREFERENCED_PARAMETER(prevFocus);
     // 擬似 Backspace の目印待ちと未完成ローマ字の表示は離れる文書のもの
     CancelAppendAction();
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     // run は文書を離れた時点で忘れる
     if (InRun()) {
         DiscardPendingRomaji();
@@ -766,8 +770,14 @@ STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 void TextService::RefreshConfig()
 {
     if (config_.Refresh()) {
-        candidateWindow_.SetFont(config_.Get().candidateFont, config_.Get().candidateFontSize);
-        pendingWindow_.SetFont(config_.Get().candidateFont, config_.Get().candidateFontSize);
+        const TsfConfig& config = config_.Get();
+        candidateWindow_.SetFont(config.candidateFont, config.candidateFontSize);
+        // アプリモード (ライト/ダーク) も設定と同じ契機で読み直す (打鍵ごとには読まない)
+        const PanelTheme theme = PanelTheme::ForAppMode();
+        for (SuggestPanel* panel : {&suggestPanel_, &pendingPanel_}) {
+            panel->SetFont(config.candidateFont, config.candidateFontSize);
+            panel->SetTheme(theme);
+        }
     }
     // 自動英字判定の有効/無効はコンポーザが持つ。Clear() でも維持されるフラグなので
     // 設定を読む機会ごとに渡し直すだけでよい
@@ -1224,7 +1234,7 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     // (run もオフの時点で忘れる)
     if (!IsKeyboardOpen()) {
         CancelAppendAction();
-        pendingWindow_.Hide();
+        pendingPanel_.Hide();
         if (InRun()) {
             DiscardPendingRomaji();
             EndRun();
@@ -1343,7 +1353,7 @@ STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly
         return S_OK;
     }
     DebugLog(L"追記のみの文書で run を終了: OnEndEdit の選択変更");
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     DiscardPendingRomaji();
     EndRun();
     ClearContext();
@@ -2330,7 +2340,7 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     // 英字候補・補正候補は min_suggest_chars によらず出す (pen は「ぺん」、want は「わんt」で2文字)
     const bool suggest = !asciiOnly && kana.size() >= static_cast<size_t>(config.minSuggestChars);
     if (!suggest && !hasAscii) {
-        ClearBar();
+        ClearBarKeepingInput(context);
         return S_OK;
     }
 
@@ -2351,21 +2361,23 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     barAsciiSource_ = composer_.Display();
     std::vector<BarCandidate> items = BuildBarItems(kana, sentences, predictions);
     if (items.empty()) {
-        ClearBar();
+        ClearBarKeepingInput(context);
         return S_OK;
     }
 
+    // 画面中央に出すときは、キャレットの矩形が取れなくても出す (モニタは前景ウィンドウで決める)
     RECT caret = {};
-    if (!CaretRect(context, &caret)) {
+    const bool gotCaret = CaretRect(context, &caret);
+    if (!gotCaret && !config.candidateCenter) {
         ClearBar();
         return S_OK;
     }
-    if (!barXFixed_) {
+    if (gotCaret && !barXFixed_) {
         barX_ = caret.left;
         barXFixed_ = true;
     }
-    if (!ShowBarItems(caret, std::move(items))) {
-        ClearBar();
+    if (!ShowBarItems(gotCaret ? &caret : nullptr, std::move(items))) {
+        ClearBarKeepingInput(context);
         return S_OK;
     }
     barKana_ = kana;
@@ -2444,28 +2456,136 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
     return items;
 }
 
-bool TextService::ShowBarItems(const RECT& caret, std::vector<BarCandidate> items)
+bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> items)
 {
     // 区間分割した run の全体変換は、採用後の文字列が分かるよう英字区間を付けて見せる
     const std::wstring asciiTail =
         SplitAsciiRun() ? composer_.ConfirmedKana().substr(composer_.AsciiStart()) : L"";
-    std::vector<CandidateWindow::BarItem> labels;
+    std::vector<SuggestPanel::Item> labels;
     for (const BarCandidate& item : items) {
         const bool head = item.kind == BarKind::Head;
         const bool tail = !head && item.kind != BarKind::Ascii;
-        labels.push_back({tail ? item.surface + asciiTail : item.surface, head});
+        labels.push_back({tail ? item.surface + asciiTail : item.surface, head, nextWordBar_});
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
-    const size_t shown = candidateWindow_.ShowBar(caret, barX_, labels, labels.size());
+    const size_t shown = ShowPanel(caret, labels, labels.size());
     if (shown == 0) {
         return false;
     }
     barBuilt_ = items;
-    barCaret_ = caret;
-    // 作業領域に収まらず表示しなかった候補は、選択の対象からも外す
+    barCaretValid_ = caret != nullptr;
+    if (caret != nullptr) {
+        barCaret_ = *caret;
+    }
+    // 作業領域 (画面中央ではパネルの幅) に収まらず表示しなかった候補は、選択の対象からも外す
     items.resize(shown);
+    labels.resize(shown);
     barItems_ = std::move(items);
+    barLabels_ = std::move(labels);
     return true;
+}
+
+// ---- サジェストパネル ----
+
+bool TextService::PanelInputActive() const
+{
+    const TsfConfig& config = config_.Get();
+    return config.candidateBar && config.panelInput;
+}
+
+bool TextService::PanelInputShown() const
+{
+    return PanelInputActive() && !converting_ && (InRun() || Composing());
+}
+
+bool TextService::PanelInputLine(SuggestPanel::InputLine* line) const
+{
+    if (!PanelInputActive() || converting_) {
+        return false;
+    }
+    if (Composing()) {
+        // 候補選択を取り消した直後の昇格した composition (run に戻る前)
+        line->text = composer_.Display();
+        return true;
+    }
+    if (InRun()) {
+        line->text = surface_;
+        line->pending = AppendPendingText();
+        return true;
+    }
+    if (!nextWordBar_ || contextSurface_.empty()) {
+        return false;
+    }
+    // 前文脈は末尾の最大 kContextChars 文字 (サロゲートペアは1文字に数える) だけを出す
+    constexpr size_t kContextChars = 8;
+    size_t start = contextSurface_.size();
+    for (size_t count = 0; count < kContextChars && start > 0; ++count) {
+        --start;
+        if (start > 0 && IS_LOW_SURROGATE(contextSurface_[start]) &&
+            IS_HIGH_SURROGATE(contextSurface_[start - 1])) {
+            --start;
+        }
+    }
+    line->context = contextSurface_.substr(start);
+    if (start > 0) {
+        line->context.insert(0, L"…");
+    }
+    line->nextWordLabel = true;
+    return true;
+}
+
+size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel::Item>& labels,
+                              size_t selection)
+{
+    SuggestPanel::Placement placement;
+    placement.position = config_.Get().candidateCenter ? SuggestPanel::Position::Center
+                                                       : SuggestPanel::Position::Caret;
+    placement.caret = caret;
+    placement.x = barX_;
+    // 入力行を出す設定では未完成ローマ字の小窓を出さないので、その下に避けなくてよい
+    placement.belowCapsule = !PanelInputActive();
+    SuggestPanel::InputLine input;
+    const bool hasInput = PanelInputLine(&input);
+    return suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
+}
+
+void TextService::RefreshRunPanel(ITfContext* context)
+{
+    RECT caret = {};
+    const bool gotCaret = CaretRect(context, &caret);
+    if (!gotCaret && !config_.Get().candidateCenter) {
+        DebugLog(L"キャレットの矩形が取れないためパネルを出さない");
+        ClearBar();
+        return;
+    }
+    if (gotCaret && !barXFixed_) {
+        barX_ = caret.left;
+        barXFixed_ = true;
+    }
+    const size_t selection = barIndex_ >= 0 ? static_cast<size_t>(barIndex_) : barLabels_.size();
+    const size_t shown = ShowPanel(gotCaret ? &caret : nullptr, barLabels_, selection);
+    if (gotCaret) {
+        barCaret_ = caret;
+        barCaretValid_ = true;
+    }
+    if (shown < barItems_.size()) {
+        barItems_.resize(shown);
+        barLabels_.resize((std::min)(shown, barLabels_.size()));
+        if (barIndex_ >= static_cast<int>(shown)) {
+            barIndex_ = -1;
+        }
+    }
+}
+
+void TextService::ClearBarKeepingInput(ITfContext* context)
+{
+    if (!PanelInputShown() || context == nullptr) {
+        ClearBar();
+        return;
+    }
+    // 打鍵ごとにウィンドウを作り直さないよう、隠さずに入力行だけのパネルへ描き直す
+    ResetBarState();
+    RefreshRunPanel(context);
 }
 
 // ---- LLM による並べ替え ----
@@ -2611,14 +2731,14 @@ void TextService::RequestRerank(const std::wstring& kana)
     rerankTick_ = GetTickCount64();
     rerankKana_ = kana;
     rerankContext_ = CurrentContext();
-    if (!candidateWindow_.StartTimer(kLlmPollMs, [this] { OnRerankTimer(); })) {
+    if (!suggestPanel_.StartTimer(kLlmPollMs, [this] { OnRerankTimer(); })) {
         rerankId_ = 0;
     }
 }
 
 void TextService::StopRerankPolling()
 {
-    candidateWindow_.StopTimer();
+    suggestPanel_.StopTimer();
 }
 
 void TextService::ResetRerank()
@@ -2666,7 +2786,7 @@ void TextService::OnRerankTimer()
         std::equal(items.begin(), items.end(), barBuilt_.begin(), barBuilt_.end(), same)) {
         return;
     }
-    ShowBarItems(barCaret_, std::move(items));
+    ShowBarItems(barCaretValid_ ? &barCaret_ : nullptr, std::move(items));
 }
 
 bool TextService::TakeRerankedCandidates(const std::wstring& kana,
@@ -2703,7 +2823,14 @@ HRESULT TextService::UpdateCompositionAndBar(ITfContext* context)
 
 void TextService::ClearBar()
 {
+    ResetBarState();
+    suggestPanel_.Hide();
+}
+
+void TextService::ResetBarState()
+{
     barItems_.clear();
+    barLabels_.clear();
     barKana_.clear();
     barIndex_ = -1;
     nextWordBar_ = false;
@@ -2713,10 +2840,6 @@ void TextService::ClearBar()
     barAscii_.Clear();
     barAsciiSource_.clear();
     StopRerankPolling();
-    // 変換中は候補ウィンドウを変換側が使っているので触らない
-    if (!converting_) {
-        candidateWindow_.Hide();
-    }
 }
 
 HRESULT TextService::MoveBarSelection(int delta)
@@ -2735,7 +2858,7 @@ HRESULT TextService::MoveBarSelection(int delta)
     } else {
         --barIndex_;
     }
-    candidateWindow_.SetSelection(static_cast<size_t>(barIndex_));
+    suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));
     return S_OK;
 }
 
@@ -2748,14 +2871,14 @@ HRESULT TextService::SelectBarByNumber(size_t number)
         return S_OK; // 表示されていない番号は無視する
     }
     barIndex_ = static_cast<int>(number);
-    candidateWindow_.SetSelection(number);
+    suggestPanel_.SetSelection(number);
     return S_OK;
 }
 
 HRESULT TextService::DeselectBar()
 {
     barIndex_ = -1;
-    candidateWindow_.SetSelection(barItems_.size()); // 範囲外 = 強調なし
+    suggestPanel_.SetSelection(barItems_.size()); // 範囲外 = 強調なし
     return S_OK;
 }
 
@@ -3097,7 +3220,7 @@ RECT TextService::CandidateAnchor(ITfContext* context)
     FallbackIfOutsideWindow(context, &rect, L"候補ウィンドウの位置");
     // 未完成ローマ字の小窓はキャレットに重ねて出すので、候補ウィンドウはその下に出す
     RECT pendingRect = {};
-    if (pendingWindow_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
+    if (pendingPanel_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
         rect.bottom = pendingRect.bottom;
         DebugLog(L"候補ウィンドウの位置: 小窓の下端に合わせる bottom=" +
                  std::to_wstring(rect.bottom));

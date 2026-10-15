@@ -19,6 +19,7 @@ add_library(quicklime_tsf SHARED
     src/lang_bar.cpp
     src/registry.cpp
     src/romaji.cpp
+    src/suggest_panel.cpp
     src/text_service.cpp
     src/text_service_direct.cpp
     src/exports.def
@@ -31,3 +32,4 @@ set_target_properties(quicklime_tsf PROPERTIES OUTPUT_NAME "QuicklIME")
 target_compile_features(quicklime_tsf PRIVATE cxx_std_20)
 target_compile_definitions(quicklime_tsf PRIVATE UNICODE _UNICODE)
 target_compile_options(quicklime_tsf PRIVATE /W4 /utf-8 /EHsc)
+target_link_libraries(quicklime_tsf PRIVATE d2d1 dwrite)

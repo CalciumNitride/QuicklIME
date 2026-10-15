@@ -877,7 +877,7 @@ HRESULT TextService::ReplaceRunDisplay(ITfContext* context, const std::wstring& 
                                        size_t selectOffset, size_t selectLength)
 {
     // 置き換えた後の表示に未完成のローマ字が要るなら、呼び出し側が小窓を出し直す
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     bool selected = false;
     const ReplaceRunResult result = ReplaceRunRange(context, surface_, surfaceCaret_,
                                                     surfaceSelectLength_, text, selectOffset,
@@ -1264,7 +1264,7 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
     surfaceSelectLength_ = 0;
     // 降格で小窓に戻した未完成のローマ字は、昇格し直した変換の表示に含まれる
     // (変換の開始時と同じく小窓を閉じる)
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     ApplyRangeContext();
     CaptureLlmContextFrom(rangeBefore_);
     DebugLog(std::wstring(delta < 0 ? L"変換の範囲を広げる: " : L"変換の範囲を縮める: ") +
@@ -1596,7 +1596,7 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     adoption_ = std::move(adoption);
     DebugLog(L"バーの候補を採用: " + adoption_.written);
 
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     ClassifyAppendDocument(context);
     if (appendDocument_ == AppendDocument::Readable) {
         if (ReplaceRunText(context, surface_, adoption_.written) != ReplaceRunResult::Succeeded) {
@@ -1722,18 +1722,22 @@ void TextService::ShowNextWordBar(ITfContext* context)
         items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
     }
     RECT caret = {};
-    if (!CaretRect(context, &caret)) {
+    const bool gotCaret = CaretRect(context, &caret);
+    if (!gotCaret && !config.candidateCenter) {
         return;
     }
     ClearBar();
     // run のバーと違って読みが伸びないので、出すたびにその時点の位置に出す。次の run の
     // バーは run で最初に出した時点の位置に固定し直す (barXFixed_ は立てない)
-    barX_ = caret.left;
-    if (!ShowBarItems(caret, std::move(items))) {
+    if (gotCaret) {
+        barX_ = caret.left;
+    }
+    // 候補の縁と入力行の前文脈は、後続語の予測であることで決まる
+    nextWordBar_ = true;
+    if (!ShowBarItems(gotCaret ? &caret : nullptr, std::move(items))) {
         ClearBar();
         return;
     }
-    nextWordBar_ = true;
     DebugLog(L"後続語の予測を表示: " + std::to_wstring(barItems_.size()) + L" 件 (前文脈 " +
              contextSurface_ + L")");
 }
@@ -1796,7 +1800,7 @@ HRESULT TextService::MoveNextWordSelection(int delta)
     }
     if (delta < 0 && barIndex_ < 0) {
         barIndex_ = static_cast<int>(barItems_.size()) - 1;
-        candidateWindow_.SetSelection(static_cast<size_t>(barIndex_));
+        suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));
         return S_OK;
     }
     return MoveBarSelection(delta);
@@ -1878,7 +1882,7 @@ void TextService::EndRun()
 
 void TextService::DropRun()
 {
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     ClearConversion();
     ClearBar();
     ResetRerank();
@@ -2065,7 +2069,7 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
         // 読める文書で run が文書と食い違った (キャレット移動・アプリ側の編集)。
         // 古い run は忘れ、この打鍵を新しい run の先頭として追記し直す
         composer_ = before;
-        pendingWindow_.Hide();
+        pendingPanel_.Hide();
         DiscardPendingRomaji();
         EndRun();
         ClearContext();
@@ -2151,7 +2155,7 @@ TextService::AppendResult TextService::RewriteAppendRun(ITfContext* context,
                                                         const std::wstring& newText,
                                                         bool endRunAfter)
 {
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     ClassifyAppendDocument(context);
     const size_t keep = CommonPrefixLength(surface_, newText);
     if (appendDocument_ == AppendDocument::Readable) {
@@ -2180,21 +2184,29 @@ TextService::AppendResult TextService::RewriteAppendRun(ITfContext* context,
 
 void TextService::UpdateAppendPending(ITfContext* context, const std::wstring& pending)
 {
+    if (PanelInputActive()) {
+        // 未完成のローマ字はパネルの入力行に含める (入力行は AppendPendingText から作る)
+        pendingPanel_.Hide();
+        if (context != nullptr && PanelInputShown()) {
+            RefreshRunPanel(context);
+        }
+        return;
+    }
     if (pending.empty() || context == nullptr) {
-        pendingWindow_.Hide();
+        pendingPanel_.Hide();
         return;
     }
     RECT rect = {};
     const wchar_t* source = nullptr;
     if (!CaretRect(context, &rect, &source)) {
-        pendingWindow_.Hide();
+        pendingPanel_.Hide();
         DebugLog(L"キャレットの矩形が取れないため小窓を出さない");
         return;
     }
     if (!config_.Get().debugLog.empty()) {
         DebugLog(std::wstring(L"小窓の位置: ") + source + L" " + DebugRectText(rect));
     }
-    pendingWindow_.ShowInline(rect, pending);
+    pendingPanel_.ShowCapsule(rect, pending);
 }
 
 bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** source)
@@ -2285,7 +2297,7 @@ void TextService::DiscardPendingRomaji()
 TextService::AppendResult TextService::FlushAppendPending(ITfContext* context)
 {
     const std::wstring tail = AppendPendingText();
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     if (tail.empty()) {
         return AppendResult::Done;
     }
@@ -2352,7 +2364,7 @@ HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
     const std::wstring text = composer_.Commit() + space;
     if (StartsWith(text, surface_)) {
         const AppendResult result = AppendRunText(context, text.substr(surface_.size()));
-        pendingWindow_.Hide();
+        pendingPanel_.Hide();
         if (result == AppendResult::Done) {
             surface_ = text;
             surfaceCaret_ = surface_.size();
@@ -2399,7 +2411,7 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context)
 
 HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
 {
-    pendingWindow_.Hide();
+    pendingPanel_.Hide();
     rangeTracked_ = false;
     rangeStates_.clear();
     if (surface_.empty()) {
@@ -2670,7 +2682,7 @@ void TextService::OnMouseInput()
     if (appendDocument_ != AppendDocument::Readable) {
         if (InRun()) {
             DebugLog(L"追記のみの文書で run を終了: マウス操作");
-            pendingWindow_.Hide();
+            pendingPanel_.Hide();
             DiscardPendingRomaji();
             EndRun();
             ClearContext();

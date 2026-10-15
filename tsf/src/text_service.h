@@ -11,6 +11,7 @@
 #include "config.h"
 #include "engine_client.h"
 #include "romaji.h"
+#include "suggest_panel.h"
 
 class LangBarButton;
 enum class ReplaceRunResult;
@@ -239,13 +240,33 @@ private:
     std::vector<BarCandidate> BuildBarItems(const std::wstring& kana,
                                             const std::vector<SentenceCandidate>& sentences,
                                             const std::vector<PredictionCandidate>& predictions) const;
-    // items を caret の行に固定の x 位置で表示する。作業領域に収まった候補だけを選択の対象に
-    // する。1件も出せなければ false (何も変えない)
-    bool ShowBarItems(const RECT& caret, std::vector<BarCandidate> items);
+    // items を caret の行に固定の x 位置 (設定 candidate_position center なら画面中央) で
+    // 表示する。収まった候補だけを選択の対象にする。caret が null ならキャレットの矩形が
+    // 取れなかったことを表す (画面中央のときだけ出せる)。1件も出せなければ false (何も変えない)
+    bool ShowBarItems(const RECT* caret, std::vector<BarCandidate> items);
     // composition を Display() で更新し、続けてバーを作り直す (候補選択を取り消したときの表示)
     HRESULT UpdateCompositionAndBar(ITfContext* context);
-    // バーの候補と選択を破棄する (非変換中なら候補ウィンドウも隠す)
+    // バーの候補と選択を破棄し、パネルを隠す
     void ClearBar();
+    // バーの候補と選択を破棄する (パネルの表示は変えない)
+    void ResetBarState();
+    // バーの候補を破棄する。入力行を出している run の間は、パネルを入力行だけにして残す
+    void ClearBarKeepingInput(ITfContext* context);
+
+    // ---- サジェストパネル (docs/design/suggest-panel.md) ----
+    // パネルに入力行を出す設定か (candidate_bar 1 かつ panel_input 1)
+    bool PanelInputActive() const;
+    // 入力行を出している状態か (入力行を出す設定で、候補選択中でない run の間)
+    bool PanelInputShown() const;
+    // 入力行の内容 (run の表示中の文字列と未完成のローマ字、run が無ければ後続語の予測の前文脈)。
+    // 入力行を出さないときは false
+    bool PanelInputLine(SuggestPanel::InputLine* line) const;
+    // labels と入力行をパネルに出し、表示した候補の数を返す。caret が null ならキャレットの
+    // 矩形が取れなかったことを表す
+    size_t ShowPanel(const RECT* caret, const std::vector<SuggestPanel::Item>& labels,
+                     size_t selection);
+    // 表示中の候補と今の入力行でパネルを出し直す (入力行を出している run の間に呼ぶ)
+    void RefreshRunPanel(ITfContext* context);
     // バーの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)。
     // 文書は書き換えない
     HRESULT MoveBarSelection(int delta);
@@ -612,7 +633,8 @@ private:
     // endRunAfter なら作り直した後に run を終える
     AppendResult RewriteAppendRun(ITfContext* context, const std::wstring& newText,
                                   bool endRunAfter);
-    // 未完成ローマ字の小窓の表示を pending にする (空なら隠す)
+    // 未完成ローマ字の小窓の表示を pending にする (空なら隠す)。パネルに入力行を出す設定では
+    // 小窓は出さず、パネルの入力行を出し直す
     void UpdateAppendPending(ITfContext* context, const std::wstring& pending);
     // 文書に入っていない未完成のローマ字を読みから取り除く
     void DiscardPendingRomaji();
@@ -671,12 +693,14 @@ private:
     std::vector<size_t> preResizeLengths_;
     // 入力全体を1文節にした候補選択 (segment_ui 0) の、候補ごとの文節。確定時の学習に使う
     std::vector<SentenceCandidate> wholeCandidates_;
-    CandidateWindow candidateWindow_;
+    CandidateWindow candidateWindow_;          // 候補選択中の縦の候補一覧
+    SuggestPanel suggestPanel_;                // 候補バーと入力行
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
 
-    // 候補バー。候補ウィンドウは候補選択中の縦の表示と排他で共用する
+    // 候補バー
     std::vector<BarCandidate> barItems_;  // 表示中の候補 (空 = 非表示)
+    std::vector<SuggestPanel::Item> barLabels_;  // 表示中の候補の表示 (barItems_ と同じ並び)
     std::wstring barKana_;                // 候補を作った確定済みかな
     int barIndex_;                        // 選択中の候補 index (-1 = 未選択)
     // バーの x 座標。run で最初に出した時点 (部分採用の後はその時点) の位置に固定する
@@ -687,6 +711,7 @@ private:
     std::vector<BarCandidate> barBuilt_;
     std::vector<PredictionCandidate> barPredictions_;
     RECT barCaret_;
+    bool barCaretValid_;  // barCaret_ を取れたか (画面中央のときは取れなくても出す)
     // 英字候補・補正候補を作った読みの複製 (採用でこれに置き換える) と、作ったときの composer_ の表示
     bool barHasAscii_ = false;
     RomajiComposer barAscii_;
@@ -767,7 +792,7 @@ private:
 
     // 追記型入力の状態
     AppendDocument appendDocument_;          // フォーカス中の文書の分類
-    CandidateWindow pendingWindow_;          // 未完成のローマ字の小窓
+    SuggestPanel pendingPanel_;              // 未完成のローマ字の小窓
     bool awaitingMarker_;                    // 擬似 Backspace を送り、目印の打鍵を待っている
     PseudoKeyAction appendAction_;           // 目印の打鍵を受け取ったときに行うこと
     KeyFunc appendActionFunc_;               // Compose で行う変換 (Convert は通常の変換)

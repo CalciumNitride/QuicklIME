@@ -85,6 +85,11 @@ struct TsfConfig {
     bool modeless = false;
     // 入力中に横一列の候補バーを出す (docs/design/candidate-bar.md)
     bool candidateBar = true;
+    // 候補バーを画面中央に出す (設定 candidate_position の center。caret ならキャレット行の下。
+    // docs/design/suggest-panel.md)
+    bool candidateCenter = false;
+    // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
+    bool panelInput = false;
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す

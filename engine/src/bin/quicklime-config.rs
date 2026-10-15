@@ -73,6 +73,8 @@ const ID_CHECK_SEGMENT_UI: i32 = 114;
 const ID_CHECK_LLM: i32 = 115;
 const ID_COMBO_LLM_BACKEND: i32 = 116;
 const ID_CHECK_NEXT_WORD: i32 = 117;
+const ID_COMBO_CANDIDATE_POSITION: i32 = 118;
+const ID_CHECK_PANEL_INPUT: i32 = 119;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
@@ -101,6 +103,8 @@ const TAB_NAMES: [&str; 6] = ["変換", "入力", "表示", "キー割当", "ア
 
 /// LLM のバックエンド: (設定上の名前, 表示名)
 const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
+/// 候補の表示位置 (candidate_position の値, 表示名)
+const CANDIDATE_POSITIONS: [(&str, &str); 2] = [("caret", "キャレットの下"), ("center", "画面中央")];
 
 /// キー割当の照合に使う入力状態: (設定上の名前, 表示名)。
 /// 並びは TSF 層 (tsf/src/config.h の KeyState) と合わせる
@@ -392,6 +396,10 @@ struct Config {
     modeless: bool,
     candidate_bar: bool,
     next_word: bool,
+    /// 候補の表示位置 ("caret" / "center")
+    candidate_position: String,
+    /// 入力中の読みも候補と同じパネルに出す
+    panel_input: bool,
     segment_ui: bool,
     llm: bool,
     /// LLM のバックエンド ("cpu" / "vulkan")
@@ -419,6 +427,8 @@ impl Default for Config {
             modeless: false,
             candidate_bar: true,
             next_word: true,
+            candidate_position: "caret".to_string(),
+            panel_input: false,
             segment_ui: false,
             llm: false,
             llm_backend: "cpu".to_string(),
@@ -560,6 +570,12 @@ impl Config {
             "modeless" => parse_bool(&mut self.modeless),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
             "next_word" => parse_bool(&mut self.next_word),
+            "candidate_position" => {
+                if CANDIDATE_POSITIONS.iter().any(|(name, _)| *name == value) {
+                    self.candidate_position = value.to_string();
+                }
+            }
+            "panel_input" => parse_bool(&mut self.panel_input),
             "segment_ui" => parse_bool(&mut self.segment_ui),
             "llm" => parse_bool(&mut self.llm),
             "llm_backend" => {
@@ -642,6 +658,8 @@ impl Config {
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
         text.push_str(&format!("next_word\t{}\n", self.next_word as u32));
+        text.push_str(&format!("candidate_position\t{}\n", self.candidate_position));
+        text.push_str(&format!("panel_input\t{}\n", self.panel_input as u32));
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
         text.push_str("\n# キー割当 (key.<機能>@<状態> は状態別の上書き)\n");
@@ -988,6 +1006,16 @@ fn main() {
         check("候補バーを表示する", y, ID_CHECK_CANDIDATE_BAR, config.candidate_bar);
         y += row_h + row_gap;
         check("確定の後に次の語を予測する", y, ID_CHECK_NEXT_WORD, config.next_word);
+        y += row_h + row_gap;
+        create_control("STATIC", "候補の表示位置:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
+        let position_labels: Vec<&str> = CANDIDATE_POSITIONS.iter().map(|(_, label)| *label).collect();
+        let current_position = CANDIDATE_POSITIONS
+            .iter()
+            .find(|(name, _)| *name == config.candidate_position)
+            .map_or(CANDIDATE_POSITIONS[0].1, |(_, label)| *label);
+        add_combo(ctrl_x, y, ID_COMBO_CANDIDATE_POSITION, &position_labels, current_position);
+        y += row_h + row_gap;
+        check("入力中の読みも候補と同じ場所に表示する", y, ID_CHECK_PANEL_INPUT, config.panel_input);
         y += row_h + row_gap;
         create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
@@ -1419,6 +1447,11 @@ fn collect(hwnd: HWND) -> Config {
     config.modeless = checked(ID_CHECK_MODELESS);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
     config.next_word = checked(ID_CHECK_NEXT_WORD);
+    let position = combo_text(ID_COMBO_CANDIDATE_POSITION);
+    if let Some((name, _)) = CANDIDATE_POSITIONS.iter().find(|(_, label)| *label == position) {
+        config.candidate_position = name.to_string();
+    }
+    config.panel_input = checked(ID_CHECK_PANEL_INPUT);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     config.llm = checked(ID_CHECK_LLM);
     let backend = combo_text(ID_COMBO_LLM_BACKEND);
@@ -2391,6 +2424,22 @@ mod tests {
         config.apply("key.next_word_next@run", "Ctrl+N");
         assert_eq!(config.keys[next].overrides[3], Some(vec![key("Ctrl+N")]));
         assert_eq!(config.keys[next].overrides[1], None);
+    }
+
+    #[test]
+    fn reads_panel_settings() {
+        let mut config = Config::default();
+        assert_eq!(config.candidate_position, "caret");
+        assert!(!config.panel_input);
+        config.apply("candidate_position", "center");
+        config.apply("panel_input", "1");
+        assert_eq!(config.candidate_position, "center");
+        assert!(config.panel_input);
+        // 不正な値は読み飛ばす
+        config.apply("candidate_position", "top");
+        config.apply("panel_input", "2");
+        assert_eq!(config.candidate_position, "center");
+        assert!(config.panel_input);
     }
 
     #[test]
