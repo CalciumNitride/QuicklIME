@@ -32,6 +32,9 @@ Enter で確定してはじめてアプリの文書に入れていた。この�
   composition の表示属性で行う
 - かなは完成した時点で文書に追記する。未完成のローマ字 (`k`、`ky` など) は文書に入れず、
   キャレット付近の小窓に出す (docs/design/append-input.md)
+- 入力中の読みを文書に書かず、サジェストパネルの入力行だけに持って採用・確定のときに挿入する
+  入力方式 (パネル保持入力、設定 `input_buffer panel`) は docs/design/panel-buffer.md で定める。
+  本書は既定の `input_buffer document` (文書書き込み入力) の挙動を定める
 
 ### run モデル
 

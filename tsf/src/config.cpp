@@ -403,6 +403,12 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
     } else if (key == L"panel_input") {
         ParseBool(value, config.panelInput);
+    } else if (key == L"input_buffer") {
+        if (value == L"document") {
+            config.panelBuffer = false;
+        } else if (value == L"panel") {
+            config.panelBuffer = true;
+        }
     } else if (key == L"panel_blur") {
         ParseBool(value, config.panelBlur);
     } else if (key == L"panel_theme") {

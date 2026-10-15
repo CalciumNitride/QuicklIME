@@ -254,7 +254,8 @@ private:
     void ClearBarKeepingInput(ITfContext* context);
 
     // ---- サジェストパネル (docs/design/suggest-panel.md) ----
-    // パネルに入力行を出す設定か (candidate_bar 1 かつ、panel_input 1 かテーマの input_row always)
+    // パネルに入力行を出す設定か (candidate_bar 1 かつ、panel_input 1 かテーマの input_row always。
+    // パネル保持入力の run は設定によらず出す)
     bool PanelInputActive() const;
     // 入力行を出している状態か (入力行を出す設定で、候補選択中でない run の間)
     bool PanelInputShown() const;
@@ -451,6 +452,30 @@ private:
     // (EnterNeedsResend のときは食べるのでここでは扱わない)。
     // OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
     void EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam);
+    // ---- パネル保持入力 (設定 input_buffer panel。docs/design/panel-buffer.md) ----
+    // 今の run がパネル保持入力の run か (run も候補選択中の composition も無ければ false)
+    bool PanelRunActive() const { return (InRun() || Composing()) && panelRun_; }
+    // パネル保持入力の run を終えてアプリへ渡すキーで、読めると判定されていない文書のため
+    // 食べて挿入の後に送り直すものか (Enter・矢印・Tab (バーなし)・Home/End/Delete・
+    // PgUp/PgDn・Ctrl 併用)
+    bool PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const;
+    // PanelKeyNeedsResend のキー: 読み (Enter のバー選択中は選択中の候補) を挿入して run を
+    // 終えてから、その打鍵をアプリへ送り直す
+    HRESULT EndPanelRunAndResend(ITfContext* context, WPARAM wparam);
+    // text をキャレット位置に挿入し (選択があれば置き換える)、文書の分類に使う直前の挿入として
+    // 覚える。LLM の履歴には足さない (呼び出し側の EndRun・FinishBarAdoption が足す)
+    HRESULT InsertPanelText(ITfContext* context, const std::wstring& text);
+    // パネル保持入力の run の文字列 text を挿入して run を終える (学習・記憶は EndRun と同じ)。
+    // 挿入に失敗したら run を捨てる
+    HRESULT InsertPanelRun(ITfContext* context, const std::wstring& text);
+    // 未判定の文書を、IME が直前に挿入した文字列の読み戻しで分類する。キャレット直前が
+    // その文字列で終わっていれば読める文書にし、そうでなければ未判定のまま残す。
+    // 照合に使った文字列は忘れる (次に挿入したときにまた判定する)
+    void ClassifyByLastInsert(ITfContext* context);
+    // 打鍵の前処理: パネル保持入力の設定で run が無いとき、run なしで文書を読む機能
+    // (変換キー・F6〜F10) の打鍵なら、食べるかを決める前に文書を分類する
+    void ClassifyBeforeIdleKey(ITfContext* context, WPARAM wparam);
+
     // バー選択中の採用に擬似 Backspace が要る (文書が読めると判定されていない)
     bool AdoptionNeedsPseudoBackspace() const;
     // Enter (Ctrl+M) を食べて確定し、確定の後に元の打鍵を送り直す (読めると判定されていない
@@ -759,6 +784,12 @@ private:
     // composition_ が run から昇格したもの (変換状態を抜けたら run に戻す) か。
     // 候補選択中の印字キーで確定して始まった次の composition にも引き継ぐ
     bool promoted_;
+    // 今の run (昇格した composition を含む) がパネル保持入力か。run を始めた時点の設定で決め、
+    // run の途中で設定が読み直されても変えない。パネル保持入力の run は surface_ を常に空にし、
+    // 読みは composer_ とパネルの入力行だけに持つ
+    bool panelRun_;
+    // IME が直前に文書へ挿入した文字列 (パネル保持入力での文書の分類用。照合したら忘れる)
+    std::wstring lastInserted_;
 
     // 変換の範囲の伸縮 (docs/design/conversion-range.md)。範囲を作って昇格したときに始める
     bool rangeTracked_;                   // 範囲の前を読めて、伸縮できる状態か

@@ -384,6 +384,7 @@ TextService::TextService()
       surfaceCaret_(0),
       surfaceSelectLength_(0),
       promoted_(false),
+      panelRun_(false),
       rangeTracked_(false),
       rangeKeepsExcluded_(false),
       rangeShift_(0),
@@ -678,7 +679,10 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 擬似 Backspace の目印待ちと未完成ローマ字の表示は離れる文書のもの
     CancelAppendAction();
     pendingPanel_.Hide();
-    // run は文書を離れた時点で忘れる
+    // 直前の挿入は離れる文書のもの (次の文書の分類に使わない)
+    lastInserted_.clear();
+    // run は文書を離れた時点で忘れる (パネル保持入力の run は surface_ が空なので、
+    // 元の文書には何も入れずに捨てることになる)
     if (InRun()) {
         DiscardPendingRomaji();
         EndRun();
@@ -877,6 +881,10 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     if (!IsKeyboardOpen()) {
         return false;
     }
+    // パネル保持入力の run を終えて渡すキーは、挿入より先にアプリへ届かないよう食べて送り直す
+    if (PanelKeyNeedsResend(context, wparam)) {
+        return true;
+    }
     const KeyMatch match = MatchKeyFunc(wparam);
     if (match.func != KeyFunc::None) {
         return CanRunKeyFunc(context, match.func);
@@ -953,6 +961,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
         // 後続語の予測を消すのと run の終了はここでも行う
         DismissNextWordForKey(wparam);
+        ClassifyBeforeIdleKey(context, wparam);
         EndRunIfPassthroughKey(context, wparam);
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
         NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
@@ -993,6 +1002,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
         return S_OK;
     }
     DismissNextWordForKey(wparam);
+    ClassifyBeforeIdleKey(context, wparam);
     EndRunIfPassthroughKey(context, wparam);
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
     NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
@@ -1100,6 +1110,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
         if (IsKeyboardOpen()) {
             DismissNextWordForKey(VK_F10);
+            ClassifyBeforeIdleKey(context, VK_F10);
         }
         // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき) と、入力なしで
         // 変換の対象が無いときはアプリへ再送する
@@ -1245,7 +1256,20 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     if (!IsKeyboardOpen()) {
         CancelAppendAction();
         pendingPanel_.Hide();
-        if (InRun()) {
+        if (InRun() && panelRun_ && surface_.empty()) {
+            // パネル保持入力の読みは文書に無いので、捨てずに未完成のローマ字ごと挿入して終える
+            ITfContext* context = nullptr;
+            ITfDocumentMgr* docMgr = nullptr;
+            if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) &&
+                docMgr != nullptr) {
+                docMgr->GetTop(&context);
+                docMgr->Release();
+            }
+            InsertPanelRun(context, composer_.Display());
+            if (context != nullptr) {
+                context->Release();
+            }
+        } else if (InRun()) {
             DiscardPendingRomaji();
             EndRun();
         }
@@ -1358,8 +1382,9 @@ STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly
         DebugLog(L"選択の変更で後続語の予測を消す");
         ClearBar();
     }
-    // 読める文書は次の追記の照合でキャレット移動を検出できる
-    if (appendDocument_ != AppendDocument::AppendOnly || !InRun()) {
+    // 読める文書は次の追記の照合でキャレット移動を検出できる。パネル保持入力の run は
+    // 文書のキャレットに結びつかず、挿入した時点のキャレット位置に入れるので続ける
+    if (appendDocument_ != AppendDocument::AppendOnly || !InRun() || panelRun_) {
         return S_OK;
     }
     DebugLog(L"追記のみの文書で run を終了: OnEndEdit の選択変更");
@@ -1603,6 +1628,9 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     // その通知が来ないホストでも自動英字判定が設定どおりになるよう毎打鍵で渡し直す
     composer_.SetModeless(config_.Get().modeless);
 
+    if (PanelKeyNeedsResend(context, wparam)) {
+        return EndPanelRunAndResend(context, wparam);
+    }
     const KeyMatch match = MatchKeyFunc(wparam);
     HRESULT hr;
     if (match.func != KeyFunc::None) {
@@ -1712,6 +1740,8 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         }
         const std::wstring commitText = PrepareConversionCommit();
         FinishConversionState(commitText);
+        // ここから新しい run になるので、方式は今の設定で決め直す
+        panelRun_ = config_.Get().panelBuffer;
         PushDirectKey(key);
         HRESULT hr = RestartComposition(context, commitText);
         if (FAILED(hr)) {
@@ -1720,6 +1750,10 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         }
         // 新しい composition はまだ空なので、キャレットの前は確定した文字列で終わっている
         CaptureLlmContext(context);
+        if (panelRun_) {
+            // 読みは文書に出さない (composition は直後の降格で空のまま終える)
+            return UpdateBar(context);
+        }
         return UpdateCompositionAndBar(context);
     }
 
@@ -2309,7 +2343,9 @@ HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
-    if (rangeTracked_ && rangeFromAdopted_) {
+    // パネル保持入力は記憶から始めた変換も、変換前の表記に戻さずに読みをパネルの run に戻す
+    // (元の文字列は composition を張るときに文書から消えている)
+    if (rangeTracked_ && rangeFromAdopted_ && !panelRun_) {
         return CancelAdoptedConversion(context);
     }
     return CancelConversionToKana(context);
@@ -2323,6 +2359,11 @@ HRESULT TextService::CancelConversionToKana(ITfContext* context)
     if (!Composing()) {
         return UpdateRunAndBar(context);
     }
+    if (PanelRunActive()) {
+        // composition は直後の降格で空にして終えるので、かなに書き直さない
+        // (文書を書き換える回数を増やさない)
+        return UpdateBar(context);
+    }
     return UpdateCompositionAndBar(context);
 }
 
@@ -2334,8 +2375,13 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     nextWordBar_ = false;
     const TsfConfig& config = config_.Get();
     // 候補選択中は縦の候補ウィンドウを使う
-    if (!config.candidateBar || (!Composing() && !InRun()) || converting_) {
+    if ((!Composing() && !InRun()) || converting_) {
         ClearBar();
+        return S_OK;
+    }
+    // 候補バーを出さない設定でも、パネル保持入力の run は入力行だけのパネルを出す
+    if (!config.candidateBar) {
+        ClearBarKeepingInput(context);
         return S_OK;
     }
     // モードレスの英字モード中は英文の入力なので、大文字小文字の補正候補のほかは出さない
@@ -2510,6 +2556,10 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
 
 bool TextService::PanelInputActive() const
 {
+    // パネル保持入力の run は、入力行に出さないと読みがどこにも見えない
+    if (PanelRunActive()) {
+        return true;
+    }
     const TsfConfig& config = config_.Get();
     return config.candidateBar && (config.panelInput || panelTheme_.Get().inputRowAlways);
 }
@@ -2530,8 +2580,13 @@ bool TextService::PanelInputLine(SuggestPanel::InputLine* line) const
         return true;
     }
     if (InRun()) {
-        line->text = surface_;
         line->pending = AppendPendingText();
+        if (panelRun_) {
+            const std::wstring display = composer_.Display();
+            line->text = display.substr(0, display.size() - line->pending.size());
+        } else {
+            line->text = surface_;
+        }
         return true;
     }
     if (!nextWordBar_ || contextSurface_.empty()) {
@@ -3083,6 +3138,9 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
     }
     if (SUCCEEDED(hr)) {
         AppendLlmHistory(commitText);
+        if (!commitText.empty()) {
+            lastInserted_ = commitText;
+        }
     }
     return hr;
 }
@@ -3337,6 +3395,9 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         TF_ES_SYNC | TF_ES_READWRITE);
     if (SUCCEEDED(hr)) {
         AppendLlmHistory(text);
+        if (!text.empty()) {
+            lastInserted_ = text;
+        }
     }
     composition_->Release();
     composition_ = nullptr;
@@ -3359,6 +3420,7 @@ HRESULT TextService::InsertText(ITfContext* context, const std::wstring& text)
                                    TF_ES_SYNC | TF_ES_READWRITE);
     if (SUCCEEDED(hr)) {
         AppendLlmHistory(text);
+        lastInserted_ = text;
     }
     return hr;
 }

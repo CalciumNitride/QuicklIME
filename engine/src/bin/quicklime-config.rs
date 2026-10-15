@@ -89,6 +89,7 @@ const ID_CHECK_DEBUG_LOG: i32 = 128;
 const ID_EDIT_DEBUG_LOG: i32 = 129;
 const ID_TAB: i32 = 130;
 const ID_BUTTON_THEME_DIR: i32 = 131;
+const ID_CHECK_PANEL_BUFFER: i32 = 132;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -403,6 +404,8 @@ struct Config {
     punctuation: String,
     digits_full: bool,
     modeless: bool,
+    /// 入力中の読みを文書に書かずパネルだけに持つ (input_buffer の panel)
+    panel_buffer: bool,
     candidate_bar: bool,
     next_word: bool,
     /// 候補パネルのテーマ名 (組み込みのテーマか、テーマフォルダの <名前>.tsv)
@@ -438,6 +441,7 @@ impl Default for Config {
             punctuation: "、。".to_string(),
             digits_full: false,
             modeless: false,
+            panel_buffer: false,
             candidate_bar: true,
             next_word: true,
             panel_theme: BUILTIN_THEMES[0].0.to_string(),
@@ -633,6 +637,11 @@ impl Config {
                 _ => {}
             },
             "modeless" => parse_bool(&mut self.modeless),
+            "input_buffer" => match value {
+                "document" => self.panel_buffer = false,
+                "panel" => self.panel_buffer = true,
+                _ => {}
+            },
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
             "next_word" => parse_bool(&mut self.next_word),
             "panel_theme" => {
@@ -725,6 +734,10 @@ impl Config {
         text.push_str(&format!("punctuation\t{}\n", self.punctuation));
         text.push_str(&format!("digits\t{}\n", if self.digits_full { "full" } else { "half" }));
         text.push_str(&format!("modeless\t{}\n", self.modeless as u32));
+        text.push_str(&format!(
+            "input_buffer\t{}\n",
+            if self.panel_buffer { "panel" } else { "document" }
+        ));
         text.push_str(&format!("segment_ui\t{}\n", self.segment_ui as u32));
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
@@ -1074,6 +1087,20 @@ fn main() {
             ID_CHECK_MODELESS,
             config.modeless,
         );
+        y += row_h + row_gap;
+        // 説明が長く項目の列の幅に収まらないので、ページの幅いっぱいに置く
+        let panel_buffer = create_control(
+            "BUTTON",
+            "入力中の読みを文書に書かず、候補パネルだけに表示する",
+            check_style,
+            0,
+            page_x,
+            y,
+            page_w,
+            row_h,
+            ID_CHECK_PANEL_BUFFER,
+        );
+        SendMessageW(panel_buffer, BM_SETCHECK, config.panel_buffer as usize, 0);
 
         // ---- 表示 ----
         current_page.set(Some(2));
@@ -1547,6 +1574,7 @@ fn collect(hwnd: HWND) -> Config {
     }
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
     config.modeless = checked(ID_CHECK_MODELESS);
+    config.panel_buffer = checked(ID_CHECK_PANEL_BUFFER);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
     config.next_word = checked(ID_CHECK_NEXT_WORD);
     let theme_index = unsafe { SendMessageW(GetDlgItem(hwnd, ID_COMBO_PANEL_THEME), CB_GETCURSEL, 0, 0) };
@@ -2572,6 +2600,19 @@ mod tests {
         assert_eq!(config.candidate_position, "center");
         assert!(config.panel_input);
         assert!(config.panel_blur);
+    }
+
+    #[test]
+    fn reads_input_buffer() {
+        let mut config = Config::default();
+        assert!(!config.panel_buffer);
+        config.apply("input_buffer", "panel");
+        assert!(config.panel_buffer);
+        // 不正な値は読み飛ばす
+        config.apply("input_buffer", "1");
+        assert!(config.panel_buffer);
+        config.apply("input_buffer", "document");
+        assert!(!config.panel_buffer);
     }
 
     #[test]

@@ -90,6 +90,9 @@ struct TsfConfig {
     bool candidateCenter = false;
     // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
     bool panelInput = false;
+    // 入力中の読みを文書に書かず、パネルの入力行だけに持つ (設定 input_buffer の panel。
+    // document なら文書書き込み入力。docs/design/panel-buffer.md)
+    bool panelBuffer = false;
     // パネルの背景をぼかし (アクリル風) にする (設定 panel_blur。テーマの blur never では効かない)
     bool panelBlur = false;
     // サジェストパネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)

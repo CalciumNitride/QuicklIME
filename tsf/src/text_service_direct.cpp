@@ -411,8 +411,10 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
     // Backspace は、未完成のローマ字が無ければアプリへ渡して文書の文字を消させる
     // (run は NoteKeyForAppend で追従させる)。自動判定で英字にした部分を判定前の日本語に戻す
     // Backspace は、文書の英字を IME が書き換えるので食べる
+    // (パネル保持入力の run は読みが文書に無いので常に食べる)
     const bool backspaceEaten = converting_ || !AppendPendingText().empty() ||
-                                (config_.Get().modeless && composer_.BackspaceRestores());
+                                (config_.Get().modeless && composer_.BackspaceRestores()) ||
+                                (InRun() && panelRun_);
     if (NextWordSelected() && !InRun()) {
         // 後続語の予測の選択中。DismissNextWordForKey が予測を残したキーだけが来る
         if (ctrl || alt) {
@@ -685,6 +687,11 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         }
         if (barIndex_ >= 0) {
             return DeselectBar();
+        }
+        if (InRun() && panelRun_) {
+            // パネル保持入力の run は文書に何も入れずに捨てる
+            DropRun();
+            return S_OK;
         }
         // 文字は文書に残したまま run だけ忘れる (未完成のローマ字も文書に残す)
         if (InRun()) {
@@ -1011,6 +1018,8 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     if (!ReadIdleTarget(context, &target)) {
         return S_OK;
     }
+    // 取消で降格するときの run の方式 (パネル保持入力なら読みを入力行に戻す)
+    panelRun_ = config_.Get().panelBuffer;
     size_t chainFrom = adopted_.size();
     size_t chainTo = adopted_.size();
     if (!target.selection) {
@@ -1039,7 +1048,7 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
         ClearContext();
         ResetRerank();
         llmRunContext_.clear();
-        if (tracked) {
+        if (tracked && !panelRun_) {
             tracked = ReadTextBeforeCaret(context, L"", &before);
         }
     } else {
@@ -1055,10 +1064,23 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
         }
         CaptureLlmContextFrom(before);
     }
-    if (PromoteRun(context) == PromoteResult::Dropped) {
+    const PromoteResult promoted = PromoteRun(context);
+    if (promoted == PromoteResult::Dropped) {
         return S_OK;
     }
-    if (tracked) {
+    if (panelRun_) {
+        if (promoted == PromoteResult::Refused) {
+            // 選択による強調の変換は文書に読みを書くので行わない (PromoteRun が文字列を戻してある)
+            DebugLog(L"パネル保持入力: composition を張れないため変換しない");
+            DropRun();
+            return S_OK;
+        }
+        // 伸縮は composition の中だけで行う (範囲の前の文書の文字列へは広げない)
+        BeginRangeTracking(L"", true);
+        if (!target.selection) {
+            BeginRangeAdopted(chainFrom, chainTo, target.adopted);
+        }
+    } else if (tracked) {
         BeginRangeTracking(before, false);
         if (!target.selection) {
             BeginRangeAdopted(chainFrom, chainTo, target.adopted);
@@ -1112,7 +1134,8 @@ bool TextService::RangeResizable() const
     // 範囲を変えると成り立たない。F6〜F10 の文字種変換は、かな1文字ごとの打鍵から残りを
     // 作り直せるので英字を含んでいても伸縮する。追記のみの文書は、張った composition の中だけで
     // 伸縮する (擬似 Backspace で張り直すと、目印を待つ間に続けて押した ←→ がアプリへ渡って
-    // キャレットを動かすため)。未判定の文書は伸縮しない
+    // キャレットを動かすため)。未判定の文書は伸縮しない。パネル保持入力は文書によらず
+    // composition の中だけで伸縮する
     if (!converting_ || config_.Get().segmentUi || !rangeTracked_) {
         return false;
     }
@@ -1121,8 +1144,9 @@ bool TextService::RangeResizable() const
     if (!formConversion && ContainsAsciiLetter(composer_.Commit())) {
         return false;
     }
-    return rangeKeepsExcluded_ ? appendDocument_ == AppendDocument::AppendOnly && Composing()
-                               : DocumentReadable();
+    return rangeKeepsExcluded_
+               ? (appendDocument_ == AppendDocument::AppendOnly || panelRun_) && Composing()
+               : DocumentReadable();
 }
 
 std::wstring TextService::RangeExcludedInComposition() const
@@ -1317,8 +1341,11 @@ void TextService::RememberAdopted(const std::wstring& surface,
                                   std::vector<std::pair<std::wstring, std::wstring>> segments,
                                   const RomajiComposer& composer)
 {
-    // 追記のみの文書は読み戻して照合できず、未判定の文書は読めるかどうかが分からない
-    if (!DocumentReadable() || surface.empty()) {
+    // 追記のみの文書は読み戻して照合できない。文書書き込み入力は未判定の文書でも記憶しない
+    // (読めるかどうかが分からない)。パネル保持入力は run の追記で文書を分類しないので、
+    // 未判定の文書でも記憶し、使う時点で読める文書と判定されていて照合で一致したものだけを使う
+    if (appendDocument_ == AppendDocument::AppendOnly || (!DocumentReadable() && !panelRun_) ||
+        surface.empty()) {
         return;
     }
     const std::wstring reading = composer.Commit();
@@ -1350,19 +1377,26 @@ void TextService::RememberAdopted(const std::wstring& surface,
 void TextService::RememberConversion(
     const std::vector<std::pair<std::wstring, std::wstring>>& committed)
 {
-    if (!DocumentReadable() || (rangeTracked_ && rangeKeepsExcluded_)) {
+    // 記憶する文書の条件は RememberAdopted と同じ。文書書き込み入力の追記のみの文書で外したかなは
+    // 記憶しないが、パネル保持入力では外したかなも確定文字列の先頭として記憶する
+    if (appendDocument_ == AppendDocument::AppendOnly || (!DocumentReadable() && !panelRun_) ||
+        (rangeTracked_ && rangeKeepsExcluded_ && !panelRun_)) {
         return;
     }
     if (rangeTracked_) {
         // 範囲が覆っていた記憶 (一部だけ入ったものを含む) を置き換える
         adopted_.resize((std::min)(rangeAdoptedFrom_, adopted_.size()));
         adopted_.insert(adopted_.end(), rangeAdopted_.begin(), rangeAdopted_.end());
-        if (!rangeKana_.empty()) {
+        // 範囲の手前のかな (文書に残したかな、または composition の先頭に残して一緒に確定する
+        // 外したかな) は、かなの1件にする
+        const std::wstring kanaBefore =
+            rangeKeepsExcluded_ ? RangeExcludedInComposition() : rangeKana_;
+        if (!kanaBefore.empty()) {
             RomajiComposer kana;
-            for (wchar_t c : rangeKana_) {
+            for (wchar_t c : kanaBefore) {
                 kana.PushKana(std::wstring(1, c), std::wstring(1, c));
             }
-            RememberAdopted(rangeKana_, {{rangeKana_, rangeKana_}}, kana);
+            RememberAdopted(kanaBefore, {{kanaBefore, kanaBefore}}, kana);
         }
     }
     RememberAdopted(ConvertedText(), committed, composer_);
@@ -1558,7 +1592,7 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     const size_t readingLength = head ? item.reading.size() : kana.size();
     // 文書の run の文字列は確定済みかなで始まる (Backspace で末尾の英字が未完成の
     // ローマ字に戻ったときだけ、その英字まで文書に入っている)
-    if (surface_.compare(0, readingLength, kana, 0, readingLength) != 0) {
+    if (!panelRun_ && surface_.compare(0, readingLength, kana, 0, readingLength) != 0) {
         DeselectBar();
         return E_UNEXPECTED;
     }
@@ -1587,16 +1621,35 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     adoption.readingLength = readingLength;
     adoption.adoptedLength = item.surface.size();
     adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !head);
-    adoption.written = item.surface + surface_.substr(readingLength);
-    if (adoption.endRun) {
-        // run を終えるので、未完成のローマ字も文書に残す (確定キー・Enter の救済と同じ)
-        adoption.written += AppendPendingText() + suffix;
+    if (panelRun_) {
+        // 挿入するのは採用部分だけ。run を終えるときは残りの読み (未完成のローマ字を含む) と
+        // suffix も続けて入れる
+        adoption.written = item.surface;
+        if (adoption.endRun) {
+            adoption.written += composer_.Display().substr(readingLength) + suffix;
+        }
+    } else {
+        adoption.written = item.surface + surface_.substr(readingLength);
+        if (adoption.endRun) {
+            // run を終えるので、未完成のローマ字も文書に残す (確定キー・Enter の救済と同じ)
+            adoption.written += AppendPendingText() + suffix;
+        }
     }
     adoption.before = composer_;
     adoption_ = std::move(adoption);
     DebugLog(L"バーの候補を採用: " + adoption_.written);
 
     pendingPanel_.Hide();
+    if (panelRun_) {
+        if (FAILED(InsertPanelText(context, adoption_.written))) {
+            DebugLog(L"採用の挿入に失敗: run を破棄");
+            DropRun();
+            ClearContext();
+            return E_FAIL;
+        }
+        FinishBarAdoption(context, followKey == nullptr);
+        return followKey != nullptr ? TypeAppend(context, *followKey) : S_OK;
+    }
     ClassifyAppendDocument(context);
     if (appendDocument_ == AppendDocument::Readable) {
         if (ReplaceRunText(context, surface_, adoption_.written) != ReplaceRunResult::Succeeded) {
@@ -1638,6 +1691,17 @@ HRESULT TextService::AdoptAsciiCandidate(ITfContext* context, BarAdopt mode,
         text += suffix;
     }
     DebugLog(L"英字候補を採用: " + text);
+    if (panelRun_) {
+        // 読みを置き換えるだけで、run を終えるときに初めて挿入する
+        if (endRun) {
+            return InsertPanelRun(context, text);
+        }
+        if (followKey != nullptr) {
+            return TypeAppend(context, *followKey);
+        }
+        UpdateBar(context);
+        return S_OK;
+    }
     ClassifyAppendDocument(context);
     const bool readable = appendDocument_ == AppendDocument::Readable;
     // 追記のみの文書では、擬似 Backspace より先に打鍵を追記すると消されるので目印の後に回す
@@ -1824,6 +1888,8 @@ HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
     }
     engine_.Learn({{item.reading, item.surface, contextSurface_}});
     SetCommitContext(item.reading, item.surface);
+    // run の外の挿入なので、記憶の扱い (RememberAdopted) は今の設定の方式に従う
+    panelRun_ = config_.Get().panelBuffer;
     const RomajiComposer composer = ComposerForReading(RomajiComposer(), item.reading);
     RememberAdopted(item.surface, {{item.reading, item.surface}}, composer);
     // 確定アンドゥは suffix (スペース) まで含めて読みのかなに戻す (run を Space で終えたときと同じ)
@@ -1917,6 +1983,27 @@ HRESULT TextService::UndoCommit(ITfContext* context)
     ClearContext();
     ResetRerank();
     llmRunContext_.clear();
+    panelRun_ = config_.Get().panelBuffer;
+    if (panelRun_) {
+        // パネル保持入力: 確定文字列を文書から消すだけで、読みは入力行に戻す
+        ClassifyByLastInsert(context);
+        if (appendDocument_ == AppendDocument::Readable) {
+            // キャレット直前が直前の確定文字列と一致する場合のみ消す
+            if (ReplaceRunText(context, commitText, L"") != ReplaceRunResult::Succeeded) {
+                DropRun();
+                return S_OK;
+            }
+            if (!adopted_.empty() && StartsWith(commitText, adopted_.back().surface)) {
+                adopted_.pop_back();
+            }
+            surface_.clear();
+            surfaceCaret_ = 0;
+            UpdateAppendPending(context, AppendPendingText());
+            return S_OK;
+        }
+        DebugLog(L"読めると判定されていない文書で確定アンドゥ: " + commitText);
+        return ScheduleAppendAction(context, PseudoKeyAction::Append, KeyFunc::None, L"", false);
+    }
     const std::wstring text = composer_.ConfirmedKana();
     ClassifyAppendDocument(context);
     if (appendDocument_ == AppendDocument::Readable) {
@@ -1989,8 +2076,9 @@ void TextService::DemoteIfLeftConversion(ITfContext* context)
     if (converting_) {
         return;
     }
-    // 確定したかなだけを文書に残して run に戻し、未完成のローマ字は小窓に戻す
-    const std::wstring text = composer_.ConfirmedKana();
+    // 確定したかなだけを文書に残して run に戻し、未完成のローマ字は小窓に戻す。
+    // パネル保持入力は composition を空の文字列で終え、読みを入力行に戻す
+    const std::wstring text = panelRun_ ? L"" : composer_.ConfirmedKana();
     HRESULT hr = E_UNEXPECTED;
     if (context != nullptr) {
         hr = RequestSync(context,
@@ -2060,10 +2148,23 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
     // 不一致で run を捨てるときに、この打鍵を含まない状態へ戻すための控え
     const RomajiComposer before = composer_;
     if (!InRun()) {
+        panelRun_ = config_.Get().panelBuffer;
+        if (panelRun_) {
+            ClassifyByLastInsert(context);
+        }
         // run の最初の文字を入れる前に左文脈を取る (run のかなは文書に入るため)
         CaptureLlmContext(context);
     }
     PushDirectKey(key);
+    if (panelRun_) {
+        // 文書には書かず、読みを入力行に出す
+        if (composer_.Empty()) {
+            DropRun();
+            return S_OK;
+        }
+        UpdateBar(context);
+        return S_OK;
+    }
     AppendResult result = SyncAppendRun(context);
     if (result == AppendResult::Mismatch) {
         // 読める文書で run が文書と食い違った (キャレット移動・アプリ側の編集)。
@@ -2329,6 +2430,17 @@ HRESULT TextService::BackspaceAppend(ITfContext* context)
     if (!InRun()) {
         return S_OK;
     }
+    if (panelRun_) {
+        // 読みは文書に無いので、Backspace は常に食べて読みの末尾を削る
+        composer_.Backspace();
+        ResolveAsciiRequest(&composer_);
+        if (composer_.Empty()) {
+            DropRun();
+            return S_OK;
+        }
+        UpdateBar(context);
+        return S_OK;
+    }
     // 未完成のローマ字だけを削る (文書の文字はアプリへ渡した Backspace で消える)。
     // 判定前の日本語に戻るときは、文書の英字も書き換える
     const bool restores = config_.Get().modeless && composer_.BackspaceRestores();
@@ -2362,6 +2474,9 @@ HRESULT TextService::SpaceAppend(ITfContext* context, bool shifted)
     const std::wstring space =
         (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
     const std::wstring text = composer_.Commit() + space;
+    if (panelRun_) {
+        return InsertPanelRun(context, text);
+    }
     if (StartsWith(text, surface_)) {
         const AppendResult result = AppendRunText(context, text.substr(surface_.size()));
         pendingPanel_.Hide();
@@ -2400,6 +2515,11 @@ void TextService::EndAppendRunForPassthroughKey(ITfContext* context)
     // run 終了時の判定 (ルール3・6・7) も適用しない。Enter で送信するアプリで、見えている
     // 文字と送られる文字を食い違わせないため
     barIndex_ = -1;
+    if (panelRun_) {
+        // 見えているとおりの読み (未完成のローマ字を含む) を入れて終える
+        InsertPanelRun(context, composer_.Display());
+        return;
+    }
     // 未完成のローマ字は、そのまま文書に残して run を終える
     if (FlushAppendPending(context) == AppendResult::Mismatch) {
         EndRun();
@@ -2509,8 +2629,9 @@ void TextService::RunAppendAction(ITfContext* context)
         // 読める文書の昇格と同じく、composition の候補選択に入る
         promoted_ = true;
         ClearBar();
-        if (appendDocument_ == AppendDocument::AppendOnly) {
-            // run より前は読めないので、範囲を広げられるのは外したかなを戻すところまで
+        if (appendDocument_ == AppendDocument::AppendOnly || panelRun_) {
+            // run より前は読めないので、範囲を広げられるのは外したかなを戻すところまで。
+            // パネル保持入力も外したかなを composition の先頭に残し、文書には書かない
             BeginRangeTracking(L"", true);
         }
         if (appendActionFunc_ == KeyFunc::Convert) {
@@ -2644,12 +2765,139 @@ void TextService::NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eate
     }
 }
 
+// ---- パネル保持入力 ----
+
+HRESULT TextService::InsertPanelText(ITfContext* context, const std::wstring& text)
+{
+    if (text.empty()) {
+        return S_OK;
+    }
+    if (context == nullptr) {
+        return E_INVALIDARG;
+    }
+    const HRESULT hr = RequestSync(context, new (std::nothrow) InsertTextEditSession(context, text),
+                                   TF_ES_SYNC | TF_ES_READWRITE);
+    if (SUCCEEDED(hr)) {
+        lastInserted_ = text;
+        DebugLog(L"パネルの読みを挿入: " + text);
+    }
+    return hr;
+}
+
+HRESULT TextService::InsertPanelRun(ITfContext* context, const std::wstring& text)
+{
+    pendingPanel_.Hide();
+    const HRESULT hr = InsertPanelText(context, text);
+    if (FAILED(hr)) {
+        DebugLog(L"パネルの読みの挿入に失敗: run を破棄");
+        DropRun();
+        ClearContext();
+        return hr;
+    }
+    // EndRun は文書に入っている run の文字列 (surface_) で学習・記憶・確定アンドゥを行う
+    surface_ = text;
+    surfaceCaret_ = surface_.size();
+    surfaceSelectLength_ = 0;
+    EndRun();
+    return S_OK;
+}
+
+void TextService::ClassifyBeforeIdleKey(ITfContext* context, WPARAM wparam)
+{
+    if (!config_.Get().panelBuffer || InRun() || Composing() || lastInserted_.empty() ||
+        appendDocument_ != AppendDocument::Unknown || IsModifierKey(wparam) ||
+        !IsKeyboardOpen()) {
+        return;
+    }
+    // 入力なしの変換はキャレット直前を読めると分かっている文書でしか働かず、食べるかどうかを
+    // その分類で決める (CanRunKeyFunc) ので、その前に分類しておく
+    const KeyFunc func = MatchKeyFunc(wparam).func;
+    if (func == KeyFunc::Convert || (func >= KeyFunc::ToHiragana && func <= KeyFunc::ToHalfAscii)) {
+        ClassifyByLastInsert(context);
+    }
+}
+
+bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
+{
+    // 読める文書では挿入が TSF の文書へ同期的に入るので、食べずに渡しても挿入より後に届く
+    if (!InRun() || !panelRun_ || DocumentReadable() || IsModifierKey(wparam)) {
+        return false;
+    }
+    const KeyMatch match = MatchKeyFunc(wparam);
+    if (match.func != KeyFunc::None && CanRunKeyFunc(context, match.func)) {
+        return false;
+    }
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    // Alt 併用は送り直さない (SendKeyWithModifiers は Ctrl・Shift しか押し直さないため)。
+    // 挿入の後にそのまま渡すので、CUAS 経由のアプリでは挿入より先に処理されうる
+    if (alt) {
+        return false;
+    }
+    if (ctrl) {
+        // Ctrl+H は Backspace の読み替えで、IME が読みを削る
+        return wparam != 'H';
+    }
+    switch (wparam) {
+    case VK_TAB:
+    case VK_UP:
+    case VK_DOWN:
+        // バーが出ていればバーの選択に使う
+        return barItems_.empty();
+    default:
+        return IsEditingKey(wparam);
+    }
+}
+
+HRESULT TextService::EndPanelRunAndResend(ITfContext* context, WPARAM wparam)
+{
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shifted = IsShiftPressed();
+    appendResendVk_ = wparam;
+    appendResendCtrl_ = ctrl;
+    appendResendShift_ = shifted;
+    const bool enter = ctrl ? wparam == 'M' : wparam == VK_RETURN;
+    HRESULT hr = S_OK;
+    if (enter && barIndex_ >= 0) {
+        hr = CommitRunDirect(context);
+    } else {
+        EndAppendRunForPassthroughKey(context);
+    }
+    SendResendKey();
+    return hr;
+}
+
+void TextService::ClassifyByLastInsert(ITfContext* context)
+{
+    if (context == nullptr) {
+        return;
+    }
+    const std::wstring inserted = lastInserted_;
+    lastInserted_.clear();
+    if (appendDocument_ != AppendDocument::Unknown || inserted.empty()) {
+        return;
+    }
+    ReplaceRunResult match = ReplaceRunResult::Unsupported;
+    RequestSync(context,
+                new (std::nothrow) MatchRunEditSession(context, inserted, inserted.size(), &match),
+                TF_ES_SYNC | TF_ES_READ);
+    if (match == ReplaceRunResult::Succeeded) {
+        SetAppendDocument(AppendDocument::Readable, L"直前の挿入を読み戻し成功");
+        return;
+    }
+    // 挿入の後にアプリへ渡したキーで文書が変わったのか、読めない文書なのかを区別できないので、
+    // 追記のみにはせず次の挿入でまた判定する
+    DebugLog(std::wstring(L"直前の挿入の読み戻しが一致しない (") + MatchReason(match) +
+             L"): 未判定のまま");
+}
+
 // ---- マウスフック ----
 
 void TextService::UpdateMouseHook()
 {
+    // パネル保持入力の run は文書に何も書いていないので、キャレットが動いても困らない
     const bool wanted = appendDocument_ != AppendDocument::Readable &&
-                        (InRun() || !lastCommitText_.empty());
+                        ((InRun() && !panelRun_) || !lastCommitText_.empty());
     if (wanted == (mouseHook_ != nullptr)) {
         return;
     }
@@ -2680,7 +2928,7 @@ void TextService::OnMouseInput()
         ClearBar();
     }
     if (appendDocument_ != AppendDocument::Readable) {
-        if (InRun()) {
+        if (InRun() && !panelRun_) {
             DebugLog(L"追記のみの文書で run を終了: マウス操作");
             pendingPanel_.Hide();
             DiscardPendingRomaji();
