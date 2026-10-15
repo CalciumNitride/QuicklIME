@@ -667,19 +667,42 @@ bool EngineClient::ConvertShortcuts(const std::wstring& kana,
     return true;
 }
 
-bool EngineClient::Predict(const std::wstring& kana,
+bool EngineClient::Predict(const std::wstring& kana, const ConversionContext& context,
                            std::vector<PredictionCandidate>* candidates)
 {
     if (candidates == nullptr || kana.empty()) {
         return false;
     }
+    // 旧エンジンは前文脈のフィールドを読まずに無視するので、判定せずに付けてよい
+    std::string request = "PREDICT\t" + WideToUtf8(kana);
+    if (!context.Empty()) {
+        request += "\t" + WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+    }
+    return RequestPredictions(request + "\n", candidates);
+}
+
+bool EngineClient::NextWord(const ConversionContext& context,
+                            std::vector<PredictionCandidate>* candidates)
+{
+    if (candidates == nullptr || context.Empty() || legacyEngine_) {
+        return false;
+    }
+    // 旧エンジンの「不明なコマンド」は OK で始まらないので、RequestPredictions が false にする
+    return RequestPredictions("NEXTWORD\t" + WideToUtf8(context.reading) + "\x1f" +
+                                  WideToUtf8(context.surface) + "\n",
+                              candidates);
+}
+
+bool EngineClient::RequestPredictions(const std::string& request,
+                                      std::vector<PredictionCandidate>* candidates)
+{
     // 毎打鍵で呼ばれるため、エンジンの自動起動 (最大2秒のブロック) はしない。
     // 未接続ならパイプを1回だけ開いてみて、開けなければ黙って諦める
     if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
         return false;
     }
     std::string response;
-    if (!SendReceive("PREDICT\t" + WideToUtf8(kana) + "\n", &response)) {
+    if (!SendReceive(request, &response)) {
         return false;
     }
 

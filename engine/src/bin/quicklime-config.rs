@@ -72,6 +72,7 @@ const ID_CHECK_CANDIDATE_BAR: i32 = 113;
 const ID_CHECK_SEGMENT_UI: i32 = 114;
 const ID_CHECK_LLM: i32 = 115;
 const ID_COMBO_LLM_BACKEND: i32 = 116;
+const ID_CHECK_NEXT_WORD: i32 = 117;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
@@ -117,7 +118,7 @@ const IN_INPUT: u8 = IN_RUN | IN_CANDIDATE | IN_SUGGEST;
 
 /// キー割当の機能一覧: (設定キー名, 表示名, 働く状態, 既定の割当)。
 /// 並び・働く状態・既定は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
-const KEY_ITEMS: [(&str, &str, u8, &str); 15] = [
+const KEY_ITEMS: [(&str, &str, u8, &str); 17] = [
     ("key.convert", "変換", IN_IDLE | IN_INPUT, "Convert"),
     ("key.next_candidate", "次候補", IN_CANDIDATE, "Space"),
     ("key.prev_candidate", "前候補", IN_CANDIDATE, "Shift+Space"),
@@ -133,6 +134,8 @@ const KEY_ITEMS: [(&str, &str, u8, &str); 15] = [
     ("key.register_word", "単語登録", IN_IDLE, "Ctrl+F7"),
     ("key.open_config", "設定を開く", IN_IDLE, "Ctrl+F12"),
     ("key.insert_newline", "改行", IN_IDLE | IN_INPUT, "Ctrl+J"),
+    ("key.next_word_next", "次の語の予測: 次", IN_IDLE | IN_SUGGEST, "Ctrl+Down"),
+    ("key.next_word_prev", "次の語の予測: 前", IN_IDLE | IN_SUGGEST, "Ctrl+Up"),
 ];
 
 /// 改行キーが働くアプリの既定 (設定 newline_apps の行が無いとき。TSF 層と合わせる)
@@ -388,6 +391,7 @@ struct Config {
     digits_full: bool,
     modeless: bool,
     candidate_bar: bool,
+    next_word: bool,
     segment_ui: bool,
     llm: bool,
     /// LLM のバックエンド ("cpu" / "vulkan")
@@ -414,6 +418,7 @@ impl Default for Config {
             digits_full: false,
             modeless: false,
             candidate_bar: true,
+            next_word: true,
             segment_ui: false,
             llm: false,
             llm_backend: "cpu".to_string(),
@@ -554,6 +559,7 @@ impl Config {
             },
             "modeless" => parse_bool(&mut self.modeless),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
+            "next_word" => parse_bool(&mut self.next_word),
             "segment_ui" => parse_bool(&mut self.segment_ui),
             "llm" => parse_bool(&mut self.llm),
             "llm_backend" => {
@@ -635,6 +641,7 @@ impl Config {
         text.push_str(&format!("segment_ui\t{}\n", self.segment_ui as u32));
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
+        text.push_str(&format!("next_word\t{}\n", self.next_word as u32));
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
         text.push_str("\n# キー割当 (key.<機能>@<状態> は状態別の上書き)\n");
@@ -979,6 +986,8 @@ fn main() {
         current_page.set(Some(2));
         let mut y = page_y;
         check("候補バーを表示する", y, ID_CHECK_CANDIDATE_BAR, config.candidate_bar);
+        y += row_h + row_gap;
+        check("確定の後に次の語を予測する", y, ID_CHECK_NEXT_WORD, config.next_word);
         y += row_h + row_gap;
         create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
@@ -1409,6 +1418,7 @@ fn collect(hwnd: HWND) -> Config {
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
     config.modeless = checked(ID_CHECK_MODELESS);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
+    config.next_word = checked(ID_CHECK_NEXT_WORD);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     config.llm = checked(ID_CHECK_LLM);
     let backend = combo_text(ID_COMBO_LLM_BACKEND);
@@ -2364,6 +2374,23 @@ mod tests {
         // 空の値は対象なしとして既定に戻さない
         config.apply("newline_apps", "");
         assert!(config.newline_apps.is_empty());
+    }
+
+    #[test]
+    fn reads_next_word_settings() {
+        let mut config = Config::default();
+        assert!(config.next_word);
+        config.apply("next_word", "0");
+        assert!(!config.next_word);
+        let next = KEY_ITEMS.iter().position(|item| item.0 == "key.next_word_next").unwrap();
+        let prev = KEY_ITEMS.iter().position(|item| item.0 == "key.next_word_prev").unwrap();
+        assert_eq!(config.keys[next].keys, vec![key("Ctrl+Down")]);
+        assert_eq!(config.keys[prev].keys, vec![key("Ctrl+Up")]);
+        // 入力なしとサジェスト選択中でだけ働く
+        config.apply("key.next_word_next@suggest", "Ctrl+N");
+        config.apply("key.next_word_next@run", "Ctrl+N");
+        assert_eq!(config.keys[next].overrides[3], Some(vec![key("Ctrl+N")]));
+        assert_eq!(config.keys[next].overrides[1], None);
     }
 
     #[test]

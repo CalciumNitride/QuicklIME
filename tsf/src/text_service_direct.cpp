@@ -380,6 +380,23 @@ bool IsHiraganaOrChoon(wchar_t c)
     return (c >= 0x3041 && c <= 0x309F) || c == 0x30FC;
 }
 
+// reading を読みとする読みの状態。source の確定済みかなと共通する先頭はその打鍵列を引き継ぎ
+// (F6〜F10 で打鍵どおりに戻せるように)、残り (予測候補で延びた読みなど) は文字そのものを打鍵列にする
+RomajiComposer ComposerForReading(const RomajiComposer& source, const std::wstring& reading)
+{
+    const std::wstring& kana = source.ConfirmedKana();
+    size_t common = 0;
+    while (common < kana.size() && common < reading.size() && kana[common] == reading[common]) {
+        ++common;
+    }
+    RomajiComposer result;
+    for (size_t i = 0; i < reading.size(); ++i) {
+        const std::wstring c(1, reading[i]);
+        result.PushKana(c, i < common ? source.RawRange(i, 1) : c);
+    }
+    return result;
+}
+
 } // namespace
 
 bool TextService::DocumentReadable() const
@@ -396,6 +413,25 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
     // Backspace は、文書の英字を IME が書き換えるので食べる
     const bool backspaceEaten = converting_ || !AppendPendingText().empty() ||
                                 (config_.Get().modeless && composer_.BackspaceRestores());
+    if (NextWordSelected() && !InRun()) {
+        // 後続語の予測の選択中。DismissNextWordForKey が予測を残したキーだけが来る
+        if (ctrl || alt) {
+            return ctrl && !alt && wparam == 'M' && EnterNeedsResend();
+        }
+        switch (wparam) {
+        case VK_RETURN:
+            return EnterNeedsResend();
+        case VK_ESCAPE:
+        case VK_TAB:
+        case VK_UP:
+        case VK_DOWN:
+        case VK_SPACE:
+            return true;
+        default:
+            // 数字は run の外でもアプリへ渡さない (1〜9 は番号の選択、それ以外は採用して run を始める)
+            return IsPrintableKey(wparam, IsShiftPressed());
+        }
+    }
     if (ctrl || alt) {
         if (!ctrl || alt || !InRun()) {
             return false;
@@ -450,6 +486,16 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
 
 void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
 {
+    if (NextWordSelected() && !InRun() && !Composing()) {
+        // 読める文書の Enter (Ctrl+M) は食べずに、後続語の予測を採用してから渡す
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        const bool enter = !alt && (ctrl ? wparam == 'M' : wparam == VK_RETURN);
+        if (enter && !IsKeyEaten(context, wparam)) {
+            AdoptNextWord(context, BarAdopt::End, L"", nullptr);
+        }
+        return;
+    }
     if ((!Composing() && !InRun()) || IsModifierKey(wparam)) {
         return;
     }
@@ -489,9 +535,10 @@ bool TextService::EnterNeedsResend() const
     // 読める文書は確定が TSF の文書へ同期的に入るので、食べずに渡しても改行より先に入る。
     // CUAS 経由のアプリ (WezTerm など) は composition の確定結果を IME メッセージで後から
     // 受け取るため、食べずに渡すと確定結果より先に Enter が処理される。擬似 Backspace が
-    // 要る採用は、書き換えが終わる前に Enter が届かないようにする
+    // 要る採用は、書き換えが終わる前に Enter が届かないようにする。後続語の予測の追記も
+    // composition の確定と同じく後から届きうる
     return appendDocument_ != AppendDocument::Readable &&
-           (converting_ || AdoptionNeedsPseudoBackspace());
+           (converting_ || AdoptionNeedsPseudoBackspace() || NextWordSelected());
 }
 
 HRESULT TextService::CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted)
@@ -504,6 +551,8 @@ HRESULT TextService::CommitAndResendEnter(ITfContext* context, WPARAM vk, bool c
     HRESULT hr = S_OK;
     if (Composing()) {
         hr = CommitComposition(context);
+    } else if (NextWordSelected() && !InRun()) {
+        hr = AdoptNextWord(context, BarAdopt::End, L"", nullptr);
     } else if (converting_ || barIndex_ >= 0) {
         hr = CommitRunDirect(context);
     } else {
@@ -562,6 +611,44 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     }
 
     DirectKey key;
+    if (NextWordSelected() && !InRun()) {
+        // 後続語の予測の選択中 (run なし)。選択の操作は run のバー選択と同じ
+        if (ClassifyDirectKey(wparam, shifted, &key)) {
+            if (!shifted && wparam >= '1' && wparam <= '9') {
+                return SelectBarByNumber(wparam - '1');
+            }
+            return AdoptNextWord(context, BarAdopt::Continue, L"", &key);
+        }
+        switch (wparam) {
+        case VK_RETURN:
+            // 食べるのは EnterNeedsResend のときだけ
+            return CommitAndResendEnter(context, originalVk, ctrl, shifted);
+        case VK_ESCAPE:
+            ClearBar();
+            return S_OK;
+        case VK_SPACE: {
+            // run の外の Space (StandaloneSpaceText) と同じく、モードレスでは英数字の語の後を
+            // 英文の途中とみなして半角にする
+            const std::wstring& surface = barItems_[static_cast<size_t>(barIndex_)].surface;
+            const bool asciiWord =
+                config_.Get().modeless && std::all_of(surface.begin(), surface.end(), [](wchar_t c) {
+                    return (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'z') ||
+                           (c >= L'A' && c <= L'Z');
+                });
+            const std::wstring space =
+                (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
+            return AdoptNextWord(context, BarAdopt::End, space, nullptr);
+        }
+        case VK_TAB:
+            return MoveBarSelection(shifted ? -1 : +1);
+        case VK_DOWN:
+            return MoveBarSelection(+1);
+        case VK_UP:
+            return MoveBarSelection(-1);
+        default:
+            return S_OK;
+        }
+    }
     if (ClassifyDirectKey(wparam, shifted, &key)) {
         // 候補選択中・バー選択中の 1〜9 は候補番号による直接選択
         if (!shifted && wparam >= '1' && wparam <= '9') {
@@ -889,9 +976,22 @@ bool TextService::ReadIdleTarget(ITfContext* context, IdleTarget* target) const
     std::wstring preceding;
     RequestSync(context,
                 new (std::nothrow) GetPrecedingTextEditSession(
-                    context, static_cast<ULONG>(kMaxReconvertLength + kRangeBeforeRead),
+                    context,
+                    static_cast<ULONG>(kMaxReconvertLength + kRangeBeforeRead +
+                                       AdoptedSurfaceLength()),
                     &preceding),
                 TF_ES_SYNC | TF_ES_READ);
+    // 最新の記憶がひらがな・ー だけなら、下のキャレット直前のかなが同じ範囲 (またはそれより左まで) を
+    // 対象にするので、記憶は漢字などを含むときだけ使う
+    if (MatchAdopted(preceding) > 0) {
+        const std::wstring& surface = adopted_.back().surface;
+        if (!std::all_of(surface.begin(), surface.end(), IsHiraganaOrChoon)) {
+            target->text = surface;
+            target->before = preceding.substr(0, preceding.size() - surface.size());
+            target->adopted = true;
+            return true;
+        }
+    }
     size_t start = preceding.size();
     while (start > 0 && preceding.size() - start < kMaxReconvertLength &&
            IsHiraganaOrChoon(preceding[start - 1])) {
@@ -911,11 +1011,22 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     if (!ReadIdleTarget(context, &target)) {
         return S_OK;
     }
-    // 対象を読みとして run を作る。エンジンに渡す読みはひらがなに正規化し、
-    // 打鍵列は元の文字 (F7-F10 の文字種変換で元の形へ戻せるように) にする
-    composer_.Clear();
-    for (wchar_t c : target.text) {
-        composer_.PushKana(std::wstring(1, KatakanaToHiragana(c)), std::wstring(1, c));
+    size_t chainFrom = adopted_.size();
+    size_t chainTo = adopted_.size();
+    if (!target.selection) {
+        const std::wstring preceding = target.before + target.text;
+        DropUnmatchedAdopted(preceding);
+        FindAdoptedChain(preceding, target.before.size(), &chainFrom, &chainTo);
+    }
+    if (target.adopted) {
+        composer_ = adopted_.back().composer;
+    } else {
+        // 対象を読みとして run を作る。エンジンに渡す読みはひらがなに正規化し、
+        // 打鍵列は元の文字 (F7-F10 の文字種変換で元の形へ戻せるように) にする
+        composer_.Clear();
+        for (wchar_t c : target.text) {
+            composer_.PushKana(std::wstring(1, KatakanaToHiragana(c)), std::wstring(1, c));
+        }
     }
     surface_ = target.text;
     std::wstring before = target.before;
@@ -934,9 +1045,12 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     } else {
         surfaceCaret_ = surface_.size();
         surfaceSelectLength_ = 0;
-        // 文書の漢字の読みは分からないので、範囲の直前が直前の確定の表記で終わるときだけ
-        // その確定を前文脈にする
-        if (contextSurface_.empty() || !EndsWith(before, contextSurface_)) {
+        // 範囲の直前が記憶なら、その最後の文節を前文脈にする。それ以外は文書の漢字の読みが
+        // 分からないので、範囲の直前が直前の確定の表記で終わるときだけその確定を前文脈にする
+        if (chainTo > chainFrom) {
+            const auto& last = adopted_[chainTo - 1].segments.back();
+            SetCommitContext(last.first, last.second);
+        } else if (contextSurface_.empty() || !EndsWith(before, contextSurface_)) {
             ClearContext();
         }
         CaptureLlmContextFrom(before);
@@ -946,6 +1060,9 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     }
     if (tracked) {
         BeginRangeTracking(before, false);
+        if (!target.selection) {
+            BeginRangeAdopted(chainFrom, chainTo, target.adopted);
+        }
     }
     return func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
 }
@@ -960,7 +1077,9 @@ bool TextService::ReadTextBeforeCaret(ITfContext* context, const std::wstring& i
     std::wstring preceding;
     RequestSync(context,
                 new (std::nothrow) GetPrecedingTextEditSession(
-                    context, static_cast<ULONG>(inRange.size() + kRangeBeforeRead), &preceding),
+                    context,
+                    static_cast<ULONG>(inRange.size() + kRangeBeforeRead + AdoptedSurfaceLength()),
+                    &preceding),
                 TF_ES_SYNC | TF_ES_READ);
     if (!EndsWith(preceding, inRange)) {
         return false;
@@ -978,6 +1097,13 @@ void TextService::BeginRangeTracking(const std::wstring& before, bool keepExclud
     rangeStates_.clear();
     // 昇格 (StartComposition) で前文脈が捨てられていればそれを反映した後の値
     rangeBaseContext_ = CurrentContext();
+    rangeAdopted_.clear();
+    rangeAdoptedFrom_ = adopted_.size();
+    rangeKana_.clear();
+    rangeRewritten_ = false;
+    rangeFromAdopted_ = false;
+    rangeOrigin_ = AdoptedText{};
+    rangeOrigBefore_.clear();
 }
 
 bool TextService::RangeResizable() const
@@ -1010,14 +1136,23 @@ std::wstring TextService::RangeExcludedInComposition() const
 void TextService::ApplyRangeContext()
 {
     // 縮めて外したかなは読み = 表記の前文脈にする。外したかなが無ければ範囲を始めたときの
-    // 前文脈を、始めたときより広げた後は、範囲の直前がその表記で終わるときだけ使う
+    // 前文脈を、始めたときより広げた後は、範囲の直前がその表記で終わるときだけ使う。
+    // 記憶の文節をかなに書き直した後は、範囲の直前に残ったかな (外したかなを含む) を、
+    // それが無ければ範囲の直前の記憶の最後の文節を前文脈にする
     ConversionContext conversionContext;
-    if (rangeShift_ > 0) {
+    if (rangeRewritten_ && !rangeKana_.empty()) {
+        conversionContext = {rangeKana_, rangeKana_};
+    } else if (!rangeRewritten_ && rangeShift_ > 0) {
         const std::wstring excluded =
             rangeBefore_.substr(rangeBefore_.size() - static_cast<size_t>(rangeShift_));
         conversionContext = {excluded, excluded};
-    } else if (rangeShift_ == 0 || (!rangeBaseContext_.surface.empty() &&
-                                    EndsWith(rangeBefore_, rangeBaseContext_.surface))) {
+    } else if (!rangeRewritten_ && rangeShift_ == 0) {
+        conversionContext = rangeBaseContext_;
+    } else if (!rangeAdopted_.empty() && EndsWith(rangeBefore_, rangeAdopted_.back().surface)) {
+        conversionContext = {rangeAdopted_.back().segments.back().first,
+                             rangeAdopted_.back().segments.back().second};
+    } else if (!rangeBaseContext_.surface.empty() &&
+               EndsWith(rangeBefore_, rangeBaseContext_.surface)) {
         conversionContext = rangeBaseContext_;
     }
     contextReading_ = conversionContext.reading;
@@ -1046,13 +1181,17 @@ void TextService::RestoreExcludedKana()
 
 HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
 {
+    // 範囲の直前が記憶 (← でその最後の文節をかなに書き直して広げる)
+    const bool adoptedAhead = rangeKana_.empty() && !rangeAdopted_.empty() &&
+                              EndsWith(rangeBefore_, rangeAdopted_.back().surface);
     if (delta < 0) {
         // 縮めて外した文字を戻すだけなら、文字の種類も上限も問わない (縮める前の範囲に戻る)。
-        // 追記のみの文書は run より前を読めないので、外したかなを戻すところまで
+        // 追記のみの文書は run より前を読めないので、外したかなを戻すところまで。
+        // 記憶の文節をかなに書き直した残りと直前の記憶は、文字の種類によらず広げる
         if (rangeStates_.empty() &&
-            (rangeKeepsExcluded_ || rangeBefore_.empty() ||
-             composer_.Commit().size() >= kMaxReconvertLength ||
-             !IsHiraganaOrChoon(rangeBefore_.back()))) {
+            (rangeKeepsExcluded_ || composer_.Commit().size() >= kMaxReconvertLength ||
+             (rangeKana_.empty() && !adoptedAhead &&
+              (rangeBefore_.empty() || !IsHiraganaOrChoon(rangeBefore_.back()))))) {
             return S_OK;
         }
     } else if (composer_.ConfirmedKana().size() < 2) {
@@ -1084,7 +1223,7 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
     // ITfComposition::ShiftStart で composition の先頭を動かすと、広げるときに確定済みの文字列を
     // composition に取り込むことになり、Discord で確定時に元のかなが残る。変換を取り消して
     // run に戻し、新しい範囲の run を昇格し直す
-    const HRESULT hr = CancelConversion(context);
+    const HRESULT hr = CancelConversionToKana(context);
     if (FAILED(hr)) {
         return hr;
     }
@@ -1093,20 +1232,30 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
         return S_OK; // 取消・降格で run を捨てた
     }
     if (delta < 0) {
-        const std::wstring added(1, rangeBefore_.back());
-        rangeBefore_.pop_back();
-        if (rangeStates_.empty()) {
-            composer_.PrependKana(added);
+        if (rangeStates_.empty() && adoptedAhead) {
+            if (!ExtendRangeIntoAdopted(context)) {
+                return S_OK;
+            }
         } else {
-            composer_ = std::move(rangeStates_.back());
-            rangeStates_.pop_back();
+            const std::wstring added(1, rangeBefore_.back());
+            rangeBefore_.pop_back();
+            if (!rangeKana_.empty()) {
+                rangeKana_.pop_back();
+            }
+            if (rangeStates_.empty()) {
+                composer_.PrependKana(added);
+            } else {
+                composer_ = std::move(rangeStates_.back());
+                rangeStates_.pop_back();
+            }
+            surface_.insert(0, added);
         }
-        surface_.insert(0, added);
         --rangeShift_;
     } else {
         // 外したかなは文書に残り、run から外れる (確定しても学習しない)
         rangeStates_.push_back(composer_);
         rangeBefore_ += surface_[0];
+        rangeKana_ += surface_[0];
         composer_.RemoveFront(1);
         surface_.erase(0, 1);
         ++rangeShift_;
@@ -1125,6 +1274,234 @@ HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
         return S_OK;
     }
     return func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
+}
+
+bool TextService::ExtendRangeIntoAdopted(ITfContext* context)
+{
+    AdoptedText& memory = rangeAdopted_.back();
+    const std::wstring reading = memory.segments.back().first;
+    const std::wstring segmentSurface = memory.segments.back().second;
+    const std::wstring kana = reading.substr(0, reading.size() - 1);
+    const std::wstring added = reading.substr(reading.size() - 1);
+    const std::wstring newSurface = added + surface_;
+    // 文節の途中で範囲を切っても、範囲に入らなかった側はかなにする (文節の表記の一部だけを
+    // 残すと、残った表記と読みが対応しなくなるため)
+    if (ReplaceRunText(context, segmentSurface + surface_, kana + newSurface) !=
+        ReplaceRunResult::Succeeded) {
+        DebugLog(L"記憶の文節の書き直しに失敗: run を破棄");
+        DropRun();
+        ClearContext();
+        return false;
+    }
+    rangeBefore_.erase(rangeBefore_.size() - segmentSurface.size());
+    rangeBefore_ += kana;
+    rangeKana_ = kana;
+    rangeRewritten_ = true;
+    memory.segments.pop_back();
+    memory.surface.erase(memory.surface.size() - segmentSurface.size());
+    if (memory.segments.empty()) {
+        rangeAdopted_.pop_back();
+    } else {
+        std::wstring rest;
+        for (const auto& segment : memory.segments) {
+            rest += segment.first;
+        }
+        memory.composer = ComposerForReading(memory.composer, rest);
+    }
+    composer_.PrependKana(added);
+    surface_ = newSurface;
+    return true;
+}
+
+void TextService::RememberAdopted(const std::wstring& surface,
+                                  std::vector<std::pair<std::wstring, std::wstring>> segments,
+                                  const RomajiComposer& composer)
+{
+    // 追記のみの文書は読み戻して照合できず、未判定の文書は読めるかどうかが分からない
+    if (!DocumentReadable() || surface.empty()) {
+        return;
+    }
+    const std::wstring reading = composer.Commit();
+    std::wstring readings;
+    std::wstring surfaces;
+    bool emptyReading = false;
+    for (const auto& [segmentReading, segmentSurface] : segments) {
+        readings += segmentReading;
+        surfaces += segmentSurface;
+        emptyReading = emptyReading || segmentReading.empty();
+    }
+    if (segments.empty() || emptyReading || readings != reading || surfaces != surface) {
+        segments.assign(1, {reading, surface});
+    }
+    if (reading.empty()) {
+        return;
+    }
+    adopted_.push_back({surface, std::move(segments), composer});
+    size_t total = 0;
+    for (const AdoptedText& memory : adopted_) {
+        total += memory.composer.Commit().size();
+    }
+    while (!adopted_.empty() && total > kMaxReconvertLength) {
+        total -= adopted_.front().composer.Commit().size();
+        adopted_.erase(adopted_.begin());
+    }
+}
+
+void TextService::RememberConversion(
+    const std::vector<std::pair<std::wstring, std::wstring>>& committed)
+{
+    if (!DocumentReadable() || (rangeTracked_ && rangeKeepsExcluded_)) {
+        return;
+    }
+    if (rangeTracked_) {
+        // 範囲が覆っていた記憶 (一部だけ入ったものを含む) を置き換える
+        adopted_.resize((std::min)(rangeAdoptedFrom_, adopted_.size()));
+        adopted_.insert(adopted_.end(), rangeAdopted_.begin(), rangeAdopted_.end());
+        if (!rangeKana_.empty()) {
+            RomajiComposer kana;
+            for (wchar_t c : rangeKana_) {
+                kana.PushKana(std::wstring(1, c), std::wstring(1, c));
+            }
+            RememberAdopted(rangeKana_, {{rangeKana_, rangeKana_}}, kana);
+        }
+    }
+    RememberAdopted(ConvertedText(), committed, composer_);
+}
+
+size_t TextService::AdoptedSurfaceLength() const
+{
+    size_t length = 0;
+    for (const AdoptedText& memory : adopted_) {
+        length += memory.surface.size();
+    }
+    return length;
+}
+
+size_t TextService::MatchAdopted(const std::wstring& preceding) const
+{
+    size_t end = preceding.size();
+    size_t count = 0;
+    for (size_t i = adopted_.size(); i-- > 0;) {
+        const std::wstring& surface = adopted_[i].surface;
+        if (surface.size() > end || preceding.compare(end - surface.size(), surface.size(),
+                                                      surface) != 0) {
+            break;
+        }
+        end -= surface.size();
+        ++count;
+    }
+    return count;
+}
+
+void TextService::DropUnmatchedAdopted(const std::wstring& preceding)
+{
+    const size_t matched = MatchAdopted(preceding);
+    if (matched == adopted_.size()) {
+        return;
+    }
+    DebugLog(L"文書と一致しない記憶を捨てる: " + std::to_wstring(adopted_.size() - matched) +
+             L" 件");
+    adopted_.erase(adopted_.begin(),
+                   adopted_.begin() + static_cast<std::ptrdiff_t>(adopted_.size() - matched));
+}
+
+void TextService::FindAdoptedChain(const std::wstring& preceding, size_t rangeStart, size_t* from,
+                                   size_t* to) const
+{
+    // 新しい記憶から順に、範囲の先頭より右にかかる記憶を範囲が覆う記憶とする
+    size_t end = preceding.size();
+    size_t covered = adopted_.size();
+    bool chain = false;
+    for (size_t i = adopted_.size(); i-- > 0;) {
+        if (end <= rangeStart) {
+            chain = end == rangeStart;
+            break;
+        }
+        covered = i;
+        end -= (std::min)(end, adopted_[i].surface.size());
+    }
+    *to = covered;
+    *from = chain ? 0 : covered;
+}
+
+void TextService::BeginRangeAdopted(size_t from, size_t to, bool fromAdopted)
+{
+    from = (std::min)(from, adopted_.size());
+    to = (std::min)((std::max)(from, to), adopted_.size());
+    rangeAdoptedFrom_ = from;
+    rangeAdopted_.assign(adopted_.begin() + static_cast<std::ptrdiff_t>(from),
+                         adopted_.begin() + static_cast<std::ptrdiff_t>(to));
+    rangeFromAdopted_ = fromAdopted && !adopted_.empty();
+    if (rangeFromAdopted_) {
+        rangeOrigin_ = adopted_.back();
+        rangeOrigBefore_ = rangeBefore_;
+    }
+}
+
+bool TextService::RangeAdoptedIntact() const
+{
+    return rangeTracked_ && rangeFromAdopted_ && rangeShift_ == 0 && !rangeRewritten_ &&
+           rangeKana_.empty();
+}
+
+void TextService::PlaceAdoptedCandidate()
+{
+    // 文節 UI の複数文節には記憶の表記を1候補として置けないので、入力全体の候補選択だけ
+    if (!RangeAdoptedIntact() || segments_.size() != 1) {
+        return;
+    }
+    const std::wstring& surface = rangeOrigin_.surface;
+    auto& candidates = segments_[0].candidates;
+    candidates.erase(std::remove(candidates.begin(), candidates.end(), surface), candidates.end());
+    candidates.insert(candidates.begin(), surface);
+    selected_[0] = 0;
+    // そのまま確定したときは、記憶の文節で学習する (PrepareConversionCommit)
+    const bool known = std::any_of(
+        wholeCandidates_.begin(), wholeCandidates_.end(),
+        [&surface](const SentenceCandidate& candidate) { return candidate.surface == surface; });
+    if (!known) {
+        wholeCandidates_.push_back({rangeOrigin_.segments, surface});
+    }
+}
+
+HRESULT TextService::CancelAdoptedConversion(ITfContext* context)
+{
+    // かなの run には戻さず、伸縮で書き換えた範囲の前と範囲を、変換前の文字列に戻して終える。
+    // 記憶 (adopted_) は変換前のまま
+    const size_t keep = CommonPrefixLength(rangeBefore_, rangeOrigBefore_);
+    const std::wstring changed = rangeBefore_.substr(keep);
+    const std::wstring restored = rangeOrigBefore_.substr(keep) + rangeOrigin_.surface;
+    const AdoptedText origin = rangeOrigin_;
+    bool restoredOk = false;
+    if (Composing()) {
+        ClearConversion();
+        const HRESULT hr =
+            context != nullptr
+                ? RequestSync(context,
+                              new (std::nothrow) EndCompositionEditSession(
+                                  context, composition_, changed.empty() ? restored : L""),
+                              TF_ES_SYNC | TF_ES_READWRITE)
+                : E_UNEXPECTED;
+        composition_->Release();
+        composition_ = nullptr;
+        promoted_ = false;
+        restoredOk = SUCCEEDED(hr) &&
+                     (changed.empty() ||
+                      ReplaceRunText(context, changed, restored) == ReplaceRunResult::Succeeded);
+    } else {
+        restoredOk = ReplaceRunRange(context, changed + surface_, changed.size() + surfaceCaret_,
+                                     surfaceSelectLength_, restored, 0,
+                                     0) == ReplaceRunResult::Succeeded;
+    }
+    DebugLog(std::wstring(L"記憶から始めた変換を取り消す: ") + (restoredOk ? L"" : L"失敗 ") +
+             restored);
+    DropRun();
+    if (!restoredOk) {
+        ClearContext();
+        return S_OK;
+    }
+    SetCommitContext(origin.segments.back().first, origin.segments.back().second);
+    return S_OK;
 }
 
 HRESULT TextService::CommitRunDirect(ITfContext* context)
@@ -1194,12 +1571,17 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
             adoption.contextReading = item.segments.back().first;
             adoption.contextSurface = item.segments.back().second;
         }
+        adoption.segments = item.segments;
+        if (adoption.segments.empty()) {
+            adoption.segments.push_back({kana.substr(0, readingLength), item.surface});
+        }
         break;
     case BarKind::Prediction:
     case BarKind::Head:
         adoption.learn.push_back({item.reading, item.surface, contextSurface_});
         adoption.contextReading = item.reading;
         adoption.contextSurface = item.surface;
+        adoption.segments.push_back({item.reading, item.surface});
         break;
     }
     adoption.readingLength = readingLength;
@@ -1281,6 +1663,13 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     composer_.RemoveFront(adoption_.readingLength);
     const std::wstring adopted = adoption_.written.substr(0, adoption_.adoptedLength);
     const std::wstring rest = adoption_.written.substr(adoption_.adoptedLength);
+    // 採用した部分を1件として記憶する (残りのかなは run の終わりで別の1件になる)
+    std::wstring adoptedReading;
+    for (const auto& segment : adoption_.segments) {
+        adoptedReading += segment.first;
+    }
+    RememberAdopted(adopted, adoption_.segments,
+                    ComposerForReading(adoption_.before, adoptedReading));
     AppendLlmHistory(adopted);
     ClearBar();
     // run の先頭が変わったので、次にバーを出す位置はその時点で取り直す
@@ -1313,6 +1702,138 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     }
 }
 
+void TextService::ShowNextWordBar(ITfContext* context)
+{
+    const TsfConfig& config = config_.Get();
+    if (!config.candidateBar || !config.nextWord || context == nullptr || InRun() ||
+        Composing() || converting_ || awaitingMarker_) {
+        return;
+    }
+    // エンジン未接続・前文脈が空・NEXTWORD を知らない旧エンジンでは false が返る
+    std::vector<PredictionCandidate> candidates;
+    if (!engine_.NextWord(CurrentContext(), &candidates) || candidates.empty()) {
+        return;
+    }
+    std::vector<BarCandidate> items;
+    for (const PredictionCandidate& candidate : candidates) {
+        if (items.size() >= CandidateWindow::kPageSize) {
+            break;
+        }
+        items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
+    }
+    RECT caret = {};
+    if (!CaretRect(context, &caret)) {
+        return;
+    }
+    ClearBar();
+    // run のバーと違って読みが伸びないので、出すたびにその時点の位置に出す。次の run の
+    // バーは run で最初に出した時点の位置に固定し直す (barXFixed_ は立てない)
+    barX_ = caret.left;
+    if (!ShowBarItems(caret, std::move(items))) {
+        ClearBar();
+        return;
+    }
+    nextWordBar_ = true;
+    DebugLog(L"後続語の予測を表示: " + std::to_wstring(barItems_.size()) + L" 件 (前文脈 " +
+             contextSurface_ + L")");
+}
+
+void TextService::ShowNextWordAfterCommit(ITfContext* context)
+{
+    if (awaitingMarker_) {
+        nextWordPending_ = true;
+        return;
+    }
+    ShowNextWordBar(context);
+}
+
+bool TextService::NextWordSelected() const
+{
+    return nextWordBar_ && barIndex_ >= 0 && static_cast<size_t>(barIndex_) < barItems_.size();
+}
+
+void TextService::DismissNextWordForKey(WPARAM wparam)
+{
+    if (!nextWordBar_ || IsModifierKey(wparam)) {
+        return;
+    }
+    const KeyFunc func = MatchKeyFunc(wparam).func;
+    bool keep = func == KeyFunc::NextWordNext || func == KeyFunc::NextWordPrev;
+    if (!keep && barIndex_ >= 0) {
+        const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+        const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+        if (func != KeyFunc::None) {
+            // 変換キーなどは予測を消してから入力なしの機能として処理する
+            keep = func == KeyFunc::CommitRun;
+        } else if (ctrl || alt) {
+            keep = ctrl && !alt && wparam == 'M';
+        } else {
+            switch (wparam) {
+            case VK_RETURN:
+            case VK_ESCAPE:
+            case VK_TAB:
+            case VK_UP:
+            case VK_DOWN:
+            case VK_SPACE:
+                keep = true;
+                break;
+            default:
+                keep = IsPrintableKey(wparam, IsShiftPressed());
+                break;
+            }
+        }
+    }
+    if (!keep) {
+        DebugLog(L"打鍵で後続語の予測を消す vk=" + std::to_wstring(wparam));
+        ClearBar();
+    }
+}
+
+HRESULT TextService::MoveNextWordSelection(int delta)
+{
+    if (!nextWordBar_ || barItems_.empty()) {
+        return S_OK;
+    }
+    if (delta < 0 && barIndex_ < 0) {
+        barIndex_ = static_cast<int>(barItems_.size()) - 1;
+        candidateWindow_.SetSelection(static_cast<size_t>(barIndex_));
+        return S_OK;
+    }
+    return MoveBarSelection(delta);
+}
+
+HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
+                                   const std::wstring& suffix, const DirectKey* followKey)
+{
+    if (!NextWordSelected()) {
+        ClearBar();
+        return E_UNEXPECTED;
+    }
+    const BarCandidate item = barItems_[static_cast<size_t>(barIndex_)];
+    ClearBar();
+    const std::wstring text = item.surface + suffix;
+    DebugLog(L"後続語の予測を採用: " + text);
+    if (FAILED(InsertText(context, text))) {
+        DebugLog(L"後続語の予測の追記に失敗");
+        ClearContext();
+        return E_FAIL;
+    }
+    engine_.Learn({{item.reading, item.surface, contextSurface_}});
+    SetCommitContext(item.reading, item.surface);
+    const RomajiComposer composer = ComposerForReading(RomajiComposer(), item.reading);
+    RememberAdopted(item.surface, {{item.reading, item.surface}}, composer);
+    // 確定アンドゥは suffix (スペース) まで含めて読みのかなに戻す (run を Space で終えたときと同じ)
+    lastCommitText_ = text;
+    lastComposer_ = composer;
+    if (followKey != nullptr) {
+        return TypeAppend(context, *followKey);
+    }
+    if (mode == BarAdopt::CommitKey) {
+        ShowNextWordBar(context);
+    }
+    return S_OK;
+}
+
 HRESULT TextService::UpdateRunAndBar(ITfContext* context)
 {
     // 文書には確定したかなだけを入れ、未完成のローマ字は小窓に表示する
@@ -1340,6 +1861,13 @@ void TextService::EndRun()
                 engine_.Learn({{kana, kana, contextSurface_}});
             }
             SetCommitContext(kana, kana);
+            // Space で終えた run は IME が入れたスペースで終わる。スペースは記憶に含めず、
+            // 記憶の照合をそこで途切れさせる
+            std::wstring text = surface_;
+            while (!text.empty() && (text.back() == L' ' || text.back() == L'　')) {
+                text.pop_back();
+            }
+            RememberAdopted(text, {{kana, text}}, composer_);
         }
         lastCommitText_ = surface_;
         lastComposer_ = composer_;
@@ -1392,6 +1920,10 @@ HRESULT TextService::UndoCommit(ITfContext* context)
         if (ReplaceRunText(context, commitText, text) != ReplaceRunResult::Succeeded) {
             DropRun();
             return S_OK;
+        }
+        // 読みに戻した確定の記憶は捨てる (確定文字列は記憶の表記の後ろにスペースなどが付きうる)
+        if (!adopted_.empty() && StartsWith(commitText, adopted_.back().surface)) {
+            adopted_.pop_back();
         }
         surface_ = text;
         surfaceCaret_ = surface_.size();
@@ -1879,12 +2411,19 @@ HRESULT TextService::BeginAppendConversion(ITfContext* context, KeyFunc func)
         // 範囲を伸縮するときの広げる先と前文脈の照合に、run より前の文書の文字列を覚えておく
         std::wstring before;
         const bool tracked = ReadTextBeforeCaret(context, surface_, &before);
+        size_t chainFrom = adopted_.size();
+        size_t chainTo = adopted_.size();
+        if (tracked) {
+            DropUnmatchedAdopted(before);
+            FindAdoptedChain(before, before.size(), &chainFrom, &chainTo);
+        }
         const PromoteResult promoted = PromoteRun(context);
         if (promoted == PromoteResult::Dropped) {
             return S_OK;
         }
         if (tracked) {
             BeginRangeTracking(before, false);
+            BeginRangeAdopted(chainFrom, chainTo, false);
         }
         // 昇格できなかった run は、現在文節の選択による強調で候補選択する
         return func == KeyFunc::Convert ? StartConversion(context)
@@ -2003,6 +2542,7 @@ void TextService::CancelAppendAction()
     appendAction_ = PseudoKeyAction::None;
     appendFollowKeyPending_ = false;
     appendResendVk_ = 0;
+    nextWordPending_ = false;
 }
 
 bool TextService::HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDown, BOOL* eaten)
@@ -2032,6 +2572,10 @@ bool TextService::HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDo
             DebugLog(L"目印の打鍵を受信 (" + where + L")");
             RunAppendAction(context);
             SendResendKey();
+            if (nextWordPending_) {
+                nextWordPending_ = false;
+                ShowNextWordBar(context);
+            }
         }
         return true;
     }
@@ -2118,6 +2662,10 @@ void TextService::OnMouseInput()
     // 擬似 Backspace の目印待ちの間は、消している途中の run を目印の後の処理に任せる
     if (awaitingMarker_) {
         return;
+    }
+    if (nextWordBar_) {
+        DebugLog(L"マウス操作で後続語の予測を消す");
+        ClearBar();
     }
     if (appendDocument_ != AppendDocument::Readable) {
         if (InRun()) {

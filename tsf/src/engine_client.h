@@ -143,10 +143,16 @@ public:
     // (連結した読み, 連結した表記) を1語としてエンジンに記録する (LEARNWORD)
     bool LearnWords(const std::vector<std::pair<std::wstring, std::wstring>>& words);
 
-    // 読みの前方一致で予測候補を取得する (PREDICT)。
-    // 毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
+    // 読みの前方一致で予測候補を取得する (PREDICT)。前文脈があれば送り、その後に確定した語を
+    // 上位に寄せさせる。毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
     // 未接続なら即 false を返す (候補ゼロは true で candidates が空)
-    bool Predict(const std::wstring& kana, std::vector<PredictionCandidate>* candidates);
+    bool Predict(const std::wstring& kana, const ConversionContext& context,
+                 std::vector<PredictionCandidate>* candidates);
+
+    // 前文脈の後に確定したことのある語を取得する (NEXTWORD。読みなしの後続語予測)。
+    // Predict と同じくエンジンの自動起動や接続待ちはしない。未接続・前文脈が空・NEXTWORD を
+    // 知らない旧エンジンのときは false (候補ゼロは true で candidates が空)
+    bool NextWord(const ConversionContext& context, std::vector<PredictionCandidate>* candidates);
 
     // 同梱 exe (エンジン・単語登録ツール) のパスを探す。
     // DLL と同じディレクトリ → 開発レイアウト (engine/target) の順。見つからなければ空
@@ -180,6 +186,10 @@ private:
                       std::vector<SentenceCandidate>* candidates);
     // CONVNBEST の応答1行を candidates にパースする
     bool ParseNBestResponse(std::string response, std::vector<SentenceCandidate>* candidates);
+    // PREDICT・NEXTWORD の要求を現在の接続で送り、応答を candidates にパースする
+    // (未接続ならパイプを1回だけ開いてみる)
+    bool RequestPredictions(const std::string& request,
+                            std::vector<PredictionCandidate>* candidates);
 
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     ULONGLONG lastLaunchTick_ = 0; // 最後にエンジン起動を試みた時刻 (連続起動の抑止)

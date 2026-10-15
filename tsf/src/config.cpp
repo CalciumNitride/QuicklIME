@@ -105,6 +105,8 @@ const wchar_t* const kKeyFuncNames[kKeyFuncCount] = {
     L"key.register_word",
     L"key.open_config",
     L"key.insert_newline",
+    L"key.next_word_next",
+    L"key.next_word_prev",
 };
 
 // 状態別の上書きの接尾辞 (key.<機能>@<状態>。KeyState の並び順)
@@ -395,6 +397,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.candidateBar);
     } else if (key == L"min_suggest_chars") {
         ParseClamped(value, 1, 5, config.minSuggestChars);
+    } else if (key == L"next_word") {
+        ParseBool(value, config.nextWord);
     } else if (key == L"segment_ui") {
         ParseBool(value, config.segmentUi);
     } else if (key == L"llm") {
@@ -460,6 +464,11 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
     case KeyFunc::RegisterWord:
     case KeyFunc::OpenConfig:
         return state == KeyState::Idle;
+    case KeyFunc::NextWordNext:
+    case KeyFunc::NextWordPrev:
+        // 読みなしの予測は run の無いときに出し、選ぶとサジェスト選択中になる
+        // (run 中のバー選択では CanRunKeyFunc が食べずにアプリへ渡す)
+        return state == KeyState::Idle || state == KeyState::Suggest;
     case KeyFunc::None:
         return false;
     default:
@@ -490,6 +499,8 @@ std::array<KeyAssignment, kKeyFuncCount> TsfConfig::DefaultKeyAssignments()
     set(KeyFunc::RegisterWord, {true, false, false, VK_F7});
     set(KeyFunc::OpenConfig, {true, false, false, VK_F12});
     set(KeyFunc::InsertNewline, {true, false, false, 'J'});
+    set(KeyFunc::NextWordNext, {true, false, false, VK_DOWN});
+    set(KeyFunc::NextWordPrev, {true, false, false, VK_UP});
     return keys;
 }
 

@@ -24,7 +24,9 @@ enum class KeyFunc {
     RegisterWord,    // 単語登録ツール起動 (既定 Ctrl+F7)
     OpenConfig,      // 設定ツール起動 (既定 Ctrl+F12)
     InsertNewline,   // 改行 (既定 Ctrl+J。対象アプリで Shift+Enter を送る)
-    None,            // 割当なし (照合の「該当なし」も表す)
+    NextWordNext,    // 読みなしの予測の次の候補を選ぶ (既定 Ctrl+↓)
+    NextWordPrev,    // 読みなしの予測の前の候補を選ぶ (既定 Ctrl+↑)
+    None,           // 割当なし (照合の「該当なし」も表す)
 };
 
 constexpr size_t kKeyFuncCount = static_cast<size_t>(KeyFunc::None);
@@ -85,6 +87,9 @@ struct TsfConfig {
     bool candidateBar = true;
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
+    // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す
+    // (docs/design/next-word-prediction.md)
+    bool nextWord = true;
     // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
     // オフなら入力全体の候補から選ぶ (docs/design/nbest.md)
     bool segmentUi = false;

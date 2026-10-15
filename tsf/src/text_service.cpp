@@ -375,6 +375,8 @@ TextService::TextService()
       barX_(0),
       barXFixed_(false),
       barCaret_{},
+      nextWordBar_(false),
+      nextWordPending_(false),
       rerankId_(0),
       rerankTick_(0),
       rerankDone_(false),
@@ -385,6 +387,9 @@ TextService::TextService()
       rangeKeepsExcluded_(false),
       rangeShift_(0),
       rangeFunc_(KeyFunc::Convert),
+      rangeAdoptedFrom_(0),
+      rangeRewritten_(false),
+      rangeFromAdopted_(false),
       appendDocument_(AppendDocument::Unknown),
       awaitingMarker_(false),
       appendAction_(PseudoKeyAction::None),
@@ -584,10 +589,12 @@ STDMETHODIMP TextService::Deactivate()
     CancelAppendAction();
     UpdateTextEditSink(nullptr);
     ClearConversion();
+    ClearBar();
     ClearContext();
     composer_.Clear();
     surface_.clear();
     lastCommitText_.clear();
+    adopted_.clear();
     promoted_ = false;
     if (composition_ != nullptr) {
         composition_->Release();
@@ -672,9 +679,15 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
         DiscardPendingRomaji();
         EndRun();
     }
+    // 後続語の予測も離れる文書のもの
+    if (nextWordBar_) {
+        ClearBar();
+    }
     // 確定アンドゥの記憶も離れる文書のもの。追記のみの文書は照合せずに擬似 Backspace で
     // 消すため、別の文書へ持ち越すと関係ない文字を消してしまう
     lastCommitText_.clear();
+    // 採用した文字列の記憶も離れる文書のもの
+    adopted_.clear();
     // フォーカス切替は設定ファイルの変更を拾う機会にする (通常は更新時刻の比較のみ)。
     // 設定ツールで保存してアプリに戻る操作自体がフォーカス切替なので、実質すぐ反映される
     RefreshConfig();
@@ -812,6 +825,11 @@ bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
     if (func == KeyFunc::InsertNewline) {
         return IsNewlineApp();
     }
+    // 後続語の予測が出ていなければ食べない (run 中のバー選択では、他の Ctrl 併用と同じく
+    // run を終えてアプリへ渡す)
+    if (func == KeyFunc::NextWordNext || func == KeyFunc::NextWordPrev) {
+        return nextWordBar_ && !barItems_.empty();
+    }
     if (CurrentKeyState() != KeyState::Idle) {
         return true;
     }
@@ -913,7 +931,8 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         *eaten = FALSE;
     } else {
         // 食べないキーはホストが OnKeyDown を呼ばずに処理することがあるため、
-        // run の終了はここでも行う
+        // 後続語の予測を消すのと run の終了はここでも行う
+        DismissNextWordForKey(wparam);
         EndRunIfPassthroughKey(context, wparam);
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
         NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
@@ -953,6 +972,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
         UpdateMouseHook();
         return S_OK;
     }
+    DismissNextWordForKey(wparam);
     EndRunIfPassthroughKey(context, wparam);
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
     NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
@@ -1015,7 +1035,7 @@ STDMETHODIMP TextService::OnKeyUp(ITfContext* context, WPARAM wparam, LPARAM lpa
 void TextService::LogKeyDown(const wchar_t* where, WPARAM wparam, KeyState state,
                              const KeyMatch& match, BOOL eaten, bool disabled) const
 {
-    // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=15 は割当なし)
+    // KeyState・KeyFunc は列挙の数値で出す (並びは config.h の定義順。func=17 は割当なし)
     wchar_t text[256] = {};
     swprintf_s(text,
                L"%s vk=0x%02X ctrl=%d alt=%d shift=%d state=%d func=%d shiftAdded=%d eaten=%d "
@@ -1058,6 +1078,9 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     }
 
     if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
+        if (IsKeyboardOpen()) {
+            DismissNextWordForKey(VK_F10);
+        }
         // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき) と、入力なしで
         // 変換の対象が無いときはアプリへ再送する
         const KeyFunc func = (context != nullptr && IsKeyboardOpen())
@@ -1176,6 +1199,9 @@ bool TextService::IsKeyboardDisabled() const
 
 void TextService::DiscardRunWhileDisabled()
 {
+    if (nextWordBar_) {
+        ClearBar();
+    }
     if (!InRun() && !(converting_ && !Composing())) {
         return;
     }
@@ -1203,6 +1229,9 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
             DiscardPendingRomaji();
             EndRun();
         }
+        if (nextWordBar_) {
+            ClearBar();
+        }
         ClearContext();
     }
     if (langBarButton_ != nullptr) {
@@ -1222,6 +1251,10 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
             }
             docMgr->Release();
         }
+    }
+    // 採用した文字列の記憶は、オフの時点で確定した文字列まで含めて捨てる
+    if (!IsKeyboardOpen()) {
+        adopted_.clear();
     }
     UpdateMouseHook();
     return S_OK;
@@ -1299,6 +1332,11 @@ STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly
              L" doc=" + AppendDocumentName(appendDocument_));
     if (own || keyEdit) {
         return S_OK;
+    }
+    // キャレットが動いたら、後続語の予測はもうキャレットの前の語に続くとは限らない
+    if (nextWordBar_) {
+        DebugLog(L"選択の変更で後続語の予測を消す");
+        ClearBar();
     }
     // 読める文書は次の追記の照合でキャレット移動を検出できる
     if (appendDocument_ != AppendDocument::AppendOnly || !InRun()) {
@@ -1571,19 +1609,29 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         return CycleCandidate(context, +1);
     case KeyFunc::PrevCandidate:
         return CycleCandidate(context, -1);
-    case KeyFunc::CommitRun:
+    case KeyFunc::CommitRun: {
         // 打鍵はアプリへ渡さないので、確定アンドゥの記憶は残る
+        if (NextWordSelected() && !InRun() && !Composing()) {
+            return AdoptNextWord(context, BarAdopt::CommitKey, L"", nullptr);
+        }
+        HRESULT hr;
         if (Composing()) {
-            return CommitComposition(context);
+            hr = CommitComposition(context);
+        } else if (converting_) {
+            hr = CommitRunDirect(context);
+        } else if (barIndex_ >= 0) {
+            hr = AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::CommitKey, L"",
+                              nullptr);
+        } else {
+            hr = CommitRunKey(context);
         }
-        if (converting_) {
-            return CommitRunDirect(context);
-        }
-        if (barIndex_ >= 0) {
-            return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::CommitKey, L"",
-                                nullptr);
-        }
-        return CommitRunKey(context);
+        ShowNextWordAfterCommit(context);
+        return hr;
+    }
+    case KeyFunc::NextWordNext:
+        return MoveNextWordSelection(+1);
+    case KeyFunc::NextWordPrev:
+        return MoveNextWordSelection(-1);
     case KeyFunc::UndoCommit:
         return UndoCommit(context);
     case KeyFunc::RegisterWord:
@@ -1768,6 +1816,7 @@ HRESULT TextService::StartConversion(ITfContext* context)
     }
     rangeFunc_ = KeyFunc::Convert;
     BuildConversionSegments();
+    PlaceAdoptedCandidate();
     HRESULT hr = UpdateConvertingDisplay(context);
     ShowCandidateWindow(context);
     return hr;
@@ -2069,6 +2118,11 @@ void TextService::EnsureConversionState()
     ConversionSegment segment;
     segment.reading = composer_.Commit();
     segment.candidates.push_back(segment.reading);
+    // 記憶から始めた文字種変換は、記憶の表記を今の選択として循環を始める
+    // (F10 で打鍵どおりの英字、F7 で全体のカタカナから始まる)
+    if (RangeAdoptedIntact() && rangeOrigin_.surface != segment.reading) {
+        segment.candidates.insert(segment.candidates.begin(), rangeOrigin_.surface);
+    }
     segments_.clear();
     segments_.push_back(std::move(segment));
     selected_.assign(1, 0);
@@ -2235,6 +2289,14 @@ HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
+    if (rangeTracked_ && rangeFromAdopted_) {
+        return CancelAdoptedConversion(context);
+    }
+    return CancelConversionToKana(context);
+}
+
+HRESULT TextService::CancelConversionToKana(ITfContext* context)
+{
     ClearConversion();
     RestoreExcludedKana();
     // かな入力に戻るので、バーも作り直して復活させる
@@ -2249,6 +2311,7 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 HRESULT TextService::UpdateBar(ITfContext* context)
 {
     barIndex_ = -1;
+    nextWordBar_ = false;
     const TsfConfig& config = config_.Get();
     // 候補選択中は縦の候補ウィンドウを使う
     if (!config.candidateBar || (!Composing() && !InRun()) || converting_) {
@@ -2278,7 +2341,7 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     }
     // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
     std::vector<PredictionCandidate> predictions;
-    if (!suggest || SplitAsciiRun() || !engine_.Predict(kana, &predictions)) {
+    if (!suggest || SplitAsciiRun() || !engine_.Predict(kana, CurrentContext(), &predictions)) {
         predictions.clear();
     }
 
@@ -2643,6 +2706,7 @@ void TextService::ClearBar()
     barItems_.clear();
     barKana_.clear();
     barIndex_ = -1;
+    nextWordBar_ = false;
     barBuilt_.clear();
     barPredictions_.clear();
     barHasAscii_ = false;
@@ -2724,6 +2788,7 @@ std::wstring TextService::PrepareConversionCommit()
     if (segmentsResized_) {
         LearnResizedSegments();
     }
+    RememberConversion(committed);
     if (!committed.empty()) {
         SetCommitContext(committed.back().first, committed.back().second);
     }

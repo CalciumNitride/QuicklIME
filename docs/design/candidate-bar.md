@@ -44,6 +44,8 @@
   - TSF 層の ConfigLoader にも `min_suggest_chars` を読ませる (今は TSF 層が2を固定で持っている)
 - 出さない状態: 候補選択中 (変換キーで入る。縦の候補ウィンドウを使う)、モードレスの英字モード中、
   設定 `candidate_bar` がオフ、候補が1件も無い
+- run の無いときにも、確定キーで run を終えた直後などに読みなしの後続語予測を同じバーで出す。
+  表示・選択・採用は docs/design/next-word-prediction.md に定める
 - 打鍵ごとに PREDICT と CONVNBEST を同期で呼び、バーを作り直す。どちらもエンジンの
   自動起動や接続待ちをしない呼び出し (`Predict`・`ConvertNBestLive`) を使う。未接続なら
   バーを出さない

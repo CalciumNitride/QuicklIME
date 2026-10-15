@@ -178,7 +178,10 @@ private:
     HRESULT MoveSegmentTo(ITfContext* context, size_t index);
     // 現在文節の境界を delta 文字ぶん伸縮し、境界固定で再変換する
     HRESULT ResizeSegment(ITfContext* context, int delta);
+    // 変換の取消 (記憶から始めた変換は CancelAdoptedConversion、それ以外は CancelConversionToKana)
     HRESULT CancelConversion(ITfContext* context);
+    // 変換を取り消してかな表示に戻す (範囲の伸縮もこれで run に戻す)
+    HRESULT CancelConversionToKana(ITfContext* context);
 
     // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する。
     // F7/F8 は連打で後ろから1文字ずつひらがなに戻し、F9/F10 は連打で
@@ -265,6 +268,25 @@ private:
     // 確定キー (バー未選択): アプリへ渡すキーと同じ救済を通して、見えているとおりに run を終える
     // (run 終了時の判定 (ルール3・6・7) も全体変換も適用しない)
     HRESULT CommitRunKey(ITfContext* context);
+
+    // ---- 読みなしの後続語予測 (docs/design/next-word-prediction.md) ----
+    // run の無いときに、今の前文脈の後続語の予測を候補バーに出す (設定・前文脈・候補・接続の
+    // どれかが欠ければ何もしない)
+    void ShowNextWordBar(ITfContext* context);
+    // 確定キーの処理の後に呼ぶ: run が終わっていれば後続語の予測を出す (擬似 Backspace の
+    // 目印待ちなら、目印を受け取った後に回す)
+    void ShowNextWordAfterCommit(ITfContext* context);
+    // 後続語の予測を出していて、その候補を選んでいるか
+    bool NextWordSelected() const;
+    // 打鍵の前処理: 後続語の予測を出しているとき、予測のまま扱うキー (未選択なら選択の機能、
+    // 選択中なら選択・採用・Esc のキー) でなければ予測を消す (そのキーは今どおり処理する)
+    void DismissNextWordForKey(WPARAM wparam);
+    // 後続語の予測の選択を動かす (未選択から delta > 0 で先頭、delta < 0 で末尾を選ぶ)
+    HRESULT MoveNextWordSelection(int delta);
+    // 選択中の後続語の予測を、suffix を付けてキャレット位置に追記する (既存の文字列は書き換えない)。
+    // 確定キー (CommitKey) なら続けて次の語の予測を出し、followKey があればその打鍵で run を始める
+    HRESULT AdoptNextWord(ITfContext* context, BarAdopt mode, const std::wstring& suffix,
+                          const DirectKey* followKey);
     // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
     // システムキャレットの矩形)。どちらも取れなければ false
     // source には位置の出所 (診断ログ用の説明) を返す
@@ -426,15 +448,20 @@ private:
     // 変換 (KeyFunc::Convert): run 中は変換開始 / 次候補 (previous なら前候補)、
     // run が無ければ入力なしの対象 (ReadIdleTarget) の変換
     HRESULT ConvertKeyDirect(ITfContext* context, bool previous);
-    // 入力なしの変換キー・F6〜F10 の対象 (docs/design/conversion-range.md)
+    // 入力なしの変換キー・F6〜F10 の対象 (docs/design/conversion-range.md、
+    // docs/design/adopted-reconversion.md)
     struct IdleTarget {
-        std::wstring text;    // 対象の文字列 (読みはひらがなに正規化して作る)
-        // 対象の先頭より前の文書の文字列 (キャレット直前のかなのときだけ読む)
+        // 対象の文字列 (読みはひらがなに正規化して作る。記憶が対象のときはその表記)
+        std::wstring text;
+        // 対象の先頭より前の文書の文字列 (選択が無いときだけ読む)
         std::wstring before;
-        bool selection = false;  // 選択範囲 (後置再変換) か、キャレット直前のかなか
+        bool selection = false;  // 選択範囲 (後置再変換) か、キャレット直前の文字列か
+        bool adopted = false;    // 最新の記憶1件が対象か (読みの状態は記憶したものを使う)
     };
     // 選択があれば、ひらがな・カタカナ・ー だけの選択 (後置再変換)。選択が空なら、読める文書で
-    // キャレット直前のひらがな・ー の連続。どちらも kMaxReconvertLength 文字まで。対象が無ければ false
+    // キャレット直前が有効な記憶で終わり、最新の記憶の表記がひらがな・ー だけでなければその1件、
+    // それ以外はキャレット直前のひらがな・ー の連続。どちらも kMaxReconvertLength 文字まで。
+    // 対象が無ければ false
     bool ReadIdleTarget(ITfContext* context, IdleTarget* target) const;
     // 入力なしの対象を読みとして run を作り、昇格して func (Convert か F6〜F10) の変換に入る
     HRESULT ConvertIdleTarget(ITfContext* context, KeyFunc func);
@@ -458,6 +485,45 @@ private:
     // 範囲の右端をキャレットに固定し、左端を1文字動かして変換をやり直す
     // (delta < 0 で広げ、delta > 0 で縮める)。できないときは何もしない
     HRESULT ResizeConversionRange(ITfContext* context, int delta);
+    // 範囲を広げる: 範囲の直前の記憶の最後の文節を、範囲に入らない部分を含めてかなに書き直し、
+    // その読みの最後の1文字を範囲の先頭に足す (降格した run の状態で呼ぶ)。
+    // 文書の書き換えに失敗したら run を捨てて false
+    bool ExtendRangeIntoAdopted(ITfContext* context);
+
+    // ---- 採用した文字列の記憶 (docs/design/adopted-reconversion.md) ----
+    // run が文書に残した出力1件 (候補バーの採用・候補選択の確定・かなのままの run の終了)
+    struct AdoptedText {
+        std::wstring surface;  // 文書に入れた文字列 (文節の表記の連結)
+        std::vector<std::pair<std::wstring, std::wstring>> segments;  // 文節ごとの (読み, 表記)
+        RomajiComposer composer;  // 確定前の読みの状態 (Commit() が文節の読みの連結)
+    };
+    // 記憶を1件足す (読める文書のときだけ)。文節の読み・表記の連結が composer・surface と
+    // 食い違えば1文節にする。読みの合計が kMaxReconvertLength を超えた分は古いものから捨てる
+    void RememberAdopted(const std::wstring& surface,
+                         std::vector<std::pair<std::wstring, std::wstring>> segments,
+                         const RomajiComposer& composer);
+    // 候補選択の確定を記憶する。範囲を追跡していれば、範囲が覆っていた記憶を、範囲の前に残った
+    // 記憶・範囲の外でかなに書き直した部分 (かなの1件)・確定した範囲に置き換える
+    void RememberConversion(const std::vector<std::pair<std::wstring, std::wstring>>& committed);
+    // 記憶の表記の長さの合計 (照合のために文書を読む長さ)
+    size_t AdoptedSurfaceLength() const;
+    // preceding (キャレット直前の文書の文字列) の末尾から、新しい記憶の表記が連続して一致する数
+    size_t MatchAdopted(const std::wstring& preceding) const;
+    // 照合で一致しなかった記憶と、それより古い記憶を捨てる
+    void DropUnmatchedAdopted(const std::wstring& preceding);
+    // 照合済みの記憶のうち、範囲の先頭 (preceding の rangeStart 文字目) でちょうど終わる連続した
+    // 記憶を adopted_[*from, *to) に返す (無ければ空)。*to 以降は範囲が (一部でも) 覆う記憶
+    void FindAdoptedChain(const std::wstring& preceding, size_t rangeStart, size_t* from,
+                          size_t* to) const;
+    // BeginRangeTracking の後に、範囲の前の記憶 adopted_[from, to) を範囲の状態に写す。
+    // fromAdopted なら最新の記憶から始めた変換 (取消で変換前の表記に戻す)
+    void BeginRangeAdopted(size_t from, size_t to, bool fromAdopted);
+    // 記憶から始めた変換の範囲が、始めたときの記憶のままか
+    bool RangeAdoptedIntact() const;
+    // 記憶から始めた変換の候補の先頭に記憶の表記を置く (文書を変えない)
+    void PlaceAdoptedCandidate();
+    // 記憶から始めた変換の取消: 範囲と、伸縮でかなに書き直した部分を変換前の表記に戻して終える
+    HRESULT CancelAdoptedConversion(ITfContext* context);
     // 候補選択中の確定 (選択を末尾に潰して run を終える)、バー選択中の確定 (選択中の候補を
     // 採用して run を終える)
     HRESULT CommitRunDirect(ITfContext* context);
@@ -628,6 +694,10 @@ private:
     // 最後に ASCIIFORM で問い合わせた文字列と応答の表記 (英字区間の打鍵ごとに問い合わせ直さない)
     std::wstring asciiFormText_;
     std::wstring asciiForm_;
+    // 表示中のバーが run の無いときに出した後続語の予測か (候補は barItems_ に予測候補として持つ)
+    bool nextWordBar_;
+    // 確定キーの採用が擬似 Backspace の目印待ちになったので、目印の後に後続語の予測を出す
+    bool nextWordPending_;
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)
@@ -648,6 +718,8 @@ private:
         std::wstring written;          // 文書の run の文字列を置き換える文字列
         bool endRun = false;
         RomajiComposer before;         // 採用前の読み (確定アンドゥの復元用)
+        // 採用部分の文節ごとの (読み, 表記) (記憶に使う)
+        std::vector<std::pair<std::wstring, std::wstring>> segments;
     };
     BarAdoption adoption_;
 
@@ -677,6 +749,21 @@ private:
     ConversionContext rangeBaseContext_;  // 範囲を始めたときの前文脈
     // 範囲を変えたときにやり直す変換 (Convert は通常の変換、それ以外は F6〜F10)
     KeyFunc rangeFunc_;
+    // 範囲の前で伸縮に使う記憶の写し (古い順)。rangeKana_ が空なら rangeBefore_ はこの表記の
+    // 連結で終わる。← で文節をかなに書き直すと写しの方を削り、adopted_ は確定まで変えない
+    std::vector<AdoptedText> rangeAdopted_;
+    // 範囲を始めたときの adopted_ のうち、確定でそのまま残す記憶の数 (rangeAdopted_ はこの後ろ)
+    size_t rangeAdoptedFrom_;
+    // rangeBefore_ の末尾の、記憶の文節をかなに書き直して範囲に入らなかった部分と縮めて外したかな
+    std::wstring rangeKana_;
+    bool rangeRewritten_;     // 記憶の文節をかなに書き直したか
+    bool rangeFromAdopted_;   // 最新の記憶から始めた変換か
+    AdoptedText rangeOrigin_;       // 変換を始めた記憶 (rangeFromAdopted_ のとき)
+    std::wstring rangeOrigBefore_;  // 変換を始めたときの rangeBefore_ (取消で戻す)
+
+    // 採用した文字列の記憶 (文書に入れた順。末尾が最新)。メモリ上だけに置き、
+    // フォーカス移動・IME オフで捨てる
+    std::vector<AdoptedText> adopted_;
 
     // 追記型入力の状態
     AppendDocument appendDocument_;          // フォーカス中の文書の分類

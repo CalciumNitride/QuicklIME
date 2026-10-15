@@ -29,6 +29,8 @@ pub struct LearningStore {
     map: HashMap<String, (String, u64)>,
     /// (前文脈の表記, 読み) → (表記, 記録順の連番)。文脈付きの学習
     ctx_map: HashMap<(String, String), (String, u64)>,
+    /// 文脈キー → その文脈で記録した読み。打鍵ごとの文脈での引き当てで ctx_map を走査しないため
+    ctx_index: HashMap<String, HashSet<String>>,
     /// 追記先ファイル。None ならメモリ上のみ (保存失敗時・テスト時)
     path: Option<PathBuf>,
     /// 人が文節伸縮で直した分割の文節読み
@@ -55,6 +57,7 @@ impl LearningStore {
         let mut store = LearningStore {
             map: HashMap::new(),
             ctx_map: HashMap::new(),
+            ctx_index: HashMap::new(),
             boundary: HashSet::new(),
             path: Some(path.clone()),
             ctx_path: Some(ctx_path.clone()),
@@ -90,6 +93,7 @@ impl LearningStore {
         LearningStore {
             map: HashMap::new(),
             ctx_map: HashMap::new(),
+            ctx_index: HashMap::new(),
             boundary: HashSet::new(),
             path: None,
             ctx_path: None,
@@ -158,10 +162,9 @@ impl LearningStore {
             {
                 if !context.is_empty() && !reading.is_empty() && !surface.is_empty() {
                     self.seq += 1;
-                    self.ctx_map.insert(
-                        (context_key(context), reading.to_string()),
-                        (surface.to_string(), self.seq),
-                    );
+                    let key = context_key(context);
+                    self.ctx_index.entry(key.clone()).or_default().insert(reading.to_string());
+                    self.ctx_map.insert((key, reading.to_string()), (surface.to_string(), self.seq));
                 }
             }
         }
@@ -182,6 +185,7 @@ impl LearningStore {
             }
         }
         let context = key.0.clone();
+        self.ctx_index.entry(context.clone()).or_default().insert(reading.to_string());
         self.ctx_map.insert(key, (surface.to_string(), self.seq));
 
         if let Some(path) = &self.ctx_path {
@@ -201,6 +205,34 @@ impl LearningStore {
         self.ctx_map
             .get(&(context_key(context), reading.to_string()))
             .map(|(surface, _)| surface.as_str())
+    }
+
+    /// 前文脈 context の後に確定した (読み, 表記) のうち、読みが prefix で始まるものを
+    /// 記録が新しい順に返す (prefix が空なら全件)。表記の重複は先勝ちで除く
+    pub fn predict_context(&self, context: &str, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
+        let key = context_key(context);
+        let Some(readings) = self.ctx_index.get(&key) else {
+            return Vec::new();
+        };
+        let mut matches: Vec<(&str, &str, u64)> = readings
+            .iter()
+            .filter(|reading| reading.starts_with(prefix))
+            .filter_map(|reading| {
+                let (surface, seq) = self.ctx_map.get(&(key.clone(), reading.clone()))?;
+                Some((reading.as_str(), surface.as_str(), *seq))
+            })
+            .collect();
+        matches.sort_by(|a, b| b.2.cmp(&a.2));
+        let mut results: Vec<(&str, &str)> = Vec::new();
+        for (reading, surface, _) in matches {
+            if results.len() >= limit {
+                break;
+            }
+            if !results.iter().any(|(_, s)| *s == surface) {
+                results.push((reading, surface));
+            }
+        }
+        results
     }
 
     /// 境界学習の追記ログ (1行1読み) を読み込む
@@ -384,6 +416,55 @@ mod tests {
         // 末尾16文字が同じ文脈なら一致する
         let other = "い".repeat(30) + &"あ".repeat(14) + "服を";
         assert_eq!(store.get_ctx(&other, "きる"), Some("着る"));
+    }
+
+    #[test]
+    fn 文脈で引くと新しい順に返り表記の重複を除く() {
+        let mut store = LearningStore::in_memory();
+        store.record_ctx("今日は", "いいてんき", "いい天気");
+        store.record_ctx("今日は", "はれ", "晴れ");
+        store.record_ctx("今日は", "はれる", "晴れ");
+        store.record_ctx("明日は", "あめ", "雨");
+        assert_eq!(
+            store.predict_context("今日は", "", 8),
+            vec![("はれる", "晴れ"), ("いいてんき", "いい天気")]
+        );
+        // 確定し直すと新しさが更新される
+        store.record_ctx("今日は", "いいてんき", "いい天気");
+        assert_eq!(
+            store.predict_context("今日は", "", 8),
+            vec![("いいてんき", "いい天気"), ("はれる", "晴れ")]
+        );
+        assert_eq!(store.predict_context("今日は", "", 1), vec![("いいてんき", "いい天気")]);
+        assert!(store.predict_context("昨日は", "", 8).is_empty());
+    }
+
+    #[test]
+    fn 文脈での引き当ては読みの前方一致で絞る() {
+        let mut store = LearningStore::in_memory();
+        store.record_ctx("今日は", "いいてんき", "いい天気");
+        store.record_ctx("今日は", "はれ", "晴れ");
+        assert_eq!(store.predict_context("今日は", "い", 8), vec![("いいてんき", "いい天気")]);
+        assert!(store.predict_context("今日は", "あ", 8).is_empty());
+    }
+
+    #[test]
+    fn 長い文脈は末尾で切り詰めたキーで引ける() {
+        let mut store = LearningStore::in_memory();
+        let long = "あ".repeat(30) + "今日は"; // 33文字 → 末尾16文字がキー
+        store.record_ctx(&long, "いいてんき", "いい天気");
+        let other = "い".repeat(30) + &"あ".repeat(13) + "今日は";
+        assert_eq!(store.predict_context(&other, "", 8), vec![("いいてんき", "いい天気")]);
+    }
+
+    #[test]
+    fn 文脈付きログの読み込みでも文脈で引ける() {
+        let mut store = LearningStore::in_memory();
+        store.load_ctx_from("今日は\tいいてんき\tいい天気\n今日は\tはれ\t晴れ\n".as_bytes());
+        assert_eq!(
+            store.predict_context("今日は", "", 8),
+            vec![("はれ", "晴れ"), ("いいてんき", "いい天気")]
+        );
     }
 
     #[test]

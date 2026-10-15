@@ -488,6 +488,19 @@ fn format_candidates(candidates: &[convert::SentenceCandidate]) -> String {
         .join("\t")
 }
 
+/// PREDICT・NEXTWORD の応答を作る (候補は「読み\x1f表記」のタブ区切り、候補なしは OK のみ)
+fn predictions_response(candidates: &[(String, String)]) -> String {
+    if candidates.is_empty() {
+        return "OK\n".to_string();
+    }
+    let body = candidates
+        .iter()
+        .map(|(reading, surface)| format!("{reading}{FIELD_SEPARATOR}{surface}"))
+        .collect::<Vec<_>>()
+        .join("\t");
+    format!("OK\t{body}\n")
+}
+
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
     // 日付・時刻の動的候補用の現在日時 (CONVSYM の候補生成と LEARN の除外判定に使う)
@@ -569,31 +582,41 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         },
         Some("PREDICT") => match fields.next() {
             // 予測入力: 読みの前方一致でユーザ辞書・履歴・辞書から候補を返す。
+            // PREDICT\t<かな>[\t<文脈読み>\x1f<文脈表記>] : 前文脈があれば、その後に確定した語を上位に寄せる。
             // 最小文字数未満・該当なし・サジェスト無効時は候補ゼロの OK (エラーにしない)
             Some(kana) if !kana.is_empty() => {
                 let cfg = *data.config.lock().expect("config lock");
                 if !cfg.suggest {
                     return "OK\n".to_string();
                 }
+                let ctx = fields.next().and_then(parse_context);
                 let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
-                let candidates =
-                    predict::predict(kana, &data.dictionary, &user, &learning, &cfg);
-                if candidates.is_empty() {
-                    "OK\n".to_string()
-                } else {
-                    let body = candidates
-                        .iter()
-                        .map(|(reading, surface)| {
-                            format!("{reading}{FIELD_SEPARATOR}{surface}")
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\t");
-                    format!("OK\t{body}\n")
-                }
+                let candidates = predict::predict(
+                    kana,
+                    ctx.as_ref().map(|c| c.surface.as_str()),
+                    &data.dictionary,
+                    &user,
+                    &learning,
+                    &cfg,
+                );
+                predictions_response(&candidates)
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("NEXTWORD") => {
+            // NEXTWORD\t<文脈読み>\x1f<文脈表記> : 読みなしの後続語予測。前文脈の後に確定した
+            // ことのある語を返す。該当なし・サジェスト無効時は候補ゼロの OK
+            let Some(ctx) = fields.next().and_then(parse_context) else {
+                return "ERR\t前文脈がありません\n".to_string();
+            };
+            let cfg = *data.config.lock().expect("config lock");
+            if !cfg.suggest {
+                return "OK\n".to_string();
+            }
+            let learning = data.learning.lock().expect("learning lock");
+            predictions_response(&predict::next_words(&ctx.surface, &learning, &cfg))
+        }
         Some("LEARN") => {
             // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する。
             // 学習が無効なら記録せず OK を返す (既存の学習データは使い続ける)
@@ -1140,6 +1163,64 @@ mod tests {
         let data = sample_data();
         data.config.lock().unwrap().suggest = false;
         assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\n");
+    }
+
+    #[test]
+    fn 前文脈つきのpredictは文脈付きの学習を確定履歴より前に出す() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN2\tきょうか\x1f強化\x1f晴れ", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        // 前文脈が無ければ確定履歴の新しい順
+        let without = handle_request("PREDICT\tきょ", &data);
+        assert_eq!(without, "OK\tきょうしつ\x1f教室\tきょうか\x1f強化\tきょう\x1f今日\n");
+        // 前文脈フィールドが空・欠けた形でも前文脈なしと同じ
+        assert_eq!(handle_request("PREDICT\tきょ\t", &data), without);
+        assert_eq!(handle_request("PREDICT\tきょ\tはれ\x1f", &data), without);
+        // 前文脈に続いて確定した語が確定履歴より前に出る
+        assert_eq!(
+            handle_request("PREDICT\tきょ\tはれ\x1f晴れ", &data),
+            "OK\tきょうか\x1f強化\tきょうしつ\x1f教室\tきょう\x1f今日\n"
+        );
+    }
+
+    #[test]
+    fn nextwordは前文脈の後に確定した語を新しい順に返す() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN2\tいいてんき\x1fいい天気\x1f今日は", &data), "OK\n");
+        assert_eq!(handle_request("LEARN2\tはれ\x1f晴れ\x1f今日は", &data), "OK\n");
+        assert_eq!(
+            handle_request("NEXTWORD\tきょうは\x1f今日は", &data),
+            "OK\tはれ\x1f晴れ\tいいてんき\x1fいい天気\n"
+        );
+        // 該当なしは候補ゼロの OK
+        assert_eq!(handle_request("NEXTWORD\tあした\x1f明日", &data), "OK\n");
+    }
+
+    #[test]
+    fn nextwordの前文脈が欠けていればエラー() {
+        let data = sample_data();
+        assert!(handle_request("NEXTWORD", &data).starts_with("ERR\t"));
+        assert!(handle_request("NEXTWORD\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("NEXTWORD\tきょうは", &data).starts_with("ERR\t"));
+        assert!(handle_request("NEXTWORD\tきょうは\x1f", &data).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn サジェスト無効ならnextwordと前文脈つきpredictは候補ゼロのok() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN2\tはれ\x1f晴れ\x1f今日は", &data), "OK\n");
+        data.config.lock().unwrap().suggest = false;
+        assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\n");
+        assert_eq!(handle_request("PREDICT\tはれ\tきょうは\x1f今日は", &data), "OK\n");
+    }
+
+    #[test]
+    fn 学習無効でもnextwordは既存の学習を使う() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN2\tはれ\x1f晴れ\x1f今日は", &data), "OK\n");
+        data.config.lock().unwrap().learning = false;
+        assert_eq!(handle_request("LEARN2\tあめ\x1f雨\x1f今日は", &data), "OK\n");
+        assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\tはれ\x1f晴れ\n");
     }
 
     #[test]
