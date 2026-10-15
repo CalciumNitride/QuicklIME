@@ -6,7 +6,26 @@
 
 namespace {
 
-constexpr wchar_t kPipeName[] = L"\\\\.\\pipe\\quicklime-engine";
+// QUICKLIME_PIPE_NAME で上書きできる。自動起動したエンジンも同じ環境変数を引き継ぐので
+// 同じパイプ名で待ち受ける。DllMain 中に環境変数を読まないよう最初の接続時に評価する
+const std::wstring& PipePath()
+{
+    static const std::wstring path = [] {
+        // 長すぎる名前でも既定名には戻さない (隔離のつもりで常用エンジンにつながるのを防ぐ)
+        const DWORD size = GetEnvironmentVariableW(L"QUICKLIME_PIPE_NAME", nullptr, 0);
+        std::wstring name;
+        if (size > 1) {
+            name.resize(size);
+            const DWORD len = GetEnvironmentVariableW(L"QUICKLIME_PIPE_NAME", name.data(), size);
+            name.resize(len < size ? len : 0);
+        }
+        if (name.empty()) {
+            name = L"quicklime-engine";
+        }
+        return L"\\\\.\\pipe\\" + name;
+    }();
+    return path;
+}
 
 // 応答が長くなった場合の暴走防止
 constexpr size_t kMaxResponseBytes = 64 * 1024;
@@ -61,13 +80,13 @@ EngineClient::~EngineClient()
 bool EngineClient::TryOpenPipe()
 {
     for (int attempt = 0; attempt < 2; ++attempt) {
-        pipe_ = CreateFileW(kPipeName, GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
-                            0, nullptr);
+        pipe_ = CreateFileW(PipePath().c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                            OPEN_EXISTING, 0, nullptr);
         if (pipe_ != INVALID_HANDLE_VALUE) {
             return true;
         }
         // 全インスタンスが使用中の場合だけ少し待って再試行する
-        if (GetLastError() != ERROR_PIPE_BUSY || !WaitNamedPipeW(kPipeName, 200)) {
+        if (GetLastError() != ERROR_PIPE_BUSY || !WaitNamedPipeW(PipePath().c_str(), 200)) {
             return false;
         }
     }

@@ -4,7 +4,7 @@
 
 ## トランスポート
 
-- named pipe: `\\.\pipe\quicklime-engine`
+- named pipe: `\\.\pipe\quicklime-engine` (環境変数 `QUICKLIME_PIPE_NAME` で `\\.\pipe\` 以降の名前を上書きできる。エンジン・TSF 層共通)
 - エンジン (quicklime-engine.exe) がサーバ、各アプリにロードされた TSF DLL がクライアント
 - 接続は複数同時に成立する (アプリごとに1本)
 - TSF 側はエンジンに接続できない場合、フォールバック (ひらがな1候補のみ) で動作を継続する

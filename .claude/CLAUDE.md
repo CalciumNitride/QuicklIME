@@ -41,10 +41,16 @@
 
 ## エンジン検証の隔離
 - エンジン単体の動作検証は、環境変数で実ユーザのデータ・常用エンジンから隔離して行う:
-  `QUICKLIME_PIPE_NAME` (パイプ名)、`QUICKLIME_DICT_DIR` (辞書)、
+  `QUICKLIME_PIPE_NAME` (パイプ名。エンジン・TSF 層・単語登録/設定ツール共通)、`QUICKLIME_DICT_DIR` (辞書)、
   `QUICKLIME_LEARN_FILE` (学習)、`QUICKLIME_USER_DICT_FILE` (ユーザ辞書)、
   `QUICKLIME_CONFIG_FILE` (設定。エンジンと TSF 層の両方が読む)、
   `QUICKLIME_ROMAJI_FILE` (ローマ字テーブル。TSF 層のみ)
+- TSF 層の実機確認も隔離できる: 上記の環境変数 (`QUICKLIME_PIPE_NAME` と
+  `QUICKLIME_LEARN_FILE` / `QUICKLIME_USER_DICT_FILE` / `QUICKLIME_CONFIG_FILE` など) を設定した
+  PowerShell から、`taskkill /IM Notepad.exe /F` で既存のメモ帳を終了してからメモ帳を起動すると、
+  そのメモ帳だけが隔離エンジンにつながる
+  - TSF 層が自動起動するエンジンや、メモ帳から開いた単語登録・設定ツールも環境変数を引き継ぐので、
+    同じパイプ名・隔離データで動く。他のアプリは常用エンジンのまま
 
 ## 開発版 DLL とインストール版 DLL の排他切替
 - `tsf/build/Debug/QuicklIME.dll` (開発版) と `%ProgramFiles%\QuicklIME\QuicklIME.dll`
