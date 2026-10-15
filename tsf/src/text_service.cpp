@@ -775,6 +775,7 @@ void TextService::RefreshConfig()
         // アプリモード (ライト/ダーク) も設定と同じ契機で読み直す (打鍵ごとには読まない)
         const PanelTheme theme = PanelTheme::ForAppMode();
         for (SuggestPanel* panel : {&suggestPanel_, &pendingPanel_}) {
+            panel->SetBlur(config.panelBlur);
             panel->SetFont(config.candidateFont, config.candidateFontSize);
             panel->SetTheme(theme);
         }

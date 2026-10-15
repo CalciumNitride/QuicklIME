@@ -1,6 +1,7 @@
 #include "suggest_panel.h"
 
 #include <d2d1.h>
+#include <dwmapi.h>
 #include <dwrite.h>
 
 #include <algorithm>
@@ -16,6 +17,80 @@ constexpr wchar_t kFallbackFont[] = L"Yu Gothic UI";
 constexpr wchar_t kNextWordLabel[] = L"次の語";
 constexpr UINT_PTR kTimerId = 1;  // StartTimer のタイマー (ウィンドウごとに1つ)
 constexpr int kAnchorGap = 2;     // キャレット行とパネルの間
+
+// ぼかしの方式の描画先の種類。hardware (DEFAULT) はホストのプロセスに D3D のデバイスを作るため、
+// まず software で試し、alpha が失われるときに切り替えて比べる
+constexpr D2D1_RENDER_TARGET_TYPE kBlurTargetType = D2D1_RENDER_TARGET_TYPE_SOFTWARE;
+
+const wchar_t* BlurTargetTypeName()
+{
+    return kBlurTargetType == D2D1_RENDER_TARGET_TYPE_SOFTWARE ? L"software" : L"hardware";
+}
+
+// SetWindowCompositionAttribute (user32 の非公開 API) の引数
+enum : DWORD {
+    kWcaAccentPolicy = 19,
+};
+enum : int {
+    kAccentEnableAcrylicBlurBehind = 4,
+};
+struct AccentPolicy {
+    int accentState;
+    DWORD accentFlags;
+    DWORD gradientColor;  // AABBGGRR
+    DWORD animationId;
+};
+struct WindowCompositionAttribData {
+    DWORD attrib;
+    void* data;
+    SIZE_T size;
+};
+using SetWindowCompositionAttributeFn = BOOL(WINAPI*)(HWND, WindowCompositionAttribData*);
+
+// 古い SDK の dwmapi.h には無いため自前で持つ
+constexpr DWORD kDwmwaWindowCornerPreference = 33;
+constexpr DWORD kDwmwcpRound = 2;
+
+DWORD ToAbgr(const PanelColor& color)
+{
+    const auto channel = [](float value) {
+        return static_cast<DWORD>(std::lround((std::clamp)(value, 0.0f, 1.0f) * 255.0f));
+    };
+    return (channel(color.a) << 24) | (channel(color.b) << 16) | (channel(color.g) << 8) |
+           channel(color.r);
+}
+
+// ウィンドウにアクリルのぼかしを当てる。API が無い・失敗したら false
+bool ApplyAcrylic(HWND hwnd, const PanelColor& tint)
+{
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (user32 == nullptr) {
+        return false;
+    }
+    const auto setAttribute = reinterpret_cast<SetWindowCompositionAttributeFn>(
+        reinterpret_cast<void*>(GetProcAddress(user32, "SetWindowCompositionAttribute")));
+    if (setAttribute == nullptr) {
+        return false;
+    }
+    AccentPolicy policy = {kAccentEnableAcrylicBlurBehind, 0, ToAbgr(tint), 0};
+    WindowCompositionAttribData data = {kWcaAccentPolicy, &policy, sizeof(policy)};
+    return setAttribute(hwnd, &data) != FALSE;
+}
+
+// Windows の透明効果がオンか (EnableTransparency。値が無ければオン)。
+// オフだとアクリルがぼかさず単色になる
+bool TransparencyEnabled()
+{
+    DWORD value = 1;
+    DWORD size = sizeof(value);
+    if (RegGetValueW(HKEY_CURRENT_USER,
+                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                     L"EnableTransparency", RRF_RT_REG_DWORD, nullptr, &value,
+                     &size) != ERROR_SUCCESS) {
+        value = 1;
+    }
+    return value != 0;
+}
 
 template <typename T>
 void SafeRelease(T** object)
@@ -188,6 +263,7 @@ PanelTheme PanelTheme::Dark()
     theme.selectedText = Rgb(0xFFFFFF);
     theme.nextWord = Rgb(0x3CC48A);
     theme.shadow = Rgb(0x000000, 0.45f);
+    theme.blurTint = Rgb(0x1C1C22, 0.6f);
     return theme;
 }
 
@@ -204,6 +280,7 @@ PanelTheme PanelTheme::Light()
     theme.selectedText = Rgb(0xFFFFFF);
     theme.nextWord = Rgb(0x2E9E6B);
     theme.shadow = Rgb(0x000000, 0.28f);
+    theme.blurTint = Rgb(0xFCFCFE, 0.7f);
     return theme;
 }
 
@@ -224,9 +301,10 @@ PanelTheme PanelTheme::ForAppMode()
 
 SuggestPanel::SuggestPanel()
     : hwnd_(nullptr), destroying_(false), d2dFactory_(nullptr), dwriteFactory_(nullptr),
-      target_(nullptr), brush_(nullptr), dotStroke_(nullptr), textFormat_(nullptr),
-      inputFormat_(nullptr), badgeFormat_(nullptr), labelFormat_(nullptr), fontSize_(18),
-      theme_(PanelTheme::Light()), kind_(Kind::Panel), selection_(0), hasInput_(false),
+      target_(nullptr), hwndTarget_(nullptr), drawTarget_(nullptr), brush_(nullptr),
+      dotStroke_(nullptr), textFormat_(nullptr), inputFormat_(nullptr), badgeFormat_(nullptr),
+      labelFormat_(nullptr), fontSize_(18), theme_(PanelTheme::Light()), blur_(false),
+      blurFailed_(false), blurActive_(false), kind_(Kind::Panel), selection_(0), hasInput_(false),
       bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0)
 {
     SetFont(kFallbackFont, 18);
@@ -280,6 +358,7 @@ bool SuggestPanel::EnsureTarget()
     if (!EnsureFactories()) {
         return false;
     }
+    ReleaseHwndTarget();
     // ホストのプロセス (ゲームなど) に D3D のデバイスを作らないよう、ソフトウェアで描く。
     // DPI は 96 に固定し、DIP を px として扱う (DPI による拡大は行わない)
     const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
@@ -301,8 +380,62 @@ bool SuggestPanel::EnsureTarget()
 
 void SuggestPanel::ReleaseTarget()
 {
-    SafeRelease(&brush_);
-    SafeRelease(&target_);
+    if (target_ != nullptr) {
+        SafeRelease(&brush_);
+        SafeRelease(&target_);
+    }
+}
+
+bool SuggestPanel::EnsureHwndTarget()
+{
+    if (hwndTarget_ != nullptr) {
+        return true;
+    }
+    if (hwnd_ == nullptr || !EnsureFactories()) {
+        return false;
+    }
+    ReleaseTarget();
+    // DPI は layered window の方式と同じく 96 に固定する
+    const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
+        kBlurTargetType,
+        D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED), 96.0f,
+        96.0f);
+    const D2D1_HWND_RENDER_TARGET_PROPERTIES hwndProperties = D2D1::HwndRenderTargetProperties(
+        hwnd_, D2D1::SizeU(static_cast<UINT32>(bodyWidth_), static_cast<UINT32>(bodyHeight_)));
+    if (FAILED(d2dFactory_->CreateHwndRenderTarget(&properties, &hwndProperties, &hwndTarget_))) {
+        hwndTarget_ = nullptr;
+        return false;
+    }
+    if (FAILED(hwndTarget_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush_))) {
+        ReleaseHwndTarget();
+        return false;
+    }
+    // 下地がぼかしの半透明な色のため、layered window と同じくグレースケールにする
+    hwndTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+    return true;
+}
+
+void SuggestPanel::ReleaseHwndTarget()
+{
+    if (hwndTarget_ != nullptr) {
+        SafeRelease(&brush_);
+        SafeRelease(&hwndTarget_);
+    }
+}
+
+void SuggestPanel::SetBlur(bool enabled)
+{
+    if (enabled == blur_) {
+        return;
+    }
+    blur_ = enabled;
+    if (enabled) {
+        blurFailed_ = false;
+    }
+    // 方式によってウィンドウの作り方が違うため、次の表示で作り直す
+    if (hwnd_ != nullptr) {
+        Hide();
+    }
 }
 
 void SuggestPanel::SetFont(const std::wstring& face, int height)
@@ -345,6 +478,9 @@ void SuggestPanel::SetTheme(const PanelTheme& theme)
     theme_ = theme;
     SetFont(face_, fontSize_);
     if (hwnd_ != nullptr) {
+        if (blurActive_) {
+            ApplyAcrylic(hwnd_, theme_.blurTint);
+        }
         Render(L"SetTheme", nullptr);
     }
 }
@@ -545,6 +681,42 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
         }
         return false;
     }
+    bool created = false;
+    if (hwnd_ == nullptr && blur_ && !blurFailed_) {
+        created = CreateBlurWindow(kind);
+    }
+    if (blurActive_) {
+        // ぼかしの方式では影を DWM に任せるため、ウィンドウの矩形 = パネルの矩形
+        margin_ = 0;
+        SetWindowPos(hwnd_, HWND_TOPMOST, bodyX_, bodyY_, bodyWidth_, bodyHeight_,
+                     SWP_NOACTIVATE);
+        ShowWindow(hwnd_, SW_SHOWNA);
+        // 打鍵ごとの位置・大きさの変化でちらつかないよう、WM_PAINT を待たずにその場で描く
+        const HRESULT hr = DrawBlur();
+        ValidateRect(hwnd_, nullptr);
+        if (SUCCEEDED(hr)) {
+            LogShow(kind, anchor, created, ERROR_SUCCESS);
+            return true;
+        }
+        if (hwndTarget_ != nullptr) {
+            if (logger_) {
+                logger_(std::wstring(kind) + L": 描画に失敗 hr=" + DebugHResultText(hr));
+            }
+            return false;
+        }
+        // 描画先を作り直せなかったときは、このインスタンスではぼかしをやめる
+        DestroyBlurWindow();
+        blurFailed_ = true;
+        created = false;
+        margin_ = ComputeMetrics(theme_, fontSize_).margin;
+        if (logger_) {
+            logger_(std::wstring(kind) +
+                    L": ぼかしをやめて layered で描く (ID2D1HwndRenderTarget を作り直せない hr=" +
+                    DebugHResultText(hr) + L")");
+        }
+    }
+
+    // layered の描画先はぼかしの描画先を解放して作るため、ぼかしの方式では作らない
     if (!EnsureTarget()) {
         if (logger_) {
             logger_(std::wstring(kind) + L": Direct2D の描画先を作れない");
@@ -580,6 +752,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
             }
             hr = target_->BindDC(memory, &rect);
             if (SUCCEEDED(hr)) {
+                drawTarget_ = target_;
                 target_->BeginDraw();
                 target_->Clear(D2D1::ColorF(0, 0, 0, 0));
                 Draw();
@@ -592,7 +765,6 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
         }
     }
 
-    bool created = false;
     DWORD createError = ERROR_SUCCESS;
     bool updated = false;
     if (SUCCEEDED(hr)) {
@@ -644,6 +816,92 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
     return hwnd_ != nullptr && updated;
 }
 
+bool SuggestPanel::CreateBlurWindow(const wchar_t* kind)
+{
+    // sticky は API が使えない理由 (このインスタンスでは再び試さない)
+    const auto fallback = [&](const std::wstring& reason, bool sticky) {
+        if (hwnd_ != nullptr) {
+            DestroyBlurWindow();
+        }
+        if (sticky) {
+            blurFailed_ = true;
+        }
+        if (logger_) {
+            logger_(std::wstring(kind) + L": ぼかしをやめて layered で描く (" + reason + L")");
+        }
+        return false;
+    };
+
+    if (!TransparencyEnabled()) {
+        return fallback(L"Windows の透明効果がオフ", false);
+    }
+    // 作成中に届く WM_ERASEBKGND・WM_PAINT をぼかしの方式として扱うため、先に立てる
+    blurActive_ = true;
+    hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kWindowClassName,
+                            L"", WS_POPUP, bodyX_, bodyY_, bodyWidth_, bodyHeight_, nullptr,
+                            nullptr, globals::dllInstance, this);
+    if (hwnd_ == nullptr) {
+        blurActive_ = false;
+        return fallback(L"CreateWindowExW 失敗 error=" + std::to_wstring(GetLastError()), false);
+    }
+    if (!ApplyAcrylic(hwnd_, theme_.blurTint)) {
+        return fallback(L"SetWindowCompositionAttribute が無いか失敗", true);
+    }
+    const DWORD corner = kDwmwcpRound;
+    const HRESULT hr =
+        DwmSetWindowAttribute(hwnd_, kDwmwaWindowCornerPreference, &corner, sizeof(corner));
+    if (FAILED(hr)) {
+        return fallback(L"DWMWA_WINDOW_CORNER_PREFERENCE の指定に失敗 hr=" + DebugHResultText(hr),
+                        true);
+    }
+    if (!EnsureHwndTarget()) {
+        return fallback(L"ID2D1HwndRenderTarget を作れない", true);
+    }
+    return true;
+}
+
+void SuggestPanel::DestroyBlurWindow()
+{
+    ReleaseHwndTarget();
+    if (hwnd_ != nullptr) {
+        destroying_ = true;
+        DestroyWindow(hwnd_);
+        destroying_ = false;
+        hwnd_ = nullptr;
+    }
+    blurActive_ = false;
+}
+
+HRESULT SuggestPanel::DrawBlur()
+{
+    HRESULT hr = E_FAIL;
+    // 描画先を作り直す必要が出たときは1度だけやり直す
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (!EnsureHwndTarget()) {
+            break;
+        }
+        const D2D1_SIZE_U size =
+            D2D1::SizeU(static_cast<UINT32>(bodyWidth_), static_cast<UINT32>(bodyHeight_));
+        const D2D1_SIZE_U current = hwndTarget_->GetPixelSize();
+        if (current.width != size.width || current.height != size.height) {
+            hr = hwndTarget_->Resize(size);
+            if (FAILED(hr)) {
+                break;
+            }
+        }
+        drawTarget_ = hwndTarget_;
+        hwndTarget_->BeginDraw();
+        hwndTarget_->Clear(D2D1::ColorF(0, 0, 0, 0));
+        Draw();
+        hr = hwndTarget_->EndDraw();
+        if (hr != D2DERR_RECREATE_TARGET) {
+            break;
+        }
+        ReleaseHwndTarget();
+    }
+    return hr;
+}
+
 void SuggestPanel::Draw()
 {
     const Metrics m = ComputeMetrics(theme_, fontSize_);
@@ -653,25 +911,28 @@ void SuggestPanel::Draw()
     const float line = static_cast<float>(m.line);
     const float radius = BodyRadius(kind_ == Kind::Capsule, m, height);
 
-    DrawShadow();
-
     const D2D1_RECT_F body = D2D1::RectF(margin, margin, margin + width, margin + height);
-    brush_->SetColor(ToD2D(theme_.background));
-    target_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
-    const float half = line / 2;
-    brush_->SetColor(ToD2D(theme_.border));
-    target_->DrawRoundedRectangle(
-        D2D1::RoundedRect(D2D1::RectF(body.left + half, body.top + half, body.right - half,
-                                      body.bottom - half),
-                          radius - half, radius - half),
-        brush_, line);
+    // ぼかしの方式では背景・外周の縁・影を DWM に任せる
+    if (!blurActive_) {
+        DrawShadow();
+
+        brush_->SetColor(ToD2D(theme_.background));
+        drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
+        const float half = line / 2;
+        brush_->SetColor(ToD2D(theme_.border));
+        drawTarget_->DrawRoundedRectangle(
+            D2D1::RoundedRect(D2D1::RectF(body.left + half, body.top + half, body.right - half,
+                                          body.bottom - half),
+                              radius - half, radius - half),
+            brush_, line);
+    }
 
     if (kind_ == Kind::Capsule) {
         brush_->SetColor(ToD2D(theme_.text));
         const D2D1_RECT_F rect =
             D2D1::RectF(body.left + m.chipPadding, body.top, body.right, body.bottom);
-        target_->DrawText(capsuleText_.c_str(), static_cast<UINT32>(capsuleText_.size()),
-                          textFormat_, rect, brush_);
+        drawTarget_->DrawText(capsuleText_.c_str(), static_cast<UINT32>(capsuleText_.size()),
+                              textFormat_, rect, brush_);
         return;
     }
 
@@ -683,7 +944,7 @@ void SuggestPanel::Draw()
         DrawInputLine(left, top, contentWidth);
         top += static_cast<float>(m.inputRowHeight + m.rowGap);
         brush_->SetColor(ToD2D(theme_.separator));
-        target_->FillRectangle(D2D1::RectF(left, top, left + contentWidth, top + line), brush_);
+        drawTarget_->FillRectangle(D2D1::RectF(left, top, left + contentWidth, top + line), brush_);
         top += line + static_cast<float>(m.rowGap);
     }
     for (size_t i = 0; i < itemTexts_.size(); ++i) {
@@ -714,8 +975,8 @@ void SuggestPanel::DrawShadow()
         const D2D1_RECT_F rect = D2D1::RectF(margin - spread, margin - spread + m.shadowOffset,
                                              margin + width + spread,
                                              margin + height + spread + m.shadowOffset);
-        target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius + spread, radius + spread),
-                                      brush_);
+        drawTarget_->FillRoundedRectangle(
+            D2D1::RoundedRect(rect, radius + spread, radius + spread), brush_);
     }
 }
 
@@ -724,23 +985,25 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const float rowHeight = static_cast<float>(m.inputRowHeight);
     const float big = 100000.0f;
-    target_->PushAxisAlignedClip(D2D1::RectF(left, top, left + width, top + rowHeight),
-                                 D2D1_ANTIALIAS_MODE_ALIASED);
+    drawTarget_->PushAxisAlignedClip(D2D1::RectF(left, top, left + width, top + rowHeight),
+                                     D2D1_ANTIALIAS_MODE_ALIASED);
 
     if (input_.text.empty() && input_.pending.empty()) {
         float x = left;
         if (!input_.context.empty()) {
             brush_->SetColor(ToD2D(theme_.secondary));
-            target_->DrawText(input_.context.c_str(), static_cast<UINT32>(input_.context.size()),
-                              inputFormat_, D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
+            drawTarget_->DrawText(input_.context.c_str(),
+                                  static_cast<UINT32>(input_.context.size()), inputFormat_,
+                                  D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
             x += TextWidth(input_.context, inputFormat_) + m.labelGap;
         }
         if (input_.nextWordLabel) {
             brush_->SetColor(ToD2D(theme_.nextWord));
-            target_->DrawText(kNextWordLabel, static_cast<UINT32>(wcslen(kNextWordLabel)),
-                              labelFormat_, D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
+            drawTarget_->DrawText(kNextWordLabel, static_cast<UINT32>(wcslen(kNextWordLabel)),
+                                  labelFormat_, D2D1::RectF(x, top, x + big, top + rowHeight),
+                                  brush_);
         }
-        target_->PopAxisAlignedClip();
+        drawTarget_->PopAxisAlignedClip();
         return;
     }
 
@@ -772,31 +1035,33 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
     if (!input_.text.empty()) {
         const float textWidth = TextWidth(input_.text, inputFormat_);
         brush_->SetColor(ToD2D(theme_.text));
-        target_->DrawText(input_.text.c_str(), static_cast<UINT32>(input_.text.size()),
-                          inputFormat_, D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
+        drawTarget_->DrawText(input_.text.c_str(), static_cast<UINT32>(input_.text.size()),
+                              inputFormat_, D2D1::RectF(x, top, x + big, top + rowHeight),
+                              brush_);
         brush_->SetColor(ToD2D(theme_.accent));
-        target_->FillRectangle(
+        drawTarget_->FillRectangle(
             D2D1::RectF(x, underlineY, x + textWidth, underlineY + theme_.underlinePx), brush_);
         x += textWidth;
     }
     if (!input_.pending.empty()) {
         const float pendingWidth = TextWidth(input_.pending, inputFormat_);
         brush_->SetColor(ToD2D(theme_.secondary));
-        target_->DrawText(input_.pending.c_str(), static_cast<UINT32>(input_.pending.size()),
-                          inputFormat_, D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
+        drawTarget_->DrawText(input_.pending.c_str(),
+                              static_cast<UINT32>(input_.pending.size()), inputFormat_,
+                              D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
         const float dotY = underlineY + line / 2;
-        target_->DrawLine(D2D1::Point2F(x, dotY), D2D1::Point2F(x + pendingWidth, dotY), brush_,
-                          line, dotStroke_);
+        drawTarget_->DrawLine(D2D1::Point2F(x, dotY), D2D1::Point2F(x + pendingWidth, dotY),
+                              brush_, line, dotStroke_);
         x += pendingWidth;
     }
     // キャレットは点滅させない (打鍵ごとの再描画以外にタイマーで描き直さない)
     brush_->SetColor(ToD2D(theme_.accent));
     const float caretX = std::round(x) + 1.0f;
-    target_->FillRectangle(D2D1::RectF(caretX, lineTop + lineHeight * 0.12f,
-                                       caretX + theme_.caretWidthPx,
-                                       lineTop + lineHeight * 0.88f),
-                           brush_);
-    target_->PopAxisAlignedClip();
+    drawTarget_->FillRectangle(D2D1::RectF(caretX, lineTop + lineHeight * 0.12f,
+                                           caretX + theme_.caretWidthPx,
+                                           lineTop + lineHeight * 0.88f),
+                               brush_);
+    drawTarget_->PopAxisAlignedClip();
 }
 
 void SuggestPanel::DrawChip(size_t index, float left, float top)
@@ -811,10 +1076,10 @@ void SuggestPanel::DrawChip(size_t index, float left, float top)
     const D2D1_RECT_F rect = D2D1::RectF(left, top, left + width, top + height);
 
     brush_->SetColor(ToD2D(selected ? theme_.accent : theme_.chip));
-    target_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush_);
+    drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush_);
     if (items_[index].nextWord) {
         brush_->SetColor(ToD2D(theme_.nextWord));
-        target_->DrawRoundedRectangle(
+        drawTarget_->DrawRoundedRectangle(
             D2D1::RoundedRect(D2D1::RectF(rect.left + half, rect.top + half, rect.right - half,
                                           rect.bottom - half),
                               radius - half, radius - half),
@@ -826,20 +1091,20 @@ void SuggestPanel::DrawChip(size_t index, float left, float top)
     const float centerX = left + m.chipPadding + badgeRadius;
     const float centerY = top + height / 2;
     brush_->SetColor(ToD2D(badgeColor));
-    target_->DrawEllipse(
+    drawTarget_->DrawEllipse(
         D2D1::Ellipse(D2D1::Point2F(centerX, centerY), badgeRadius - half, badgeRadius - half),
         brush_, line);
     const std::wstring number = std::to_wstring(index + 1);
-    target_->DrawText(number.c_str(), static_cast<UINT32>(number.size()), badgeFormat_,
-                      D2D1::RectF(centerX - badgeRadius, centerY - badgeRadius,
-                                  centerX + badgeRadius, centerY + badgeRadius),
-                      brush_);
+    drawTarget_->DrawText(number.c_str(), static_cast<UINT32>(number.size()), badgeFormat_,
+                          D2D1::RectF(centerX - badgeRadius, centerY - badgeRadius,
+                                      centerX + badgeRadius, centerY + badgeRadius),
+                          brush_);
 
     const std::wstring& text = itemTexts_[index];
     const float textX = left + m.chipPadding + m.badgeSize + m.badgeGap;
     brush_->SetColor(ToD2D(selected ? theme_.selectedText : theme_.text));
-    target_->DrawText(text.c_str(), static_cast<UINT32>(text.size()), textFormat_,
-                      D2D1::RectF(textX, top, rect.right, rect.bottom), brush_);
+    drawTarget_->DrawText(text.c_str(), static_cast<UINT32>(text.size()), textFormat_,
+                          D2D1::RectF(textX, top, rect.right, rect.bottom), brush_);
 }
 
 bool SuggestPanel::WindowRect(RECT* rect) const
@@ -888,12 +1153,14 @@ void SuggestPanel::Hide()
             swprintf_s(text, L"Hide: ウィンドウを破棄 hwnd=%p", static_cast<void*>(hwnd_));
             logger_(text);
         }
+        ReleaseHwndTarget();
         // ウィンドウと一緒にタイマーも破棄される
         destroying_ = true;
         DestroyWindow(hwnd_);
         destroying_ = false;
         hwnd_ = nullptr;
     }
+    blurActive_ = false;
     timerCallback_ = nullptr;
     items_.clear();
     itemTexts_.clear();
@@ -927,6 +1194,24 @@ LRESULT CALLBACK SuggestPanel::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
     case WM_MOUSEACTIVATE:
         // クリックされてもフォーカスを奪わない
         return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
+        if (self != nullptr && self->blurActive_) {
+            // ちらつきを避けるため背景は消さない (全面を DrawBlur で描き直す)
+            return 1;
+        }
+        break;
+    case WM_PAINT:
+        if (self != nullptr && self->blurActive_) {
+            PAINTSTRUCT paint = {};
+            BeginPaint(hwnd, &paint);
+            // 作成中で描画先がまだ無いときは描かずに済ませる (作成後に Render が描く)
+            if (self->hwndTarget_ != nullptr) {
+                self->DrawBlur();
+            }
+            EndPaint(hwnd, &paint);
+            return 0;
+        }
+        break;
     case WM_TIMER:
         if (self != nullptr && wparam == kTimerId && self->timerCallback_) {
             // callback の中で StopTimer・Hide されても呼び出し中の関数が消えないよう、写しを呼ぶ
@@ -950,7 +1235,9 @@ void SuggestPanel::LogShow(const wchar_t* kind, const RECT* anchor, bool created
         std::wstring(kind) + L": anchor=" + (anchor != nullptr ? DebugRectText(*anchor) : L"なし") +
         L" pos=(" + std::to_wstring(bodyX_) + L"," + std::to_wstring(bodyY_) + L") size=(" +
         std::to_wstring(bodyWidth_) + L"," + std::to_wstring(bodyHeight_) + L") 候補=" +
-        std::to_wstring(itemTexts_.size()) + L" 入力行=" + (hasInput_ ? L"1" : L"0");
+        std::to_wstring(itemTexts_.size()) + L" 入力行=" + (hasInput_ ? L"1" : L"0") +
+        L" 方式=" + (blurActive_ ? std::wstring(L"blur(") + BlurTargetTypeName() + L")"
+                                 : std::wstring(L"layered"));
     if (hwnd_ == nullptr) {
         logger_(line + L" CreateWindowExW 失敗 error=" + std::to_wstring(error));
         return;
@@ -981,7 +1268,7 @@ void SuggestPanel::LogShow(const wchar_t* kind, const RECT* anchor, bool created
                GetCurrentThreadId(), static_cast<void*>(foreground), foregroundTopmost ? 1 : 0,
                (foreground != nullptr && foregroundProcess == GetCurrentProcessId()) ? 1 : 0);
     std::wstring message = line + text;
-    if (error != ERROR_SUCCESS) {
+    if (!blurActive_ && error != ERROR_SUCCESS) {
         message += L" UpdateLayeredWindow 失敗 error=" + std::to_wstring(error);
     }
     logger_(message);

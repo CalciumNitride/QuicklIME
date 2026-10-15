@@ -8,6 +8,8 @@
 
 struct ID2D1Factory;
 struct ID2D1DCRenderTarget;
+struct ID2D1HwndRenderTarget;
+struct ID2D1RenderTarget;
 struct ID2D1SolidColorBrush;
 struct ID2D1StrokeStyle;
 struct IDWriteFactory;
@@ -56,6 +58,7 @@ struct PanelTheme {
     PanelColor selectedText;  // 選択中のチップの文字とバッジ
     PanelColor nextWord;    // 読みなしの後続語予測の縁と「次の語」ラベル
     PanelColor shadow;      // 影 (a は重ねたときの最大不透明度)
+    PanelColor blurTint;    // ぼかし (panel_blur) の上に重ねる色
 
     static PanelTheme Dark();
     static PanelTheme Light();
@@ -65,6 +68,7 @@ struct PanelTheme {
 
 // 候補バー (横一列のチップ) と入力行を出すパネル、および未完成ローマ字の小さなカプセル。
 // Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
+// ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
 class SuggestPanel {
 public:
@@ -127,6 +131,10 @@ public:
     // 配色と寸法の比率を差し替える。表示中なら描き直す
     void SetTheme(const PanelTheme& theme);
 
+    // 背景のぼかし (設定 panel_blur) を使うかどうか。変わったときは表示中なら隠し、次の表示から
+    // 新しい方式でウィンドウを作る。ぼかしが使えない環境では layered window の描画に戻す
+    void SetBlur(bool enabled);
+
     // 表示中のウィンドウに intervalMs 間隔のタイマーを付け、callback を呼ぶ (付け直すと前のものを
     // 置き換える)。非表示なら付けずに false。Hide で破棄されたタイマーは止まる
     bool StartTimer(UINT intervalMs, std::function<void()> callback);
@@ -157,6 +165,14 @@ private:
     float TextWidth(const std::wstring& text, IDWriteTextFormat* format) const;
     // 今のレイアウトをウィンドウ (bodyX_, bodyY_ の位置) に描いて出す
     bool Render(const wchar_t* kind, const RECT* anchor);
+    // ぼかしのウィンドウを作る。使えなければ作りかけを破棄して false (理由はログに出す)
+    bool CreateBlurWindow(const wchar_t* kind);
+    // 今のレイアウトを残したまま、ぼかしのウィンドウとその描画先を破棄する
+    void DestroyBlurWindow();
+    bool EnsureHwndTarget();
+    void ReleaseHwndTarget();
+    // ぼかしのウィンドウに今のレイアウトを描く
+    HRESULT DrawBlur();
     void Draw();
     void DrawShadow();
     void DrawInputLine(float left, float top, float width);
@@ -170,7 +186,10 @@ private:
 
     ID2D1Factory* d2dFactory_;
     IDWriteFactory* dwriteFactory_;
-    ID2D1DCRenderTarget* target_;
+    ID2D1DCRenderTarget* target_;          // layered window の描画先
+    ID2D1HwndRenderTarget* hwndTarget_;    // ぼかしのウィンドウの描画先
+    ID2D1RenderTarget* drawTarget_;        // Draw が描く先 (上の2つのうち描画中のもの)
+    // target_ と hwndTarget_ は同時には持たず、brush_ は今ある方で作ったもの
     ID2D1SolidColorBrush* brush_;
     ID2D1StrokeStyle* dotStroke_;  // 未完成ローマ字の点線の下線
     IDWriteTextFormat* textFormat_;    // 候補文字列・カプセル (f)
@@ -180,6 +199,9 @@ private:
     std::wstring face_;
     int fontSize_;
     PanelTheme theme_;
+    bool blur_;          // ぼかしを使う設定
+    bool blurFailed_;    // API が使えずぼかしをやめた (SetBlur で有効にし直すまで試さない)
+    bool blurActive_;    // 今のウィンドウがぼかしの方式
 
     // 今のレイアウト (座標は影を除いたパネルの左上を原点とする px)
     Kind kind_;
@@ -195,5 +217,5 @@ private:
     int bodyY_;
     int bodyWidth_;
     int bodyHeight_;
-    int margin_;      // 影のためにパネルの外側に取る余白
+    int margin_;      // 影のためにパネルの外側に取る余白 (ぼかしの方式では 0)
 };
