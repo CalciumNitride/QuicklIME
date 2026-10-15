@@ -90,8 +90,10 @@ struct TsfConfig {
     bool candidateCenter = false;
     // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
     bool panelInput = false;
-    // パネルの背景をぼかし (アクリル風) にする実験用の設定 (設定 panel_blur。設定ツールには出さない)
+    // パネルの背景をぼかし (アクリル風) にする (設定 panel_blur。テーマの blur never では効かない)
     bool panelBlur = false;
+    // サジェストパネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
+    std::wstring panelTheme = L"capsule";
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す

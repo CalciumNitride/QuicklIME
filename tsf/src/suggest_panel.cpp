@@ -17,6 +17,9 @@ constexpr wchar_t kFallbackFont[] = L"Yu Gothic UI";
 constexpr wchar_t kNextWordLabel[] = L"次の語";
 constexpr UINT_PTR kTimerId = 1;  // StartTimer のタイマー (ウィンドウごとに1つ)
 constexpr int kAnchorGap = 2;     // キャレット行とパネルの間
+constexpr float kSoftAlpha = 0.16f;        // selection soft でアクセント色を敷く不透明度
+constexpr float kTagAlpha = 0.16f;         // 種類のタグの背景の不透明度
+constexpr float kTextShadowAlpha = 0.35f;  // text_shadow の影の不透明度
 
 // ぼかしの方式の描画先の種類。hardware (DEFAULT) はホストのプロセスに D3D のデバイスを作るため、
 // まず software で試し、alpha が失われるときに切り替えて比べる
@@ -101,13 +104,6 @@ void SafeRelease(T** object)
     }
 }
 
-PanelColor Rgb(unsigned rgb, float alpha = 1.0f)
-{
-    return {static_cast<float>((rgb >> 16) & 0xFF) / 255.0f,
-            static_cast<float>((rgb >> 8) & 0xFF) / 255.0f,
-            static_cast<float>(rgb & 0xFF) / 255.0f, alpha};
-}
-
 D2D1_COLOR_F ToD2D(const PanelColor& color)
 {
     return D2D1::ColorF(color.r, color.g, color.b, color.a);
@@ -120,16 +116,23 @@ struct Metrics {
     int chipHeight;
     float chipPadding;
     float chipGap;
+    float chipRadius;     // 候補の背景の角丸の半径 (chip_shape で決まる)
     float badgeSize;
     float badgeGap;
+    float badgeSlot;      // 番号の形と、番号と候補文字列の間を合わせた幅 (番号なしなら 0)
     float labelGap;
+    float inputTextSize;  // 入力行の文字の高さ
     int inputRowHeight;
     int rowGap;
     int line;
     float panelRadius;
     float shadowSpread;
     float shadowOffset;
-    int margin;  // 影のためにパネルの外側に取る余白
+    float tagHeight;
+    float tagPadding;     // 種類のタグの左右の余白
+    float tagGap;         // 候補文字列と種類のタグの間
+    int margin;           // 影のためにパネルの外側に取る余白
+    int ghostMargin;      // ghost のにじみのためにパネルの外側に取る余白
 };
 
 int Scaled(float ratio, float f)
@@ -139,23 +142,78 @@ int Scaled(float ratio, float f)
 
 Metrics ComputeMetrics(const PanelTheme& theme, int fontSize)
 {
+    const bool ghost = theme.style == PanelStyle::Ghost;
     Metrics m = {};
     m.f = static_cast<float>(fontSize);
     m.padding = Scaled(theme.panelPadding, m.f);
     m.chipHeight = Scaled(theme.chipHeight, m.f);
     m.chipPadding = theme.chipPadding * m.f;
     m.chipGap = theme.chipGap * m.f;
+    const float half = static_cast<float>(m.chipHeight) / 2;
+    switch (theme.chipShape) {
+    case ChipShape::Pill:
+        m.chipRadius = half;
+        break;
+    case ChipShape::Rounded:
+        m.chipRadius = (std::min)(theme.chipRadius * m.f, half);
+        break;
+    default:
+        m.chipRadius = 0.0f;
+        break;
+    }
     m.badgeSize = theme.badgeSize * m.f;
     m.badgeGap = theme.badgeGap * m.f;
+    m.badgeSlot = theme.badgeShape == BadgeShape::None ? 0.0f : m.badgeSize + m.badgeGap;
     m.labelGap = theme.labelGap * m.f;
-    m.inputRowHeight = Scaled(theme.inputRowHeight, m.f);
+    m.inputTextSize = (ghost ? theme.ghostTextSize : theme.inputTextSize) * m.f;
+    // ghost では入力行の文字を大きくするので、行の高さも文字の高さの比で伸ばす
+    m.inputRowHeight = Scaled(
+        ghost ? theme.inputRowHeight * theme.ghostTextSize / theme.inputTextSize
+              : theme.inputRowHeight,
+        m.f);
     m.rowGap = Scaled(theme.rowGap, m.f);
     m.line = (std::max)(1, static_cast<int>(std::lround(theme.lineWidthPx)));
     m.panelRadius = theme.panelRadius * m.f;
     m.shadowSpread = theme.shadowSize * m.f;
     m.shadowOffset = theme.shadowOffset * m.f;
+    m.tagHeight = theme.tagTextSize * m.f * 1.6f;
+    m.tagPadding = theme.tagTextSize * m.f * 0.55f;
+    m.tagGap = m.badgeGap;
     m.margin = static_cast<int>(std::ceil(m.shadowSpread + m.shadowOffset));
+    m.ghostMargin = Scaled(1.5f, m.f);
     return m;
+}
+
+const wchar_t* KindTagLabel(SuggestPanel::ItemKind kind)
+{
+    switch (kind) {
+    case SuggestPanel::ItemKind::Ascii:
+        return L"英字";
+    case SuggestPanel::ItemKind::Prediction:
+        return L"予測";
+    case SuggestPanel::ItemKind::Partial:
+        return L"文節";
+    case SuggestPanel::ItemKind::NextWord:
+        return L"次の語";
+    default:
+        return L"変換";
+    }
+}
+
+const PanelColor& KindTagColor(const PanelTheme& theme, SuggestPanel::ItemKind kind)
+{
+    switch (kind) {
+    case SuggestPanel::ItemKind::Ascii:
+        return theme.tagAscii;
+    case SuggestPanel::ItemKind::Prediction:
+        return theme.tagPrediction;
+    case SuggestPanel::ItemKind::Partial:
+        return theme.tagPartial;
+    case SuggestPanel::ItemKind::NextWord:
+        return theme.tagNextWord;
+    default:
+        return theme.tagConversion;
+    }
 }
 
 // パネル (影を除く) の角丸の半径。カプセルは両端を半円にする
@@ -232,12 +290,14 @@ bool FontExists(IDWriteFactory* factory, const std::wstring& face)
 }
 
 IDWriteTextFormat* CreateFormat(IDWriteFactory* factory, const std::wstring& face, float size,
-                                DWRITE_TEXT_ALIGNMENT alignment)
+                                DWRITE_TEXT_ALIGNMENT alignment,
+                                DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL)
 {
     IDWriteTextFormat* format = nullptr;
-    if (FAILED(factory->CreateTextFormat(face.c_str(), nullptr, DWRITE_FONT_WEIGHT_NORMAL,
-                                         DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL,
-                                         size, L"ja-jp", &format))) {
+    // テーマで文字の高さの比率を 0 にできるが、DirectWrite は 0 の大きさを受け付けない
+    if (FAILED(factory->CreateTextFormat(face.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+                                         DWRITE_FONT_STRETCH_NORMAL, (std::max)(size, 1.0f),
+                                         L"ja-jp", &format))) {
         return nullptr;
     }
     format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -246,65 +306,29 @@ IDWriteTextFormat* CreateFormat(IDWriteFactory* factory, const std::wstring& fac
     return format;
 }
 
-} // namespace
-
-// ---- PanelTheme ----
-
-PanelTheme PanelTheme::Dark()
+// 描く矩形に収まらない文字列の末尾を「…」で切る
+void SetEllipsisTrimming(IDWriteFactory* factory, IDWriteTextFormat* format)
 {
-    PanelTheme theme;
-    theme.background = Rgb(0x1C1C22, 0.92f);
-    theme.border = Rgb(0xFFFFFF, 0.08f);
-    theme.text = Rgb(0xF2F2F6);
-    theme.secondary = Rgb(0xA0A0AD);
-    theme.chip = Rgb(0xFFFFFF, 0.07f);
-    theme.separator = Rgb(0xFFFFFF, 0.09f);
-    theme.accent = Rgb(0x2B86EE);
-    theme.selectedText = Rgb(0xFFFFFF);
-    theme.nextWord = Rgb(0x3CC48A);
-    theme.shadow = Rgb(0x000000, 0.45f);
-    theme.blurTint = Rgb(0x1C1C22, 0.6f);
-    return theme;
-}
-
-PanelTheme PanelTheme::Light()
-{
-    PanelTheme theme;
-    theme.background = Rgb(0xFCFCFE, 0.92f);
-    theme.border = Rgb(0x000000, 0.08f);
-    theme.text = Rgb(0x16161C);
-    theme.secondary = Rgb(0x6B6B78);
-    theme.chip = Rgb(0x000000, 0.045f);
-    theme.separator = Rgb(0x000000, 0.08f);
-    theme.accent = Rgb(0x2B86EE);
-    theme.selectedText = Rgb(0xFFFFFF);
-    theme.nextWord = Rgb(0x2E9E6B);
-    theme.shadow = Rgb(0x000000, 0.28f);
-    theme.blurTint = Rgb(0xFCFCFE, 0.7f);
-    return theme;
-}
-
-PanelTheme PanelTheme::ForAppMode()
-{
-    DWORD value = 1;
-    DWORD size = sizeof(value);
-    if (RegGetValueW(HKEY_CURRENT_USER,
-                     L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
-                     L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value,
-                     &size) != ERROR_SUCCESS) {
-        value = 1;
+    IDWriteInlineObject* sign = nullptr;
+    if (FAILED(factory->CreateEllipsisTrimmingSign(format, &sign))) {
+        return;
     }
-    return value != 0 ? Light() : Dark();
+    const DWRITE_TRIMMING trimming = {DWRITE_TRIMMING_GRANULARITY_CHARACTER, 0, 0};
+    format->SetTrimming(&trimming, sign);
+    sign->Release();
 }
+
+} // namespace
 
 // ---- SuggestPanel ----
 
 SuggestPanel::SuggestPanel()
     : hwnd_(nullptr), destroying_(false), d2dFactory_(nullptr), dwriteFactory_(nullptr),
       target_(nullptr), hwndTarget_(nullptr), drawTarget_(nullptr), brush_(nullptr),
-      dotStroke_(nullptr), textFormat_(nullptr), inputFormat_(nullptr), badgeFormat_(nullptr),
-      labelFormat_(nullptr), fontSize_(18), theme_(PanelTheme::Light()), blur_(false),
-      blurFailed_(false), blurActive_(false), kind_(Kind::Panel), selection_(0), hasInput_(false),
+      dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
+      badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
+      theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
+      kind_(Kind::Panel), inputTop_(0.0f), separator_(false), selection_(0), hasInput_(false),
       bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0)
 {
     SetFont(kFallbackFont, 18);
@@ -317,9 +341,11 @@ SuggestPanel::~SuggestPanel()
     Hide();
     ReleaseTarget();
     SafeRelease(&textFormat_);
+    SafeRelease(&boldFormat_);
     SafeRelease(&inputFormat_);
     SafeRelease(&badgeFormat_);
     SafeRelease(&labelFormat_);
+    SafeRelease(&tagFormat_);
     SafeRelease(&dotStroke_);
     SafeRelease(&dwriteFactory_);
     SafeRelease(&d2dFactory_);
@@ -445,38 +471,57 @@ void SuggestPanel::SetFont(const std::wstring& face, int height)
     }
     const std::wstring actual = FontExists(dwriteFactory_, face) ? face : kFallbackFont;
     const float f = static_cast<float>(height);
+    const float inputSize =
+        theme_.style == PanelStyle::Ghost ? theme_.ghostTextSize : theme_.inputTextSize;
     IDWriteTextFormat* text =
         CreateFormat(dwriteFactory_, actual, f, DWRITE_TEXT_ALIGNMENT_LEADING);
-    IDWriteTextFormat* input = CreateFormat(dwriteFactory_, actual, theme_.inputTextSize * f,
-                                            DWRITE_TEXT_ALIGNMENT_LEADING);
+    IDWriteTextFormat* bold = CreateFormat(dwriteFactory_, actual, f,
+                                           DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_FONT_WEIGHT_BOLD);
+    IDWriteTextFormat* input =
+        CreateFormat(dwriteFactory_, actual, inputSize * f, DWRITE_TEXT_ALIGNMENT_LEADING);
     IDWriteTextFormat* badge = CreateFormat(dwriteFactory_, actual, theme_.badgeTextSize * f,
                                             DWRITE_TEXT_ALIGNMENT_CENTER);
     IDWriteTextFormat* label = CreateFormat(dwriteFactory_, actual, theme_.labelTextSize * f,
                                             DWRITE_TEXT_ALIGNMENT_LEADING);
-    if (text == nullptr || input == nullptr || badge == nullptr || label == nullptr) {
+    IDWriteTextFormat* tag = CreateFormat(dwriteFactory_, actual, theme_.tagTextSize * f,
+                                          DWRITE_TEXT_ALIGNMENT_CENTER);
+    if (text == nullptr || bold == nullptr || input == nullptr || badge == nullptr ||
+        label == nullptr || tag == nullptr) {
         SafeRelease(&text);
+        SafeRelease(&bold);
         SafeRelease(&input);
         SafeRelease(&badge);
         SafeRelease(&label);
+        SafeRelease(&tag);
         return;
     }
+    SetEllipsisTrimming(dwriteFactory_, text);
+    SetEllipsisTrimming(dwriteFactory_, bold);
     SafeRelease(&textFormat_);
+    SafeRelease(&boldFormat_);
     SafeRelease(&inputFormat_);
     SafeRelease(&badgeFormat_);
     SafeRelease(&labelFormat_);
+    SafeRelease(&tagFormat_);
     textFormat_ = text;
+    boldFormat_ = bold;
     inputFormat_ = input;
     badgeFormat_ = badge;
     labelFormat_ = label;
+    tagFormat_ = tag;
     face_ = face;
     fontSize_ = height;
 }
 
 void SuggestPanel::SetTheme(const PanelTheme& theme)
 {
+    const bool sameShape = theme_.SameShape(theme);
     // 文字の大きさの比率も theme が持つので、書式を作り直す
     theme_ = theme;
     SetFont(face_, fontSize_);
+    if (hwnd_ != nullptr && !sameShape) {
+        Hide();
+    }
     if (hwnd_ != nullptr) {
         if (blurActive_) {
             ApplyAcrylic(hwnd_, theme_.blurTint);
@@ -511,13 +556,26 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         return 0;
     }
     const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const bool column = theme_.layout == PanelLayout::Column;
+    const bool ghost = theme_.style == PanelStyle::Ghost;
+    const bool centerAlign = theme_.align == PanelAlign::Center;
 
     std::vector<std::wstring> texts;
-    std::vector<float> widths;
+    std::vector<float> widths;  // 切り詰めずに出したときの候補 1 件の幅
     for (size_t i = 0; i < items.size() && i < kMaxItems; ++i) {
-        std::wstring text = items[i].partial ? items[i].text + L"…" : items[i].text;
-        widths.push_back(m.chipPadding * 2 + m.badgeSize + m.badgeGap +
-                         TextWidth(text, textFormat_));
+        std::wstring text =
+            items[i].kind == ItemKind::Partial ? items[i].text + L"…" : items[i].text;
+        float textWidth = TextWidth(text, textFormat_);
+        if (theme_.selection == SelectionStyle::Text) {
+            // 選択すると太字になるので、選択によって幅が変わらないよう太字の幅も見込む
+            textWidth = (std::max)(textWidth, TextWidth(text, boldFormat_));
+        }
+        float width = m.chipPadding * 2 + m.badgeSlot + textWidth;
+        if (column && theme_.kindTag) {
+            width += m.tagGap + TextWidth(KindTagLabel(items[i].kind), tagFormat_) +
+                     m.tagPadding * 2;
+        }
+        widths.push_back(width);
         texts.push_back(std::move(text));
     }
 
@@ -533,21 +591,30 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             inputWidth = TextWidth(input->text, inputFormat_) +
                          TextWidth(input->pending, inputFormat_) + 1.0f + theme_.caretWidthPx;
         }
+        if (ghost && !texts.empty()) {
+            // ゴーストは選択によって変わるので、いちばん長いものが入る幅を取る
+            float widest = 0.0f;
+            for (const std::wstring& text : texts) {
+                widest = (std::max)(widest, TextWidth(L"→ " + text, inputFormat_));
+            }
+            inputWidth += m.labelGap + widest;
+        }
     }
     const bool hasInput = input != nullptr;
-    // 入力行を出すときは、候補が無くてもチップ列の高さを取って入力行の位置を上下させない
-    int height = m.padding * 2 + m.chipHeight;
-    if (hasInput) {
-        height += m.inputRowHeight + m.rowGap * 2 + m.line;
-    }
+    // 入力行と区切り線 (前後の間を含む) の高さ
+    const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
+    // 縦積みで n 行を出すときのパネルの高さ。候補が無ければ入力行だけにする
+    const auto columnHeight = [&](size_t n) {
+        if (n == 0) {
+            return m.padding * 2 + (hasInput ? m.inputRowHeight : 0);
+        }
+        const int count = static_cast<int>(n);
+        return m.padding * 2 + header + m.chipHeight * count +
+               static_cast<int>(std::lround(m.chipGap * static_cast<float>(count - 1)));
+    };
 
-    size_t count = 0;
-    float chipsWidth = 0.0f;
-    int x = 0;
-    int y = 0;
-    int width = 0;
+    HMONITOR monitor = nullptr;
     if (placement.position == Position::Center) {
-        HMONITOR monitor = nullptr;
         if (placement.caret != nullptr) {
             monitor = MonitorFromRect(placement.caret, MONITOR_DEFAULTTONEAREST);
         } else {
@@ -556,59 +623,114 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
                           ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
                           : MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
         }
-        const RECT work = WorkAreaOf(monitor);
-        const int workWidth = static_cast<int>(work.right - work.left);
-        const int workHeight = static_cast<int>(work.bottom - work.top);
-        // 幅は候補の数によらず固定し、左詰めにして打鍵ごとに候補の位置を動かさない
-        width = static_cast<int>(
-            (std::min)(theme_.centerWidth * m.f,
-                       static_cast<float>(workWidth) * theme_.centerWidthRatio));
-        const float available = static_cast<float>(width - m.padding * 2);
-        for (size_t i = 0; i < widths.size(); ++i) {
-            const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
-            if (next > available) {
-                break;
-            }
-            chipsWidth = next;
-            ++count;
-        }
-        x = static_cast<int>(work.left) + (workWidth - width) / 2;
-        y = static_cast<int>(work.top) + (workHeight - height) / 2;
     } else {
-        const RECT& caret = *placement.caret;
-        const POINT origin = {placement.x, caret.bottom};
-        const RECT work = WorkAreaOf(MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST));
-        x = (std::max)(placement.x, static_cast<int>(work.left));
-        for (size_t i = 0; i < widths.size(); ++i) {
-            const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
-            if (static_cast<float>(x + m.padding * 2) + next > static_cast<float>(work.right)) {
-                break;
-            }
-            chipsWidth = next;
+        const POINT origin = {placement.x, placement.caret->bottom};
+        monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST);
+    }
+    const RECT work = WorkAreaOf(monitor);
+    const int workWidth = static_cast<int>(work.right - work.left);
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+    // 画面中央では幅を候補の数によらず固定し、打鍵ごとに候補の位置を動かさない
+    const int centerWidth = static_cast<int>((std::min)(
+        theme_.centerWidth * m.f, static_cast<float>(workWidth) * theme_.centerWidthRatio));
+
+    size_t count = 0;
+    float chipsWidth = 0.0f;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    if (column) {
+        while (count < widths.size() && columnHeight(count + 1) <= workHeight) {
             ++count;
         }
-        if (count == 0 && !widths.empty()) {
-            // 先頭の候補も入らない位置では、先頭の候補が収まるところまで左へ寄せる
-            count = 1;
-            chipsWidth = widths[0];
-            const int needed = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
-            x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - needed);
+        height = columnHeight(count);
+        if (placement.position == Position::Center) {
+            width = centerWidth;
+            x = static_cast<int>(work.left) + (workWidth - width) / 2;
+            // 上端は出せる最大の行数のときの高さで決めて固定し、候補の数が変わっても入力行と
+            // 先頭の行を動かさない (下へ伸び縮みする)
+            size_t fullRows = 0;
+            while (fullRows < kMaxItems && columnHeight(fullRows + 1) <= workHeight) {
+                ++fullRows;
+            }
+            const int fullHeight = (std::max)(columnHeight(fullRows), height);
+            y = static_cast<int>(work.top) + (std::max)(0, (workHeight - fullHeight) / 2);
+        } else {
+            float widest = inputWidth;
+            for (size_t i = 0; i < count; ++i) {
+                widest = (std::max)(widest, widths[i]);
+            }
+            width = m.padding * 2 + static_cast<int>(std::ceil(widest));
+            width = (std::max)(width, m.chipHeight * 2);
+            width = (std::min)(width, workWidth);
+            x = (std::max)(placement.x, static_cast<int>(work.left));
+            if (x + width > work.right) {
+                x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - width);
+            }
+            const RECT& caret = *placement.caret;
+            int top = static_cast<int>(caret.bottom);
+            if (placement.belowCapsule) {
+                top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
+            }
+            y = top + kAnchorGap;
+            if (y + height > work.bottom) {
+                // 上に出すときは下端をキャレット行の上に揃え、候補が増えると上へ伸ばす
+                y = static_cast<int>(caret.top) - height - kAnchorGap;
+            }
+            y = (std::max)(y, static_cast<int>(work.top));
         }
-        const int chipsNeeded = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
-        width = m.padding * 2 + static_cast<int>(std::ceil((std::max)(chipsWidth, inputWidth)));
-        width = (std::max)(width, m.chipHeight * 2);
-        // 入力行が長いときは作業領域の右端で切る (候補は上で収まる分だけにしてある)
-        width = (std::max)((std::min)(width, static_cast<int>(work.right) - x), chipsNeeded);
+    } else {
+        // 入力行を出すときは、候補が無くてもチップ列の高さを取って入力行の位置を上下させない
+        height = m.padding * 2 + m.chipHeight + header;
+        if (placement.position == Position::Center) {
+            width = centerWidth;
+            const float available = static_cast<float>(width - m.padding * 2);
+            for (size_t i = 0; i < widths.size(); ++i) {
+                const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
+                if (next > available) {
+                    break;
+                }
+                chipsWidth = next;
+                ++count;
+            }
+            x = static_cast<int>(work.left) + (workWidth - width) / 2;
+            y = static_cast<int>(work.top) + (workHeight - height) / 2;
+        } else {
+            const RECT& caret = *placement.caret;
+            x = (std::max)(placement.x, static_cast<int>(work.left));
+            for (size_t i = 0; i < widths.size(); ++i) {
+                const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
+                if (static_cast<float>(x + m.padding * 2) + next > static_cast<float>(work.right)) {
+                    break;
+                }
+                chipsWidth = next;
+                ++count;
+            }
+            if (count == 0 && !widths.empty()) {
+                // 先頭の候補も入らない位置では、先頭の候補が収まるところまで左へ寄せる
+                count = 1;
+                chipsWidth = widths[0];
+                const int needed = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
+                x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - needed);
+            }
+            const int chipsNeeded = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
+            width =
+                m.padding * 2 + static_cast<int>(std::ceil((std::max)(chipsWidth, inputWidth)));
+            width = (std::max)(width, m.chipHeight * 2);
+            // 入力行が長いときは作業領域の右端で切る (候補は上で収まる分だけにしてある)
+            width = (std::max)((std::min)(width, static_cast<int>(work.right) - x), chipsNeeded);
 
-        // 未完成ローマ字のカプセル (チップと同じ高さ) はキャレットに重ねて出し、打鍵ごとに
-        // 出たり消えたりする。カプセルの有無で上下に動かないよう、常にその下端より下に出す
-        int top = static_cast<int>(caret.bottom);
-        if (placement.belowCapsule) {
-            top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
-        }
-        y = top + kAnchorGap;
-        if (y + height > work.bottom) {
-            y = static_cast<int>(caret.top) - height - kAnchorGap;
+            // 未完成ローマ字のカプセル (チップと同じ高さ) はキャレットに重ねて出し、打鍵ごとに
+            // 出たり消えたりする。カプセルの有無で上下に動かないよう、常にその下端より下に出す
+            int top = static_cast<int>(caret.bottom);
+            if (placement.belowCapsule) {
+                top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
+            }
+            y = top + kAnchorGap;
+            if (y + height > work.bottom) {
+                y = static_cast<int>(caret.top) - height - kAnchorGap;
+            }
         }
     }
 
@@ -621,13 +743,33 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     texts.resize(count);
     itemTexts_ = std::move(texts);
     items_.assign(items.begin(), items.begin() + static_cast<std::ptrdiff_t>(count));
-    chipX_.clear();
-    chipWidth_.clear();
-    float chipX = 0.0f;
-    for (size_t i = 0; i < count; ++i) {
-        chipX_.push_back(chipX);
-        chipWidth_.push_back(widths[i]);
-        chipX += widths[i] + m.chipGap;
+    const float padding = static_cast<float>(m.padding);
+    const float contentWidth = static_cast<float>(width) - padding * 2;
+    inputTop_ = padding;
+    float itemsTop = padding;
+    separator_ = false;
+    if (hasInput && (!column || count > 0)) {
+        itemsTop += static_cast<float>(header);
+        // ghost は枠を持たないので区切り線も引かない (間だけ取る)
+        separator_ = !ghost;
+    }
+    itemBoxes_.clear();
+    if (column) {
+        for (size_t i = 0; i < count; ++i) {
+            // 左揃えでは行の幅をそろえ、中央揃えでは行ごとの幅で中央に置く
+            const float boxWidth = centerAlign ? (std::min)(widths[i], contentWidth) : contentWidth;
+            const float left = padding + (centerAlign ? (contentWidth - boxWidth) / 2 : 0.0f);
+            const float top =
+                itemsTop + static_cast<float>(i) * (static_cast<float>(m.chipHeight) + m.chipGap);
+            itemBoxes_.push_back({left, std::round(top), boxWidth});
+        }
+    } else {
+        float chipX =
+            padding + (centerAlign ? (std::max)(0.0f, (contentWidth - chipsWidth) / 2) : 0.0f);
+        for (size_t i = 0; i < count; ++i) {
+            itemBoxes_.push_back({chipX, itemsTop, widths[i]});
+            chipX += widths[i] + m.chipGap;
+        }
     }
     selection_ = selection;
     hasInput_ = hasInput;
@@ -637,7 +779,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     bodyY_ = y;
     bodyWidth_ = width;
     bodyHeight_ = height;
-    margin_ = m.margin;
+    margin_ = LayeredMargin();
     if (!Render(L"Show", placement.caret)) {
         return 0;
     }
@@ -658,8 +800,8 @@ bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
     kind_ = Kind::Capsule;
     items_.clear();
     itemTexts_.clear();
-    chipX_.clear();
-    chipWidth_.clear();
+    itemBoxes_.clear();
+    separator_ = false;
     selection_ = 0;
     hasInput_ = false;
     input_ = InputLine{};
@@ -668,7 +810,7 @@ bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
     bodyY_ = position.y;
     bodyWidth_ = width;
     bodyHeight_ = height;
-    margin_ = m.margin;
+    margin_ = LayeredMargin();
     return Render(L"ShowCapsule", &caret);
 }
 
@@ -708,7 +850,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
         DestroyBlurWindow();
         blurFailed_ = true;
         created = false;
-        margin_ = ComputeMetrics(theme_, fontSize_).margin;
+        margin_ = LayeredMargin();
         if (logger_) {
             logger_(std::wstring(kind) +
                     L": ぼかしをやめて layered で描く (ID2D1HwndRenderTarget を作り直せない hr=" +
@@ -902,6 +1044,46 @@ HRESULT SuggestPanel::DrawBlur()
     return hr;
 }
 
+int SuggestPanel::LayeredMargin() const
+{
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    if (theme_.style == PanelStyle::Ghost) {
+        return m.ghostMargin;
+    }
+    return theme_.drawShadow ? m.margin : 0;
+}
+
+std::wstring SuggestPanel::GhostText() const
+{
+    if (theme_.style != PanelStyle::Ghost || kind_ != Kind::Panel || itemTexts_.empty()) {
+        return {};
+    }
+    const size_t index = selection_ < itemTexts_.size() ? selection_ : 0;
+    return L"→ " + itemTexts_[index];
+}
+
+void SuggestPanel::DrawLabel(const std::wstring& text, IDWriteTextFormat* format, float left,
+                             float top, float right, float bottom, const PanelColor& color)
+{
+    if (text.empty() || format == nullptr) {
+        return;
+    }
+    const UINT32 length = static_cast<UINT32>(text.size());
+    if (theme_.textShadow) {
+        // 背景の明暗によらず読めるよう、文字と反対の明るさの影を 1px ずらして敷く
+        PanelColor shadow = theme_.dark ? PanelColor{0.0f, 0.0f, 0.0f, 1.0f}
+                                        : PanelColor{1.0f, 1.0f, 1.0f, 1.0f};
+        shadow.a = kTextShadowAlpha * color.a;
+        brush_->SetColor(ToD2D(shadow));
+        drawTarget_->DrawText(text.c_str(), length, format,
+                              D2D1::RectF(left + 1.0f, top + 1.0f, right + 1.0f, bottom + 1.0f),
+                              brush_);
+    }
+    brush_->SetColor(ToD2D(color));
+    drawTarget_->DrawText(text.c_str(), length, format, D2D1::RectF(left, top, right, bottom),
+                          brush_);
+}
+
 void SuggestPanel::Draw()
 {
     const Metrics m = ComputeMetrics(theme_, fontSize_);
@@ -914,41 +1096,47 @@ void SuggestPanel::Draw()
     const D2D1_RECT_F body = D2D1::RectF(margin, margin, margin + width, margin + height);
     // ぼかしの方式では背景・外周の縁・影を DWM に任せる
     if (!blurActive_) {
-        DrawShadow();
-
-        brush_->SetColor(ToD2D(theme_.background));
-        drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
-        const float half = line / 2;
-        brush_->SetColor(ToD2D(theme_.border));
-        drawTarget_->DrawRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(body.left + half, body.top + half, body.right - half,
-                                          body.bottom - half),
-                              radius - half, radius - half),
-            brush_, line);
+        if (theme_.style == PanelStyle::Ghost) {
+            DrawScrim();
+        } else {
+            if (theme_.drawShadow) {
+                DrawShadow();
+            }
+            brush_->SetColor(ToD2D(theme_.background));
+            drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
+            if (theme_.drawBorder) {
+                const float half = line / 2;
+                brush_->SetColor(ToD2D(theme_.border));
+                drawTarget_->DrawRoundedRectangle(
+                    D2D1::RoundedRect(D2D1::RectF(body.left + half, body.top + half,
+                                                  body.right - half, body.bottom - half),
+                                      radius - half, radius - half),
+                    brush_, line);
+            }
+        }
     }
 
     if (kind_ == Kind::Capsule) {
-        brush_->SetColor(ToD2D(theme_.text));
-        const D2D1_RECT_F rect =
-            D2D1::RectF(body.left + m.chipPadding, body.top, body.right, body.bottom);
-        drawTarget_->DrawText(capsuleText_.c_str(), static_cast<UINT32>(capsuleText_.size()),
-                              textFormat_, rect, brush_);
+        DrawLabel(capsuleText_, textFormat_, body.left + m.chipPadding, body.top, body.right,
+                  body.bottom, theme_.text);
         return;
     }
 
     const float padding = static_cast<float>(m.padding);
     const float left = body.left + padding;
     const float contentWidth = width - padding * 2;
-    float top = body.top + padding;
     if (hasInput_) {
+        const float top = body.top + inputTop_;
         DrawInputLine(left, top, contentWidth);
-        top += static_cast<float>(m.inputRowHeight + m.rowGap);
-        brush_->SetColor(ToD2D(theme_.separator));
-        drawTarget_->FillRectangle(D2D1::RectF(left, top, left + contentWidth, top + line), brush_);
-        top += line + static_cast<float>(m.rowGap);
+        if (separator_) {
+            const float separatorY = top + static_cast<float>(m.inputRowHeight + m.rowGap);
+            brush_->SetColor(ToD2D(theme_.separator));
+            drawTarget_->FillRectangle(
+                D2D1::RectF(left, separatorY, left + contentWidth, separatorY + line), brush_);
+        }
     }
-    for (size_t i = 0; i < itemTexts_.size(); ++i) {
-        DrawChip(i, left + chipX_[i], top);
+    for (size_t i = 0; i < itemBoxes_.size(); ++i) {
+        DrawItem(i, body.left, body.top);
     }
 }
 
@@ -980,28 +1168,88 @@ void SuggestPanel::DrawShadow()
     }
 }
 
+void SuggestPanel::DrawScrim()
+{
+    if (theme_.scrim.a <= 0.0f) {
+        return;
+    }
+    // ウィンドウ (外側の余白を含む) に内接する楕円で透明まで落とし、ウィンドウの端で切れて
+    // 見えないようにする。中心から一様に薄めると文字の位置で背景が透けて読みにくいため、
+    // 文字の載る内側は scrim の濃さを保ち、外側だけで透明へ落とす
+    const float margin = static_cast<float>(margin_);
+    const float radiusX = static_cast<float>(bodyWidth_) / 2 + margin;
+    const float radiusY = static_cast<float>(bodyHeight_) / 2 + margin;
+    const D2D1_POINT_2F center = D2D1::Point2F(radiusX, radiusY);
+    PanelColor clear = theme_.scrim;
+    clear.a = 0.0f;
+    const D2D1_GRADIENT_STOP stops[] = {
+        {0.0f, ToD2D(theme_.scrim)},
+        {0.45f, ToD2D(theme_.scrim)},
+        {1.0f, ToD2D(clear)},
+    };
+    ID2D1GradientStopCollection* collection = nullptr;
+    if (FAILED(drawTarget_->CreateGradientStopCollection(stops, ARRAYSIZE(stops), &collection))) {
+        return;
+    }
+    ID2D1RadialGradientBrush* gradient = nullptr;
+    if (SUCCEEDED(drawTarget_->CreateRadialGradientBrush(
+            D2D1::RadialGradientBrushProperties(center, D2D1::Point2F(0, 0), radiusX, radiusY),
+            collection, &gradient))) {
+        drawTarget_->FillEllipse(D2D1::Ellipse(center, radiusX, radiusY), gradient);
+        gradient->Release();
+    }
+    collection->Release();
+}
+
 void SuggestPanel::DrawInputLine(float left, float top, float width)
 {
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const float rowHeight = static_cast<float>(m.inputRowHeight);
     const float big = 100000.0f;
+    const bool contextOnly = input_.text.empty() && input_.pending.empty();
+    const std::wstring ghost = GhostText();
+    PanelColor ghostColor = theme_.text;
+    ghostColor.a *= theme_.ghostOpacity;
+
+    // 中央揃えでは、ゴーストまで含めた入力行の幅で中央に置く
+    float x = left;
+    if (theme_.align == PanelAlign::Center) {
+        float total = 0.0f;
+        if (contextOnly) {
+            if (!input_.context.empty()) {
+                total += TextWidth(input_.context, inputFormat_) + m.labelGap;
+            }
+            if (input_.nextWordLabel) {
+                total += TextWidth(kNextWordLabel, labelFormat_);
+            }
+        } else {
+            total = std::round(TextWidth(input_.text, inputFormat_) +
+                               TextWidth(input_.pending, inputFormat_)) +
+                    1.0f + theme_.caretWidthPx;
+        }
+        if (!ghost.empty()) {
+            total += m.labelGap + TextWidth(ghost, inputFormat_);
+        }
+        x += (std::max)(0.0f, std::round((width - total) / 2));
+    }
+
     drawTarget_->PushAxisAlignedClip(D2D1::RectF(left, top, left + width, top + rowHeight),
                                      D2D1_ANTIALIAS_MODE_ALIASED);
 
-    if (input_.text.empty() && input_.pending.empty()) {
-        float x = left;
+    if (contextOnly) {
         if (!input_.context.empty()) {
-            brush_->SetColor(ToD2D(theme_.secondary));
-            drawTarget_->DrawText(input_.context.c_str(),
-                                  static_cast<UINT32>(input_.context.size()), inputFormat_,
-                                  D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
+            DrawLabel(input_.context, inputFormat_, x, top, x + big, top + rowHeight,
+                      theme_.secondary);
             x += TextWidth(input_.context, inputFormat_) + m.labelGap;
         }
         if (input_.nextWordLabel) {
-            brush_->SetColor(ToD2D(theme_.nextWord));
-            drawTarget_->DrawText(kNextWordLabel, static_cast<UINT32>(wcslen(kNextWordLabel)),
-                                  labelFormat_, D2D1::RectF(x, top, x + big, top + rowHeight),
-                                  brush_);
+            DrawLabel(kNextWordLabel, labelFormat_, x, top, x + big, top + rowHeight,
+                      theme_.nextWord);
+            x += TextWidth(kNextWordLabel, labelFormat_);
+        }
+        if (!ghost.empty()) {
+            const float ghostX = x + m.labelGap;
+            DrawLabel(ghost, inputFormat_, ghostX, top, ghostX + big, top + rowHeight, ghostColor);
         }
         drawTarget_->PopAxisAlignedClip();
         return;
@@ -1026,18 +1274,13 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
         }
         layout->Release();
     }
-    const float inputSize = theme_.inputTextSize * m.f;
     const float underlineY =
-        std::round(lineTop + baseline + (std::max)(2.0f, inputSize * 0.15f));
+        std::round(lineTop + baseline + (std::max)(2.0f, m.inputTextSize * 0.15f));
     const float line = static_cast<float>(m.line);
 
-    float x = left;
     if (!input_.text.empty()) {
         const float textWidth = TextWidth(input_.text, inputFormat_);
-        brush_->SetColor(ToD2D(theme_.text));
-        drawTarget_->DrawText(input_.text.c_str(), static_cast<UINT32>(input_.text.size()),
-                              inputFormat_, D2D1::RectF(x, top, x + big, top + rowHeight),
-                              brush_);
+        DrawLabel(input_.text, inputFormat_, x, top, x + big, top + rowHeight, theme_.text);
         brush_->SetColor(ToD2D(theme_.accent));
         drawTarget_->FillRectangle(
             D2D1::RectF(x, underlineY, x + textWidth, underlineY + theme_.underlinePx), brush_);
@@ -1045,10 +1288,9 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
     }
     if (!input_.pending.empty()) {
         const float pendingWidth = TextWidth(input_.pending, inputFormat_);
+        DrawLabel(input_.pending, inputFormat_, x, top, x + big, top + rowHeight,
+                  theme_.secondary);
         brush_->SetColor(ToD2D(theme_.secondary));
-        drawTarget_->DrawText(input_.pending.c_str(),
-                              static_cast<UINT32>(input_.pending.size()), inputFormat_,
-                              D2D1::RectF(x, top, x + big, top + rowHeight), brush_);
         const float dotY = underlineY + line / 2;
         drawTarget_->DrawLine(D2D1::Point2F(x, dotY), D2D1::Point2F(x + pendingWidth, dotY),
                               brush_, line, dotStroke_);
@@ -1061,50 +1303,135 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
                                            caretX + theme_.caretWidthPx,
                                            lineTop + lineHeight * 0.88f),
                                brush_);
+    if (!ghost.empty()) {
+        const float ghostX = caretX + theme_.caretWidthPx + m.labelGap;
+        DrawLabel(ghost, inputFormat_, ghostX, top, ghostX + big, top + rowHeight, ghostColor);
+    }
     drawTarget_->PopAxisAlignedClip();
 }
 
-void SuggestPanel::DrawChip(size_t index, float left, float top)
+void SuggestPanel::DrawItem(size_t index, float originX, float originY)
 {
     const Metrics m = ComputeMetrics(theme_, fontSize_);
-    const float width = chipWidth_[index];
+    const ItemBox& box = itemBoxes_[index];
+    const bool column = theme_.layout == PanelLayout::Column;
+    const bool underline = theme_.chipShape == ChipShape::Underline;
+    const SelectionStyle selectionStyle = theme_.selection;
     const float height = static_cast<float>(m.chipHeight);
-    const float radius = height / 2;
+    const float radius = m.chipRadius;
     const float line = static_cast<float>(m.line);
     const float half = line / 2;
     const bool selected = index == selection_;
-    const D2D1_RECT_F rect = D2D1::RectF(left, top, left + width, top + height);
+    const D2D1_RECT_F rect = D2D1::RectF(originX + box.left, originY + box.top,
+                                         originX + box.left + box.width, originY + box.top + height);
 
-    brush_->SetColor(ToD2D(selected ? theme_.accent : theme_.chip));
-    drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush_);
-    if (items_[index].nextWord) {
-        brush_->SetColor(ToD2D(theme_.nextWord));
-        drawTarget_->DrawRoundedRectangle(
-            D2D1::RoundedRect(D2D1::RectF(rect.left + half, rect.top + half, rect.right - half,
-                                          rect.bottom - half),
-                              radius - half, radius - half),
-            brush_, line);
+    // 横一列では未選択の候補もチップの背景を持ち、縦積みでは選択中の行だけを強調する
+    if (!underline) {
+        bool filled = true;
+        PanelColor fill = theme_.chip;
+        if (selected && selectionStyle == SelectionStyle::Fill) {
+            fill = theme_.accent;
+        } else if (selected && selectionStyle == SelectionStyle::Soft) {
+            fill = theme_.accent;
+            fill.a *= kSoftAlpha;
+        } else if (column) {
+            filled = false;
+        }
+        if (filled) {
+            brush_->SetColor(ToD2D(fill));
+            drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush_);
+        }
+        if (!column && items_[index].kind == ItemKind::NextWord) {
+            const float inner = (std::max)(0.0f, radius - half);
+            brush_->SetColor(ToD2D(theme_.nextWord));
+            drawTarget_->DrawRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(rect.left + half, rect.top + half,
+                                              rect.right - half, rect.bottom - half),
+                                  inner, inner),
+                brush_, line);
+        }
     }
 
-    const PanelColor& badgeColor = selected ? theme_.selectedText : theme_.secondary;
-    const float badgeRadius = m.badgeSize / 2;
-    const float centerX = left + m.chipPadding + badgeRadius;
-    const float centerY = top + height / 2;
-    brush_->SetColor(ToD2D(badgeColor));
-    drawTarget_->DrawEllipse(
-        D2D1::Ellipse(D2D1::Point2F(centerX, centerY), badgeRadius - half, badgeRadius - half),
-        brush_, line);
-    const std::wstring number = std::to_wstring(index + 1);
-    drawTarget_->DrawText(number.c_str(), static_cast<UINT32>(number.size()), badgeFormat_,
-                          D2D1::RectF(centerX - badgeRadius, centerY - badgeRadius,
-                                      centerX + badgeRadius, centerY + badgeRadius),
-                          brush_);
+    // underline の fill・soft は下線の色だけをアクセント色にし、文字は未選択と同じにする
+    PanelColor textColor = theme_.text;
+    PanelColor badgeColor = theme_.secondary;
+    bool bold = false;
+    if (selected) {
+        if (selectionStyle == SelectionStyle::Text) {
+            textColor = theme_.accent;
+            bold = true;
+        } else if (!underline && selectionStyle == SelectionStyle::Fill) {
+            textColor = theme_.selectedText;
+            badgeColor = theme_.selectedText;
+        } else if (!underline && selectionStyle == SelectionStyle::Soft) {
+            textColor = theme_.accent;
+            badgeColor = theme_.accent;
+        }
+    }
+
+    const float centerY = rect.top + height / 2;
+    float x = rect.left + m.chipPadding;
+    if (theme_.badgeShape != BadgeShape::None) {
+        const float badgeRadius = m.badgeSize / 2;
+        const float centerX = x + badgeRadius;
+        brush_->SetColor(ToD2D(badgeColor));
+        if (theme_.badgeShape == BadgeShape::Circle) {
+            drawTarget_->DrawEllipse(D2D1::Ellipse(D2D1::Point2F(centerX, centerY),
+                                                   badgeRadius - half, badgeRadius - half),
+                                     brush_, line);
+        } else if (theme_.badgeShape == BadgeShape::Square) {
+            const float corner = badgeRadius * 0.35f;
+            drawTarget_->DrawRoundedRectangle(
+                D2D1::RoundedRect(D2D1::RectF(centerX - badgeRadius + half,
+                                              centerY - badgeRadius + half,
+                                              centerX + badgeRadius - half,
+                                              centerY + badgeRadius - half),
+                                  corner, corner),
+                brush_, line);
+        }
+        DrawLabel(std::to_wstring(index + 1), badgeFormat_, centerX - badgeRadius,
+                  centerY - badgeRadius, centerX + badgeRadius, centerY + badgeRadius, badgeColor);
+        x += m.badgeSlot;
+    }
+
+    float textRight = rect.right;
+    if (column) {
+        textRight = rect.right - m.chipPadding;
+        if (theme_.kindTag) {
+            const ItemKind kind = items_[index].kind;
+            const std::wstring tag = KindTagLabel(kind);
+            const PanelColor& tagColor = KindTagColor(theme_, kind);
+            const float tagWidth = TextWidth(tag, tagFormat_) + m.tagPadding * 2;
+            const D2D1_RECT_F tagRect =
+                D2D1::RectF(textRight - tagWidth, centerY - m.tagHeight / 2, textRight,
+                            centerY + m.tagHeight / 2);
+            PanelColor tagFill = tagColor;
+            tagFill.a = kTagAlpha;
+            const float tagRadius = m.tagHeight * 0.25f;
+            brush_->SetColor(ToD2D(tagFill));
+            drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(tagRect, tagRadius, tagRadius),
+                                              brush_);
+            DrawLabel(tag, tagFormat_, tagRect.left, tagRect.top, tagRect.right, tagRect.bottom,
+                      tagColor);
+            textRight = tagRect.left - m.tagGap;
+        }
+        // 切り詰めずに収まる行で、幅の丸め誤差から「…」が出ないよう少し余裕を持たせる
+        textRight += 1.0f;
+    }
 
     const std::wstring& text = itemTexts_[index];
-    const float textX = left + m.chipPadding + m.badgeSize + m.badgeGap;
-    brush_->SetColor(ToD2D(selected ? theme_.selectedText : theme_.text));
-    drawTarget_->DrawText(text.c_str(), static_cast<UINT32>(text.size()), textFormat_,
-                          D2D1::RectF(textX, top, rect.right, rect.bottom), brush_);
+    IDWriteTextFormat* format = bold ? boldFormat_ : textFormat_;
+    textRight = (std::max)(textRight, x);
+    DrawLabel(text, format, x, rect.top, textRight, rect.bottom, textColor);
+
+    if (underline && selected) {
+        const float underlineWidth = (std::min)(TextWidth(text, format), textRight - x);
+        const float underlineY = std::round(rect.bottom - theme_.underlinePx - height * 0.12f);
+        brush_->SetColor(ToD2D(theme_.accent));
+        drawTarget_->FillRectangle(
+            D2D1::RectF(x, underlineY, x + underlineWidth, underlineY + theme_.underlinePx),
+            brush_);
+    }
 }
 
 bool SuggestPanel::WindowRect(RECT* rect) const
@@ -1164,8 +1491,8 @@ void SuggestPanel::Hide()
     timerCallback_ = nullptr;
     items_.clear();
     itemTexts_.clear();
-    chipX_.clear();
-    chipWidth_.clear();
+    itemBoxes_.clear();
+    separator_ = false;
     selection_ = 0;
     hasInput_ = false;
     input_ = InputLine{};

@@ -769,13 +769,22 @@ STDMETHODIMP TextService::OnSetFocus(BOOL foreground)
 
 void TextService::RefreshConfig()
 {
-    if (config_.Refresh()) {
-        const TsfConfig& config = config_.Get();
+    const bool configChanged = config_.Refresh();
+    const TsfConfig& config = config_.Get();
+    if (configChanged) {
         candidateWindow_.SetFont(config.candidateFont, config.candidateFontSize);
-        // アプリモード (ライト/ダーク) も設定と同じ契機で読み直す (打鍵ごとには読まない)
-        const PanelTheme theme = PanelTheme::ForAppMode();
+    }
+    // テーマとアプリモード (ライト/ダーク) は、設定かテーマファイルが変わったときだけ読み直す
+    // (打鍵ごとには読まない)
+    std::vector<std::wstring> themeLog;
+    const bool themeChanged = panelTheme_.Refresh(config.panelTheme, configChanged, &themeLog);
+    for (const std::wstring& message : themeLog) {
+        DebugLog(L"テーマ " + message);
+    }
+    if (configChanged || themeChanged) {
+        const PanelTheme& theme = panelTheme_.Get();
         for (SuggestPanel* panel : {&suggestPanel_, &pendingPanel_}) {
-            panel->SetBlur(config.panelBlur);
+            panel->SetBlur(config.panelBlur && theme.blurAllowed);
             panel->SetFont(config.candidateFont, config.candidateFontSize);
             panel->SetTheme(theme);
         }
@@ -2466,7 +2475,18 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
     for (const BarCandidate& item : items) {
         const bool head = item.kind == BarKind::Head;
         const bool tail = !head && item.kind != BarKind::Ascii;
-        labels.push_back({tail ? item.surface + asciiTail : item.surface, head, nextWordBar_});
+        // 後続語の予測は予測候補 (BarKind::Prediction) として作るが、表示では種類を分ける
+        SuggestPanel::ItemKind kind = SuggestPanel::ItemKind::Prediction;
+        if (nextWordBar_) {
+            kind = SuggestPanel::ItemKind::NextWord;
+        } else if (head) {
+            kind = SuggestPanel::ItemKind::Partial;
+        } else if (item.kind == BarKind::Ascii) {
+            kind = SuggestPanel::ItemKind::Ascii;
+        } else if (item.kind == BarKind::Whole) {
+            kind = SuggestPanel::ItemKind::Conversion;
+        }
+        labels.push_back({tail ? item.surface + asciiTail : item.surface, kind});
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
     const size_t shown = ShowPanel(caret, labels, labels.size());
@@ -2491,7 +2511,7 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
 bool TextService::PanelInputActive() const
 {
     const TsfConfig& config = config_.Get();
-    return config.candidateBar && config.panelInput;
+    return config.candidateBar && (config.panelInput || panelTheme_.Get().inputRowAlways);
 }
 
 bool TextService::PanelInputShown() const

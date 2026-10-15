@@ -17,6 +17,7 @@ add_library(quicklime_tsf SHARED
     src/globals.cpp
     src/kana_forms.cpp
     src/lang_bar.cpp
+    src/panel_theme.cpp
     src/registry.cpp
     src/romaji.cpp
     src/suggest_panel.cpp

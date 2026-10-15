@@ -68,6 +68,7 @@ const ID_COMBO_DIGITS: i32 = 107;
 const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
 const ID_CHECK_PANEL_BLUR: i32 = 110;
+const ID_COMBO_PANEL_THEME: i32 = 111;
 const ID_CHECK_MODELESS: i32 = 112;
 const ID_CHECK_CANDIDATE_BAR: i32 = 113;
 const ID_CHECK_SEGMENT_UI: i32 = 114;
@@ -87,6 +88,7 @@ const ID_BUTTON_APP_DEFAULT: i32 = 127;
 const ID_CHECK_DEBUG_LOG: i32 = 128;
 const ID_EDIT_DEBUG_LOG: i32 = 129;
 const ID_TAB: i32 = 130;
+const ID_BUTTON_THEME_DIR: i32 = 131;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -106,6 +108,12 @@ const TAB_NAMES: [&str; 6] = ["変換", "入力", "表示", "キー割当", "ア
 const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
 /// 候補の表示位置 (candidate_position の値, 表示名)
 const CANDIDATE_POSITIONS: [(&str, &str); 2] = [("caret", "キャレットの下"), ("center", "画面中央")];
+/// 組み込みのテーマ (panel_theme の値, 表示名)。TSF 層 (tsf/src/panel_theme.cpp) と合わせる
+const BUILTIN_THEMES: [(&str, &str); 3] = [
+    ("capsule", "カプセル (横一列)"),
+    ("capsule-column", "カプセル (縦積み)"),
+    ("ghost", "ゴースト"),
+];
 
 /// キー割当の照合に使う入力状態: (設定上の名前, 表示名)。
 /// 並びは TSF 層 (tsf/src/config.h の KeyState) と合わせる
@@ -397,6 +405,8 @@ struct Config {
     modeless: bool,
     candidate_bar: bool,
     next_word: bool,
+    /// 候補パネルのテーマ名 (組み込みのテーマか、テーマフォルダの <名前>.tsv)
+    panel_theme: String,
     /// 候補の表示位置 ("caret" / "center")
     candidate_position: String,
     /// 入力中の読みも候補と同じパネルに出す
@@ -430,6 +440,7 @@ impl Default for Config {
             modeless: false,
             candidate_bar: true,
             next_word: true,
+            panel_theme: BUILTIN_THEMES[0].0.to_string(),
             candidate_position: "caret".to_string(),
             panel_input: false,
             panel_blur: false,
@@ -506,6 +517,56 @@ fn config_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(appdata).join("QuicklIME").join("config.tsv"))
 }
 
+/// テーマフォルダ。優先順: QUICKLIME_THEME_DIR > %APPDATA%\QuicklIME\themes (TSF 層と同じ)
+fn theme_dir() -> Result<PathBuf, String> {
+    if let Ok(path) = std::env::var("QUICKLIME_THEME_DIR") {
+        return Ok(PathBuf::from(path));
+    }
+    let appdata =
+        std::env::var("APPDATA").map_err(|_| "テーマのフォルダを特定できません".to_string())?;
+    Ok(PathBuf::from(appdata).join("QuicklIME").join("themes"))
+}
+
+/// テーマフォルダの *.tsv のファイル名 (拡張子なし)。フォルダが無ければ空
+fn user_theme_names(dir: &std::path::Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| {
+            let path = entry.ok()?.path();
+            let is_tsv = path.extension()?.to_str()?.eq_ignore_ascii_case("tsv");
+            (is_tsv && path.is_file()).then(|| path.file_stem()?.to_str().map(str::to_string))?
+        })
+        .collect()
+}
+
+/// 「候補の見た目」の選択肢 ((panel_theme の値, 表示名))。組み込みのテーマに続けて、ユーザの
+/// テーマを名前順に並べる。組み込みと同名のファイル (Windows のファイル名と同じく大文字小文字を
+/// 区別しない) は組み込みの項目だけにする。今の設定値が無ければ (ファイルを消したときなど)
+/// 選び直さずに保存しても変わらないよう末尾に足す
+fn theme_choices(user_names: Vec<String>, current: &str) -> Vec<(String, String)> {
+    let mut choices: Vec<(String, String)> =
+        BUILTIN_THEMES.iter().map(|(name, label)| (name.to_string(), label.to_string())).collect();
+    let mut users: Vec<String> = Vec::new();
+    for name in user_names {
+        let lower = name.to_lowercase();
+        if name.is_empty()
+            || BUILTIN_THEMES.iter().any(|(builtin, _)| builtin.to_lowercase() == lower)
+            || users.iter().any(|user| user.to_lowercase() == lower)
+        {
+            continue;
+        }
+        users.push(name);
+    }
+    users.sort_by_key(|name| name.to_lowercase());
+    choices.extend(users.into_iter().map(|name| (name.clone(), name)));
+    if !choices.iter().any(|(name, _)| name == current) {
+        choices.push((current.to_string(), current.to_string()));
+    }
+    choices
+}
+
 /// 診断ログの既定の出力先 (%APPDATA%\QuicklIME\debug.log)。QUICKLIME_CONFIG_FILE で
 /// 設定ファイルを移していても同じ場所にする。APPDATA が無ければ空
 fn default_debug_log_path() -> String {
@@ -574,6 +635,11 @@ impl Config {
             "modeless" => parse_bool(&mut self.modeless),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
             "next_word" => parse_bool(&mut self.next_word),
+            "panel_theme" => {
+                if !value.is_empty() {
+                    self.panel_theme = value.to_string();
+                }
+            }
             "candidate_position" => {
                 if CANDIDATE_POSITIONS.iter().any(|(name, _)| *name == value) {
                     self.candidate_position = value.to_string();
@@ -663,6 +729,7 @@ impl Config {
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
         text.push_str(&format!("next_word\t{}\n", self.next_word as u32));
+        text.push_str(&format!("panel_theme\t{}\n", self.panel_theme));
         text.push_str(&format!("candidate_position\t{}\n", self.candidate_position));
         text.push_str(&format!("panel_input\t{}\n", self.panel_input as u32));
         text.push_str(&format!("panel_blur\t{}\n", self.panel_blur as u32));
@@ -811,7 +878,9 @@ fn main() {
         let page_pad = scale(12);
         let column_w = label_w + row_gap + ctrl_w;
         let key_list_w = scale(440);
-        let page_w = column_w.max(key_list_w);
+        // 「候補の見た目」の行は、コンボの横に「テーマのフォルダを開く」ボタンを置く
+        let theme_button_w = scale(150);
+        let page_w = column_w.max(key_list_w).max(column_w + row_gap + theme_button_w);
 
         // 大きさはタブの中身を作ってから決める
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
@@ -1013,6 +1082,29 @@ fn main() {
         y += row_h + row_gap;
         check("確定の後に次の語を予測する", y, ID_CHECK_NEXT_WORD, config.next_word);
         y += row_h + row_gap;
+        create_control("STATIC", "候補の見た目:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
+        let themes = theme_choices(
+            theme_dir().map(|dir| user_theme_names(&dir)).unwrap_or_default(),
+            &config.panel_theme,
+        );
+        let theme_labels: Vec<&str> = themes.iter().map(|(_, label)| label.as_str()).collect();
+        let theme_combo = add_combo(ctrl_x, y, ID_COMBO_PANEL_THEME, &theme_labels, "");
+        // CB_SELECTSTRING は前方一致で選ぶため、設定値の位置で選び直す
+        let current_theme = themes.iter().position(|(name, _)| *name == config.panel_theme);
+        SendMessageW(theme_combo, CB_SETCURSEL, current_theme.unwrap_or(0), 0);
+        THEME_CHOICES.with(|choices| *choices.borrow_mut() = themes);
+        create_control(
+            "BUTTON",
+            "テーマのフォルダを開く",
+            button_style,
+            0,
+            ctrl_x + ctrl_w + row_gap,
+            y,
+            theme_button_w,
+            row_h,
+            ID_BUTTON_THEME_DIR,
+        );
+        y += row_h + row_gap;
         create_control("STATIC", "候補の表示位置:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let position_labels: Vec<&str> = CANDIDATE_POSITIONS.iter().map(|(_, label)| *label).collect();
         let current_position = CANDIDATE_POSITIONS
@@ -1055,6 +1147,7 @@ fn main() {
         let size_items: Vec<String> = (10..=40).map(|n| n.to_string()).collect();
         let size_refs: Vec<&str> = size_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_FONT_SIZE, &size_refs, &config.candidate_font_size.to_string());
+        let display_h = y + row_h - page_y;
 
         // ---- キー割当 ----
         current_page.set(Some(3));
@@ -1151,7 +1244,7 @@ fn main() {
         // 「開発用」タブの注意書きは折り返すため2行分の高さを取る
         let debug_note_h = row_h * 2;
         let debug_h = (row_h + row_gap) * 2 + debug_note_h;
-        let page_h = convert_h.max(keys_h).max(apps_min_h).max(debug_h);
+        let page_h = convert_h.max(display_h).max(keys_h).max(apps_min_h).max(debug_h);
 
         current_page.set(Some(4));
         create_control("STATIC", "改行キーの対象アプリ", label_style, 0, page_x, page_y, page_w, row_h, 0);
@@ -1350,6 +1443,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                         DestroyWindow(hwnd);
                     }
                     ID_BUTTON_KEY_EDIT => on_edit_key(hwnd),
+                    ID_BUTTON_THEME_DIR => on_open_theme_dir(hwnd),
                     ID_BUTTON_KEY_DEFAULT => {
                         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = default_key_assigns());
                         refresh_key_list(GetDlgItem(hwnd, ID_LIST_KEYS));
@@ -1455,6 +1549,12 @@ fn collect(hwnd: HWND) -> Config {
     config.modeless = checked(ID_CHECK_MODELESS);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
     config.next_word = checked(ID_CHECK_NEXT_WORD);
+    let theme_index = unsafe { SendMessageW(GetDlgItem(hwnd, ID_COMBO_PANEL_THEME), CB_GETCURSEL, 0, 0) };
+    if let Ok(index) = usize::try_from(theme_index)
+        && let Some((name, _)) = THEME_CHOICES.with(|choices| choices.borrow().get(index).cloned())
+    {
+        config.panel_theme = name;
+    }
     let position = combo_text(ID_COMBO_CANDIDATE_POSITION);
     if let Some((name, _)) = CANDIDATE_POSITIONS.iter().find(|(_, label)| *label == position) {
         config.candidate_position = name.to_string();
@@ -1608,6 +1708,22 @@ fn on_remove_app(hwnd: HWND) {
     }
 }
 
+/// 「テーマのフォルダを開く」: フォルダが無ければ作ってからエクスプローラーで開く
+fn on_open_theme_dir(hwnd: HWND) {
+    let result = theme_dir().and_then(|dir| {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("テーマのフォルダを作れません ({e})\n{}", dir.display()))?;
+        std::process::Command::new("explorer.exe")
+            .arg(&dir)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("テーマのフォルダを開けません ({e})\n{}", dir.display()))
+    });
+    if let Err(message) = result {
+        message_box(hwnd, &message, MB_ICONERROR);
+    }
+}
+
 fn message_box(hwnd: HWND, text: &str, icon: u32) {
     let text = wide(text);
     let title = wide("QuicklIME 設定");
@@ -1638,6 +1754,8 @@ thread_local! {
     static KEY_ASSIGNS: RefCell<Vec<KeyAssign>> = const { RefCell::new(Vec::new()) };
     /// 画面上の改行キーの対象アプリ (保存で書き出す)
     static NEWLINE_APPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// 「候補の見た目」の選択肢 ((panel_theme の値, 表示名)。コンボの項目と同じ並び)
+    static THEME_CHOICES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     /// タブごとの項目 (TAB_NAMES の並び順)
     static TAB_PAGES: RefCell<Vec<Vec<HWND>>> = const { RefCell::new(Vec::new()) };
     static APP_PICK: RefCell<Option<AppPick>> = const { RefCell::new(None) };
@@ -2454,6 +2572,58 @@ mod tests {
         assert_eq!(config.candidate_position, "center");
         assert!(config.panel_input);
         assert!(config.panel_blur);
+    }
+
+    #[test]
+    fn reads_panel_theme() {
+        let mut config = Config::default();
+        assert_eq!(config.panel_theme, "capsule");
+        config.apply("panel_theme", "mine");
+        assert_eq!(config.panel_theme, "mine");
+        // 空の値は読み飛ばす
+        config.apply("panel_theme", "");
+        assert_eq!(config.panel_theme, "mine");
+    }
+
+    #[test]
+    fn makes_theme_choices() {
+        let names = |choices: &[(String, String)]| -> Vec<String> {
+            choices.iter().map(|(name, _)| name.clone()).collect()
+        };
+        // 組み込みに続けてユーザのテーマを名前順に。組み込みと同名 (大文字小文字は問わない)・
+        // 重複は除く
+        let choices = theme_choices(
+            vec![
+                "mine".to_string(),
+                "Capsule".to_string(),
+                "ghost".to_string(),
+                "Alpha".to_string(),
+                "MINE".to_string(),
+            ],
+            "capsule",
+        );
+        assert_eq!(names(&choices), ["capsule", "capsule-column", "ghost", "Alpha", "mine"]);
+        assert_eq!(choices[0].1, "カプセル (横一列)");
+        assert_eq!(choices[2].1, "ゴースト");
+        assert_eq!(choices[3].1, "Alpha");
+        // 一覧に無い設定値は末尾に足す
+        let choices = theme_choices(Vec::new(), "gone");
+        assert_eq!(names(&choices), ["capsule", "capsule-column", "ghost", "gone"]);
+    }
+
+    #[test]
+    fn lists_user_theme_files() {
+        let dir = std::env::temp_dir().join(format!("quicklime-theme-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub.tsv")).unwrap();
+        for file in ["mine.tsv", "Upper.TSV", "note.txt"] {
+            std::fs::write(dir.join(file), "accent\t#E0457B\n").unwrap();
+        }
+        let mut names = user_theme_names(&dir);
+        names.sort();
+        assert_eq!(names, ["Upper", "mine"]);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert!(user_theme_names(&dir).is_empty());
     }
 
     #[test]

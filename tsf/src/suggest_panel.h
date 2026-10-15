@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "panel_theme.h"
+
 struct ID2D1Factory;
 struct ID2D1DCRenderTarget;
 struct ID2D1HwndRenderTarget;
@@ -15,59 +17,8 @@ struct ID2D1StrokeStyle;
 struct IDWriteFactory;
 struct IDWriteTextFormat;
 
-// 色 (アルファは乗算前の値)
-struct PanelColor {
-    float r = 0.0f;
-    float g = 0.0f;
-    float b = 0.0f;
-    float a = 1.0f;
-};
-
-// サジェストパネルの見た目 (docs/design/suggest-panel.md)。寸法は設定 candidate_font_size
-// (以下 f) に対する比率、px と書いたものは f によらない画素数
-struct PanelTheme {
-    float panelRadius = 1.4f;      // パネルの角丸の半径 (パネルの高さの半分まで)
-    float panelPadding = 0.6f;     // パネルの内側の余白
-    float inputTextSize = 1.15f;   // 入力行の文字の高さ
-    float inputRowHeight = 1.7f;   // 入力行の高さ (下線を含む)
-    float rowGap = 0.35f;          // 入力行と区切り線、区切り線とチップ列の間
-    float chipHeight = 1.9f;       // チップの高さ (両端は半円)
-    float chipPadding = 0.65f;     // チップの左右の余白
-    float chipGap = 0.35f;         // チップどうしの間隔
-    float badgeSize = 0.95f;       // 候補番号のバッジの直径
-    float badgeTextSize = 0.62f;   // 候補番号の文字の高さ
-    float badgeGap = 0.35f;        // バッジと候補文字列の間
-    float labelTextSize = 0.62f;   // 入力行の「次の語」ラベルの文字の高さ
-    float labelGap = 0.5f;         // 前文脈と「次の語」ラベルの間
-    float shadowSize = 0.8f;       // 影の広がり
-    float shadowOffset = 0.2f;     // 影を下へずらす量
-    float centerWidth = 36.0f;     // 画面中央に出すときのパネルの幅
-    float centerWidthRatio = 0.9f; // 画面中央に出すときの幅の上限 (作業領域の幅に対する比率)
-    float lineWidthPx = 1.0f;      // 外周・区切り線・バッジ・次の語の縁の太さ (px)
-    float underlinePx = 2.0f;      // run の文字列の下線の太さ (px)
-    float caretWidthPx = 2.0f;     // 入力行のキャレットの太さ (px)
-    int shadowSteps = 10;          // 影を近似する角丸矩形の枚数
-
-    PanelColor background;  // パネルの背景
-    PanelColor border;      // 外周の縁
-    PanelColor text;        // 文字
-    PanelColor secondary;   // 副次色 (候補番号・未完成ローマ字・前文脈)
-    PanelColor chip;        // チップの背景
-    PanelColor separator;   // 入力行とチップ列の区切り線
-    PanelColor accent;      // 選択中のチップ・run の下線・キャレット
-    PanelColor selectedText;  // 選択中のチップの文字とバッジ
-    PanelColor nextWord;    // 読みなしの後続語予測の縁と「次の語」ラベル
-    PanelColor shadow;      // 影 (a は重ねたときの最大不透明度)
-    PanelColor blurTint;    // ぼかし (panel_blur) の上に重ねる色
-
-    static PanelTheme Dark();
-    static PanelTheme Light();
-    // Windows のアプリモード (AppsUseLightTheme。値が無ければライト) に合わせた配色
-    static PanelTheme ForAppMode();
-};
-
-// 候補バー (横一列のチップ) と入力行を出すパネル、および未完成ローマ字の小さなカプセル。
-// Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
+// 候補バー (横一列または縦積みの候補) と入力行を出すパネル、および未完成ローマ字の小さな
+// カプセル。見た目は PanelTheme (docs/design/panel-theme.md) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
 // ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
 class SuggestPanel {
@@ -75,10 +26,18 @@ public:
     // 番号 (1〜9) を付けて出せる候補の数
     static constexpr size_t kMaxItems = 9;
 
+    // 候補の種類 (縦積みの種類のタグに出す)
+    enum class ItemKind {
+        Ascii,       // 英字
+        Conversion,  // 全体変換
+        Prediction,  // 予測
+        Partial,     // 先頭文節 (部分採用。末尾に「…」を付けて表示する)
+        NextWord,    // 読みなしの後続語予測 (横一列では「次の語」色の縁を付ける)
+    };
+
     struct Item {
         std::wstring text;
-        bool partial = false;   // 部分採用の候補 (末尾に「…」を付けて表示する)
-        bool nextWord = false;  // 読みなしの後続語予測の候補 (「次の語」色の縁を付ける)
+        ItemKind kind = ItemKind::Conversion;
     };
 
     // 入力行の内容。パネルは内容を解釈せずにそのまま出す
@@ -109,8 +68,8 @@ public:
     SuggestPanel(const SuggestPanel&) = delete;
     SuggestPanel& operator=(const SuggestPanel&) = delete;
 
-    // 候補を横一列に並べ、input があれば上に入力行を置いて出す。収まる先頭からの候補だけを
-    // 表示し、表示した候補の数を返す (候補が無く入力行だけを出したときも 0)。
+    // 候補をテーマの並べ方 (横一列・縦積み) で並べ、input があれば上に入力行を置いて出す。
+    // 収まる先頭からの候補だけを表示し、表示した候補の数を返す (候補が無く入力行だけを出したときも 0)。
     // 候補も入力行も無ければ隠す。selection が範囲外ならどの候補も強調しない
     size_t Show(const Placement& placement, const std::vector<Item>& items, size_t selection,
                 const InputLine* input);
@@ -128,7 +87,8 @@ public:
     // フォントが見つからなければ Yu Gothic UI を使う。表示中の内容には次の Show から効く
     void SetFont(const std::wstring& face, int height);
 
-    // 配色と寸法の比率を差し替える。表示中なら描き直す
+    // 見た目を差し替える。表示中なら、色だけが変わったときは描き直し、並べ方・形・寸法が
+    // 変わったときは隠す (今のレイアウトは前の見た目で組んであるため)
     void SetTheme(const PanelTheme& theme);
 
     // 背景のぼかし (設定 panel_blur) を使うかどうか。変わったときは表示中なら隠し、次の表示から
@@ -158,6 +118,13 @@ private:
         Capsule,  // ShowCapsule
     };
 
+    // 候補 1 件の表示位置 (影を除いたパネルの左上を原点とする px)。高さは行の高さ
+    struct ItemBox {
+        float left;
+        float top;
+        float width;
+    };
+
     bool EnsureFactories();
     bool EnsureTarget();
     void ReleaseTarget();
@@ -175,8 +142,17 @@ private:
     HRESULT DrawBlur();
     void Draw();
     void DrawShadow();
+    // ghost の背景 (放射状のにじみ)
+    void DrawScrim();
     void DrawInputLine(float left, float top, float width);
-    void DrawChip(size_t index, float left, float top);
+    void DrawItem(size_t index, float left, float top);
+    // text_shadow on なら下に影を敷いて文字を描く
+    void DrawLabel(const std::wstring& text, IDWriteTextFormat* format, float left, float top,
+                   float right, float bottom, const PanelColor& color);
+    // layered window の方式で、パネルの外側に取る余白 (影・ghost のにじみの分)
+    int LayeredMargin() const;
+    // 入力行の末尾に出すゴースト (ghost のとき選択中または先頭の候補。無ければ空)
+    std::wstring GhostText() const;
     void LogShow(const wchar_t* kind, const RECT* anchor, bool created, DWORD error) const;
 
     HWND hwnd_;
@@ -192,10 +168,12 @@ private:
     // target_ と hwndTarget_ は同時には持たず、brush_ は今ある方で作ったもの
     ID2D1SolidColorBrush* brush_;
     ID2D1StrokeStyle* dotStroke_;  // 未完成ローマ字の点線の下線
-    IDWriteTextFormat* textFormat_;    // 候補文字列・カプセル (f)
+    IDWriteTextFormat* textFormat_;    // 候補文字列・カプセル (f。収まらなければ末尾を「…」で切る)
+    IDWriteTextFormat* boldFormat_;    // selection text の選択中の候補文字列
     IDWriteTextFormat* inputFormat_;   // 入力行
     IDWriteTextFormat* badgeFormat_;   // 候補番号 (中央揃え)
     IDWriteTextFormat* labelFormat_;   // 「次の語」ラベル
+    IDWriteTextFormat* tagFormat_;     // 種類のタグ (中央揃え)
     std::wstring face_;
     int fontSize_;
     PanelTheme theme_;
@@ -207,8 +185,9 @@ private:
     Kind kind_;
     std::vector<Item> items_;
     std::vector<std::wstring> itemTexts_;  // 表示する候補文字列 (「…」を付けたもの)
-    std::vector<float> chipX_;
-    std::vector<float> chipWidth_;
+    std::vector<ItemBox> itemBoxes_;
+    float inputTop_;  // 入力行の上端 (パネルの左上を原点とする px)
+    bool separator_;  // 入力行と候補の間に区切り線を引く
     size_t selection_;
     bool hasInput_;
     InputLine input_;

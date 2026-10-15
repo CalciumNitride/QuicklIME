@@ -405,6 +405,10 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.panelInput);
     } else if (key == L"panel_blur") {
         ParseBool(value, config.panelBlur);
+    } else if (key == L"panel_theme") {
+        if (!value.empty()) {
+            config.panelTheme = value;
+        }
     } else if (key == L"min_suggest_chars") {
         ParseClamped(value, 1, 5, config.minSuggestChars);
     } else if (key == L"next_word") {

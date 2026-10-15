@@ -254,7 +254,7 @@ private:
     void ClearBarKeepingInput(ITfContext* context);
 
     // ---- サジェストパネル (docs/design/suggest-panel.md) ----
-    // パネルに入力行を出す設定か (candidate_bar 1 かつ panel_input 1)
+    // パネルに入力行を出す設定か (candidate_bar 1 かつ、panel_input 1 かテーマの input_row always)
     bool PanelInputActive() const;
     // 入力行を出している状態か (入力行を出す設定で、候補選択中でない run の間)
     bool PanelInputShown() const;
@@ -697,6 +697,7 @@ private:
     SuggestPanel suggestPanel_;                // 候補バーと入力行
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
+    PanelThemeLoader panelTheme_;              // サジェストパネルのテーマ (設定 panel_theme)
 
     // 候補バー
     std::vector<BarCandidate> barItems_;  // 表示中の候補 (空 = 非表示)
