@@ -333,12 +333,14 @@ Google日本語入力 / ATOK / macOS標準 / Mozc / azooKey / Akaza を調査し
   - [x] 入力位置がウィンドウの外を指すアプリ (マビノギなど) での候補ウィンドウ類の位置
         (2026-10-10 実装、docs/design/candidate-position-fallback.md)。文書のウィンドウの外なら
         ウィンドウ中央に出し、縦の候補一覧と小窓をモニタの作業領域に収める
-  - [ ] マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない。
+  - [ ] マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない (対応は見送り)。
         ゲームは OnTestKeyDown を呼び、IME が食べると答えても OnKeyDown を呼ばない
         (Ctrl なしのキーでは呼ぶ)。key-up では OnTestKeyUp だけ呼ばれ、OnKeyUp は来ない。
-        案: OnTestKeyDown で食べると答えたキーの OnKeyDown が来ないまま OnTestKeyUp が来たら、
-        その時点で機能を実行する。他のアプリで二重実行にならないかの確認が要る。
-        当面はマビノギでは Convert キーを使う
+        また、composition 中に Ctrl 併用のキーを受けると、ゲームが選択中の候補のまま
+        composition を確定させる (OnTestKeyDown と OnTestKeyUp の間に起き、IME からは止められない)。
+        OnKeyDown が来ないまま OnTestKeyUp が来たら機能を実行する方式を試したが、変換の開始は
+        できても候補選択中の候補送りはできなかった (擬似 Backspace の目印も Ctrl+F24 として届く
+        ため、目印も同じく key-up で処理する必要があった)。マビノギでは Convert キーを使う
 - [ ] 自分で常用しながらの改善サイクルへ
 
 ## 開発上の注意点
