@@ -148,7 +148,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
 
 段階1 の検証が終わってから行う。結果を見て採るかどうか決める。
 
-- 設定 `panel_blur` (`0` / `1`、既定 `0`) を実験用に足す。設定ツールには出さない
+- 設定 `panel_blur` (`0` / `1`、既定 `0`) を足す。設定ツールの「表示」タブに「候補の背景をぼかす」として出す
 - `panel_blur 1` のときは layered window をやめ、通常の `WS_POPUP` に
   `SetWindowCompositionAttribute` (非公開 API) の `ACCENT_ENABLE_ACRYLICBLURBEHIND` を当てる。
   角丸は `DwmSetWindowAttribute` の `DWMWA_WINDOW_CORNER_PREFERENCE` (`DWMWCP_ROUND`) に任せ、
@@ -162,7 +162,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
 
 - 対象は候補バーのパネルと未完成ローマ字のカプセルの両方 (`SuggestPanel` の 2 インスタンスとも)
 - 設定: TSF 層の config.tsv に `panel_blur` (`0` / `1`、既定 `0`、不正な値は既定) を足す。
-  設定ツール・README には出さない。`TextService::RefreshConfig` でパネルに渡し、表示中なら
+  `TextService::RefreshConfig` でパネルに渡し、表示中なら
   一度隠して次の表示から新しい方式で作る (ウィンドウの作り直しが必要なため)
 - 色味: ぼかしの上に重ねる色は `ACCENT_POLICY` の `GradientColor` で指定する。色はパネル背景と同じ
   (ダーク #1C1C22、ライト #FCFCFE)、不透明度はダーク 0.6、ライト 0.7。`PanelTheme` に
@@ -204,6 +204,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
 | B7 | メモ帳 | Windows の透明効果をオフにして入力 | 段階1 の描画で出る。診断ログに戻した理由が出る |
 | B8 | メモ帳 | アプリモードのライト/ダークを切り替えて設定を保存し直す | 色味が切り替わる |
 | B9 | メモ帳 | 入力中に `panel_blur` を 0 ⇔ 1 と切り替えて保存 | 次の表示から方式が切り替わる |
+| B10 | 設定ツール | 「表示」タブの「候補の背景をぼかす」を切り替えて保存 | config.tsv の `panel_input` の直後に `panel_blur` が書かれ、次の表示から方式が切り替わる。開き直すとチェックの状態が保たれる |
 
 #### 段階2 の結果
 
@@ -220,7 +221,15 @@ alpha が失われず、透明な部分は黒くならずにぼかしが透け�
   文字は読める
 
 採る。`panel_blur` を正式な設定にして設定ツールと README に出す。既定は `0` (段階1 の描画) のまま。
-設定ツールへの追加は別の変更として行う。
+
+#### 設定ツール・README での見せ方
+
+- 設定ツール: 「表示」タブの「入力中の読みも候補と同じ場所に表示する」の直後 (フォントの前) に
+  チェックボックス「候補の背景をぼかす」を置く。補足の括弧書きは付けない
+- config.tsv の書き出し: `# 候補ウィンドウ` の節、`panel_input` の直後に `panel_blur` を書く
+- README: `panel_input` の項の後に `panel_blur` の項を足す。設定ツールでの表記、既定 0、
+  対象が候補バーのパネルと未完成ローマ字のカプセルであること、角丸が DWM の小さい角丸になること、
+  Windows の透明効果がオフのときや API が使えないときは通常の描画に戻ることを書く
 
 ## 変更対象ファイル
 
@@ -231,9 +240,9 @@ alpha が失われず、透明な部分は黒くならずにぼかしが透け�
 | tsf/src/text_service.h, tsf/src/text_service.cpp, tsf/src/text_service_direct.cpp | 候補バー・未完成ローマ字の小窓の表示を `SuggestPanel` に移す。入力行の内容を渡す。`center` でのキャレット矩形の扱い |
 | tsf/src/config.h, tsf/src/config.cpp | `candidate_position`・`panel_input` (段階2 で `panel_blur`) の読み込み |
 | tsf/CMakeLists.txt | `suggest_panel.cpp` の追加、`d2d1`・`dwrite` のリンク |
-| engine/src/bin/quicklime-config.rs | 設定ツールに 2 項目を追加 |
+| engine/src/bin/quicklime-config.rs | 設定ツールに 2 項目を追加 (段階2 で `panel_blur` も) |
 | docs/design/candidate-bar.md | 「表示位置と見た目」から本書を参照する |
-| README.md | 設定の説明があれば 2 項目を追記する |
+| README.md | 設定の説明があれば 2 項目を追記する (段階2 で `panel_blur` も) |
 
 ## 実装手順
 
@@ -250,6 +259,7 @@ alpha が失われず、透明な部分は黒くならずにぼかしが透け�
 段階2 (段階1 の検証後に別途委譲する):
 
 6. `panel_blur` の実験と結果の記録
+7. 設定ツール・README への `panel_blur` の追加
 
 ## 検証方法
 
@@ -289,4 +299,3 @@ TSF 層のテスト前に `taskkill /IM Notepad.exe /F` でメモ帳を終了し
 - 入力中のかなを文書に書かず、パネルだけに持つ設定 (別の設計書で扱う)
 - ユーザが変えられる見た目の範囲と、その指定方法 (値の指定か、スクリプトか)
 - 案 D (ゴースト HUD) の追加
-- `panel_blur` の設定ツールでの見せ方 (置くタブと表記)
