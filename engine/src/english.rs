@@ -4,12 +4,14 @@
 // 打鍵列」のどこから英単語が始まるかを、英単語辞書との照合で決める。
 // 一般語 (data/english-words.txt。SCOWL から生成) と固有名詞・技術用語
 // (data/english-names.txt) を読み込む。ユーザ辞書の英字の語は UserDict が持つ。
+// 固有名詞・技術用語は正しい表記も持ち、大文字小文字の補正に使う (docs/design/english-case.md)。
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-/// 英単語辞書のファイル名 (辞書ディレクトリ直下)
+/// 英単語辞書のファイル名 (辞書ディレクトリ直下)。先頭が一般語、2番目が固有名詞・技術用語
 pub const WORD_FILES: [&str; 2] = ["english-words.txt", "english-names.txt"];
 
 /// 一致とみなす打鍵列の最小の長さ (完全一致と、完全一致でない前方一致)。短い打鍵列はほぼ必ず
@@ -40,45 +42,70 @@ impl MatchMode {
     }
 }
 
-/// 小文字にした語の整列済み配列
+/// 小文字にした語の整列済み配列と、固有名詞・技術用語の正しい表記
 pub struct EnglishDict {
     words: Vec<String>,
+    /// 固有名詞・技術用語のうち表記が小文字だけでない語の「小文字の形 → 表記」。
+    /// 一般語 (SCOWL) は may / May のように小文字が正しい場合があるため持たない
+    forms: HashMap<String, String>,
 }
 
 impl EnglishDict {
     pub fn empty() -> Self {
-        EnglishDict { words: Vec::new() }
+        EnglishDict { words: Vec::new(), forms: HashMap::new() }
     }
 
     /// dir 直下の WORD_FILES を読み込む。無いファイルは飛ばし、読めた語数を返す
     pub fn load_dir(dir: &Path) -> (Self, usize) {
-        let readers: Vec<BufReader<File>> = WORD_FILES
-            .iter()
-            .filter_map(|name| File::open(dir.join(name)).ok().map(BufReader::new))
-            .collect();
-        let dict = Self::load_from(readers);
+        let open = |name: &str| File::open(dir.join(name)).ok().map(BufReader::new);
+        let dict = Self::load_with_names(open(WORD_FILES[0]), open(WORD_FILES[1]));
         let count = dict.words.len();
         (dict, count)
     }
 
     /// 1行1語。# で始まる行と空行は飛ばし、英字だけの語を小文字にして持つ
+    #[cfg(test)]
     pub fn load_from(readers: impl IntoIterator<Item = impl BufRead>) -> Self {
-        let mut words = Vec::new();
-        for reader in readers {
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
-                let word = line.trim();
-                if word.starts_with('#') || !is_ascii_word(word) {
-                    continue;
-                }
-                words.push(word.to_ascii_lowercase());
-            }
+        Self::load_with_names(readers, Vec::<&[u8]>::new())
+    }
+
+    /// words と names の語を照合に使い、names の語は表記も持つ (1行の形式は load_from と同じ)
+    pub fn load_with_names(
+        words: impl IntoIterator<Item = impl BufRead>,
+        names: impl IntoIterator<Item = impl BufRead>,
+    ) -> Self {
+        let mut dict = EnglishDict::empty();
+        for reader in words {
+            dict.read_words(reader, false);
         }
-        words.sort();
-        words.dedup();
-        EnglishDict { words }
+        for reader in names {
+            dict.read_words(reader, true);
+        }
+        dict.words.sort();
+        dict.words.dedup();
+        dict
+    }
+
+    fn read_words(&mut self, reader: impl BufRead, keep_forms: bool) {
+        for line in reader.lines() {
+            let Ok(line) = line else {
+                break;
+            };
+            let word = line.trim();
+            if word.starts_with('#') || !is_ascii_word(word) {
+                continue;
+            }
+            let lowered = word.to_ascii_lowercase();
+            if keep_forms && lowered != word {
+                self.forms.entry(lowered.clone()).or_insert_with(|| word.to_string());
+            }
+            self.words.push(lowered);
+        }
+    }
+
+    /// 固有名詞・技術用語の「小文字の形 → 表記」(表記が小文字だけでない語)
+    pub fn forms(&self) -> &HashMap<String, String> {
+        &self.forms
     }
 
     /// text (小文字) が mode の方法で語に一致するか
@@ -164,6 +191,21 @@ mod tests {
     fn コメントと英字以外の行を除いて小文字で持つ() {
         let d = dict("# コメント\nApple\n\nworld\ncafé\nit's\nzoom\n");
         assert_eq!(d.words, vec!["apple", "world", "zoom"]);
+    }
+
+    #[test]
+    fn 固有名詞の表記は小文字だけでない語だけ持ち一般語の表記は持たない() {
+        let d = EnglishDict::load_with_names(
+            ["# コメント\nMay\nbill\n".as_bytes()],
+            ["# コメント\nGitHub\niPhone\nlocalhost\nNext.js\n".as_bytes()],
+        );
+        assert_eq!(d.words, vec!["bill", "github", "iphone", "localhost", "may"]);
+        let mut forms: Vec<(&str, &str)> =
+            d.forms().iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        forms.sort();
+        assert_eq!(forms, vec![("github", "GitHub"), ("iphone", "iPhone")]);
+        // load_from は表記を持たない
+        assert!(dict("GitHub\n").forms().is_empty());
     }
 
     #[test]

@@ -30,6 +30,10 @@ const UNKNOWN_WORD_COST: i32 = 12000;
 /// 英字混じりの読みで英単語が日本語の部分の変換を邪魔しないよう、一般的な名詞程度にする
 const ASCII_WORD_COST: i32 = 5000;
 
+/// 英字の連続を正しい表記 (github → GitHub) にしたノードの単語コストを ASCII_WORD_COST から
+/// 下げる量。補正した候補を上位に、打ったとおりの候補をすぐ下に出す
+const ASCII_FORM_BONUS: i32 = 100;
+
 /// 文節境界ペナルティ。自立語 (付属語でない語) ごとに Viterbi のコストへ加算する。
 /// 辞書にはコスト0の短いかな語が多く、素のコストでは「き+き+無+れ」のような
 /// 細切れ経路が複合語 (聞き慣れ) より安くなるため、文節数が少ない経路を優先させる。
@@ -1025,18 +1029,39 @@ fn build_lattice(
             (start + 1, UNKNOWN_WORD_COST)
         };
         let reading: String = chars[start..end].iter().collect();
+        // 英字の連続が正しい表記を持てば、その表記のノードを打ったとおりのノードより安く足す
+        // (打ったとおりの候補はその下に残る。docs/design/english-case.md)
+        let form = if is_ascii_alpha(chars[start]) {
+            user.ascii_form(&reading).filter(|f| *f != reading).map(str::to_string)
+        } else {
+            None
+        };
         nodes.push(Node {
             start,
             reading: reading.clone(),
             left_id: DEFAULT_NOUN_ID,
             right_id: DEFAULT_NOUN_ID,
             word_cost,
-            surface: reading,
+            surface: reading.clone(),
             penalty: 0,
             best_cost: i64::MAX,
             best_prev: 0,
         });
         ending_at[end].push(nodes.len() - 1);
+        if let Some(form) = form {
+            nodes.push(Node {
+                start,
+                reading,
+                left_id: DEFAULT_NOUN_ID,
+                right_id: DEFAULT_NOUN_ID,
+                word_cost: ASCII_WORD_COST - ASCII_FORM_BONUS,
+                surface: form,
+                penalty: 0,
+                best_cost: i64::MAX,
+                best_prev: 0,
+            });
+            ending_at[end].push(nodes.len() - 1);
+        }
     }
 
     // Viterbi: ノードを開始位置順に処理し、直前ノード群から最小コストを選ぶ。
@@ -1552,6 +1577,59 @@ mod tests {
         assert_eq!(surfaces[0], "今日はgithubで作業");
         // 英字の連続の一部だけに一致する語 (UB・ハブ) で割れた候補は出ない
         assert!(surfaces.iter().all(|s| !s.contains("UB") && !s.contains("ハブ")), "{surfaces:?}");
+    }
+
+    /// 英単語辞書の表記 (github → GitHub) を起動時と同じく写したユーザ辞書
+    fn user_with_name_forms() -> UserDict {
+        let mut user = UserDict::empty();
+        user.set_name_forms(HashMap::from([("github".to_string(), "GitHub".to_string())]));
+        user
+    }
+
+    #[test]
+    fn 英字の連続は正しい表記の候補が上位に打ったとおりの候補が下位に出る() {
+        let user = user_with_name_forms();
+        let got = convert_nbest(
+            "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "今日はGitHubで作業");
+        assert!(surfaces.contains(&"今日はgithubで作業".to_string()), "{surfaces:?}");
+
+        let segments = convert_segments(
+            "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+        let best: String = segments.iter().map(|s| s.candidates[0].as_str()).collect();
+        assert_eq!(best, "今日はGitHubで作業");
+
+        // 英字だけの読みも補正した表記が先頭
+        let got = convert_nbest(
+            "github", None, &mixed_dict(), &user, &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory());
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "GitHub");
+        assert!(surfaces.contains(&"github".to_string()), "{surfaces:?}");
+
+        // 打ったとおりが正しい表記なら、ノードを足さない (候補は1つの表記だけ)
+        let got = convert_nbest(
+            "GitHub", None, &mixed_dict(), &user, &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory());
+        assert_eq!(surfaces_of(&got)[0], "GitHub");
+        assert!(!surfaces_of(&got).contains(&"github".to_string()));
+    }
+
+    #[test]
+    fn 学習で打ったとおりの英字の候補が先頭に来る() {
+        let user = user_with_name_forms();
+        let mut learning = LearningStore::in_memory();
+        // TSF 層は確定した文節ごとに学習を送る
+        learning.record("きょうは", "今日は");
+        learning.record("githubで", "githubで");
+        learning.record("さぎょう", "作業");
+        let got = convert_nbest(
+            "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
+            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+        assert_eq!(surfaces_of(&got)[0], "今日はgithubで作業");
     }
 
     #[test]

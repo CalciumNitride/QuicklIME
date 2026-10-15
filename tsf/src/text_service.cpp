@@ -225,20 +225,39 @@ std::vector<std::wstring> KatakanaCycleVariants(const std::wstring& reading, boo
 }
 
 // 打鍵したローマ字そのものと大文字小文字の変種を候補に挿入する (英単語入力用)。
+// form (空でなければ) は大文字小文字を補正した正しい表記で、変種の先頭に入れる。
 // position は挿入開始位置。既にある候補 (学習済みなど) は動かさず挿入しない
-void InsertRawCandidates(ConversionSegment* segment, const std::wstring& raw, size_t position)
+void InsertRawCandidates(ConversionSegment* segment, const std::wstring& raw,
+                         const std::wstring& form, size_t position)
 {
     if (raw.empty() || !ContainsAsciiLetter(raw)) {
         return;
     }
+    std::vector<std::wstring> variants;
+    if (!form.empty()) {
+        variants.push_back(form);
+    }
+    for (const auto& variant : CaseCycleVariants(raw)) {
+        if (variant != form) {
+            variants.push_back(variant);
+        }
+    }
     auto& list = segment->candidates;
     position = (std::min)(position, list.size());
-    for (const auto& candidate : CaseCycleVariants(raw)) {
+    for (const auto& candidate : variants) {
         if (std::find(list.begin(), list.end(), candidate) == list.end()) {
             list.insert(list.begin() + position, candidate);
             ++position;
         }
     }
+}
+
+// 空でなく ASCII 英字だけからなるか
+bool IsAsciiLetters(const std::wstring& text)
+{
+    return !text.empty() && std::all_of(text.begin(), text.end(), [](wchar_t c) {
+        return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+    });
 }
 
 // 末尾のスペースを除いた全体が ASCII 英数字か (空文字列は false)。
@@ -1442,6 +1461,44 @@ bool TextService::CloseAsciiSection(wchar_t c)
     return true;
 }
 
+bool TextService::AsciiFormOf(const std::wstring& text, std::wstring* form)
+{
+    // ASCIIFORM は英字以外を含む文字列を受け付けない
+    if (!IsAsciiLetters(text)) {
+        return false;
+    }
+    if (text != asciiFormText_) {
+        std::wstring response;
+        if (!engine_.AsciiFormLive(text, &response)) {
+            return false;
+        }
+        asciiFormText_ = text;
+        asciiForm_ = response;
+    }
+    if (asciiForm_.empty() || asciiForm_ == text) {
+        return false;
+    }
+    *form = asciiForm_;
+    return true;
+}
+
+bool TextService::BuildAsciiFormCandidate(RomajiComposer* result)
+{
+    if (!config_.Get().modeless || !composer_.AsciiMode()) {
+        return false;
+    }
+    std::wstring form;
+    if (!AsciiFormOf(composer_.AsciiSection(), &form)) {
+        return false;
+    }
+    RomajiComposer copy = composer_;
+    if (!copy.ReplaceAsciiSection(form)) {
+        return false;
+    }
+    *result = std::move(copy);
+    return true;
+}
+
 bool TextService::MixedAsciiRun() const
 {
     return config_.Get().modeless && composer_.MixedAscii();
@@ -1763,7 +1820,12 @@ void TextService::BuildConversionSegments()
     // 英字混じりの run は打鍵のローマ字全体の候補を入れない (run 全体を英字にするなら F10)
     if (segments_.size() == 1 && !MixedAsciiRun()) {
         const size_t position = fixedAscii ? 1 : segments_[0].candidates.size();
-        InsertRawCandidates(&segments_[0], composer_.Raw(), position);
+        const std::wstring raw = composer_.Raw();
+        std::wstring form;
+        if (!AsciiFormOf(raw, &form)) {
+            form.clear();
+        }
+        InsertRawCandidates(&segments_[0], raw, form, position);
     }
     selected_.assign(segments_.size(), 0);
     segmentIndex_ = 0;
@@ -2188,19 +2250,22 @@ HRESULT TextService::UpdateBar(ITfContext* context)
 {
     barIndex_ = -1;
     const TsfConfig& config = config_.Get();
-    // 候補選択中は縦の候補ウィンドウを使う。モードレスの英字モード中は英文の入力なので出さない
-    // (日本語区間が残っている区間分割の run は、日本語区間に対して出す)
-    if (!config.candidateBar || (!Composing() && !InRun()) || converting_ ||
-        (config.modeless && composer_.AsciiMode() && !SplitAsciiRun())) {
+    // 候補選択中は縦の候補ウィンドウを使う
+    if (!config.candidateBar || (!Composing() && !InRun()) || converting_) {
         ClearBar();
         return S_OK;
     }
+    // モードレスの英字モード中は英文の入力なので、大文字小文字の補正候補のほかは出さない
+    // (日本語区間が残っている区間分割の run は、日本語区間に対して出す)
+    const bool asciiOnly = config.modeless && composer_.AsciiMode() && !SplitAsciiRun();
     const std::wstring kana = BarReading();
-    // 英字候補は採用で読みを複製に置き換えるので、昇格した composition (候補選択の後始末中) では作らない
+    // 英字候補・補正候補は採用で読みを複製に置き換えるので、昇格した composition
+    // (候補選択の後始末中) では作らない。英字候補は英字モード中は作らないので、両方は並ばない
     RomajiComposer ascii;
-    const bool hasAscii = !Composing() && BuildAsciiCandidate(&ascii);
-    // 英字候補は min_suggest_chars によらず出す (pen は「ぺん」、want は「わんt」で2文字)
-    const bool suggest = kana.size() >= static_cast<size_t>(config.minSuggestChars);
+    const bool hasAscii =
+        !Composing() && (BuildAsciiCandidate(&ascii) || BuildAsciiFormCandidate(&ascii));
+    // 英字候補・補正候補は min_suggest_chars によらず出す (pen は「ぺん」、want は「わんt」で2文字)
+    const bool suggest = !asciiOnly && kana.size() >= static_cast<size_t>(config.minSuggestChars);
     if (!suggest && !hasAscii) {
         ClearBar();
         return S_OK;

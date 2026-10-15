@@ -99,6 +99,12 @@ public:
     // ときは false (呼び出し側は英字区間を閉じない)
     bool AsciiWordLive(const std::wstring& text, bool* prefix, std::vector<size_t>* lengths);
 
+    // 英字だけの文字列の大文字小文字を補正した正しい表記を問い合わせる (ASCIIFORM)。応答を
+    // 得られれば true で、表記を form に入れる (表記が無い・text と同じなら空)。打鍵中に呼ぶため、
+    // エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIIFORM を知らない旧エンジンの
+    // ときは false (呼び出し側は補正の候補を出さない)
+    bool AsciiFormLive(const std::wstring& text, std::wstring* form);
+
     // RERANKGET の結果
     enum class RerankStatus {
         Pending,  // 推論中・順番待ち

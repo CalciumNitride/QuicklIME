@@ -103,6 +103,12 @@ pub struct UserDict {
     /// 短縮よみ・名詞系単語のうち表記が ASCII 英字だけのもの (小文字、整列済み)。
     /// ASCIISTART で英単語辞書と合わせて照合する
     english: Vec<String>,
+    /// 大文字を含む登録語の「小文字の形 → 登録した表記」。同じ小文字の形は先に登録したものを持つ
+    /// (大文字小文字の補正。docs/design/english-case.md)
+    english_forms: HashMap<String, String>,
+    /// 英単語辞書 (english-names.txt) の「小文字の形 → 表記」。変換 (build_lattice) には
+    /// 英単語辞書を渡す経路が無いため、起動時に main.rs が写して持たせる
+    name_forms: HashMap<String, String>,
 }
 
 impl UserDict {
@@ -118,6 +124,8 @@ impl UserDict {
             imported_shortcuts: Vec::new(),
             import_dir: None,
             english: Vec::new(),
+            english_forms: HashMap::new(),
+            name_forms: HashMap::new(),
         }
     }
 
@@ -160,6 +168,7 @@ impl UserDict {
         self.shortcuts.clear();
         self.words.clear();
         self.english.clear();
+        self.english_forms.clear();
         if let Ok(file) = File::open(&path) {
             self.load_from(BufReader::new(file), functional);
         }
@@ -364,6 +373,11 @@ impl UserDict {
             return;
         }
         let word = surface.to_ascii_lowercase();
+        // 小文字だけの登録は読みから引くためのもので表記の指定ではないとみなし、
+        // 英単語辞書の表記 (vim → Vim) を打ち消さないよう表記として持たない
+        if word != surface {
+            self.english_forms.entry(word.clone()).or_insert_with(|| surface.to_string());
+        }
         if let Err(index) = self.english.binary_search(&word) {
             self.english.insert(index, word);
         }
@@ -372,6 +386,18 @@ impl UserDict {
     /// 表記が ASCII 英字だけの登録語に、text (小文字) が mode の方法で一致するものがあるか
     pub fn english_matches(&self, text: &str, mode: english::MatchMode) -> bool {
         english::sorted_matches(&self.english, text, mode)
+    }
+
+    /// 英単語辞書の「小文字の形 → 表記」を設定する
+    pub fn set_name_forms(&mut self, forms: HashMap<String, String>) {
+        self.name_forms = forms;
+    }
+
+    /// text (小文字にして照合する) の正しい表記。登録語を英単語辞書より優先する。
+    /// 表記を持たない語は None。表記が text と同じこともある
+    pub fn ascii_form(&self, text: &str) -> Option<&str> {
+        let lowered = text.to_ascii_lowercase();
+        self.english_forms.get(&lowered).or_else(|| self.name_forms.get(&lowered)).map(String::as_str)
     }
 
     /// 分割して確定した複合語を1語として学習する: メモリへ反映し、
@@ -709,6 +735,38 @@ mod tests {
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn 英字の登録語の表記を英単語辞書より優先して引ける() {
+        let mut dict = UserDict::empty();
+        let functional = sample_functional();
+        dict.set_name_forms(HashMap::from([
+            ("github".to_string(), "GitHub".to_string()),
+            ("vim".to_string(), "Vim".to_string()),
+        ]));
+        dict.load_from(
+            "ぎっとはぶ\tGithub\t固有名詞\n\
+             ぎっとはぶ\tGITHUB\t短縮よみ\n\
+             くいっくる\tQuicklIME\t固有名詞\n\
+             ゔぃむ\tvim\t短縮よみ\n\
+             めーる\tmail@example.com\t短縮よみ\n"
+                .as_bytes(),
+            &functional,
+        );
+        // 同じ小文字の形は先の登録。英単語辞書より登録語が先
+        assert_eq!(dict.ascii_form("github"), Some("Github"));
+        assert_eq!(dict.ascii_form("GitHub"), Some("Github"));
+        assert_eq!(dict.ascii_form("quicklime"), Some("QuicklIME"));
+        // 小文字だけの登録は表記として持たず、英単語辞書の表記が残る
+        assert_eq!(dict.ascii_form("vim"), Some("Vim"));
+        assert_eq!(dict.ascii_form("mail"), None);
+        assert_eq!(dict.ascii_form("apple"), None);
+        // 再読込 (ファイルなし) で登録語の表記は消えるが、英単語辞書の表記は残る
+        dict.path = Some(std::env::temp_dir().join("quicklime-no-such-userdict.tsv"));
+        dict.reload(&functional);
+        assert_eq!(dict.ascii_form("github"), Some("GitHub"));
+        assert_eq!(dict.ascii_form("quicklime"), None);
     }
 
     #[test]

@@ -76,6 +76,10 @@ public:
     // Push する (docs/design/mixed-conversion.md)。c で自動英字判定の要求が出ることがあるので、
     // 呼び出し側は Push と同じく直後に ResolveAscii で決着させる
     void CloseAscii(size_t length, wchar_t c);
+    // 開いている英字区間のかなと打鍵列を text に置き換える (大文字小文字の補正の候補。
+    // docs/design/english-case.md)。英字モードでない・text が英字区間と同じ長さでなければ
+    // 何もせず false
+    bool ReplaceAsciiSection(const std::wstring& text);
     // 閉じた英字区間があるか
     bool HasClosedAscii() const { return !closedAscii_.empty(); }
     // 英字区間 (開いている・閉じたもの) と、どの英字区間にも入らない日本語区間の両方がある run か

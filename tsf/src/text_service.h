@@ -209,7 +209,9 @@ private:
         Whole,       // 全体変換 (確定済みかな全体の CONVNBEST の上位)
         Prediction,  // 予測候補
         Head,        // 先頭文節 (部分採用)
-        Ascii,       // 英字候補 (今 run を終えたら英字になる形。barAscii_ の確定文字列)
+        // 英字候補 (今 run を終えたら英字になる形) または英字区間の大文字小文字の補正候補。
+        // どちらも barAscii_ の確定文字列 (英字モード中は前者を作らないので両方は並ばない)
+        Ascii,
     };
     struct BarCandidate {
         BarKind kind;
@@ -313,6 +315,13 @@ private:
     // 英字区間を閉じられれば閉じて、c を日本語区間の打鍵として入れる (docs/design/mixed-conversion.md)。
     // 閉じなかったら false (c はまだ入れていない)
     bool CloseAsciiSection(wchar_t c);
+    // 英字だけの text の大文字小文字を補正した正しい表記 (ASCIIFORM。docs/design/english-case.md)。
+    // text と異なる表記があれば form に入れて true。同じ text への応答は覚えておき、
+    // text が変わるまで問い合わせ直さない (未接続・エラーは覚えない)
+    bool AsciiFormOf(const std::wstring& text, std::wstring* form);
+    // 候補バーの補正候補: 開いている英字区間の文字列が正しい表記を持てば、composer_ の複製の
+    // 英字区間をその表記に置き換えて result に入れて true。採用は英字候補と同じ経路
+    bool BuildAsciiFormCandidate(RomajiComposer* result);
     // モードレス入力で、英字区間と日本語区間の両方を含む run か (変換キーで英字を含む読みを
     // 1文節に固定せずに変換する)
     bool MixedAsciiRun() const;
@@ -612,10 +621,13 @@ private:
     std::vector<BarCandidate> barBuilt_;
     std::vector<PredictionCandidate> barPredictions_;
     RECT barCaret_;
-    // 英字候補を作った読みの複製 (採用でこれに置き換える) と、作ったときの composer_ の表示
+    // 英字候補・補正候補を作った読みの複製 (採用でこれに置き換える) と、作ったときの composer_ の表示
     bool barHasAscii_ = false;
     RomajiComposer barAscii_;
     std::wstring barAsciiSource_;
+    // 最後に ASCIIFORM で問い合わせた文字列と応答の表記 (英字区間の打鍵ごとに問い合わせ直さない)
+    std::wstring asciiFormText_;
+    std::wstring asciiForm_;
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)

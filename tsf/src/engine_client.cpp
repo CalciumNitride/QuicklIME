@@ -441,6 +441,27 @@ bool EngineClient::AsciiWordLive(const std::wstring& text, bool* prefix,
     return true;
 }
 
+bool EngineClient::AsciiFormLive(const std::wstring& text, std::wstring* form)
+{
+    if (text.empty() || form == nullptr ||
+        (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("ASCIIFORM\t" + WideToUtf8(text) + "\n", &response)) {
+        return false;
+    }
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK\t", 0) != 0) {
+        return false;
+    }
+    *form = Utf8ToWide(response.substr(3));
+    return true;
+}
+
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
                                 bool live, std::vector<SentenceCandidate>* candidates)
 {

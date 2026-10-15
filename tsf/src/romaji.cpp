@@ -681,6 +681,18 @@ std::wstring RomajiComposer::AsciiSection() const
     return asciiMode_ ? kana_.substr((std::min)(asciiStart_, kana_.size())) : std::wstring();
 }
 
+bool RomajiComposer::ReplaceAsciiSection(const std::wstring& text)
+{
+    if (!asciiMode_ || asciiStart_ > kana_.size() || text.size() != kana_.size() - asciiStart_) {
+        return false;
+    }
+    for (size_t i = 0; i < text.size(); ++i) {
+        kana_[asciiStart_ + i] = text[i];
+        raw_[asciiStart_ + i] = std::wstring(1, text[i]);
+    }
+    return true;
+}
+
 bool RomajiComposer::CanCloseAscii(size_t length, wchar_t c) const
 {
     if (!asciiMode_ || length == 0 || asciiStart_ + length > kana_.size()) {

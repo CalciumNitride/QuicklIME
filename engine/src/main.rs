@@ -58,7 +58,8 @@ struct EngineData {
     config: Mutex<Config>,
     /// LLM による並べ替えのワーカーと、接続ごとの依頼・結果
     llm: llm::LlmManager,
-    /// 英単語辞書 (ASCIISTART 用。ユーザ辞書の英字の語は user が持つ)
+    /// 英単語辞書 (ASCIISTART 用。ユーザ辞書の英字の語は user が持つ。
+    /// 大文字小文字の補正に使う表記は user にも写してある)
     english: EnglishDict,
 }
 
@@ -74,7 +75,9 @@ fn main() -> std::io::Result<()> {
 
     // ユーザ辞書の品詞名解決に品詞ID表を使うため、先に読み込んでおく
     let functional = load_functional_ids();
-    let user = UserDict::load_default(&functional, learn::learned_word_path());
+    let english = load_english();
+    let mut user = UserDict::load_default(&functional, learn::learned_word_path());
+    user.set_name_forms(english.forms().clone());
     let config = Config::load_default();
     let data = Arc::new(EngineData {
         dictionary: load_dictionary(),
@@ -84,7 +87,7 @@ fn main() -> std::io::Result<()> {
         learning: Mutex::new(LearningStore::load_default()),
         config: Mutex::new(config),
         llm: llm::LlmManager::new(Box::new(llm::ProcessLauncher)),
-        english: load_english(),
+        english,
     });
     data.llm.configure(config.llm, config.llm_backend);
 
@@ -750,6 +753,19 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             let lengths: Vec<String> = lengths.iter().map(usize::to_string).collect();
             format!("OK\t{}\t{}\n", u8::from(prefix), lengths.join(","))
         }
+        Some("ASCIIFORM") => {
+            // ASCIIFORM\t<文字列> : 大文字小文字を補正した正しい表記を返す
+            // (ユーザ辞書を英単語辞書より優先する。表記が無い・文字列と同じなら空)
+            let Some(text) = fields.next().filter(|f| !f.is_empty()) else {
+                return "ERR\t文字列が空です\n".to_string();
+            };
+            if !english::is_ascii_word(text) {
+                return "ERR\t英字以外を含みます\n".to_string();
+            }
+            let user = data.user.lock().expect("user lock");
+            let form = user.ascii_form(text).filter(|f| *f != text).unwrap_or("");
+            format!("OK\t{form}\n")
+        }
         Some("RELOADUSER") => {
             // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
             let mut user = data.user.lock().expect("user lock");
@@ -1351,6 +1367,50 @@ mod tests {
         assert!(handle_request("ASCIIWORD\t", &data).starts_with("ERR\t"));
         assert!(handle_request("ASCIIWORD\tgit-hub", &data).starts_with("ERR\t"));
         assert!(handle_request("ASCIIWORD\tきょう", &data).starts_with("ERR\t"));
+    }
+
+    /// ASCIIFORM のテスト用: 英単語辞書の表記を起動時と同じくユーザ辞書に写したデータ
+    fn form_data() -> EngineData {
+        let mut data = sample_data();
+        data.english = EnglishDict::load_with_names(
+            ["apple\nmay\n".as_bytes()],
+            ["GitHub\nlocalhost\nmacOS\n".as_bytes()],
+        );
+        data.user.lock().unwrap().set_name_forms(data.english.forms().clone());
+        data
+    }
+
+    #[test]
+    fn asciiformは英単語辞書の正しい表記を返す() {
+        let data = form_data();
+        assert_eq!(handle_request("ASCIIFORM\tgithub", &data), "OK\tGitHub\n");
+        assert_eq!(handle_request("ASCIIFORM\tGithub", &data), "OK\tGitHub\n");
+        assert_eq!(handle_request("ASCIIFORM\tmacos", &data), "OK\tmacOS\n");
+        // 表記と同じ、小文字だけの語、一般語、辞書に無い語は空
+        assert_eq!(handle_request("ASCIIFORM\tGitHub", &data), "OK\t\n");
+        assert_eq!(handle_request("ASCIIFORM\tlocalhost", &data), "OK\t\n");
+        assert_eq!(handle_request("ASCIIFORM\tapple", &data), "OK\t\n");
+        assert_eq!(handle_request("ASCIIFORM\tMay", &data), "OK\t\n");
+        assert_eq!(handle_request("ASCIIFORM\txyzw", &data), "OK\t\n");
+    }
+
+    #[test]
+    fn asciiformはユーザ辞書の表記を優先する() {
+        let data = form_data();
+        assert_eq!(handle_request("ADDWORD\tぎっとはぶ\tGithub\t固有名詞", &data), "OK\n");
+        assert_eq!(handle_request("ASCIIFORM\tgithub", &data), "OK\tGithub\n");
+        assert_eq!(handle_request("ASCIIFORM\tGitHub", &data), "OK\tGithub\n");
+        assert_eq!(handle_request("ADDWORD\tくいっくらいむ\tQuicklIME\t固有名詞", &data), "OK\n");
+        assert_eq!(handle_request("ASCIIFORM\tquicklime", &data), "OK\tQuicklIME\n");
+    }
+
+    #[test]
+    fn asciiformの要求が不正ならエラー() {
+        let data = form_data();
+        assert!(handle_request("ASCIIFORM", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIFORM\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIFORM\tgit-hub", &data).starts_with("ERR\t"));
+        assert!(handle_request("ASCIIFORM\tきょう", &data).starts_with("ERR\t"));
     }
 
     #[test]
