@@ -11,7 +11,7 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 | `llm/` | LLM による候補の並べ替えの子プロセス (Rust / llama.cpp。エンジンが起動する) |
 | `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
-| `docs/` | ドキュメント。開発計画は [docs/roadmap.md](docs/roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](docs/protocol.md) |
+| `docs/` | ドキュメント。全体の構成は [docs/architecture.md](docs/architecture.md)、機能ごとの設計書は [設計書の索引](docs/design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](docs/roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](docs/protocol.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
 | `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド) |
 
