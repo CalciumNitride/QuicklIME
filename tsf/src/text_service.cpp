@@ -875,6 +875,19 @@ bool TextService::FindImeStartState(bool* open) const
     return false;
 }
 
+bool TextService::IsNoLearningApp() const
+{
+    if (hostExeName_.empty()) {
+        return false;
+    }
+    for (const std::wstring& app : config_.Get().noLearningApps) {
+        if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.c_str(), -1, TRUE) == CSTR_EQUAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
 {
     // 対象外のアプリでは割当なしと同じく食べない (ターミナルや Excel では Shift+Enter が
@@ -3076,10 +3089,12 @@ std::wstring TextService::PrepareConversionCommit()
             committed.push_back({segments_[i].reading, segments_[i].candidates[selected_[i]]});
         }
     }
-    engine_.Learn(SentenceLearnEntries(committed));
-    // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
-    if (segmentsResized_) {
-        LearnResizedSegments();
+    if (!IsNoLearningApp()) {
+        engine_.Learn(SentenceLearnEntries(committed));
+        // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
+        if (segmentsResized_) {
+            LearnResizedSegments();
+        }
     }
     RememberConversion(committed);
     if (!committed.empty()) {

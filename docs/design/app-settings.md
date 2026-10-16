@@ -1,8 +1,8 @@
 # 設定ツールのアプリ別設定
 
 設定ツール (engine/src/bin/quicklime-config.rs) の「アプリ」タブを、アプリを1つの一覧に並べ、
-アプリごとに各設定を変える画面にする。今の設定は改行キー (docs/design/newline-key.md) と
-起動時の IME の状態 (docs/design/ime-start-state.md) の2つ。
+アプリごとに各設定を変える画面にする。今の設定は改行キー (docs/design/newline-key.md)、
+起動時の IME の状態 (docs/design/ime-start-state.md)、学習の停止 (docs/design/no-learning-apps.md) の3つ。
 
 ## 背景と目的
 

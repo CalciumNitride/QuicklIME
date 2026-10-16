@@ -478,6 +478,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseAppList(value, &config.newlineApps);
     } else if (key == L"ime_start_apps") {
         ParseImeStartApps(value, &config.imeStartApps);
+    } else if (key == L"no_learning_apps") {
+        ParseAppList(value, &config.noLearningApps);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

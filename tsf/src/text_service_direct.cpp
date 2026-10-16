@@ -1727,7 +1727,9 @@ HRESULT TextService::AdoptAsciiCandidate(ITfContext* context, BarAdopt mode,
 
 void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
 {
-    engine_.Learn(adoption_.learn);
+    if (!IsNoLearningApp()) {
+        engine_.Learn(adoption_.learn);
+    }
     SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
     // 採用した部分は run から外す (以後 IME はその文字列を書き換えない)
     composer_.RemoveFront(adoption_.readingLength);
@@ -1892,7 +1894,9 @@ HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
         ClearContext();
         return E_FAIL;
     }
-    engine_.Learn({{item.reading, item.surface, contextSurface_}});
+    if (!IsNoLearningApp()) {
+        engine_.Learn({{item.reading, item.surface, contextSurface_}});
+    }
     SetCommitContext(item.reading, item.surface);
     // run の外の挿入なので、記憶の扱い (RememberAdopted) は今の設定の方式に従う
     panelRun_ = config_.Get().panelBuffer;
@@ -1933,7 +1937,7 @@ void TextService::EndRun()
             // 確定したかなは次の変換の文脈にする (かなのみの学習はしない。学習は変換候補の
             // 並び替えにも使われ、「きょう→きょう」が入るとひらがな候補が先頭へ来るため)
             const std::wstring kana = composer_.Commit();
-            if (ContainsAsciiLetter(kana)) {
+            if (ContainsAsciiLetter(kana) && !IsNoLearningApp()) {
                 engine_.Learn({{kana, kana, contextSurface_}});
             }
             SetCommitContext(kana, kana);

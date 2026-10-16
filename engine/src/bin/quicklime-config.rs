@@ -92,6 +92,7 @@ const ID_BUTTON_THEME_DIR: i32 = 131;
 const ID_CHECK_PANEL_BUFFER: i32 = 132;
 const ID_CHECK_APP_NEWLINE: i32 = 133;
 const ID_COMBO_APP_IME_START: i32 = 134;
+const ID_CHECK_APP_NO_LEARNING: i32 = 135;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -203,6 +204,8 @@ struct AppSetting {
     /// 改行キーが働く (newline_apps に載る)
     newline: bool,
     ime_start: ImeStart,
+    /// 学習を記録しない (no_learning_apps に載る)
+    no_learning: bool,
 }
 
 /// 修飾キーの組と仮想キー
@@ -452,6 +455,8 @@ struct Config {
     newline_apps: Vec<String>,
     /// 起動時の IME をオン/オフにするアプリ (ime_start_apps。自動のアプリは含めない)
     ime_start_apps: Vec<(String, ImeStart)>,
+    /// 学習を記録しないアプリの exe 名
+    no_learning_apps: Vec<String>,
     /// 診断ログの出力先 (空なら出さない)
     debug_log: String,
 }
@@ -483,6 +488,7 @@ impl Default for Config {
             keys: default_key_assigns(),
             newline_apps: parse_app_list(DEFAULT_NEWLINE_APPS),
             ime_start_apps: Vec::new(),
+            no_learning_apps: Vec::new(),
             debug_log: String::new(),
         }
     }
@@ -554,11 +560,13 @@ fn format_ime_start_apps(apps: &[(String, ImeStart)]) -> String {
         .join(",")
 }
 
-/// newline_apps と ime_start_apps からアプリごとの設定の一覧を作る。newline_apps の順に並べ、
-/// 続けて ime_start_apps にだけあるアプリをその順に足す (exe 名の表記は先に出たものを使う)
+/// newline_apps・ime_start_apps・no_learning_apps からアプリごとの設定の一覧を作る。
+/// newline_apps の順に並べ、続けて後のキーにだけあるアプリをその順に足す
+/// (exe 名の表記は先に出たものを使う)
 fn merge_app_settings(
     newline_apps: &[String],
     ime_start_apps: &[(String, ImeStart)],
+    no_learning_apps: &[String],
 ) -> Vec<AppSetting> {
     let mut apps: Vec<AppSetting> = Vec::new();
     for exe in newline_apps {
@@ -571,32 +579,43 @@ fn merge_app_settings(
             apps[index].ime_start = *state;
         }
     }
+    for exe in no_learning_apps {
+        let index = add_app_setting(&mut apps, exe);
+        apps[index].no_learning = true;
+    }
     apps
 }
 
-/// アプリごとの設定の一覧を、一覧の順のまま newline_apps と ime_start_apps に分ける
-fn split_app_settings(apps: &[AppSetting]) -> (Vec<String>, Vec<(String, ImeStart)>) {
+/// アプリごとの設定の一覧を、一覧の順のまま newline_apps・ime_start_apps・no_learning_apps に分ける
+fn split_app_settings(apps: &[AppSetting]) -> (Vec<String>, Vec<(String, ImeStart)>, Vec<String>) {
     let newline_apps = apps.iter().filter(|app| app.newline).map(|app| app.exe.clone()).collect();
     let ime_start_apps = apps
         .iter()
         .filter(|app| app.ime_start != ImeStart::Auto)
         .map(|app| (app.exe.clone(), app.ime_start))
         .collect();
-    (newline_apps, ime_start_apps)
+    let no_learning_apps =
+        apps.iter().filter(|app| app.no_learning).map(|app| app.exe.clone()).collect();
+    (newline_apps, ime_start_apps, no_learning_apps)
 }
 
 /// 「アプリ」タブの既定: 改行キーの既定のアプリだけ (改行キーあり・自動)
 fn default_app_settings() -> Vec<AppSetting> {
-    merge_app_settings(&parse_app_list(DEFAULT_NEWLINE_APPS), &[])
+    merge_app_settings(&parse_app_list(DEFAULT_NEWLINE_APPS), &[], &[])
 }
 
-/// apps に exe 名 name のアプリを「改行キーなし・自動」で足す (すでにあれば足さない)。
+/// apps に exe 名 name のアプリを「改行キーなし・自動・学習する」で足す (すでにあれば足さない)。
 /// 足した、またはすでにあった位置を返す
 fn add_app_setting(apps: &mut Vec<AppSetting>, name: &str) -> usize {
     if let Some(index) = apps.iter().position(|app| same_app(&app.exe, name)) {
         return index;
     }
-    apps.push(AppSetting { exe: name.to_string(), newline: false, ime_start: ImeStart::Auto });
+    apps.push(AppSetting {
+        exe: name.to_string(),
+        newline: false,
+        ime_start: ImeStart::Auto,
+        no_learning: false,
+    });
     apps.len() - 1
 }
 
@@ -800,6 +819,7 @@ impl Config {
             // 空の値は「対象なし」としてそのまま持つ
             "newline_apps" => self.newline_apps = parse_app_list(value),
             "ime_start_apps" => self.ime_start_apps = parse_ime_start_apps(value),
+            "no_learning_apps" => self.no_learning_apps = parse_app_list(value),
             "debug_log" => self.debug_log = value.to_string(),
             _ => self.apply_key(key, value),
         }
@@ -894,6 +914,8 @@ impl Config {
             "ime_start_apps\t{}\n",
             format_ime_start_apps(&self.ime_start_apps)
         ));
+        text.push_str("\n# 学習を記録しないアプリの exe 名 (カンマ区切り)\n");
+        text.push_str(&format!("no_learning_apps\t{}\n", self.no_learning_apps.join(",")));
         text.push_str("\n# 開発用 (debug_log は診断ログの出力先。行が無ければ出さない)\n");
         if !self.debug_log.is_empty() {
             text.push_str(&format!("debug_log\t{}\n", self.debug_log));
@@ -964,7 +986,11 @@ fn main() {
         let config = Config::load();
         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = config.keys.clone());
         APP_SETTINGS.with(|apps| {
-            *apps.borrow_mut() = merge_app_settings(&config.newline_apps, &config.ime_start_apps)
+            *apps.borrow_mut() = merge_app_settings(
+                &config.newline_apps,
+                &config.ime_start_apps,
+                &config.no_learning_apps,
+            )
         });
 
         let controls = INITCOMMONCONTROLSEX {
@@ -1024,13 +1050,18 @@ fn main() {
         let key_list_w = scale(440);
         // 「候補の見た目」の行は、コンボの横に「テーマのフォルダを開く」ボタンを置く
         let theme_button_w = scale(150);
-        // 「アプリ」タブは、3列の一覧と右に縦に並べたボタンが収まる幅にする。
+        // 「アプリ」タブは、4列の一覧と右に縦に並べたボタンが収まる幅にする。
         // 一覧の幅には縦スクロールバーが出ても横スクロールにならない分を足す
         let app_button_w = scale(190);
         let app_newline_column_w = scale(64);
         let app_ime_column_w = scale(90);
+        let app_learning_column_w = scale(56);
         let app_list_scroll_w = scale(24);
-        let app_list_min_w = scale(150) + app_newline_column_w + app_ime_column_w + app_list_scroll_w;
+        let app_list_min_w = scale(150)
+            + app_newline_column_w
+            + app_ime_column_w
+            + app_learning_column_w
+            + app_list_scroll_w;
         let page_w = column_w
             .max(key_list_w)
             .max(column_w + row_gap + theme_button_w)
@@ -1408,8 +1439,8 @@ fn main() {
         ];
         let app_button_count = app_buttons.len() as i32;
         let app_list_min_h = app_button_count * (button_h + row_gap) - row_gap;
-        // 編集欄は見出し・チェックボックス・コンボ・説明の4行
-        let app_editor_h = row_h * 4 + row_gap * 3;
+        // 編集欄は見出し・チェックボックス・コンボ・説明・チェックボックスの5行
+        let app_editor_h = row_h * 5 + row_gap * 4;
         let apps_min_h = app_list_y - page_y + app_list_min_h + row_gap * 2 + app_editor_h;
         // 「開発用」タブの注意書きは折り返すため2行分の高さを取る
         let debug_note_h = row_h * 2;
@@ -1437,9 +1468,17 @@ fn main() {
             LVS_EX_FULLROWSELECT as isize,
         );
         let app_columns = [
-            ("exe 名", app_list_w - app_newline_column_w - app_ime_column_w - app_list_scroll_w),
+            (
+                "exe 名",
+                app_list_w
+                    - app_newline_column_w
+                    - app_ime_column_w
+                    - app_learning_column_w
+                    - app_list_scroll_w,
+            ),
             ("改行キー", app_newline_column_w),
             ("起動時の IME", app_ime_column_w),
+            ("学習", app_learning_column_w),
         ];
         for (i, (title, width)) in app_columns.iter().enumerate() {
             let mut text = wide(title);
@@ -1493,6 +1532,18 @@ fn main() {
             editor_w,
             row_h,
             0,
+        );
+        y += row_h + row_gap;
+        create_control(
+            "BUTTON",
+            "このアプリでは学習しない",
+            check_style,
+            0,
+            editor_x,
+            y,
+            editor_w,
+            row_h,
+            ID_CHECK_APP_NO_LEARNING,
         );
         let app_button_x = page_x + app_list_w + row_gap;
         for (i, (text, id)) in app_buttons.iter().enumerate() {
@@ -1668,6 +1719,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_CHECK_APP_NEWLINE if ((wparam >> 16) & 0xFFFF) as u32 == BN_CLICKED => {
                         on_app_editor_changed(hwnd)
                     }
+                    ID_CHECK_APP_NO_LEARNING if ((wparam >> 16) & 0xFFFF) as u32 == BN_CLICKED => {
+                        on_app_editor_changed(hwnd)
+                    }
                     ID_COMBO_APP_IME_START if ((wparam >> 16) & 0xFFFF) as u32 == CBN_SELCHANGE => {
                         on_app_editor_changed(hwnd)
                     }
@@ -1794,9 +1848,11 @@ fn collect(hwnd: HWND) -> Config {
         config.candidate_font_size = n.clamp(10, 40);
     }
     config.keys = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
-    let (newline_apps, ime_start_apps) = APP_SETTINGS.with(|apps| split_app_settings(&apps.borrow()));
+    let (newline_apps, ime_start_apps, no_learning_apps) =
+        APP_SETTINGS.with(|apps| split_app_settings(&apps.borrow()));
     config.newline_apps = newline_apps;
     config.ime_start_apps = ime_start_apps;
+    config.no_learning_apps = no_learning_apps;
     if checked(ID_CHECK_DEBUG_LOG) {
         let path = window_text(unsafe { GetDlgItem(hwnd, ID_EDIT_DEBUG_LOG) });
         let path = path.trim();
@@ -1848,10 +1904,15 @@ fn show_tab(hwnd: HWND, index: usize) {
     });
 }
 
-/// 「アプリ」タブの一覧の row 行目の列 (exe 名・改行キー・起動時の IME) を書く。
+/// 「アプリ」タブの一覧の row 行目の列 (exe 名・改行キー・起動時の IME・学習) を書く。
 /// insert なら行を足す
 fn set_app_row(list: HWND, row: usize, app: &AppSetting, insert: bool) {
-    let texts = [app.exe.as_str(), if app.newline { "✓" } else { "" }, ime_start_label(app.ime_start)];
+    let texts = [
+        app.exe.as_str(),
+        if app.newline { "✓" } else { "" },
+        ime_start_label(app.ime_start),
+        if app.no_learning { "しない" } else { "" },
+    ];
     for (column, text) in texts.iter().enumerate() {
         let mut text = wide(text);
         let item = LVITEMW {
@@ -1897,13 +1958,17 @@ fn sync_app_editor(hwnd: HWND) {
     let newline = app.as_ref().is_some_and(|app| app.newline);
     let state = app.as_ref().map_or(ImeStart::Auto, |app| app.ime_start);
     let state_index = IME_START_LABELS.iter().position(|(s, _)| *s == state).unwrap_or(0);
+    let no_learning = app.as_ref().is_some_and(|app| app.no_learning);
     unsafe {
         let check = GetDlgItem(hwnd, ID_CHECK_APP_NEWLINE);
         let combo = GetDlgItem(hwnd, ID_COMBO_APP_IME_START);
+        let learning_check = GetDlgItem(hwnd, ID_CHECK_APP_NO_LEARNING);
         SendMessageW(check, BM_SETCHECK, newline as usize, 0);
         SendMessageW(combo, CB_SETCURSEL, state_index, 0);
+        SendMessageW(learning_check, BM_SETCHECK, no_learning as usize, 0);
         EnableWindow(check, app.is_some() as i32);
         EnableWindow(combo, app.is_some() as i32);
+        EnableWindow(learning_check, app.is_some() as i32);
     }
 }
 
@@ -1912,11 +1977,13 @@ fn on_app_editor_changed(hwnd: HWND) {
     let Some(row) = selected_app_row(hwnd) else {
         return;
     };
-    let (newline, state_index) = unsafe {
+    let (newline, state_index, no_learning) = unsafe {
         (
             SendMessageW(GetDlgItem(hwnd, ID_CHECK_APP_NEWLINE), BM_GETCHECK, 0, 0)
                 == BST_CHECKED as isize,
             SendMessageW(GetDlgItem(hwnd, ID_COMBO_APP_IME_START), CB_GETCURSEL, 0, 0),
+            SendMessageW(GetDlgItem(hwnd, ID_CHECK_APP_NO_LEARNING), BM_GETCHECK, 0, 0)
+                == BST_CHECKED as isize,
         )
     };
     let state = usize::try_from(state_index)
@@ -1928,6 +1995,7 @@ fn on_app_editor_changed(hwnd: HWND) {
         let app = apps.get_mut(row)?;
         app.newline = newline;
         app.ime_start = state;
+        app.no_learning = no_learning;
         Some(app.clone())
     });
     if let Some(app) = app {
@@ -1935,7 +2003,7 @@ fn on_app_editor_changed(hwnd: HWND) {
     }
 }
 
-/// 一覧にアプリを「改行キーなし・自動」で足し (すでにあれば足さない)、その行を選ぶ
+/// 一覧にアプリを「改行キーなし・自動・学習する」で足し (すでにあれば足さない)、その行を選ぶ
 fn add_app_to_list(hwnd: HWND, name: &str) {
     let index = APP_SETTINGS.with(|apps| add_app_setting(&mut apps.borrow_mut(), name));
     refresh_app_list(unsafe { GetDlgItem(hwnd, ID_LIST_APPS) }, Some(index));
@@ -2974,45 +3042,85 @@ mod tests {
         let mut config = Config::default();
         config.apply("newline_apps", "Discord.exe");
         config.apply("ime_start_apps", "Notepad.exe:on,discord.exe:off");
-        let apps = merge_app_settings(&config.newline_apps, &config.ime_start_apps);
+        config.apply("no_learning_apps", "notepad.exe, WindowsTerminal.exe");
+        let apps = merge_app_settings(
+            &config.newline_apps,
+            &config.ime_start_apps,
+            &config.no_learning_apps,
+        );
+        let app = |exe: &str, newline: bool, ime_start: ImeStart, no_learning: bool| AppSetting {
+            exe: exe.to_string(),
+            newline,
+            ime_start,
+            no_learning,
+        };
         assert_eq!(
             apps,
             [
-                AppSetting { exe: "Discord.exe".to_string(), newline: true, ime_start: ImeStart::Off },
-                AppSetting { exe: "Notepad.exe".to_string(), newline: false, ime_start: ImeStart::On },
+                app("Discord.exe", true, ImeStart::Off, false),
+                app("Notepad.exe", false, ImeStart::On, true),
+                app("WindowsTerminal.exe", false, ImeStart::Auto, true),
             ]
         );
-        // newline_apps の行が無ければ既定のアプリが「改行キーあり・自動」で並ぶ
-        let apps = merge_app_settings(&Config::default().newline_apps, &[]);
+        // newline_apps の行が無ければ既定のアプリが「改行キーあり・自動・学習する」で並ぶ
+        let config = Config::default();
+        let apps = merge_app_settings(
+            &config.newline_apps,
+            &config.ime_start_apps,
+            &config.no_learning_apps,
+        );
         assert_eq!(apps, default_app_settings());
         assert_eq!(apps.len(), 5);
-        assert!(apps.iter().all(|app| app.newline && app.ime_start == ImeStart::Auto));
+        assert!(apps
+            .iter()
+            .all(|app| app.newline && app.ime_start == ImeStart::Auto && !app.no_learning));
     }
 
     #[test]
     fn splits_app_settings_for_saving() {
-        let app = |exe: &str, newline: bool, ime_start: ImeStart| AppSetting {
+        let app = |exe: &str, newline: bool, ime_start: ImeStart, no_learning: bool| AppSetting {
             exe: exe.to_string(),
             newline,
             ime_start,
+            no_learning,
         };
         let mut apps = vec![
-            app("Discord.exe", true, ImeStart::Off),
-            app("Notepad.exe", true, ImeStart::Off),
-            // 既定のままのアプリはどちらのキーにも書かない
-            app("Code.exe", false, ImeStart::Auto),
+            app("Discord.exe", true, ImeStart::Off, false),
+            app("Notepad.exe", true, ImeStart::Off, true),
+            app("WindowsTerminal.exe", false, ImeStart::Auto, true),
+            // 既定のままのアプリはどのキーにも書かない
+            app("Code.exe", false, ImeStart::Auto, false),
         ];
         let mut config = Config::default();
-        (config.newline_apps, config.ime_start_apps) = split_app_settings(&apps);
+        (config.newline_apps, config.ime_start_apps, config.no_learning_apps) =
+            split_app_settings(&apps);
         let text = config.file_text();
         assert!(text.contains("\nnewline_apps\tDiscord.exe,Notepad.exe\n"));
         assert!(text.contains("\nime_start_apps\tDiscord.exe:off,Notepad.exe:off\n"));
-        // 削除したアプリはどちらからも消え、空になれば空の値で書く
-        apps.retain(|app| app.exe != "Discord.exe" && app.exe != "Notepad.exe");
-        (config.newline_apps, config.ime_start_apps) = split_app_settings(&apps);
+        assert!(text.contains("\nno_learning_apps\tNotepad.exe,WindowsTerminal.exe\n"));
+        // 学習しないだけのアプリも、読み直すと一覧に残る
+        let mut reloaded = Config::default();
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            if let Some((key, value)) = line.split_once('\t') {
+                reloaded.apply(key, value);
+            }
+        }
+        assert_eq!(
+            merge_app_settings(
+                &reloaded.newline_apps,
+                &reloaded.ime_start_apps,
+                &reloaded.no_learning_apps,
+            ),
+            apps[..3]
+        );
+        // 削除したアプリはどこからも消え、空になれば空の値で書く
+        apps.retain(|app| app.exe == "Code.exe");
+        (config.newline_apps, config.ime_start_apps, config.no_learning_apps) =
+            split_app_settings(&apps);
         let text = config.file_text();
         assert!(text.contains("\nnewline_apps\t\n"));
         assert!(text.contains("\nime_start_apps\t\n"));
+        assert!(text.contains("\nno_learning_apps\t\n"));
         // 書いた内容を読み直すと同じ一覧になる (既定のままのアプリは消える)
         let mut reloaded = Config::default();
         for line in text.lines().filter(|line| !line.starts_with('#')) {
@@ -3020,7 +3128,12 @@ mod tests {
                 reloaded.apply(key, value);
             }
         }
-        assert!(merge_app_settings(&reloaded.newline_apps, &reloaded.ime_start_apps).is_empty());
+        assert!(merge_app_settings(
+            &reloaded.newline_apps,
+            &reloaded.ime_start_apps,
+            &reloaded.no_learning_apps,
+        )
+        .is_empty());
     }
 
     #[test]
@@ -3031,7 +3144,12 @@ mod tests {
         assert_eq!(add_app_setting(&mut apps, "Notepad.exe"), 5);
         assert_eq!(
             apps[5],
-            AppSetting { exe: "Notepad.exe".to_string(), newline: false, ime_start: ImeStart::Auto }
+            AppSetting {
+                exe: "Notepad.exe".to_string(),
+                newline: false,
+                ime_start: ImeStart::Auto,
+                no_learning: false,
+            }
         );
         assert_eq!(ime_start_label(ImeStart::Auto), "自動");
         assert_eq!(ime_start_label(ImeStart::On), "オン");
