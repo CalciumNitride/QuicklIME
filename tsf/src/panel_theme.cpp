@@ -46,26 +46,28 @@ constexpr wchar_t kCapsuleText[] =
     L"underline_px\t2\n"
     L"caret_width_px\t2\n"
     L"shadow_steps\t10\n"
-    L"accent\t#2B86EE\n"
-    L"selected_text\t#FFFFFF\n"
-    L"dark.background\t#1C1C22EB\n"
+    L"dark.accent\t#7DC7B0\n"
+    L"dark.selected_text\t#2D3437\n"
+    L"dark.background\t#2D3437EB\n"
     L"dark.border\t#FFFFFF14\n"
-    L"dark.text\t#F2F2F6\n"
-    L"dark.secondary\t#A0A0AD\n"
+    L"dark.text\t#FAFBF7\n"
+    L"dark.secondary\t#9AA5A3\n"
     L"dark.chip\t#FFFFFF12\n"
     L"dark.separator\t#FFFFFF17\n"
-    L"dark.next_word\t#3CC48A\n"
+    L"dark.next_word\t#E3B873\n"
     L"dark.shadow\t#00000073\n"
-    L"dark.blur_tint\t#1C1C2299\n"
-    L"light.background\t#FCFCFEEB\n"
+    L"dark.blur_tint\t#2D343799\n"
+    L"light.accent\t#2A7D66\n"
+    L"light.selected_text\t#FFFFFF\n"
+    L"light.background\t#FAFBF7EB\n"
     L"light.border\t#00000014\n"
-    L"light.text\t#16161C\n"
-    L"light.secondary\t#6B6B78\n"
+    L"light.text\t#2D3437\n"
+    L"light.secondary\t#6B7573\n"
     L"light.chip\t#0000000B\n"
     L"light.separator\t#00000014\n"
-    L"light.next_word\t#2E9E6B\n"
+    L"light.next_word\t#A8741F\n"
     L"light.shadow\t#00000047\n"
-    L"light.blur_tint\t#FCFCFEB3\n";
+    L"light.blur_tint\t#FAFBF7B3\n";
 
 constexpr wchar_t kCapsuleColumnText[] =
     L"base\tcapsule\n"
@@ -537,39 +539,42 @@ PanelTheme PanelTheme::Defaults(bool dark)
 {
     PanelTheme theme;
     theme.dark = dark;
-    theme.accent = Rgba(0x2B86EE);
-    theme.selectedText = Rgba(0xFFFFFF);
-    theme.tagConversion = Rgba(0x2B86EE);
     if (dark) {
-        theme.background = Rgba(0x1C1C22, 0xEB);
+        theme.accent = Rgba(0x7DC7B0);
+        theme.selectedText = Rgba(0x2D3437);
+        theme.tagConversion = Rgba(0x7DC7B0);
+        theme.background = Rgba(0x2D3437, 0xEB);
         theme.border = Rgba(0xFFFFFF, 0x14);
-        theme.text = Rgba(0xF2F2F6);
-        theme.secondary = Rgba(0xA0A0AD);
+        theme.text = Rgba(0xFAFBF7);
+        theme.secondary = Rgba(0x9AA5A3);
         theme.chip = Rgba(0xFFFFFF, 0x12);
         theme.separator = Rgba(0xFFFFFF, 0x17);
-        theme.nextWord = Rgba(0x3CC48A);
+        theme.nextWord = Rgba(0xE3B873);
         theme.shadow = Rgba(0x000000, 0x73);
-        theme.blurTint = Rgba(0x1C1C22, 0x99);
+        theme.blurTint = Rgba(0x2D3437, 0x99);
         theme.scrim = Rgba(0x000000, 0xBF);
-        theme.tagAscii = Rgba(0xA0A0AD);
-        theme.tagPrediction = Rgba(0xA0A0AD);
+        theme.tagAscii = Rgba(0x9AA5A3);
+        theme.tagPrediction = Rgba(0x9AA5A3);
         theme.tagPartial = Rgba(0xC08CF0);
-        theme.tagNextWord = Rgba(0x3CC48A);
+        theme.tagNextWord = Rgba(0xE3B873);
     } else {
-        theme.background = Rgba(0xFCFCFE, 0xEB);
+        theme.accent = Rgba(0x2A7D66);
+        theme.selectedText = Rgba(0xFFFFFF);
+        theme.tagConversion = Rgba(0x2A7D66);
+        theme.background = Rgba(0xFAFBF7, 0xEB);
         theme.border = Rgba(0x000000, 0x14);
-        theme.text = Rgba(0x16161C);
-        theme.secondary = Rgba(0x6B6B78);
+        theme.text = Rgba(0x2D3437);
+        theme.secondary = Rgba(0x6B7573);
         theme.chip = Rgba(0x000000, 0x0B);
         theme.separator = Rgba(0x000000, 0x14);
-        theme.nextWord = Rgba(0x2E9E6B);
+        theme.nextWord = Rgba(0xA8741F);
         theme.shadow = Rgba(0x000000, 0x47);
-        theme.blurTint = Rgba(0xFCFCFE, 0xB3);
+        theme.blurTint = Rgba(0xFAFBF7, 0xB3);
         theme.scrim = Rgba(0xFFFFFF, 0xE6);
-        theme.tagAscii = Rgba(0x6B6B78);
-        theme.tagPrediction = Rgba(0x6B6B78);
+        theme.tagAscii = Rgba(0x6B7573);
+        theme.tagPrediction = Rgba(0x6B7573);
         theme.tagPartial = Rgba(0x8A4FC8);
-        theme.tagNextWord = Rgba(0x2E9E6B);
+        theme.tagNextWord = Rgba(0xA8741F);
     }
     return theme;
 }

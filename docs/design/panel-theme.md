@@ -144,11 +144,18 @@ dark.background	#101014EE
 | `ghost_text_size` | 1.7 |
 | `ghost_opacity` | 0.42 |
 | `scrim` | ダーク #000000 (0.75)、ライト #FFFFFF (0.9) |
-| `tag_ascii` | ダーク #A0A0AD、ライト #6B6B78 |
-| `tag_conversion` | #2B86EE |
-| `tag_prediction` | ダーク #A0A0AD、ライト #6B6B78 |
+| `tag_ascii` | ダーク #9AA5A3、ライト #6B7573 |
+| `tag_conversion` | ダーク #7DC7B0、ライト #2A7D66 |
+| `tag_prediction` | ダーク #9AA5A3、ライト #6B7573 |
 | `tag_partial` | ダーク #C08CF0、ライト #8A4FC8 |
-| `tag_next_word` | ダーク #3CC48A、ライト #2E9E6B |
+| `tag_next_word` | ダーク #E3B873、ライト #A8741F |
+
+既定の配色 (色の値は docs/theme.md「色」) はロゴの色 (スレート #2D3437・ミント #7DC7B0・
+オフホワイト #FAFBF7) から取る。
+
+- ダークの `selected_text` はスレートにする。ミントは明るく、白文字ではコントラストが足りない
+- ライトの `accent` は暗いティール (#2A7D66) にする。ミントのままでは白い背景の上で下線・キャレットが見えにくい
+- `next_word` はアンバー系にし、アクセントのミントと区別する
 
 `capsule-column` (`base capsule` に次を重ねる):
 

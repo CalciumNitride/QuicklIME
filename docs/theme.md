@@ -116,23 +116,23 @@ f によらない画素数。
 
 | キー | 内容 | ダークの既定 | ライトの既定 |
 |---|---|---|---|
-| `background` | パネルの背景 | `#1C1C22EB` | `#FCFCFEEB` |
+| `background` | パネルの背景 | `#2D3437EB` | `#FAFBF7EB` |
 | `border` | 外周の縁 | `#FFFFFF14` | `#00000014` |
-| `text` | 文字 | `#F2F2F6` | `#16161C` |
-| `secondary` | 副次色 (番号・未完成ローマ字・前文脈) | `#A0A0AD` | `#6B6B78` |
+| `text` | 文字 | `#FAFBF7` | `#2D3437` |
+| `secondary` | 副次色 (番号・未完成ローマ字・前文脈) | `#9AA5A3` | `#6B7573` |
 | `chip` | 候補の背景 | `#FFFFFF12` | `#0000000B` |
 | `separator` | 入力行と候補の区切り線 | `#FFFFFF17` | `#00000014` |
-| `accent` | 選択中の候補・入力中のかなの下線・キャレット | `#2B86EE` | `#2B86EE` |
-| `selected_text` | `selection fill` の選択中の候補の文字と番号 | `#FFFFFF` | `#FFFFFF` |
-| `next_word` | 次の語の予測の候補の縁と「次の語」ラベル | `#3CC48A` | `#2E9E6B` |
+| `accent` | 選択中の候補・入力中のかなの下線・キャレット | `#7DC7B0` | `#2A7D66` |
+| `selected_text` | `selection fill` の選択中の候補の文字と番号 | `#2D3437` | `#FFFFFF` |
+| `next_word` | 次の語の予測の候補の縁と「次の語」ラベル | `#E3B873` | `#A8741F` |
 | `shadow` | 影 (AA は重なったところの最大の不透明度) | `#00000073` | `#00000047` |
-| `blur_tint` | ぼかし (`panel_blur 1`) の上に重ねる色 | `#1C1C2299` | `#FCFCFEB3` |
+| `blur_tint` | ぼかし (`panel_blur 1`) の上に重ねる色 | `#2D343799` | `#FAFBF7B3` |
 | `scrim` | `ghost` のにじみの色 (内側はこの濃さのまま、外へ向かって透明になる) | `#000000BF` | `#FFFFFFE6` |
-| `tag_ascii` | 種類のタグ「英字」の文字の色 | `#A0A0AD` | `#6B6B78` |
-| `tag_conversion` | 種類のタグ「変換」の文字の色 | `#2B86EE` | `#2B86EE` |
-| `tag_prediction` | 種類のタグ「予測」の文字の色 | `#A0A0AD` | `#6B6B78` |
+| `tag_ascii` | 種類のタグ「英字」の文字の色 | `#9AA5A3` | `#6B7573` |
+| `tag_conversion` | 種類のタグ「変換」の文字の色 | `#7DC7B0` | `#2A7D66` |
+| `tag_prediction` | 種類のタグ「予測」の文字の色 | `#9AA5A3` | `#6B7573` |
 | `tag_partial` | 種類のタグ「文節」の文字の色 | `#C08CF0` | `#8A4FC8` |
-| `tag_next_word` | 種類のタグ「次の語」の文字の色 | `#3CC48A` | `#2E9E6B` |
+| `tag_next_word` | 種類のタグ「次の語」の文字の色 | `#E3B873` | `#A8741F` |
 
 - 種類のタグの背景は、文字の色を不透明度 0.16 で敷く
 - `blur_tint` は `panel_blur 1` のときだけ使い、そのときは `background`・`border`・`shadow` を描かない
