@@ -28,6 +28,7 @@
   設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
 - [ime-start-state.md](ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに決める
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
+- [forget-learning.md](forget-learning.md): 候補パネルで選んでいる候補の学習を Ctrl+Delete で消す
 
 ## 候補の表示
 

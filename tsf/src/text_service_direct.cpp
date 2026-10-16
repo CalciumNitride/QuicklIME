@@ -1840,7 +1840,7 @@ void TextService::DismissNextWordForKey(WPARAM wparam)
         const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
         if (func != KeyFunc::None) {
             // 変換キーなどは予測を消してから入力なしの機能として処理する
-            keep = func == KeyFunc::CommitRun;
+            keep = func == KeyFunc::CommitRun || func == KeyFunc::ForgetLearning;
         } else if (ctrl || alt) {
             keep = ctrl && !alt && wparam == 'M';
         } else {

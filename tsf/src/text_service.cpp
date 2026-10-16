@@ -1780,6 +1780,8 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         return MoveNextWordSelection(+1);
     case KeyFunc::NextWordPrev:
         return MoveNextWordSelection(-1);
+    case KeyFunc::ForgetLearning:
+        return ForgetBarLearning(context);
     case KeyFunc::UndoCommit:
         return UndoCommit(context);
     case KeyFunc::RegisterWord:
@@ -3062,6 +3064,49 @@ HRESULT TextService::DeselectBar()
 {
     barIndex_ = -1;
     suggestPanel_.SetSelection(barItems_.size()); // 範囲外 = 強調なし
+    return S_OK;
+}
+
+HRESULT TextService::ForgetBarLearning(ITfContext* context)
+{
+    // 英字候補・学習でない候補・エンジン未接続でも、打鍵は食べたまま何もしない
+    // (アプリへ渡すとキャレットの後ろの文字が消える)
+    if (converting_ || barIndex_ < 0 || static_cast<size_t>(barIndex_) >= barItems_.size()) {
+        return S_OK;
+    }
+    const BarCandidate& item = barItems_[static_cast<size_t>(barIndex_)];
+    if (item.kind == BarKind::Ascii) {
+        return S_OK;
+    }
+    std::vector<std::pair<std::wstring, std::wstring>> pairs = {{item.reading, item.surface}};
+    if (item.kind == BarKind::Whole) {
+        // 文節ごとの学習を当てた 1-best が同じ表記を作り続けるため、文節の組も消す
+        pairs.insert(pairs.end(), item.segments.begin(), item.segments.end());
+    }
+    size_t count = 0;
+    if (!engine_.Forget(pairs, &count)) {
+        DebugLog(L"学習の削除に失敗 (未接続か FORGET を知らないエンジン)");
+        return S_OK;
+    }
+    DebugLog(L"学習を削除: " + item.surface + L" (" + std::to_wstring(count) + L" 件)");
+    if (count == 0) {
+        return S_OK;
+    }
+
+    const size_t index = static_cast<size_t>(barIndex_);
+    if (nextWordBar_) {
+        // ShowNextWordBar は候補が無いと前の表示を残すので、先に消しておく
+        ClearBar();
+        ShowNextWordBar(context);
+    } else {
+        // UpdateBar は並べ替えの依頼と結果も捨てて引き直す
+        UpdateBar(context);
+    }
+    if (barItems_.empty()) {
+        return S_OK;
+    }
+    barIndex_ = static_cast<int>((std::min)(index, barItems_.size() - 1));
+    suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));
     return S_OK;
 }
 

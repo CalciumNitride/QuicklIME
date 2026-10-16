@@ -107,6 +107,7 @@ const wchar_t* const kKeyFuncNames[kKeyFuncCount] = {
     L"key.insert_newline",
     L"key.next_word_next",
     L"key.next_word_prev",
+    L"key.forget_learning",
 };
 
 // 状態別の上書きの接尾辞 (key.<機能>@<状態>。KeyState の並び順)
@@ -544,6 +545,8 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
         // 読みなしの予測は run の無いときに出し、選ぶとサジェスト選択中になる
         // (run 中のバー選択では CanRunKeyFunc が食べずにアプリへ渡す)
         return state == KeyState::Idle || state == KeyState::Suggest;
+    case KeyFunc::ForgetLearning:
+        return state == KeyState::Suggest;
     case KeyFunc::None:
         return false;
     default:
@@ -576,6 +579,7 @@ std::array<KeyAssignment, kKeyFuncCount> TsfConfig::DefaultKeyAssignments()
     set(KeyFunc::InsertNewline, {true, false, false, 'J'});
     set(KeyFunc::NextWordNext, {true, false, false, VK_DOWN});
     set(KeyFunc::NextWordPrev, {true, false, false, VK_UP});
+    set(KeyFunc::ForgetLearning, {true, false, false, VK_DELETE});
     return keys;
 }
 

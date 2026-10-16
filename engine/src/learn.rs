@@ -282,6 +282,60 @@ impl LearningStore {
         self.boundary_max
     }
 
+    /// (読み, 表記) の学習を消す: 文脈なしの学習はその読みの表記が一致するときだけ、
+    /// 文脈付きの学習は前文脈によらず読みと表記が一致するものをすべて消す。
+    /// 消した項目があったファイルはメモリの内容から書き直す。戻り値は消した件数
+    pub fn forget(&mut self, reading: &str, surface: &str) -> usize {
+        let mut plain = 0;
+        if self.map.get(reading).is_some_and(|(s, _)| s == surface) {
+            self.map.remove(reading);
+            plain = 1;
+        }
+
+        let ctx_keys: Vec<(String, String)> = self
+            .ctx_map
+            .iter()
+            .filter(|((_, r), (s, _))| r == reading && s == surface)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &ctx_keys {
+            self.ctx_map.remove(key);
+            if let Some(readings) = self.ctx_index.get_mut(&key.0) {
+                readings.remove(&key.1);
+                if readings.is_empty() {
+                    self.ctx_index.remove(&key.0);
+                }
+            }
+        }
+
+        if plain > 0 {
+            if let Some(path) = &self.path {
+                let mut entries: Vec<(&String, &(String, u64))> = self.map.iter().collect();
+                entries.sort_by_key(|(_, (_, seq))| *seq);
+                let content: String =
+                    entries.iter().map(|(r, (s, _))| format!("{r}\t{s}\n")).collect();
+                if let Err(e) = rewrite_file(path, &content) {
+                    eprintln!("学習ファイルの書き直しに失敗しました ({e})");
+                }
+            }
+        }
+        if !ctx_keys.is_empty() {
+            if let Some(path) = &self.ctx_path {
+                let mut entries: Vec<(&(String, String), &(String, u64))> =
+                    self.ctx_map.iter().collect();
+                entries.sort_by_key(|(_, (_, seq))| *seq);
+                let content: String = entries
+                    .iter()
+                    .map(|((c, r), (s, _))| format!("{c}\t{r}\t{s}\n"))
+                    .collect();
+                if let Err(e) = rewrite_file(path, &content) {
+                    eprintln!("文脈学習ファイルの書き直しに失敗しました ({e})");
+                }
+            }
+        }
+        plain + ctx_keys.len()
+    }
+
     /// 読みが prefix で始まる履歴を新しい順に返す (予測入力用)。
     /// 件数が小さい (高々数千) ため線形走査で足りる
     pub fn predict_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
@@ -295,6 +349,19 @@ impl LearningStore {
         matches.truncate(limit);
         matches.into_iter().map(|(reading, surface, _)| (reading, surface)).collect()
     }
+}
+
+/// ファイルの内容を content で置き換える。書き込みの途中で失敗しても元のファイルが
+/// 壊れないよう、同じディレクトリの一時ファイルに書いてから rename する
+pub fn rewrite_file(path: &Path, content: &str) -> std::io::Result<()> {
+    let mut tmp_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = fs::write(&tmp, content).and_then(|()| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// 文脈キーの正規化: 末尾 MAX_CONTEXT_KEY_CHARS 文字に切り詰める
@@ -511,6 +578,80 @@ mod tests {
         assert!(store.is_boundary("いいてんき"));
         assert!(!store.is_boundary("は"));
         assert_eq!(store.max_boundary_chars(), 5);
+    }
+
+    #[test]
+    fn 表記が一致する学習だけを消す() {
+        let mut store = LearningStore::in_memory();
+        store.record("きょうし", "教師");
+        store.record_ctx("今日は", "きょうし", "教師");
+        store.record_ctx("明日は", "きょうし", "教師");
+        store.record_ctx("昨日は", "きょうし", "講師");
+        store.record_ctx("今日は", "はれ", "晴れ");
+        // 表記が違えば消えない
+        assert_eq!(store.forget("きょうし", "講義"), 0);
+        assert_eq!(store.get("きょうし"), Some("教師"));
+        // 文脈なし 1 件 + 文脈付き 2 件
+        assert_eq!(store.forget("きょうし", "教師"), 3);
+        assert_eq!(store.get("きょうし"), None);
+        assert_eq!(store.get_ctx("今日は", "きょうし"), None);
+        assert_eq!(store.get_ctx("明日は", "きょうし"), None);
+        assert_eq!(store.get_ctx("昨日は", "きょうし"), Some("講師"));
+        assert_eq!(store.predict_context("今日は", "", 8), vec![("はれ", "晴れ")]);
+        assert!(store.predict_context("明日は", "", 8).is_empty());
+        assert!(store.predict_prefix("きょう", 8).is_empty());
+        // 2 回目は消すものが無い
+        assert_eq!(store.forget("きょうし", "教師"), 0);
+    }
+
+    #[test]
+    fn 消した後に書き直したファイルを読み込み直すと同じ状態になる() {
+        let dir = std::env::temp_dir().join(format!("quicklime-forget-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("learning.tsv");
+        let ctx_path = dir.join("learning_context.tsv");
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&ctx_path);
+
+        let mut store = LearningStore {
+            path: Some(path.clone()),
+            ctx_path: Some(ctx_path.clone()),
+            ..LearningStore::in_memory()
+        };
+        store.record("きょうし", "講師");
+        store.record("きょうし", "教師");
+        store.record("きょう", "今日");
+        store.record("はれ", "晴れ");
+        // 同じ内容の確定し直しはファイルに書かれず、連番だけが新しくなる
+        store.record("きょう", "今日");
+        store.record_ctx("今日は", "きょうし", "教師");
+        store.record_ctx("今日は", "はれ", "晴れ");
+        store.record_ctx("明日は", "きょうし", "教師");
+
+        assert_eq!(store.forget("きょうし", "教師"), 3);
+        // 以前の表記 (講師) の行も消え、残りは連番の昇順
+        assert_eq!(fs::read_to_string(&path).unwrap(), "はれ\t晴れ\nきょう\t今日\n");
+        assert_eq!(fs::read_to_string(&ctx_path).unwrap(), "今日は\tはれ\t晴れ\n");
+        assert!(!dir.join("learning.tsv.tmp").exists());
+
+        let mut reloaded = LearningStore::in_memory();
+        reloaded.load_from(BufReader::new(File::open(&path).unwrap()));
+        reloaded.load_ctx_from(BufReader::new(File::open(&ctx_path).unwrap()));
+        assert_eq!(reloaded.get("きょうし"), None);
+        assert_eq!(reloaded.predict_prefix("", 8), store.predict_prefix("", 8));
+        assert_eq!(reloaded.predict_context("今日は", "", 8), vec![("はれ", "晴れ")]);
+        assert!(reloaded.predict_context("明日は", "", 8).is_empty());
+
+        // 文脈付きの学習だけが一致したときは learning.tsv を書き直さない
+        store.record_ctx("明日は", "あめ", "雨");
+        fs::write(&path, "そのまま\t残る\n").unwrap();
+        assert_eq!(store.forget("あめ", "雨"), 1);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "そのまま\t残る\n");
+        assert_eq!(fs::read_to_string(&ctx_path).unwrap(), "今日は\tはれ\t晴れ\n");
+
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&ctx_path);
+        let _ = fs::remove_dir(&dir);
     }
 
     #[test]

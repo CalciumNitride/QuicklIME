@@ -154,6 +154,11 @@ public:
     // 知らない旧エンジンのときは false (候補ゼロは true で candidates が空)
     bool NextWord(const ConversionContext& context, std::vector<PredictionCandidate>* candidates);
 
+    // (読み, 表記) の組の学習をエンジンから消す (FORGET)。消した件数を count に入れる
+    // (0 なら学習でない候補だった)。キー操作の応答を止めないよう、エンジンの自動起動・
+    // 接続待ちはしない。未接続・エラー・FORGET を知らない旧エンジンのときは false
+    bool Forget(const std::vector<std::pair<std::wstring, std::wstring>>& pairs, size_t* count);
+
     // パイプに接続してみて、開けなければエンジンを起動する。起動の完了は待たない
     // (最初の変換より前にエンジンを立ち上げておくため、アクティブ化のときに呼ぶ)
     void StartEngine();

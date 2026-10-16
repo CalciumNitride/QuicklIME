@@ -710,6 +710,39 @@ bool EngineClient::NextWord(const ConversionContext& context,
                               candidates);
 }
 
+bool EngineClient::Forget(const std::vector<std::pair<std::wstring, std::wstring>>& pairs,
+                          size_t* count)
+{
+    if (count == nullptr) {
+        return false;
+    }
+    std::string request = "FORGET";
+    size_t sent = 0;
+    for (const auto& [reading, surface] : pairs) {
+        if (reading.empty() || surface.empty()) {
+            continue;
+        }
+        request += "\t" + WideToUtf8(reading) + "\x1f" + WideToUtf8(surface);
+        ++sent;
+    }
+    if (sent == 0) {
+        return false;
+    }
+    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive(request + "\n", &response)) {
+        return false;
+    }
+    // 応答: "OK\t<消した件数>\n"。旧エンジンの「不明なコマンド」は ERR なのでここで false になる
+    if (response.rfind("OK\t", 0) != 0) {
+        return false;
+    }
+    *count = static_cast<size_t>(std::strtoul(response.c_str() + 3, nullptr, 10));
+    return true;
+}
+
 bool EngineClient::RequestPredictions(const std::string& request,
                                       std::vector<PredictionCandidate>* candidates)
 {

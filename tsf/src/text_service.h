@@ -287,6 +287,10 @@ private:
     HRESULT SelectBarByNumber(size_t number);
     // バーの選択を解除する (バーは表示のまま)
     HRESULT DeselectBar();
+    // サジェスト選択中の ForgetLearning: 選んでいる候補の学習をエンジンから消し、消えたものが
+    // あれば候補を作り直して同じ番号 (無ければ末尾) を選ぶ。文書は書き換えない
+    // (docs/design/forget-learning.md)
+    HRESULT ForgetBarLearning(ITfContext* context);
     // バーの index の候補を採用する。run の文字列を「採用部分 + 残りのかな」(run を終えるときは
     // 未完成のローマ字と suffix も) に作り直す (追記のみの文書では擬似 Backspace の後に追記する)。
     // followKey があれば、採用の後にその打鍵を入れる

@@ -751,6 +751,30 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 "ERR\t記録する内容がありません\n".to_string()
             }
         }
+        Some("FORGET") => {
+            // FORGET\t読み\x1f表記\t... : (読み, 表記) の学習を消す。応答は消した件数。
+            // 記録ではないので、学習が無効でも消す
+            let mut pairs: Vec<(&str, &str)> = Vec::new();
+            for pair in fields {
+                match pair.split_once(FIELD_SEPARATOR) {
+                    Some((reading, surface)) if !reading.is_empty() && !surface.is_empty() => {
+                        pairs.push((reading, surface));
+                    }
+                    _ => return "ERR\t読みまたは表記がありません\n".to_string(),
+                }
+            }
+            if pairs.is_empty() {
+                return "ERR\t消す内容がありません\n".to_string();
+            }
+            let mut user = data.user.lock().expect("user lock");
+            let mut learning = data.learning.lock().expect("learning lock");
+            let mut count = 0;
+            for (reading, surface) in pairs {
+                count += learning.forget(reading, surface);
+                count += user.forget_learned(reading, surface);
+            }
+            format!("OK\t{count}\n")
+        }
         Some("ADDWORD") => {
             // ADDWORD\t読み\t表記\t品詞 : ユーザ辞書へ1件登録する
             // (userdict.tsv へ追記し、メモリへ即時反映する)
@@ -1300,6 +1324,52 @@ mod tests {
         let request = format!("LEARNWORD\tけいしょうか{FIELD_SEPARATOR}形象化");
         assert_eq!(handle_request(&request, &data), "OK\n");
         assert!(data.user.lock().unwrap().lookup_words("けいしょうか").is_empty());
+    }
+
+    #[test]
+    fn forgetで学習と複合語を消して件数を返す() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN2\tきょうしつ\x1f教室\x1f晴れ", &data), "OK\n");
+        let request = format!("LEARNWORD\tけいしょうか{FIELD_SEPARATOR}形象化");
+        assert_eq!(handle_request(&request, &data), "OK\n");
+        assert_eq!(
+            handle_request("PREDICT\tきょ", &data),
+            "OK\tきょうしつ\x1f教室\tきょう\x1f今日\n"
+        );
+        // 文脈なし + 文脈付き
+        assert_eq!(handle_request("FORGET\tきょうしつ\x1f教室", &data), "OK\t2\n");
+        assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
+        // 複合語は learning.tsv の学習と learning_word.tsv の語の両方が消える
+        assert_eq!(
+            handle_request("FORGET\tけいしょうか\x1f形象化\tはれ\x1f晴れ", &data),
+            "OK\t2\n"
+        );
+        assert!(data.user.lock().unwrap().lookup_words("けいしょうか").is_empty());
+        // 学習でない候補 (辞書の語) は何も消えない
+        assert_eq!(handle_request("FORGET\tきょう\x1f今日", &data), "OK\t0\n");
+        assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn 学習無効でもforgetは消す() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        data.config.lock().unwrap().learning = false;
+        assert_eq!(handle_request("FORGET\tきょうしつ\x1f教室", &data), "OK\t1\n");
+        assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
+    }
+
+    #[test]
+    fn forgetの組が無いか欠けていればエラー() {
+        let data = sample_data();
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        assert!(handle_request("FORGET", &data).starts_with("ERR\t"));
+        assert!(handle_request("FORGET\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("FORGET\t読みだけ", &data).starts_with("ERR\t"));
+        assert!(handle_request("FORGET\t\x1f教室", &data).starts_with("ERR\t"));
+        // 欠けた組があれば、ほかの組も消さない
+        assert!(handle_request("FORGET\tきょうしつ\x1f教室\tよみ\x1f", &data).starts_with("ERR\t"));
+        assert_eq!(handle_request("FORGET\tきょうしつ\x1f教室", &data), "OK\t1\n");
     }
 
     #[test]

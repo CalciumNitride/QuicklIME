@@ -69,6 +69,7 @@
 | `InsertNewline` | `key.insert_newline` | 全状態 | `Ctrl+J` | 対象アプリ (`newline_apps`) で Shift+Enter を送る。入力中は Enter と同じく確定してから送る。対象外のアプリでは割当なしと同じ (docs/design/newline-key.md) |
 | `NextWordNext` | `key.next_word_next` | 入力なし・サジェスト選択中 | `Ctrl+Down` | 読みなしの予測 (docs/design/next-word-prediction.md) の選択を右へ動かす (未選択から先頭) |
 | `NextWordPrev` | `key.next_word_prev` | 入力なし・サジェスト選択中 | `Ctrl+Up` | 読みなしの予測の選択を左へ動かす (未選択から末尾、先頭から未選択) |
+| `ForgetLearning` | `key.forget_learning` | サジェスト選択中 | `Ctrl+Delete` | 選んでいる候補の学習を消し、候補を作り直す (docs/design/forget-learning.md)。英字候補・学習でない候補・エンジン未接続でも打鍵を食べて何もしない |
 
 - `Convert` に割り当てたキーは、Shift を足した打鍵にも一致する。候補選択中は Shift を
   足すと前候補になる (既存の Shift+変換キー の挙動)。それ以外の状態では Shift の有無で

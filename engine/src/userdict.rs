@@ -29,6 +29,7 @@ use std::path::PathBuf;
 
 use crate::dict::{Dictionary, Entry};
 use crate::english;
+use crate::learn;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
 
 /// 短縮よみの品詞名 (ファイル上の表記)
@@ -421,6 +422,29 @@ impl UserDict {
             }
         }
         true
+    }
+
+    /// 読みと表記が一致する学習した複合語を消し、消したものがあれば複合語の学習ファイルを
+    /// メモリの内容から書き直す (FORGET 用)。手動登録・インポート辞書の語は消さない。
+    /// 戻り値は消した件数
+    pub fn forget_learned(&mut self, reading: &str, surface: &str) -> usize {
+        let before = self.learned.len();
+        self.learned.retain(|w| !(w.reading == reading && w.surface == surface));
+        let count = before - self.learned.len();
+        if count > 0 {
+            if let Some(path) = &self.learned_path {
+                let content: String = self
+                    .learned
+                    .iter()
+                    .map(|w| format!("{}\t{}\n", w.reading, w.surface))
+                    .collect();
+                if let Err(e) = learn::rewrite_file(path, &content) {
+                    // メモリからは消えたまま (エンジンの再起動で戻る)
+                    eprintln!("複合語の学習ファイルの書き直しに失敗しました ({e})");
+                }
+            }
+        }
+        count
     }
 
     /// 複合語をメモリへ追加する (ファイルには書かない)。新しく記録できたら true。
@@ -947,6 +971,45 @@ mod tests {
         // 手動登録の再読込 (RELOADUSER) でも複合語は保たれる
         dict.reload(&functional);
         assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+
+        let _ = std::fs::remove_file(&learned_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn 学習した複合語だけを消して学習ファイルを書き直す() {
+        let dir = std::env::temp_dir()
+            .join(format!("quicklime-forgetword-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let learned_path = dir.join("learning_word.tsv");
+        let functional = sample_functional();
+        std::fs::write(
+            &learned_path,
+            "けいしょうか\t継承化\nまいぐらふぃ\tマイグラフィ\nけいしょうか\t形象化\nずあん\t図案\n",
+        )
+        .unwrap();
+
+        let mut dict = UserDict { learned_path: Some(learned_path.clone()), ..UserDict::empty() };
+        dict.load_learned(&functional);
+        dict.add("かんべ", "神戸", "姓", &functional).unwrap();
+        // 表記が違う・手動登録の語は消さない
+        assert_eq!(dict.forget_learned("けいしょうか", "継承化"), 0);
+        assert_eq!(dict.forget_learned("かんべ", "神戸"), 0);
+        assert_eq!(dict.lookup_words("かんべ")[0].surface, "神戸");
+        assert_eq!(std::fs::read_to_string(&learned_path).unwrap().lines().count(), 4);
+
+        assert_eq!(dict.forget_learned("けいしょうか", "形象化"), 1);
+        assert!(dict.lookup_words("けいしょうか").is_empty());
+        let content = std::fs::read_to_string(&learned_path).unwrap();
+        assert_eq!(content, "まいぐらふぃ\tマイグラフィ\nずあん\t図案\n");
+
+        // 書き直したファイルを読み込み直すと同じ状態
+        let mut reloaded =
+            UserDict { learned_path: Some(learned_path.clone()), ..UserDict::empty() };
+        reloaded.load_learned(&functional);
+        assert_eq!(reloaded.learned_count(), 2);
+        assert!(reloaded.lookup_words("けいしょうか").is_empty());
+        assert_eq!(reloaded.word_prefix("", 8), dict.word_prefix("", 8)[1..]);
 
         let _ = std::fs::remove_file(&learned_path);
         let _ = std::fs::remove_dir(&dir);

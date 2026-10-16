@@ -26,6 +26,7 @@ enum class KeyFunc {
     InsertNewline,   // 改行 (既定 Ctrl+J。対象アプリで Shift+Enter を送る)
     NextWordNext,    // 読みなしの予測の次の候補を選ぶ (既定 Ctrl+↓)
     NextWordPrev,    // 読みなしの予測の前の候補を選ぶ (既定 Ctrl+↑)
+    ForgetLearning,  // 選んでいるサジェスト候補の学習を消す (既定 Ctrl+Delete)
     None,           // 割当なし (照合の「該当なし」も表す)
 };
 
