@@ -119,6 +119,8 @@ private:
     bool FindImeStartState(bool* open) const;
     // ホストの exe 名が学習を記録しないアプリ (設定 no_learning_apps) にあるか
     bool IsNoLearningApp() const;
+    // ホストの exe 名が読める文書でも追記のみとして扱うアプリ (設定 append_only_apps) にあるか
+    bool IsAppendOnlyApp() const;
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)

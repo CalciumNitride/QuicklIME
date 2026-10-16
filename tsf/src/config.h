@@ -121,6 +121,8 @@ struct TsfConfig {
     std::vector<ImeStartApp> imeStartApps;
     // 学習を記録しないアプリの exe 名 (docs/design/no-learning-apps.md)
     std::vector<std::wstring> noLearningApps;
+    // 読める文書でも追記のみとして扱うアプリの exe 名 (docs/design/append-only-apps.md)
+    std::vector<std::wstring> appendOnlyApps = DefaultAppendOnlyApps();
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();
@@ -132,6 +134,7 @@ struct TsfConfig {
 
     static std::array<KeyAssignment, kKeyFuncCount> DefaultKeyAssignments();
     static std::vector<std::wstring> DefaultNewlineApps();
+    static std::vector<std::wstring> DefaultAppendOnlyApps();
 };
 
 // config.tsv (QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv) のローダ。

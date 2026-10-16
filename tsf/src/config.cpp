@@ -481,6 +481,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseImeStartApps(value, &config.imeStartApps);
     } else if (key == L"no_learning_apps") {
         ParseAppList(value, &config.noLearningApps);
+    } else if (key == L"append_only_apps") {
+        ParseAppList(value, &config.appendOnlyApps);
     }
     // 未知キー (エンジン向けを含む) は無視
 }
@@ -587,6 +589,13 @@ std::vector<std::wstring> TsfConfig::DefaultNewlineApps()
 {
     // ブラウザは Ctrl+J (ダウンロード) を奪うため入れない
     return {L"Discord.exe", L"slack.exe", L"ms-teams.exe", L"Teams.exe", L"LINE.exe"};
+}
+
+std::vector<std::wstring> TsfConfig::DefaultAppendOnlyApps()
+{
+    // Discord のエディタは TSF の範囲指定の置換を内部モデルへ取り込まず、置き換えた文字が残る。
+    // ほかの Electron 系アプリは症状を確かめていないため入れない
+    return {L"Discord.exe"};
 }
 
 KeyMatch TsfConfig::FindFunc(KeyState state, const KeyBinding& pressed) const

@@ -2131,9 +2131,17 @@ const wchar_t* TextService::AppendDocumentName(AppendDocument document)
 
 void TextService::SetAppendDocument(AppendDocument document, const wchar_t* reason)
 {
+    // 範囲指定の置換を取り込まないアプリでは、読めても擬似 Backspace で置き換える
+    // (docs/design/append-only-apps.md)
+    bool remapped = false;
+    if (document == AppendDocument::Readable && IsAppendOnlyApp()) {
+        document = AppendDocument::AppendOnly;
+        remapped = true;
+    }
     if (document != appendDocument_) {
         DebugLog(std::wstring(L"文書の分類: ") + AppendDocumentName(appendDocument_) + L" -> " +
-                 AppendDocumentName(document) + L" (" + reason + L")");
+                 AppendDocumentName(document) + L" (" + reason +
+                 (remapped ? L"。append_only_apps で読み替え" : L"") + L")");
     }
     appendDocument_ = document;
 }

@@ -888,6 +888,19 @@ bool TextService::IsNoLearningApp() const
     return false;
 }
 
+bool TextService::IsAppendOnlyApp() const
+{
+    if (hostExeName_.empty()) {
+        return false;
+    }
+    for (const std::wstring& app : config_.Get().appendOnlyApps) {
+        if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.c_str(), -1, TRUE) == CSTR_EQUAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
 {
     // 対象外のアプリでは割当なしと同じく食べない (ターミナルや Excel では Shift+Enter が
