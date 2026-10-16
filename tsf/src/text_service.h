@@ -476,6 +476,9 @@ private:
     // 割当に一致しなかったキーを食べるか (候補選択中の composition 以外)
     bool IsKeyEatenDirect(WPARAM wparam) const;
     HRESULT HandleKeyDirect(ITfContext* context, WPARAM wparam);
+    // ←→ (修飾キーなし) を ↑↓ と同じくサジェストの選択移動に使うか (横並びのテーマで
+    // run のバーか後続語の予測を選択中。変換中は除く)
+    bool ArrowMovesBarSelection(WPARAM wparam) const;
     // 食べずにアプリへ渡すキーのうち run を終えるもの (Enter・矢印・Ctrl 併用など) の
     // 状態処理。候補選択中・バー選択中の Enter は確定してから渡す
     // (EnterNeedsResend のときは食べるのでここでは扱わない)。

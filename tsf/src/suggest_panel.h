@@ -123,6 +123,9 @@ public:
     // 表示中かどうか (Hide 済み・未表示なら false)
     bool Visible() const { return hwnd_ != nullptr; }
 
+    // テーマが候補を横一列に並べるか (変換の候補一覧はこれによらず縦積み)
+    bool Horizontal() const { return theme_.layout == PanelLayout::Row; }
+
     // ウィンドウクラス登録から参照するため public にしている
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 

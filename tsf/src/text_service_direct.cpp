@@ -271,6 +271,9 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
         case VK_DOWN:
         case VK_SPACE:
             return true;
+        case VK_LEFT:
+        case VK_RIGHT:
+            return ArrowMovesBarSelection(wparam);
         default:
             // 数字は run の外でもアプリへ渡さない (1〜9 は番号の選択、それ以外は採用して run を始める)
             return IsPrintableKey(wparam, IsShiftPressed());
@@ -310,6 +313,9 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
             return converting_ || !barItems_.empty();
         case VK_LEFT:
         case VK_RIGHT:
+            if (ArrowMovesBarSelection(wparam)) {
+                return true;
+            }
             // 入力全体の候補選択の ←→ は変換の範囲の伸縮 (伸縮できなくても食べる)
             if (!shifted && RangeResizable()) {
                 return true;
@@ -370,6 +376,18 @@ void TextService::EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam)
         return;
     }
     EndAppendRunForPassthroughKey(context);
+}
+
+bool TextService::ArrowMovesBarSelection(WPARAM wparam) const
+{
+    if (wparam != VK_LEFT && wparam != VK_RIGHT) {
+        return false;
+    }
+    // 未選択の ←→ はキャレット移動としてアプリへ渡す。変換中の ←→ は範囲の伸縮・文節の移動
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    return !ctrl && !alt && !IsShiftPressed() && !converting_ && barIndex_ >= 0 &&
+           suggestPanel_.Horizontal();
 }
 
 bool TextService::EnterNeedsResend() const
@@ -482,6 +500,12 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
             return MoveBarSelection(+1);
         case VK_UP:
             return MoveBarSelection(-1);
+        case VK_RIGHT:
+        case VK_LEFT:
+            if (ArrowMovesBarSelection(wparam)) {
+                return MoveBarSelection(wparam == VK_RIGHT ? +1 : -1);
+            }
+            return S_OK;
         default:
             return S_OK;
         }
@@ -526,6 +550,12 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         return MoveBarSelection(+1);
     case VK_UP:
         return MoveBarSelection(-1);
+    case VK_RIGHT:
+    case VK_LEFT:
+        if (ArrowMovesBarSelection(wparam)) {
+            return MoveBarSelection(wparam == VK_RIGHT ? +1 : -1);
+        }
+        return S_OK;
     default:
         return S_OK;
     }
@@ -1333,6 +1363,10 @@ void TextService::DismissNextWordForKey(WPARAM wparam)
             case VK_SPACE:
                 keep = true;
                 break;
+            case VK_LEFT:
+            case VK_RIGHT:
+                keep = ArrowMovesBarSelection(wparam);
+                break;
             default:
                 keep = IsPrintableKey(wparam, IsShiftPressed());
                 break;
@@ -1921,6 +1955,9 @@ bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
     case VK_DOWN:
         // バーが出ていればバーの選択に使う
         return barItems_.empty();
+    case VK_LEFT:
+    case VK_RIGHT:
+        return !ArrowMovesBarSelection(wparam);
     default:
         return IsEditingKey(wparam);
     }

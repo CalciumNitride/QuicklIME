@@ -107,7 +107,7 @@
 | Backspace / Ctrl+H | 1字削除 | 変換を取り消す | 1字削除 (既存どおり) |
 | Tab / Shift+Tab | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 変換を取り消してバーの先頭を選ぶ | 次 / 前の候補 |
 | ↑ / ↓ | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 前候補 / 次候補 | 前 / 次の候補 |
-| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | ← / → は変換の範囲の伸縮 (docs/design/conversion-range.md。伸縮しない run・文書では確定してアプリへ渡す)、Shift+← / Shift+→ は確定してアプリへ渡す。`segment_ui` 1 では ← / → で文節の移動、Shift+← / Shift+→ で文節の伸縮 | run を終えてアプリへ渡す |
+| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | ← / → は変換の範囲の伸縮 (docs/design/conversion-range.md。伸縮しない run・文書では確定してアプリへ渡す)、Shift+← / Shift+→ は確定してアプリへ渡す。`segment_ui` 1 では ← / → で文節の移動、Shift+← / Shift+→ で文節の伸縮 | run を終えてアプリへ渡す。横一列のテーマ (`layout row`) では ← / → は前 / 次の候補 (docs/design/basics.md) |
 | PgUp / PgDn | run を終えてアプリへ渡す | 確定してアプリへ渡す (`segment_ui` 1 では先頭 / 末尾の文節へ) | run を終えてアプリへ渡す |
 | Home / End / Delete | run を終えてアプリへ渡す | 確定してアプリへ渡す | run を終えてアプリへ渡す |
 | 1〜9 | 数字を入力 | 候補番号で選択 | 候補番号で選択 |
