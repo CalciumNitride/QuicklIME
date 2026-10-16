@@ -71,7 +71,12 @@ foreach ($file in $found) {
     # 静かに失敗する (エラーなし・終了コード0で何もしない) ため、
     # フォワードスラッシュに変換してから渡す
     $forwardPath = $file.FullName -replace '\\', '/'
-    & trash $forwardPath *>$null
+    # Windows PowerShell 5.1 では $ErrorActionPreference = 'Stop' のもとで、使用中のファイルに
+    # trash が出す stderr が例外になりスクリプトごと止まる。成否は下の Test-Path で判定する
+    try {
+        & trash $forwardPath *>$null
+    } catch {
+    }
     if (Test-Path -LiteralPath $file.FullName) {
         Write-Host "使用中の可能性、スキップ: $($file.FullName)" -ForegroundColor Yellow
         $locked += $file.FullName
