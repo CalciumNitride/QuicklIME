@@ -410,6 +410,8 @@ TextService::TextService()
       barCaret_{},
       barCaretValid_(false),
       nextWordBar_(false),
+      markerCaret_{},
+      markerCaretValid_(false),
       rerankId_(0),
       rerankTick_(0),
       rerankDone_(false),
@@ -616,6 +618,8 @@ STDMETHODIMP TextService::Deactivate()
     UpdateTextEditSink(nullptr);
     ClearConversion();
     ClearBar();
+    caretMarker_.Hide();
+    markerCaretValid_ = false;
     ClearContext();
     composer_.Clear();
     lastCommitText_.clear();
@@ -715,6 +719,9 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     if (nextWordBar_) {
         ClearBar();
     }
+    // 三角は離れる文書のキャレットを指している
+    caretMarker_.Hide();
+    markerCaretValid_ = false;
     // 確定アンドゥの記憶も離れる文書のもの
     lastCommitText_.clear();
     // 採用した文字列の記憶も離れる文書のもの
@@ -864,7 +871,7 @@ void TextService::RefreshConfig()
     }
     if (configChanged || themeChanged) {
         const PanelTheme& theme = panelTheme_.Get();
-        suggestPanel_.SetBlur(config.panelBlur && theme.blurAllowed);
+        suggestPanel_.SetBlur(theme.blur);
         suggestPanel_.SetFont(config.candidateFont, config.candidateFontSize);
         suggestPanel_.SetTheme(theme);
     }
@@ -1071,6 +1078,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
         NoteKeyForAppend(wparam, *eaten != FALSE);
     }
+    HideCaretMarkerOutsidePeriod();
     if (logging) {
         LogKeyDown(L"OnTestKeyDown", wparam, state, match, *eaten, disabled);
     }
@@ -1090,6 +1098,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
     if (IsKeyboardDisabled()) {
         DiscardRunWhileDisabled();
+        HideCaretMarkerOutsidePeriod();
         *eaten = FALSE;
         if (logging) {
             LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, true);
@@ -1105,6 +1114,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
         LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, false);
     }
     if (*eaten == FALSE) {
+        HideCaretMarkerOutsidePeriod();
         return S_OK;
     }
     if (wparam < pendingKeyUps_.size()) {
@@ -1116,6 +1126,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     // (失敗 HRESULT を返すと「未処理」とみなして打鍵文字をそのまま挿入する
     //  ホストがあるため。内部の失敗はその打鍵が効かないだけに留める)
     HandleKey(context, wparam);
+    HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
 
@@ -1213,8 +1224,11 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
                 : KeyFunc::None;
         if (func != KeyFunc::None && CanRunKeyFunc(context, func)) {
             *eaten = TRUE;
-            return HandleKey(context, VK_F10);
+            const HRESULT hr = HandleKey(context, VK_F10);
+            HideCaretMarkerOutsidePeriod();
+            return hr;
         }
+        HideCaretMarkerOutsidePeriod();
         // IME が使わないときは eaten=FALSE だけではアプリに F10 が届かないため、
         // Mozc と同様に WM_SYSKEYDOWN を合成してアプリ本来の F10 動作を再現する
         *eaten = FALSE;
@@ -1245,6 +1259,7 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
         CommitComposition(context);
     }
     SetKeyboardOpen(open);
+    HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
 
@@ -1439,6 +1454,7 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     if (!IsKeyboardOpen()) {
         adopted_.clear();
     }
+    HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
 
@@ -1456,6 +1472,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
         runComposition_->Release();
         runComposition_ = nullptr;
         DropRun();
+        HideCaretMarkerOutsidePeriod();
         return S_OK;
     }
     // フォーカス移動で終えずに手放した composition の終了は、今の入力と関係ない
@@ -1472,6 +1489,7 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     rangeStates_.clear();
     composition_->Release();
     composition_ = nullptr;
+    HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
 
@@ -1528,6 +1546,7 @@ STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly
         DebugLog(L"選択の変更で後続語の予測を消す");
         ClearBar();
     }
+    HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
 
@@ -2499,6 +2518,8 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         ResetBarState();
         return S_OK;
     }
+    // 三角は候補が無くパネルを出さない打鍵でも出すので、パネルの有無を決める前に取り直す
+    UpdateCaretMarker(context);
     if (!Composing() && !InRun()) {
         ClearBar();
         return S_OK;
@@ -2741,6 +2762,7 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
     placement.x = barX_;
     // 未完成のローマ字は composition か入力行に含めて出すので、キャレットの下に避ける場所は無い
     placement.belowCapsule = false;
+    ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
     return suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
@@ -3457,6 +3479,7 @@ void TextService::ShowCandidateWindow(ITfContext* context)
 void TextService::HideCandidateList(ITfContext* context)
 {
     if (!PanelInputActive()) {
+        UpdateCaretMarker(context);
         suggestPanel_.Hide();
         return;
     }
@@ -3470,6 +3493,7 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
     }
     // パネルは候補バーと共用なので、バーの並べ替えの結果で候補一覧を上書きさせない
     StopRerankPolling();
+    UpdateCaretMarker(context);
     const RECT anchor = CandidateAnchor(context);
     SuggestPanel::Placement placement;
     placement.position = config_.Get().candidateCenter ? SuggestPanel::Position::Center
@@ -3477,6 +3501,7 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
     placement.caret = &anchor;
     placement.x = anchor.left;
     placement.belowCapsule = false;
+    ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = ConversionInputLine(&input);
     static const std::vector<std::wstring> kNoCandidates;

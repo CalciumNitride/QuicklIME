@@ -261,6 +261,17 @@ float BodyRadius(bool capsule, const Metrics& m, float height)
     return capsule ? height / 2 : (std::min)(m.panelRadius, height / 2);
 }
 
+// 尻尾を付けるパネルの左端を Placement::x から左へずらす量。TailTipX は尻尾を角丸の外
+// (左端 + 半径 + 半幅) に止めるため、ずらさないと打ち始めのキャレットを指せない
+int PointerLeftShift(const Metrics& m, int height, int pointerHeight)
+{
+    if (pointerHeight <= 0) {
+        return 0;
+    }
+    return static_cast<int>(std::ceil(BodyRadius(false, m, static_cast<float>(height)))) +
+           pointerHeight;
+}
+
 // ウィンドウクラスを一度だけ登録する
 bool EnsureWindowClass()
 {
@@ -295,9 +306,10 @@ RECT WorkAreaOf(HMONITOR monitor)
 }
 
 // 基準矩形 anchor を基準に (x, y) に置く width x height の矩形を、anchor を含むモニタの
-// 作業領域に収めた位置を返す。下にはみ出すなら anchor の上側、それでも収まらなければ (anchor が
-// タスクバーに重なる位置にあるときなど) 作業領域の下端に寄せる
-POINT FitToWorkArea(const RECT& anchor, int x, int y, int width, int height)
+// 作業領域に収めた位置を返す。下にはみ出すなら anchor の上側 (aboveGap だけ離す)、それでも
+// 収まらなければ (anchor がタスクバーに重なる位置にあるときなど) 作業領域の下端に寄せる
+POINT FitToWorkArea(const RECT& anchor, int x, int y, int width, int height,
+                    int aboveGap = kAnchorGap)
 {
     const POINT origin = {anchor.left, anchor.top};
     const RECT work = WorkAreaOf(MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST));
@@ -306,13 +318,74 @@ POINT FitToWorkArea(const RECT& anchor, int x, int y, int width, int height)
     }
     x = (std::max)(x, static_cast<int>(work.left));
     if (y + height > work.bottom) {
-        y = static_cast<int>(anchor.top) - height - kAnchorGap;
+        y = static_cast<int>(anchor.top) - height - aboveGap;
         if (y < work.top || y + height > work.bottom) {
             y = static_cast<int>(work.bottom) - height;
         }
     }
     y = (std::max)(y, static_cast<int>(work.top));
     return {x, y};
+}
+
+// 角丸矩形 rect に、上辺 (top) か下辺に二等辺三角形の尻尾を足した輪郭。尻尾の先端は x = tipX で
+// 辺から tailHeight だけ外側、底辺は高さの 2 倍。作れなければ nullptr
+ID2D1PathGeometry* CreateBalloonGeometry(ID2D1Factory* factory, const D2D1_RECT_F& rect,
+                                         float radius, bool top, float tipX, float tailHeight)
+{
+    ID2D1PathGeometry* geometry = nullptr;
+    if (FAILED(factory->CreatePathGeometry(&geometry))) {
+        return nullptr;
+    }
+    ID2D1GeometrySink* sink = nullptr;
+    if (FAILED(geometry->Open(&sink))) {
+        geometry->Release();
+        return nullptr;
+    }
+    const float r = (std::clamp)(radius, 0.0f,
+                                 (std::min)(rect.right - rect.left, rect.bottom - rect.top) / 2);
+    const float h = (std::max)(0.0f, tailHeight);
+    const auto corner = [&](float x, float y) {
+        if (r > 0.0f) {
+            sink->AddArc(D2D1::ArcSegment(D2D1::Point2F(x, y), D2D1::SizeF(r, r), 0.0f,
+                                          D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+        } else {
+            sink->AddLine(D2D1::Point2F(x, y));
+        }
+    };
+    sink->BeginFigure(D2D1::Point2F(rect.left + r, rect.top), D2D1_FIGURE_BEGIN_FILLED);
+    if (top) {
+        sink->AddLine(D2D1::Point2F(tipX - h, rect.top));
+        sink->AddLine(D2D1::Point2F(tipX, rect.top - h));
+        sink->AddLine(D2D1::Point2F(tipX + h, rect.top));
+    }
+    sink->AddLine(D2D1::Point2F(rect.right - r, rect.top));
+    corner(rect.right, rect.top + r);
+    sink->AddLine(D2D1::Point2F(rect.right, rect.bottom - r));
+    corner(rect.right - r, rect.bottom);
+    if (!top) {
+        sink->AddLine(D2D1::Point2F(tipX + h, rect.bottom));
+        sink->AddLine(D2D1::Point2F(tipX, rect.bottom + h));
+        sink->AddLine(D2D1::Point2F(tipX - h, rect.bottom));
+    }
+    sink->AddLine(D2D1::Point2F(rect.left + r, rect.bottom));
+    corner(rect.left, rect.bottom - r);
+    sink->AddLine(D2D1::Point2F(rect.left, rect.top + r));
+    corner(rect.left + r, rect.top);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    const HRESULT hr = sink->Close();
+    sink->Release();
+    if (FAILED(hr)) {
+        geometry->Release();
+        return nullptr;
+    }
+    return geometry;
+}
+
+// 輪郭を outset だけ外へ広げた (負なら内へ寄せた) ときの尻尾の高さ。尻尾の斜辺は 45 度なので、
+// 斜辺を outset だけ平行に動かすと、先端は辺から見て outset * (√2 - 1) だけ余分に伸びる
+float OffsetTailHeight(float tailHeight, float outset)
+{
+    return tailHeight + outset * 0.41421356f;
 }
 
 bool FontExists(IDWriteFactory* factory, const std::wstring& face)
@@ -369,7 +442,8 @@ SuggestPanel::SuggestPanel()
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
       kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false), pageTop_(0.0f),
       selection_(0), hasInput_(false),
-      bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0)
+      bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0), tail_(TailSide::None),
+      tailHeight_(0), markerX_(0)
 {
     SetFont(kFallbackFont, 18);
 }
@@ -599,6 +673,10 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     const bool column = theme_.layout == PanelLayout::Column;
     const bool ghost = theme_.style == PanelStyle::Ghost;
     const bool centerAlign = theme_.align == PanelAlign::Center;
+    // 尻尾は先端がキャレット行の下端・上端に届くよう、尻尾の高さだけ離す
+    const int pointerHeight = PointerHeight(placement);
+    const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
+    const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
 
     std::vector<std::wstring> texts;
     std::vector<float> widths;  // 切り詰めずに出したときの候補 1 件の幅
@@ -704,7 +782,8 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             width = m.padding * 2 + static_cast<int>(std::ceil(widest));
             width = (std::max)(width, m.chipHeight * 2);
             width = (std::min)(width, workWidth);
-            x = (std::max)(placement.x, static_cast<int>(work.left));
+            x = (std::max)(placement.x - PointerLeftShift(m, height, pointerHeight),
+                           static_cast<int>(work.left));
             if (x + width > work.right) {
                 x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - width);
             }
@@ -713,10 +792,10 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             if (placement.belowCapsule) {
                 top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
             }
-            y = top + kAnchorGap;
+            y = top + belowGap;
             if (y + height > work.bottom) {
                 // 上に出すときは下端をキャレット行の上に揃え、候補が増えると上へ伸ばす
-                y = static_cast<int>(caret.top) - height - kAnchorGap;
+                y = static_cast<int>(caret.top) - height - aboveGap;
             }
             y = (std::max)(y, static_cast<int>(work.top));
         }
@@ -738,7 +817,8 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             y = static_cast<int>(work.top) + (workHeight - height) / 2;
         } else {
             const RECT& caret = *placement.caret;
-            x = (std::max)(placement.x, static_cast<int>(work.left));
+            x = (std::max)(placement.x - PointerLeftShift(m, height, pointerHeight),
+                           static_cast<int>(work.left));
             for (size_t i = 0; i < widths.size(); ++i) {
                 const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
                 if (static_cast<float>(x + m.padding * 2) + next > static_cast<float>(work.right)) {
@@ -767,9 +847,9 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             if (placement.belowCapsule) {
                 top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
             }
-            y = top + kAnchorGap;
+            y = top + belowGap;
             if (y + height > work.bottom) {
-                y = static_cast<int>(caret.top) - height - kAnchorGap;
+                y = static_cast<int>(caret.top) - height - aboveGap;
             }
         }
     }
@@ -821,6 +901,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     bodyY_ = y;
     bodyWidth_ = width;
     bodyHeight_ = height;
+    PlaceTail(placement, pointerHeight);
     margin_ = LayeredMargin();
     if (!Render(L"Show", placement.caret)) {
         return 0;
@@ -843,6 +924,9 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     const bool centerAlign = theme_.align == PanelAlign::Center;
     const bool hasInput = input != nullptr;
     const size_t total = candidates.size();
+    const int pointerHeight = PointerHeight(placement);
+    const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
+    const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
     const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
     // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
     const auto heightOf = [&](size_t n, bool pages) {
@@ -927,9 +1011,9 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         width = (std::max)(width, m.chipHeight * 2);
         width = (std::min)(width, workWidth);
         const RECT& anchor = *placement.caret;
-        const POINT position = FitToWorkArea(anchor, placement.x,
-                                             static_cast<int>(anchor.bottom) + kAnchorGap, width,
-                                             height);
+        const POINT position =
+            FitToWorkArea(anchor, placement.x - PointerLeftShift(m, height, pointerHeight),
+                          static_cast<int>(anchor.bottom) + belowGap, width, height, aboveGap);
         x = position.x;
         y = position.y;
     }
@@ -971,6 +1055,7 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     bodyY_ = y;
     bodyWidth_ = width;
     bodyHeight_ = height;
+    PlaceTail(placement, pointerHeight);
     margin_ = LayeredMargin();
     if (!Render(L"変換の候補", placement.caret)) {
         return 0;
@@ -1004,6 +1089,7 @@ bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
     bodyY_ = position.y;
     bodyWidth_ = width;
     bodyHeight_ = height;
+    tail_ = TailSide::None;
     margin_ = LayeredMargin();
     return Render(L"ShowCapsule", &caret);
 }
@@ -1061,7 +1147,8 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
         return false;
     }
     const int windowWidth = bodyWidth_ + margin_ * 2;
-    const int windowHeight = bodyHeight_ + margin_ * 2;
+    const int windowHeight = bodyHeight_ + margin_ * 2 + TopTailPad() + BottomTailPad();
+    const int windowY = bodyY_ - margin_ - TopTailPad();
 
     HDC screen = GetDC(nullptr);
     HDC memory = CreateCompatibleDC(screen);
@@ -1107,7 +1194,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
         if (hwnd_ == nullptr) {
             hwnd_ = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
-                kWindowClassName, L"", WS_POPUP, bodyX_ - margin_, bodyY_ - margin_, windowWidth,
+                kWindowClassName, L"", WS_POPUP, bodyX_ - margin_, windowY, windowWidth,
                 windowHeight, nullptr, nullptr, globals::dllInstance, this);
             if (hwnd_ == nullptr) {
                 createError = GetLastError();
@@ -1116,7 +1203,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
             }
         }
         if (hwnd_ != nullptr) {
-            POINT destination = {bodyX_ - margin_, bodyY_ - margin_};
+            POINT destination = {bodyX_ - margin_, windowY};
             SIZE size = {windowWidth, windowHeight};
             POINT source = {0, 0};
             BLENDFUNCTION blend = {AC_SRC_OVER, 0, 255, AC_SRC_ALPHA};
@@ -1247,6 +1334,70 @@ int SuggestPanel::LayeredMargin() const
     return theme_.drawShadow ? m.margin : 0;
 }
 
+bool SuggestPanel::BlurExpected() const
+{
+    // Render がぼかしのウィンドウを作るのは、ウィンドウが無いときだけ
+    return blurActive_ || (hwnd_ == nullptr && blur_ && !blurFailed_);
+}
+
+int SuggestPanel::PointerHeight(const Placement& placement) const
+{
+    // 画面中央ではキャレットから離れており、ghost には尻尾を付ける枠が無く、ぼかしでは DWM の
+    // 角丸ウィンドウの外に描けない。描けないときは三角にも代えない (テーマで選んだ見た目と違うため)
+    if (!placement.pointer || placement.position != Position::Caret ||
+        placement.caret == nullptr || theme_.style == PanelStyle::Ghost || BlurExpected()) {
+        return 0;
+    }
+    return static_cast<int>(std::lround(theme_.pointerSize * static_cast<float>(fontSize_)));
+}
+
+int SuggestPanel::TriangleHeight(const Placement& placement) const
+{
+    if (!placement.belowTriangle || placement.position != Position::Caret) {
+        return 0;
+    }
+    return static_cast<int>(std::lround(theme_.triangleSize * static_cast<float>(fontSize_)));
+}
+
+void SuggestPanel::PlaceTail(const Placement& placement, int pointerHeight)
+{
+    tail_ = TailSide::None;
+    tailHeight_ = pointerHeight;
+    markerX_ = placement.markerX;
+    if (pointerHeight <= 0 || placement.caret == nullptr) {
+        return;
+    }
+    // 作業領域に収めるためにキャレット行に重なったときは、指す向きが決まらないので付けない
+    if (bodyY_ >= placement.caret->bottom) {
+        tail_ = TailSide::Top;
+    } else if (bodyY_ + bodyHeight_ <= placement.caret->top) {
+        tail_ = TailSide::Bottom;
+    }
+}
+
+int SuggestPanel::TopTailPad() const
+{
+    // 先端の縁のアンチエイリアスの分を 1px 足す
+    return tail_ == TailSide::Top && !blurActive_ ? tailHeight_ + 1 : 0;
+}
+
+int SuggestPanel::BottomTailPad() const
+{
+    return tail_ == TailSide::Bottom && !blurActive_ ? tailHeight_ + 1 : 0;
+}
+
+float SuggestPanel::TailTipX(float bodyLeft, float bodyRight, float radius) const
+{
+    const float half = static_cast<float>(tailHeight_);
+    const float low = bodyLeft + radius + half;
+    const float high = bodyRight - radius - half;
+    if (low > high) {
+        return (bodyLeft + bodyRight) / 2;
+    }
+    const float tipX = bodyLeft + static_cast<float>(markerX_ - bodyX_);
+    return (std::clamp)(tipX, low, high);
+}
+
 std::wstring SuggestPanel::GhostText() const
 {
     if (theme_.style != PanelStyle::Ghost || kind_ != Kind::Panel || conversion_ ||
@@ -1287,8 +1438,9 @@ void SuggestPanel::Draw()
     const float height = static_cast<float>(bodyHeight_);
     const float line = static_cast<float>(m.line);
     const float radius = BodyRadius(kind_ == Kind::Capsule, m, height);
+    const float bodyTop = margin + static_cast<float>(TopTailPad());
 
-    const D2D1_RECT_F body = D2D1::RectF(margin, margin, margin + width, margin + height);
+    const D2D1_RECT_F body = D2D1::RectF(margin, bodyTop, margin + width, bodyTop + height);
     // ぼかしの方式では背景・外周の縁・影を DWM に任せる
     if (!blurActive_) {
         if (theme_.style == PanelStyle::Ghost) {
@@ -1297,16 +1449,39 @@ void SuggestPanel::Draw()
             if (theme_.drawShadow) {
                 DrawShadow();
             }
-            brush_->SetColor(ToD2D(theme_.background));
-            drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
-            if (theme_.drawBorder) {
-                const float half = line / 2;
-                brush_->SetColor(ToD2D(theme_.border));
-                drawTarget_->DrawRoundedRectangle(
-                    D2D1::RoundedRect(D2D1::RectF(body.left + half, body.top + half,
-                                                  body.right - half, body.bottom - half),
-                                      radius - half, radius - half),
-                    brush_, line);
+            const float half = line / 2;
+            const D2D1_RECT_F inset =
+                D2D1::RectF(body.left + half, body.top + half, body.right - half, body.bottom - half);
+            if (tail_ != TailSide::None) {
+                // 尻尾とパネルを1つの輪郭で塗り・縁取りし、縁を尻尾の底辺の部分で切ってひと続きにする
+                const bool up = tail_ == TailSide::Top;
+                const float tipX = TailTipX(body.left, body.right, radius);
+                const float tail = static_cast<float>(tailHeight_);
+                ID2D1PathGeometry* fill =
+                    CreateBalloonGeometry(d2dFactory_, body, radius, up, tipX, tail);
+                if (fill != nullptr) {
+                    brush_->SetColor(ToD2D(theme_.background));
+                    drawTarget_->FillGeometry(fill, brush_);
+                    fill->Release();
+                }
+                if (theme_.drawBorder) {
+                    ID2D1PathGeometry* outline =
+                        CreateBalloonGeometry(d2dFactory_, inset, radius - half, up, tipX,
+                                              OffsetTailHeight(tail, -half));
+                    if (outline != nullptr) {
+                        brush_->SetColor(ToD2D(theme_.border));
+                        drawTarget_->DrawGeometry(outline, brush_, line);
+                        outline->Release();
+                    }
+                }
+            } else {
+                brush_->SetColor(ToD2D(theme_.background));
+                drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(body, radius, radius), brush_);
+                if (theme_.drawBorder) {
+                    brush_->SetColor(ToD2D(theme_.border));
+                    drawTarget_->DrawRoundedRectangle(
+                        D2D1::RoundedRect(inset, radius - half, radius - half), brush_, line);
+                }
             }
         }
     }
@@ -1353,9 +1528,11 @@ void SuggestPanel::DrawShadow()
         return;
     }
     const float margin = static_cast<float>(margin_);
+    const float top = margin + static_cast<float>(TopTailPad());
     const float width = static_cast<float>(bodyWidth_);
     const float height = static_cast<float>(bodyHeight_);
     const float radius = BodyRadius(kind_ == Kind::Capsule, m, height);
+    const float tipX = TailTipX(margin, margin + width, radius);
     // ID2D1DCRenderTarget ではブラーのエフェクトが使えないため、少しずつ広げた角丸矩形を外側から
     // 重ねて近似する。全部が重なるパネルの縁で最大不透明度になるよう、1枚の不透明度を決める
     const float alpha =
@@ -1365,11 +1542,22 @@ void SuggestPanel::DrawShadow()
     brush_->SetColor(ToD2D(color));
     for (int k = steps; k >= 1; --k) {
         const float spread = m.shadowSpread * static_cast<float>(k) / static_cast<float>(steps);
-        const D2D1_RECT_F rect = D2D1::RectF(margin - spread, margin - spread + m.shadowOffset,
+        const D2D1_RECT_F rect = D2D1::RectF(margin - spread, top - spread + m.shadowOffset,
                                              margin + width + spread,
-                                             margin + height + spread + m.shadowOffset);
-        drawTarget_->FillRoundedRectangle(
-            D2D1::RoundedRect(rect, radius + spread, radius + spread), brush_);
+                                             top + height + spread + m.shadowOffset);
+        if (tail_ == TailSide::None) {
+            drawTarget_->FillRoundedRectangle(
+                D2D1::RoundedRect(rect, radius + spread, radius + spread), brush_);
+            continue;
+        }
+        // 尻尾と矩形を別々に塗ると重なりで濃くなるため、1つの輪郭にして塗る
+        ID2D1PathGeometry* geometry = CreateBalloonGeometry(
+            d2dFactory_, rect, radius + spread, tail_ == TailSide::Top, tipX,
+            OffsetTailHeight(static_cast<float>(tailHeight_), spread));
+        if (geometry != nullptr) {
+            drawTarget_->FillGeometry(geometry, brush_);
+            geometry->Release();
+        }
     }
 }
 
@@ -1820,6 +2008,7 @@ void SuggestPanel::Hide()
     hasInput_ = false;
     input_ = InputLine{};
     capsuleText_.clear();
+    tail_ = TailSide::None;
 }
 
 LRESULT CALLBACK SuggestPanel::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)

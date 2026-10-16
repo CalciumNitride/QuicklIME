@@ -97,6 +97,22 @@ private:
     bool* succeededOut_;
 };
 
+// composition の末尾の位置の矩形 (スクリーン座標) を取得する (キャレットの印の位置用)。
+// 末尾の空の範囲の矩形が取れなければ、composition 全体の矩形の右端 (幅 0) を返す
+class GetCompositionEndExtentEditSession : public EditSessionBase {
+public:
+    GetCompositionEndExtentEditSession(ITfContext* context, ITfComposition* composition,
+                                       RECT* rectOut, bool* succeededOut);
+    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
+
+private:
+    ~GetCompositionEndExtentEditSession() override;
+
+    ITfComposition* composition_;
+    RECT* rectOut_;
+    bool* succeededOut_;
+};
+
 // 現在の選択テキストを取得する (単語登録ダイアログの初期値用)。
 // 選択が無い・長すぎる場合は textOut を空のままにする
 class GetSelectionTextEditSession : public EditSessionBase {

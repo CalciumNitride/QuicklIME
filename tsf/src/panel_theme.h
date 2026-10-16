@@ -49,6 +49,13 @@ enum class SelectionStyle {
     Text,  // 文字だけをアクセント色の太字に
 };
 
+// 文書のキャレットの位置を示す印 (docs/design/caret-marker.md)
+enum class CaretMarkerStyle {
+    Off,
+    Pointer,   // 候補パネルに吹き出しの尻尾を付けてキャレットを指す
+    Triangle,  // キャレットの下端に上向きの三角を出す
+};
+
 // サジェストパネルの見た目 (docs/design/panel-theme.md)。ライト・ダークを解決した1組。
 // 寸法は設定 candidate_font_size (以下 f) に対する比率、Px で終わるものは f によらない画素数
 struct PanelTheme {
@@ -56,10 +63,11 @@ struct PanelTheme {
     PanelLayout layout = PanelLayout::Row;
     PanelAlign align = PanelAlign::Left;
     bool inputRowAlways = false;  // input_row always (設定 panel_input によらず入力行を出す)
-    bool blurAllowed = true;      // blur allow (設定 panel_blur を効かせる)
+    bool blur = false;            // blur on (背景をぼかし (アクリル) にする)
     ChipShape chipShape = ChipShape::Pill;
     BadgeShape badgeShape = BadgeShape::Circle;
     SelectionStyle selection = SelectionStyle::Fill;
+    CaretMarkerStyle caretMarker = CaretMarkerStyle::Triangle;
     bool drawBorder = true;   // パネルの外周の縁
     bool drawShadow = true;   // パネルの影
     bool kindTag = false;     // 候補の種類のタグ (layout column のときだけ効く)
@@ -87,6 +95,8 @@ struct PanelTheme {
     float shadowOffset = 0.2f;     // 影を下へずらす量
     float centerWidth = 36.0f;     // 画面中央に出すときのパネルの幅
     float centerWidthRatio = 0.9f; // 画面中央に出すときの幅の上限 (作業領域の幅に対する比率)
+    float pointerSize = 0.6f;      // caret_marker pointer の尻尾の高さ (底辺は高さの 2 倍)
+    float triangleSize = 0.5f;     // caret_marker triangle の三角の高さ (底辺は高さの 2 倍)
     float lineWidthPx = 1.0f;      // 外周・区切り線・バッジ・次の語の縁の太さ (px)
     float underlinePx = 2.0f;      // run の文字列・選択中の候補の下線の太さ (px)
     float caretWidthPx = 2.0f;     // 入力行のキャレットの太さ (px)
@@ -102,13 +112,14 @@ struct PanelTheme {
     PanelColor selectedText;  // selection fill の選択中の候補の文字と番号
     PanelColor nextWord;      // 読みなしの後続語予測の縁と「次の語」ラベル
     PanelColor shadow;        // 影 (a は重ねたときの最大不透明度)
-    PanelColor blurTint;      // ぼかし (panel_blur) の上に重ねる色
+    PanelColor blurTint;      // ぼかし (blur on) の上に重ねる色
     PanelColor scrim;         // ghost のにじみの中心の色 (外へ向かって透明になる)
     PanelColor tagAscii;      // 種類のタグの文字の色 (背景はこの色を不透明度 0.16 で敷く)
     PanelColor tagConversion;
     PanelColor tagPrediction;
     PanelColor tagPartial;
     PanelColor tagNextWord;
+    PanelColor caretMarkerColor;  // caret_marker triangle の三角 (書かなければ解決後の accent)
 
     bool operator==(const PanelTheme&) const = default;
     // 色以外 (並べ方・形・寸法) が同じか

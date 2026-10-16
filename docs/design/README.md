@@ -47,13 +47,17 @@
   入力行は [suggest-panel.md](suggest-panel.md) で置き換え
 - [suggest-panel.md](suggest-panel.md): サジェストパネル。候補バーの見た目の刷新 (カプセル)、画面中央への
   表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
-  [conversion-panel.md](conversion-panel.md) で置き換え
+  [conversion-panel.md](conversion-panel.md)、設定 `panel_blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [panel-theme.md](panel-theme.md): 候補パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
-  テーマファイル)
+  テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
   出し、予測候補の順位にも前文脈を使う
 - [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧をサジェストパネルで出す (テーマ・表示位置・
   変換中の入力行)
+- [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
+  印 (テーマの `caret_marker`。パネルの吹き出しの尻尾か、キャレットの下の三角) で示す
+- [theme-blur.md](theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
+  `capsule-blur` を足す。設定 `panel_blur` を廃止
 
 ## 変換
 

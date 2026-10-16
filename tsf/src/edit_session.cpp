@@ -286,6 +286,66 @@ STDMETHODIMP GetTextExtentEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
+// ---- GetCompositionEndExtentEditSession ----
+
+GetCompositionEndExtentEditSession::GetCompositionEndExtentEditSession(
+    ITfContext* context, ITfComposition* composition, RECT* rectOut, bool* succeededOut)
+    : EditSessionBase(context),
+      composition_(composition),
+      rectOut_(rectOut),
+      succeededOut_(succeededOut)
+{
+    composition_->AddRef();
+    *succeededOut_ = false;
+}
+
+GetCompositionEndExtentEditSession::~GetCompositionEndExtentEditSession()
+{
+    composition_->Release();
+}
+
+STDMETHODIMP GetCompositionEndExtentEditSession::DoEditSession(TfEditCookie ec)
+{
+    ITfRange* range = nullptr;
+    HRESULT hr = composition_->GetRange(&range);
+    if (FAILED(hr)) {
+        return hr;
+    }
+    ITfContextView* view = nullptr;
+    hr = context_->GetActiveView(&view);
+    if (FAILED(hr)) {
+        range->Release();
+        return hr;
+    }
+
+    // 折り返した composition では全体の矩形の右端がキャレットの位置にならないため、
+    // 末尾の空の範囲を先に使う
+    ITfRange* end = nullptr;
+    if (SUCCEEDED(range->Clone(&end))) {
+        RECT rect = {};
+        BOOL clipped = FALSE;
+        if (SUCCEEDED(end->Collapse(ec, TF_ANCHOR_END)) &&
+            SUCCEEDED(view->GetTextExt(ec, end, &rect, &clipped)) &&
+            (rect.right != 0 || rect.bottom != 0)) {
+            *rectOut_ = rect;
+            *succeededOut_ = true;
+        }
+        end->Release();
+    }
+    if (!*succeededOut_) {
+        RECT rect = {};
+        BOOL clipped = FALSE;
+        hr = view->GetTextExt(ec, range, &rect, &clipped);
+        if (SUCCEEDED(hr) && (rect.right != 0 || rect.bottom != 0)) {
+            *rectOut_ = {rect.right, rect.top, rect.right, rect.bottom};
+            *succeededOut_ = true;
+        }
+    }
+    view->Release();
+    range->Release();
+    return hr;
+}
+
 // ---- GetSelectionTextEditSession ----
 
 GetSelectionTextEditSession::GetSelectionTextEditSession(ITfContext* context,

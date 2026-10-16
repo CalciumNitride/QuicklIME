@@ -17,7 +17,7 @@ constexpr wchar_t kCapsuleText[] =
     L"layout\trow\n"
     L"align\tleft\n"
     L"input_row\tsetting\n"
-    L"blur\tallow\n"
+    L"blur\toff\n"
     L"chip_shape\tpill\n"
     L"badge_shape\tcircle\n"
     L"selection\tfill\n"
@@ -25,6 +25,7 @@ constexpr wchar_t kCapsuleText[] =
     L"shadow\ton\n"
     L"kind_tag\toff\n"
     L"text_shadow\toff\n"
+    L"caret_marker\ttriangle\n"
     L"panel_radius\t1.4\n"
     L"panel_padding\t0.6\n"
     L"input_text_size\t1.15\n"
@@ -42,6 +43,8 @@ constexpr wchar_t kCapsuleText[] =
     L"shadow_offset\t0.2\n"
     L"center_width\t36\n"
     L"center_width_ratio\t0.9\n"
+    L"pointer_size\t0.6\n"
+    L"triangle_size\t0.5\n"
     L"line_width_px\t1\n"
     L"underline_px\t2\n"
     L"caret_width_px\t2\n"
@@ -79,12 +82,16 @@ constexpr wchar_t kCapsuleColumnText[] =
     L"selection\tsoft\n"
     L"kind_tag\ton\n";
 
+constexpr wchar_t kCapsuleBlurText[] =
+    L"base\tcapsule\n"
+    L"blur\ton\n";
+
 constexpr wchar_t kGhostText[] =
     L"base\tcapsule\n"
     L"style\tghost\n"
     L"align\tcenter\n"
     L"input_row\talways\n"
-    L"blur\tnever\n"
+    L"blur\toff\n"
     L"chip_shape\tunderline\n"
     L"badge_shape\tplain\n"
     L"selection\ttext\n"
@@ -100,6 +107,7 @@ const struct {
 } kBuiltinThemes[] = {
     {L"capsule", kCapsuleText},
     {L"capsule-column", kCapsuleColumnText},
+    {L"capsule-blur", kCapsuleBlurText},
     {L"ghost", kGhostText},
 };
 
@@ -133,6 +141,8 @@ const struct {
     {L"shadow_offset", &PanelTheme::shadowOffset, 0.0f, 5.0f},
     {L"center_width", &PanelTheme::centerWidth, 5.0f, 100.0f},
     {L"center_width_ratio", &PanelTheme::centerWidthRatio, 0.1f, 1.0f},
+    {L"pointer_size", &PanelTheme::pointerSize, 0.0f, 3.0f},
+    {L"triangle_size", &PanelTheme::triangleSize, 0.0f, 3.0f},
     {L"line_width_px", &PanelTheme::lineWidthPx, 0.0f, 10.0f},
     {L"underline_px", &PanelTheme::underlinePx, 0.0f, 10.0f},
     {L"caret_width_px", &PanelTheme::caretWidthPx, 0.0f, 10.0f},
@@ -159,7 +169,11 @@ const struct {
     {L"tag_prediction", &PanelTheme::tagPrediction},
     {L"tag_partial", &PanelTheme::tagPartial},
     {L"tag_next_word", &PanelTheme::tagNextWord},
+    {L"caret_marker", &PanelTheme::caretMarkerColor},
 };
+
+// ApplyThemeText で caret_marker の色が書かれたかを見分けるための、色として読めない値
+constexpr PanelColor kUnsetColor = {-1.0f, -1.0f, -1.0f, -1.0f};
 
 PanelColor Rgba(unsigned rgb, unsigned alpha = 0xFF)
 {
@@ -250,7 +264,7 @@ bool ParseOnOff(const std::wstring& value, bool* out)
     return ParseChoice(value, kNames, kValues, out);
 }
 
-// 色以外のキー (border・shadow の on/off は色のキーと同名のため除く) か
+// 色以外のキー (border・shadow・caret_marker の形は色のキーと同名のため除く) か
 bool IsShapeKey(const std::wstring& key)
 {
     static const wchar_t* const kNames[] = {
@@ -289,9 +303,7 @@ bool ApplyShapeKey(const std::wstring& key, const std::wstring& value, PanelThem
         static const bool kValues[] = {false, true};
         ok = ParseChoice(value, kNames, kValues, &theme->inputRowAlways);
     } else if (key == L"blur") {
-        static const wchar_t* const kNames[] = {L"allow", L"never"};
-        static const bool kValues[] = {true, false};
-        ok = ParseChoice(value, kNames, kValues, &theme->blurAllowed);
+        ok = ParseOnOff(value, &theme->blur);
     } else if (key == L"chip_shape") {
         static const wchar_t* const kNames[] = {L"pill", L"rounded", L"underline"};
         static const ChipShape kValues[] = {ChipShape::Pill, ChipShape::Rounded,
@@ -314,6 +326,12 @@ bool ApplyShapeKey(const std::wstring& key, const std::wstring& value, PanelThem
     } else if ((key == L"border" || key == L"shadow") && !value.empty() && value[0] != L'#') {
         // border・shadow は形 (on/off) と色の両方のキー。# で始まらない値は形として読む
         ok = ParseOnOff(value, key == L"border" ? &theme->drawBorder : &theme->drawShadow);
+    } else if (key == L"caret_marker" && !value.empty() && value[0] != L'#') {
+        // caret_marker も border・shadow と同じく形と色の両方のキー
+        static const wchar_t* const kNames[] = {L"off", L"pointer", L"triangle"};
+        static const CaretMarkerStyle kValues[] = {CaretMarkerStyle::Off, CaretMarkerStyle::Pointer,
+                                                   CaretMarkerStyle::Triangle};
+        ok = ParseChoice(value, kNames, kValues, &theme->caretMarker);
     } else if (key == L"shadow_steps") {
         double number = 0.0;
         ok = ParseNumber(value, &number);
@@ -576,6 +594,7 @@ PanelTheme PanelTheme::Defaults(bool dark)
         theme.tagPartial = Rgba(0x8A4FC8);
         theme.tagNextWord = Rgba(0xA8741F);
     }
+    theme.caretMarkerColor = theme.accent;
     return theme;
 }
 
@@ -606,7 +625,19 @@ void ApplyThemeText(const std::wstring& source, const std::wstring& builtinName,
                     const std::wstring& text, bool dark, PanelTheme* theme,
                     std::vector<std::wstring>* log)
 {
+    // 三角の色を書かなかったテーマでは、accent だけを変えたときも三角の色が追従するよう、
+    // 重ね終えた accent を使う
+    theme->caretMarkerColor = kUnsetColor;
     ApplyThemeTextAt(source, builtinName, text, dark, theme, log, 0);
+    if (theme->caretMarkerColor == kUnsetColor) {
+        theme->caretMarkerColor = theme->accent;
+    }
+    if (theme->blur && theme->caretMarker == CaretMarkerStyle::Pointer) {
+        // ぼかしのパネルは DWM の角丸ウィンドウの外に尻尾を描けない。ぼかしが使えずに通常の描画へ
+        // 戻ったときは尻尾を出すため、ここでは caretMarker を書き換えない
+        log->push_back(source + L": blur on と caret_marker pointer の両方があるため、" +
+                       L"ぼかしで描くときは尻尾を出さない");
+    }
 }
 
 bool PanelThemeLoader::Refresh(const std::wstring& name, bool force,

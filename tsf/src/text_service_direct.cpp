@@ -4,6 +4,7 @@
 #include "text_service.h"
 
 #include <algorithm>
+#include <cmath>
 #include <new>
 #include <vector>
 
@@ -1320,6 +1321,7 @@ void TextService::ShowNextWordBar(ITfContext* context)
     }
     // 候補の縁と入力行の前文脈は、後続語の予測であることで決まる
     nextWordBar_ = true;
+    UpdateCaretMarker(context);
     if (!ShowBarItems(gotCaret ? &caret : nullptr, std::move(items))) {
         ClearBar();
         return;
@@ -1725,8 +1727,12 @@ HRESULT TextService::UpdateRunDisplay(ITfContext* context)
                        TF_ES_SYNC | TF_ES_READWRITE);
 }
 
-bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** source)
+bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** source,
+                            bool* replaced)
 {
+    if (replaced != nullptr) {
+        *replaced = false;
+    }
     bool succeeded = false;
     if (context != nullptr && runComposition_ != nullptr) {
         // composition 入力のバーは composition の位置に合わせる (選択は composition の末尾にある)
@@ -1760,12 +1766,15 @@ bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** sou
         }
     }
     if (succeeded) {
-        FallbackIfOutsideWindow(context, rect, L"候補バーの位置");
+        const bool fallback = FallbackIfOutsideWindow(context, rect, L"候補バーの位置");
+        if (replaced != nullptr) {
+            *replaced = fallback;
+        }
     }
     return succeeded;
 }
 
-void TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
+bool TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
                                           const wchar_t* where) const
 {
     HWND root = nullptr;
@@ -1793,12 +1802,12 @@ void TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
     }
     RECT rootRect = {};
     if (root == nullptr || !GetWindowRect(root, &rootRect)) {
-        return;
+        return false;
     }
     // 幅・高さ 0 の矩形も来るため、矩形の重なりではなく左上の点で判定する
     const POINT origin = {rect->left, rect->top};
     if (PtInRect(&rootRect, origin)) {
-        return;
+        return false;
     }
     const RECT original = *rect;
     const LONG x = rootRect.left + (rootRect.right - rootRect.left) / 2;
@@ -1807,6 +1816,67 @@ void TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
     DebugLog(std::wstring(where) + L": 文書のウィンドウの外のため代わりの位置を使う 元=" +
              DebugRectText(original) + L" ウィンドウ=" + DebugRectText(rootRect) + L" 代わり=" +
              DebugRectText(*rect));
+    return true;
+}
+
+bool TextService::CaretMarkerRect(ITfContext* context, RECT* rect)
+{
+    // 候補選択中は composition_、composition 入力の run は runComposition_ に読みがある
+    ITfComposition* composition = composition_ != nullptr ? composition_ : runComposition_;
+    bool succeeded = false;
+    if (context != nullptr && composition != nullptr) {
+        RequestSync(context,
+                    new (std::nothrow)
+                        GetCompositionEndExtentEditSession(context, composition, rect, &succeeded),
+                    TF_ES_SYNC | TF_ES_READ);
+        // 代わりの位置はキャレットの位置ではなく、印が違う場所を指すため出さない
+        if (succeeded && FallbackIfOutsideWindow(context, rect, L"キャレットの印の位置")) {
+            return false;
+        }
+    }
+    if (succeeded) {
+        return true;
+    }
+    bool replaced = false;
+    return CaretRect(context, rect, nullptr, &replaced) && !replaced;
+}
+
+bool TextService::InCaretMarkerPeriod() const
+{
+    return InRun() || Composing() || nextWordBar_;
+}
+
+void TextService::UpdateCaretMarker(ITfContext* context)
+{
+    const PanelTheme& theme = panelTheme_.Get();
+    markerCaretValid_ = theme.caretMarker != CaretMarkerStyle::Off && InCaretMarkerPeriod() &&
+                        CaretMarkerRect(context, &markerCaret_);
+    if (!markerCaretValid_ || theme.caretMarker != CaretMarkerStyle::Triangle) {
+        caretMarker_.Hide();
+        return;
+    }
+    const int height = static_cast<int>(
+        std::lround(theme.triangleSize * static_cast<float>(config_.Get().candidateFontSize)));
+    caretMarker_.Show(markerCaret_, height, theme.caretMarkerColor);
+}
+
+void TextService::HideCaretMarkerOutsidePeriod()
+{
+    if (!InCaretMarkerPeriod()) {
+        markerCaretValid_ = false;
+        caretMarker_.Hide();
+    }
+}
+
+void TextService::ApplyCaretMarker(SuggestPanel::Placement* placement) const
+{
+    if (!markerCaretValid_) {
+        return;
+    }
+    const CaretMarkerStyle style = panelTheme_.Get().caretMarker;
+    placement->markerX = markerCaret_.left;
+    placement->pointer = style == CaretMarkerStyle::Pointer;
+    placement->belowTriangle = style == CaretMarkerStyle::Triangle;
 }
 
 HRESULT TextService::BackspaceAppend(ITfContext* context)

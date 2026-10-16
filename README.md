@@ -357,7 +357,8 @@ copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
   バーを出す文字数を変えられる。`suggest` (「入力中にサジェストを表示する」) を 0 にすると
   予測候補だけが出なくなる (全体変換・先頭文節は出る)
 - 見た目: `panel_theme` (設定ツールの「候補の見た目」、既定 `capsule`)。組み込みの
-  `capsule` (カプセル (横一列))・`capsule-column` (カプセル (縦積み))・`ghost` (ゴースト) から選ぶか、
+  `capsule` (カプセル (横一列))・`capsule-column` (カプセル (縦積み))・`capsule-blur` (カプセル (ぼかし))・
+  `ghost` (ゴースト) から選ぶか、
   テーマフォルダ `%APPDATA%\QuicklIME\themes\` に置いたテーマファイル (`<名前>.tsv`) を選ぶ。
   テーマファイルの書き方は [docs/theme.md](docs/theme.md)
 - 表示位置: `candidate_position` (設定ツールの「候補の表示位置」、`caret` / `center`、既定
@@ -369,7 +370,8 @@ copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
   入力中は入力行だけを出す。次の語の予測では直前の確定の末尾を
   出す。変換キーの候補選択中は、変換中の文を文節ごとに区切り、選択中の文節を強調して出す。
   `candidate_bar` が 0 のときは出さない
-- ぼかし: `panel_blur` (設定ツールの「候補の背景をぼかす」、既定 0)。1 にすると、候補バーと
+- ぼかし: テーマのキー `blur` (`on` / `off`、既定 `off`) で決まる。組み込みでは `capsule-blur`
+  (カプセル (ぼかし)) が `blur on`。`on` のテーマでは、候補バーと
   変換キーの候補一覧のパネルの背景が、後ろが透けるぼかし (アクリル) になる。角丸は
   Windows が描く小さい角丸になる。Windows の透明効果がオフのときや、機能が使えない環境
   (Windows 10 など) では通常の描画で出る

@@ -460,8 +460,6 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         config.panelBuffer = value == L"panel";
     } else if (key == L"input_scope_passthrough") {
         ParseBool(value, config.inputScopePassthrough);
-    } else if (key == L"panel_blur") {
-        ParseBool(value, config.panelBlur);
     } else if (key == L"panel_theme") {
         if (!value.empty()) {
             config.panelTheme = value;

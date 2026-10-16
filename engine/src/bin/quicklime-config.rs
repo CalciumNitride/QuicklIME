@@ -67,7 +67,6 @@ const ID_COMBO_PUNCT: i32 = 106;
 const ID_COMBO_DIGITS: i32 = 107;
 const ID_COMBO_FONT: i32 = 108;
 const ID_COMBO_FONT_SIZE: i32 = 109;
-const ID_CHECK_PANEL_BLUR: i32 = 110;
 const ID_COMBO_PANEL_THEME: i32 = 111;
 const ID_CHECK_MODELESS: i32 = 112;
 const ID_CHECK_CANDIDATE_BAR: i32 = 113;
@@ -117,9 +116,10 @@ const CANDIDATE_POSITIONS: [(&str, &str); 2] = [("caret", "キャレットの下
 const INPUT_BUFFERS: [(&str, &str); 2] =
     [("composition", "文書に下線付きで出す"), ("panel", "候補パネルだけに出す")];
 /// 組み込みのテーマ (panel_theme の値, 表示名)。TSF 層 (tsf/src/panel_theme.cpp) と合わせる
-const BUILTIN_THEMES: [(&str, &str); 3] = [
+const BUILTIN_THEMES: [(&str, &str); 4] = [
     ("capsule", "カプセル (横一列)"),
     ("capsule-column", "カプセル (縦積み)"),
+    ("capsule-blur", "カプセル (ぼかし)"),
     ("ghost", "ゴースト"),
 ];
 
@@ -449,8 +449,6 @@ struct Config {
     candidate_position: String,
     /// 入力中の読みも候補と同じパネルに出す
     panel_input: bool,
-    /// 候補パネルの背景をぼかす
-    panel_blur: bool,
     segment_ui: bool,
     llm: bool,
     /// LLM のバックエンド ("cpu" / "vulkan")
@@ -487,7 +485,6 @@ impl Default for Config {
             panel_theme: BUILTIN_THEMES[0].0.to_string(),
             candidate_position: "caret".to_string(),
             panel_input: false,
-            panel_blur: false,
             segment_ui: false,
             llm: false,
             llm_backend: "cpu".to_string(),
@@ -798,7 +795,6 @@ impl Config {
                 }
             }
             "panel_input" => parse_bool(&mut self.panel_input),
-            "panel_blur" => parse_bool(&mut self.panel_blur),
             "segment_ui" => parse_bool(&mut self.segment_ui),
             "llm" => parse_bool(&mut self.llm),
             "llm_backend" => {
@@ -905,7 +901,6 @@ impl Config {
         text.push_str(&format!("panel_theme\t{}\n", self.panel_theme));
         text.push_str(&format!("candidate_position\t{}\n", self.candidate_position));
         text.push_str(&format!("panel_input\t{}\n", self.panel_input as u32));
-        text.push_str(&format!("panel_blur\t{}\n", self.panel_blur as u32));
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
         text.push_str("\n# キー割当 (key.<機能>@<状態> は状態別の上書き)\n");
@@ -1333,8 +1328,6 @@ fn main() {
         add_combo(ctrl_x, y, ID_COMBO_CANDIDATE_POSITION, &position_labels, current_position);
         y += row_h + row_gap;
         check("入力中の読みも候補と同じ場所に表示する", y, ID_CHECK_PANEL_INPUT, config.panel_input);
-        y += row_h + row_gap;
-        check("候補の背景をぼかす", y, ID_CHECK_PANEL_BLUR, config.panel_blur);
         y += row_h + row_gap;
         create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
@@ -1858,7 +1851,6 @@ fn collect(hwnd: HWND) -> Config {
         config.candidate_position = name.to_string();
     }
     config.panel_input = checked(ID_CHECK_PANEL_INPUT);
-    config.panel_blur = checked(ID_CHECK_PANEL_BLUR);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     config.llm = checked(ID_CHECK_LLM);
     let backend = combo_text(ID_COMBO_LLM_BACKEND);
@@ -2938,20 +2930,15 @@ mod tests {
         let mut config = Config::default();
         assert_eq!(config.candidate_position, "caret");
         assert!(!config.panel_input);
-        assert!(!config.panel_blur);
         config.apply("candidate_position", "center");
         config.apply("panel_input", "1");
-        config.apply("panel_blur", "1");
         assert_eq!(config.candidate_position, "center");
         assert!(config.panel_input);
-        assert!(config.panel_blur);
         // 不正な値は読み飛ばす
         config.apply("candidate_position", "top");
         config.apply("panel_input", "2");
-        config.apply("panel_blur", "2");
         assert_eq!(config.candidate_position, "center");
         assert!(config.panel_input);
-        assert!(config.panel_blur);
     }
 
     #[test]
@@ -3019,13 +3006,17 @@ input_buffer	panel
             ],
             "capsule",
         );
-        assert_eq!(names(&choices), ["capsule", "capsule-column", "ghost", "Alpha", "mine"]);
+        assert_eq!(
+            names(&choices),
+            ["capsule", "capsule-column", "capsule-blur", "ghost", "Alpha", "mine"]
+        );
         assert_eq!(choices[0].1, "カプセル (横一列)");
-        assert_eq!(choices[2].1, "ゴースト");
-        assert_eq!(choices[3].1, "Alpha");
+        assert_eq!(choices[2].1, "カプセル (ぼかし)");
+        assert_eq!(choices[3].1, "ゴースト");
+        assert_eq!(choices[4].1, "Alpha");
         // 一覧に無い設定値は末尾に足す
         let choices = theme_choices(Vec::new(), "gone");
-        assert_eq!(names(&choices), ["capsule", "capsule-column", "ghost", "gone"]);
+        assert_eq!(names(&choices), ["capsule", "capsule-column", "capsule-blur", "ghost", "gone"]);
     }
 
     #[test]

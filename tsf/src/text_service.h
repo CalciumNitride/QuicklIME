@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "caret_marker.h"
 #include "config.h"
 #include "engine_client.h"
 #include "romaji.h"
@@ -329,13 +330,29 @@ private:
                           const DirectKey* followKey);
     // 候補バーの位置の基準 (run の composition があればその矩形、無ければ選択範囲の矩形、
     // 取れなければシステムキャレットの矩形)。どれも取れなければ false
-    // source には位置の出所 (診断ログ用の説明) を返す
-    bool CaretRect(ITfContext* context, RECT* rect, const wchar_t** source = nullptr);
+    // source には位置の出所 (診断ログ用の説明) を返す。replaced には、矩形がウィンドウの外を指して
+    // 代わりの位置 (FallbackIfOutsideWindow) に置き換えたかを返す
+    bool CaretRect(ITfContext* context, RECT* rect, const wchar_t** source = nullptr,
+                   bool* replaced = nullptr);
     // 文字位置から得た rect の左上が文書のルートウィンドウの外なら、ルートウィンドウの中央の点
-    // (幅・高さ 0) に置き換える。TSF が入力欄と無関係な位置 (モニタの隅に丸めた値など) を返す
-    // アプリでも候補ウィンドウ等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
+    // (幅・高さ 0) に置き換えて true を返す。TSF が入力欄と無関係な位置 (モニタの隅に丸めた値など) を
+    // 返すアプリでも候補ウィンドウ等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
     // where は置き換えたときのデバッグログの見出し
-    void FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
+    bool FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
+
+    // ---- キャレットの印 (テーマの caret_marker。docs/design/caret-marker.md) ----
+    // 文書のキャレットの矩形。composition があればその末尾 (取れなければ composition の右端)、
+    // 無ければ CaretRect。取れないとき・代わりの位置に置き換えたときは false
+    bool CaretMarkerRect(ITfContext* context, RECT* rect);
+    // 印を出す期間か (run 中・候補選択中・後続語の予測の表示中)
+    bool InCaretMarkerPeriod() const;
+    // キャレットの位置を取り直し (markerCaret_)、triangle なら三角を出し直す。期間外・off・
+    // 位置が取れないときは三角を消す。パネルを出す前に呼ぶ (パネルの尻尾と三角の分の位置に使う)
+    void UpdateCaretMarker(ITfContext* context);
+    // 印を出す期間でなければ三角を消す (状態を変えうる通知の処理の最後に呼ぶ)
+    void HideCaretMarkerOutsidePeriod();
+    // placement に、キャレットの印に合わせた尻尾・三角の指定を入れる
+    void ApplyCaretMarker(SuggestPanel::Placement* placement) const;
 
     // ---- LLM による並べ替え (docs/design/llm-rerank.md) ----
     // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
@@ -734,6 +751,12 @@ private:
     std::wstring asciiForm_;
     // 表示中のバーが run の無いときに出した後続語の予測か (候補は barItems_ に予測候補として持つ)
     bool nextWordBar_;
+
+    // キャレットの印。最後に取った文書のキャレットの矩形を、並べ替えの結果でバーを組み直すとき
+    // (タイマーからは文書の矩形を取らない) にも使う
+    CaretMarker caretMarker_;
+    RECT markerCaret_;
+    bool markerCaretValid_;  // markerCaret_ を印に使えるか
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)

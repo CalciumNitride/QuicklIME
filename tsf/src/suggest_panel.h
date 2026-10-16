@@ -66,6 +66,15 @@ public:
         int x = 0;  // Caret のときのパネルの左端
         // Caret のとき、未完成ローマ字のカプセル (キャレットに重ねて出す) の下端より下に出す
         bool belowCapsule = true;
+        // キャレットの印 (docs/design/caret-marker.md) の先端の x (文書のキャレットの矩形の左端。
+        // スクリーン座標)。pointer のときだけ使う
+        int markerX = 0;
+        // キャレット行に向いた辺に吹き出しの尻尾を付けて markerX を指す。描けないとき
+        // (Center・style ghost・ぼかし・キャレット行に重なる位置) は付けない
+        bool pointer = false;
+        // Caret でキャレット行の下に出すとき、キャレットの下端に出す三角 (theme の triangleSize) の
+        // 高さの分だけ下げる
+        bool belowTriangle = false;
     };
 
     SuggestPanel();
@@ -105,7 +114,7 @@ public:
     // 変わったときは隠す (今のレイアウトは前の見た目で組んであるため)
     void SetTheme(const PanelTheme& theme);
 
-    // 背景のぼかし (設定 panel_blur) を使うかどうか。変わったときは表示中なら隠し、次の表示から
+    // 背景のぼかし (テーマの blur) を使うかどうか。変わったときは表示中なら隠し、次の表示から
     // 新しい方式でウィンドウを作る。ぼかしが使えない環境では layered window の描画に戻す
     void SetBlur(bool enabled);
 
@@ -133,6 +142,13 @@ private:
     enum class Kind {
         Panel,    // Show
         Capsule,  // ShowCapsule
+    };
+
+    // 吹き出しの尻尾を付ける辺
+    enum class TailSide {
+        None,
+        Top,     // パネルがキャレット行の下にあり、上向きの尻尾を付ける
+        Bottom,  // パネルがキャレット行の上にあり、下向きの尻尾を付ける
     };
 
     // 候補 1 件の表示位置 (影を除いたパネルの左上を原点とする px)。高さは行の高さ
@@ -170,6 +186,19 @@ private:
                    float right, float bottom, const PanelColor& color);
     // layered window の方式で、パネルの外側に取る余白 (影・ghost のにじみの分)
     int LayeredMargin() const;
+    // 次の Render がぼかしの方式で描くか
+    bool BlurExpected() const;
+    // placement で尻尾を付けるときの尻尾の高さ (px)。付けられなければ 0
+    int PointerHeight(const Placement& placement) const;
+    // placement で三角の分だけパネルを下げる量 (px)。下げなければ 0
+    int TriangleHeight(const Placement& placement) const;
+    // 決めたパネルの位置 (bodyY_・bodyHeight_) とキャレット行から、尻尾を付ける辺を決める
+    void PlaceTail(const Placement& placement, int pointerHeight);
+    // 尻尾の分としてパネルの上・下に取るウィンドウの余白 (px)
+    int TopTailPad() const;
+    int BottomTailPad() const;
+    // 尻尾の先端の x (ウィンドウ内の座標)。bodyLeft・bodyRight はパネルの左右端 (ウィンドウ内の座標)
+    float TailTipX(float bodyLeft, float bodyRight, float radius) const;
     // 入力行の末尾に出すゴースト (ghost のとき選択中または先頭の候補。無ければ空)
     std::wstring GhostText() const;
     void LogShow(const wchar_t* kind, const RECT* anchor, bool created, DWORD error) const;
@@ -219,4 +248,7 @@ private:
     int bodyWidth_;
     int bodyHeight_;
     int margin_;      // 影のためにパネルの外側に取る余白 (ぼかしの方式では 0)
+    TailSide tail_;   // 吹き出しの尻尾を付ける辺
+    int tailHeight_;  // 尻尾の高さ (px。底辺は高さの 2 倍)
+    int markerX_;     // 尻尾の先端の x (スクリーン座標。角丸にかかるときは Draw で寄せる)
 };
