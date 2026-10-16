@@ -98,8 +98,11 @@ struct TsfConfig {
     // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
     bool panelInput = false;
     // 入力中の読みを文書に書かず、パネルの入力行だけに持つ (設定 input_buffer の panel。
-    // document なら文書書き込み入力。docs/design/panel-buffer.md)
+    // composition なら読みを文書の composition に出す。docs/design/input-buffer-modes.md)
     bool panelBuffer = false;
+    // 半角英数字を前提にした InputScope の欄 (数字・電話番号・メールアドレス・URL など) では
+    // キーを食べない (設定 input_scope_passthrough。docs/design/input-scope.md)
+    bool inputScopePassthrough = true;
     // パネルの背景をぼかし (アクリル風) にする (設定 panel_blur。テーマの blur never では効かない)
     bool panelBlur = false;
     // サジェストパネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
@@ -121,8 +124,6 @@ struct TsfConfig {
     std::vector<ImeStartApp> imeStartApps;
     // 学習を記録しないアプリの exe 名 (docs/design/no-learning-apps.md)
     std::vector<std::wstring> noLearningApps;
-    // 読める文書でも追記のみとして扱うアプリの exe 名 (docs/design/append-only-apps.md)
-    std::vector<std::wstring> appendOnlyApps = DefaultAppendOnlyApps();
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();
@@ -134,7 +135,6 @@ struct TsfConfig {
 
     static std::array<KeyAssignment, kKeyFuncCount> DefaultKeyAssignments();
     static std::vector<std::wstring> DefaultNewlineApps();
-    static std::vector<std::wstring> DefaultAppendOnlyApps();
 };
 
 // config.tsv (QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv) のローダ。

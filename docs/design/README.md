@@ -18,18 +18,26 @@
 - [direct-input.md](direct-input.md): 直接入力方式。打鍵した文字を文書に直接入れ、run を覚えて変換キーで
   後置変換する。composition 方式とフォールバックは [append-input.md](append-input.md) で廃止。かなの
   追記の方法と文書の分類は [append-input.md](append-input.md)、パネル保持入力は
-  [panel-buffer.md](panel-buffer.md)
+  [panel-buffer.md](panel-buffer.md)。文書に直接入れる方式は [input-buffer-modes.md](input-buffer-modes.md)
+  で廃止し、run のキーの意味と後置再変換はそちらで置き換え
 - [append-input.md](append-input.md): 追記型入力。未完成のローマ字を小窓に出し、かなを文書に追記する。
-  読める文書と追記のみの文書の扱い
+  読める文書と追記のみの文書の扱い。[input-buffer-modes.md](input-buffer-modes.md) で廃止し、文書の分類は
+  そちらで置き換え
 - [keymap.md](keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける
 - [panel-buffer.md](panel-buffer.md): パネル保持入力 (設定 `input_buffer panel`)。入力中の読みを文書に
-  書かず候補パネルの入力行だけに持ち、採用・確定で挿入する
+  書かず候補パネルの入力行だけに持ち、採用・確定で挿入する。設定の値・文書の分類・確定アンドゥは
+  [input-buffer-modes.md](input-buffer-modes.md) で置き換え
+- [input-buffer-modes.md](input-buffer-modes.md): 入力方式の選択 (設定 `input_buffer` の `composition` /
+  `panel`)。文書書き込み入力・擬似 Backspace・`append_only_apps` を廃止し、2方式で run とキー処理を
+  共通にする。後置再変換・確定アンドゥは読める文書だけで働く
 - [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
   設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
 - [ime-start-state.md](ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに決める
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
-- [append-only-apps.md](append-only-apps.md): 指定したアプリ (既定 Discord.exe) では読める文書も追記のみとして扱い、文字の置き換えを擬似 Backspace で行う
+- [append-only-apps.md](append-only-apps.md): 指定したアプリ (既定 Discord.exe) では読める文書も追記のみとして扱い、文字の置き換えを擬似 Backspace で行う。
+  [input-buffer-modes.md](input-buffer-modes.md) で廃止
 - [forget-learning.md](forget-learning.md): 候補パネルで選んでいる候補の学習を Ctrl+Delete で消す
+- [input-scope.md](input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンのままキーを食べない (設定 `input_scope_passthrough`)
 
 ## 候補の表示
 

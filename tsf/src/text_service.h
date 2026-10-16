@@ -4,6 +4,7 @@
 #include <msctf.h>
 
 #include <bitset>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -14,6 +15,7 @@
 
 class LangBarButton;
 enum class ReplaceRunResult;
+struct FocusInputScope;
 
 // キーの分類 (text_service.cpp と text_service_direct.cpp で共用。定義は text_service.cpp)
 namespace key_util {
@@ -37,9 +39,9 @@ bool ContainsAsciiLetter(const std::wstring& text);
 } // namespace key_util
 
 // TSF テキストサービス本体。
-// 打鍵したかなを未確定文字列を使わずに文書へ追記し (run)、変換キーで run を
-// composition に昇格して候補ウィンドウから選ぶ (docs/design/direct-input.md、
-// docs/design/append-input.md)。
+// 打鍵した読みを run として IME が持ち、文書の composition (composition 入力) か
+// 候補パネルの入力行 (パネル保持入力) に出す。採用・確定で文書へ入れ、変換キーでは
+// composition で候補を選ぶ (docs/design/input-buffer-modes.md)。
 class TextService : public ITfTextInputProcessorEx,
                     public ITfThreadMgrEventSink,
                     public ITfKeyEventSink,
@@ -88,7 +90,7 @@ public:
     STDMETHODIMP EnumDisplayAttributeInfo(IEnumTfDisplayAttributeInfo** enumInfo) override;
     STDMETHODIMP GetDisplayAttributeInfo(REFGUID guid, ITfDisplayAttributeInfo** info) override;
 
-    // ITfTextEditSink (キャレット移動による run の終了用)
+    // ITfTextEditSink (キャレット移動で後続語の予測を消す)
     STDMETHODIMP OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly,
                            ITfEditRecord* editRecord) override;
 
@@ -119,8 +121,6 @@ private:
     bool FindImeStartState(bool* open) const;
     // ホストの exe 名が学習を記録しないアプリ (設定 no_learning_apps) にあるか
     bool IsNoLearningApp() const;
-    // ホストの exe 名が読める文書でも追記のみとして扱うアプリ (設定 append_only_apps) にあるか
-    bool IsAppendOnlyApp() const;
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
@@ -142,11 +142,17 @@ private:
     // フォーカス中の文書でキー入力が無効か (フォーカス中の文書・最上位 context が無い、または
     // context の KEYBOARD_DISABLED・EMPTYCONTEXT compartment が立っている。パスワード欄など)
     bool IsKeyboardDisabled() const;
-    // キー入力が無効な文書でキーを受けたとき、残っている run (昇格できなかった run の候補選択を
-    // 含む) と目印待ちを、学習・LLM の履歴・確定文脈に残さずに捨てる
+    // キー入力が無効な文書でキーを受けたとき、残っている run を、学習・LLM の履歴・確定文脈に
+    // 残さずに捨てる
     void DiscardRunWhileDisabled();
-    // フォーカスが移った文書の無効化の状態と InputScope を診断ログに出す
-    void LogFocusDocument(ITfDocumentMgr* focus);
+    // フォーカスが移った文書の無効化の状態と InputScope (inputScopeLog) を診断ログに出す
+    void LogFocusDocument(ITfDocumentMgr* focus, const std::wstring& inputScopeLog);
+    // フォーカスが移った文書の InputScope を読み取りの edit session で取りに行き、
+    // focusInputScope_ に入れる (同期で走らなければ走った時点で入れる)。戻り値は診断ログ用
+    std::wstring RequestFocusInputScope(ITfDocumentMgr* focus);
+    // フォーカス中の文書が半角英数字を前提にした InputScope の欄で、キーを食べずに素通しにするか
+    // (設定 input_scope_passthrough)。未取得なら context から同期で読み、読めなければ素通しにしない
+    bool IsInputScopePassthrough(ITfContext* context) const;
 
     // 食べたキーを状態機械に従って処理する (候補選択中の composition とそれ以外で
     // 振り分け、処理後に昇格した composition の降格を判定する)
@@ -193,10 +199,8 @@ private:
     HRESULT MoveSegmentTo(ITfContext* context, size_t index);
     // 現在文節の境界を delta 文字ぶん伸縮し、境界固定で再変換する
     HRESULT ResizeSegment(ITfContext* context, int delta);
-    // 変換の取消 (記憶から始めた変換は CancelAdoptedConversion、それ以外は CancelConversionToKana)
+    // 変換を取り消して変換前の読みに戻す (表示は直後の DemoteIfLeftConversion が run に戻して行う)
     HRESULT CancelConversion(ITfContext* context);
-    // 変換を取り消してかな表示に戻す (範囲の伸縮もこれで run に戻す)
-    HRESULT CancelConversionToKana(ITfContext* context);
 
     // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する。
     // F7/F8 は連打で後ろから1文字ずつひらがなに戻し、F9/F10 は連打で
@@ -258,8 +262,6 @@ private:
     // 表示する。収まった候補だけを選択の対象にする。caret が null ならキャレットの矩形が
     // 取れなかったことを表す (画面中央のときだけ出せる)。1件も出せなければ false (何も変えない)
     bool ShowBarItems(const RECT* caret, std::vector<BarCandidate> items);
-    // composition を Display() で更新し、続けてバーを作り直す (候補選択を取り消したときの表示)
-    HRESULT UpdateCompositionAndBar(ITfContext* context);
     // バーの候補と選択を破棄し、パネルを隠す
     void ClearBar();
     // バーの候補と選択を破棄する (パネルの表示は変えない)
@@ -273,7 +275,7 @@ private:
     bool PanelInputActive() const;
     // 入力行を出している状態か (入力行を出す設定で、候補選択中でない run の間)
     bool PanelInputShown() const;
-    // 入力行の内容 (run の表示中の文字列と未完成のローマ字、run が無ければ後続語の予測の前文脈)。
+    // 入力行の内容 (run の確定したかなと未完成のローマ字、run が無ければ後続語の予測の前文脈)。
     // 入力行を出さないときは false
     bool PanelInputLine(SuggestPanel::InputLine* line) const;
     // labels と入力行をパネルに出し、表示した候補の数を返す。caret が null ならキャレットの
@@ -293,16 +295,15 @@ private:
     // あれば候補を作り直して同じ番号 (無ければ末尾) を選ぶ。文書は書き換えない
     // (docs/design/forget-learning.md)
     HRESULT ForgetBarLearning(ITfContext* context);
-    // バーの index の候補を採用する。run の文字列を「採用部分 + 残りのかな」(run を終えるときは
-    // 未完成のローマ字と suffix も) に作り直す (追記のみの文書では擬似 Backspace の後に追記する)。
-    // followKey があれば、採用の後にその打鍵を入れる
+    // バーの index の候補を採用する。採用部分 (run を終えるときは残りの読みと suffix も) を
+    // 文書に入れ、残りの読みで run を続ける。followKey があれば、採用の後にその打鍵を入れる
     HRESULT AdoptBarItem(ITfContext* context, size_t index, BarAdopt mode,
                          const std::wstring& suffix, const DirectKey* followKey);
-    // 英字候補の採用: 読みを英字候補の複製に置き換え、文書の run を英字に書き換える。
-    // run を終えるとき (Space・確定キー・Enter) は suffix を付けて終え、印字キーは英字区間に続ける
+    // 英字候補の採用: 読みを英字候補の複製に置き換える。run を終えるとき (Space・確定キー・
+    // Enter) は suffix を付けて文書に入れ、印字キーは英字区間に続ける
     HRESULT AdoptAsciiCandidate(ITfContext* context, BarAdopt mode, const std::wstring& suffix,
                                 const DirectKey* followKey);
-    // 採用の文書の書き換えを終えた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
+    // 採用を文書に入れた後の状態処理 (学習・文脈・読みの切り離し・run の終了または
     // 継続)。updateBar なら run を続けるときにバーを作り直す
     void FinishBarAdoption(ITfContext* context, bool updateBar);
     // 確定キー (バー未選択): アプリへ渡すキーと同じ救済を通して、見えているとおりに run を終える
@@ -313,8 +314,7 @@ private:
     // run の無いときに、今の前文脈の後続語の予測を候補バーに出す (設定・前文脈・候補・接続の
     // どれかが欠ければ何もしない)
     void ShowNextWordBar(ITfContext* context);
-    // 確定キーの処理の後に呼ぶ: run が終わっていれば後続語の予測を出す (擬似 Backspace の
-    // 目印待ちなら、目印を受け取った後に回す)
+    // 確定キーの処理の後に呼ぶ: run が終わっていれば後続語の予測を出す
     void ShowNextWordAfterCommit(ITfContext* context);
     // 後続語の予測を出していて、その候補を選んでいるか
     bool NextWordSelected() const;
@@ -327,8 +327,8 @@ private:
     // 確定キー (CommitKey) なら続けて次の語の予測を出し、followKey があればその打鍵で run を始める
     HRESULT AdoptNextWord(ITfContext* context, BarAdopt mode, const std::wstring& suffix,
                           const DirectKey* followKey);
-    // 未完成ローマ字の小窓・候補バーの位置の基準 (選択範囲の矩形、取れなければ
-    // システムキャレットの矩形)。どちらも取れなければ false
+    // 候補バーの位置の基準 (run の composition があればその矩形、無ければ選択範囲の矩形、
+    // 取れなければシステムキャレットの矩形)。どれも取れなければ false
     // source には位置の出所 (診断ログ用の説明) を返す
     bool CaretRect(ITfContext* context, RECT* rect, const wchar_t** source = nullptr);
     // 文字位置から得た rect の左上が文書のルートウィンドウの外なら、ルートウィンドウの中央の点
@@ -344,7 +344,7 @@ private:
     // 呼び出し側が文書から読んだ、範囲の先頭より前の文字列を LLM の左文脈にする
     // (設定 llm が無効なら何もしない)
     void CaptureLlmContextFrom(const std::wstring& preceding);
-    // IME が文書に入れた文字列を履歴 (追記のみの文書の左文脈) に足す
+    // IME が文書に入れた文字列を履歴 (読めると判定されていない文書の左文脈) に足す
     void AppendLlmHistory(const std::wstring& text);
     // 部分採用の後も run は続く。文書は読み直さず、run を始めたときの左文脈に採用した文字列を足す
     void ExtendLlmContext(const std::wstring& adopted);
@@ -412,20 +412,20 @@ private:
     void FinishConversionState(const std::wstring& commitText);
     // 「確定 + 新しい composition の開始」を1つの edit session で行い、
     // composition_ を新しいものに差し替える。未確定文字列の表示は
-    // 呼び出し側が UpdateCompositionAndPredict で別途行う。
+    // 呼び出し側が別の edit session で行う。
     // 候補選択中に印字キーが来たときは必ずこれを使う (分割すると Word や
     // CUAS 経由のアプリで新しい composition が生き残らない)
     HRESULT RestartComposition(ITfContext* context, const std::wstring& commitText);
-    // 確定アンドゥ (Ctrl+Backspace): 直前の確定文字列を読みのかなに戻して run を再開する。
-    // 読める文書はキャレット直前が確定文字列と一致するときだけ置き換え、
-    // 追記のみの文書は擬似 Backspace で消してから追記する
+    // 確定アンドゥ (Ctrl+Backspace): 読める文書でキャレット直前が直前の確定文字列と一致するとき、
+    // その文字列を消して読みの run を再開する
     HRESULT UndoCommit(ITfContext* context);
+    // 確定アンドゥを今行えるか (読める文書で、キャレット直前が直前の確定文字列で終わる)
+    bool CanUndoCommit(ITfContext* context) const;
     // 単語登録 (既定 Ctrl+F7): 選択テキストを初期値にして登録ツールを起動する
     HRESULT LaunchWordRegister(ITfContext* context);
     // 設定ツール (quicklime-config.exe) の起動 (既定 Ctrl+F12)
     HRESULT LaunchConfigTool();
-    // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する。
-    // 昇格できなかった run では surface_ を置き換えて現在文節を選択状態にする
+    // 変換中の表示 (選択候補の連結 + 現在文節の強調) を composition に反映する
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
     std::wstring ConvertedText() const;
@@ -452,13 +452,13 @@ private:
     // 次の変換の左文脈として使えなくなったとき)
     void ClearContext();
 
+    // 候補選択中の composition があるか (run の composition は runComposition_ に別に持つ)
     bool Composing() const { return composition_ != nullptr; }
 
-    // ---- run (実装は text_service_direct.cpp) ----
-    // 打鍵したかなを composition ではなく文書に追記し、IME が「自分が入れた文字列
-    // (surface_) とその読み (composer_)」= run を覚えておく。未完成のローマ字は文書に
-    // 入れずにキャレット付近の小窓に出し、変換するときは run を composition に昇格する
-    // (docs/design/direct-input.md、docs/design/append-input.md)
+    // ---- run (実装は text_service_direct.cpp。docs/design/input-buffer-modes.md) ----
+    // 打鍵した読み (composer_) = run を IME が持ち、採用・確定したときに文書へ入れる。
+    // 読みの表示場所は run を始めた時点の設定で決め (RunMode)、変換するときは composition で
+    // 候補を選ぶ
     // 1打鍵が composer_ に加える内容
     struct DirectKey {
         wchar_t romaji = 0;       // 0 以外ならローマ字として Push する (英字モード中は raw)
@@ -466,9 +466,13 @@ private:
         std::wstring raw;         // 打鍵文字そのもの
         bool enterAscii = false;  // Shift+英字: 英字モードに入る
     };
-    // 未完成のローマ字だけの run (文書にはまだ何も入っていない) もある。
+    // run の読みを出す場所 (設定 input_buffer)
+    enum class RunMode {
+        Composition,  // 文書の composition (runComposition_)
+        Panel,        // 候補パネルの入力行だけ (文書には採用・確定まで何も入れない)
+    };
     // 候補選択中の composition は run に数えない
-    bool InRun() const { return !surface_.empty() || (!Composing() && !composer_.Empty()); }
+    bool InRun() const { return !Composing() && !composer_.Empty(); }
     // 割当に一致しなかったキーを食べるか (候補選択中の composition 以外)
     bool IsKeyEatenDirect(WPARAM wparam) const;
     HRESULT HandleKeyDirect(ITfContext* context, WPARAM wparam);
@@ -477,38 +481,51 @@ private:
     // (EnterNeedsResend のときは食べるのでここでは扱わない)。
     // OnTestKeyDown / OnKeyDown の両方から呼ぶ (2回目以降は何もしない)
     void EndRunIfPassthroughKey(ITfContext* context, WPARAM wparam);
-    // ---- パネル保持入力 (設定 input_buffer panel。docs/design/panel-buffer.md) ----
-    // 今の run がパネル保持入力の run か (run も候補選択中の composition も無ければ false)
-    bool PanelRunActive() const { return (InRun() || Composing()) && panelRun_; }
-    // パネル保持入力の run を終えてアプリへ渡すキーで、読めると判定されていない文書のため
-    // 食べて挿入の後に送り直すものか (Enter・矢印・Tab (バーなし)・Home/End/Delete・
-    // PgUp/PgDn・Ctrl 併用)
+    // 今の run (昇格した composition を含む) がパネル保持入力か (run も候補選択中の
+    // composition も無ければ false)
+    bool PanelRunActive() const { return (InRun() || Composing()) && runMode_ == RunMode::Panel; }
+    // run を終えてアプリへ渡すキーで、読めると判定されていない文書のため食べて文書に入れた後に
+    // 送り直すものか (Enter・矢印・Tab (バーなし)・Home/End/Delete・PgUp/PgDn・Ctrl 併用)
     bool PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const;
-    // PanelKeyNeedsResend のキー: 読み (Enter のバー選択中は選択中の候補) を挿入して run を
+    // PanelKeyNeedsResend のキー: 読み (Enter のバー選択中は選択中の候補) を文書に入れて run を
     // 終えてから、その打鍵をアプリへ送り直す
     HRESULT EndPanelRunAndResend(ITfContext* context, WPARAM wparam);
-    // text をキャレット位置に挿入し (選択があれば置き換える)、文書の分類に使う直前の挿入として
-    // 覚える。LLM の履歴には足さない (呼び出し側の EndRun・FinishBarAdoption が足す)
-    HRESULT InsertPanelText(ITfContext* context, const std::wstring& text);
-    // パネル保持入力の run の文字列 text を挿入して run を終える (学習・記憶は EndRun と同じ)。
-    // 挿入に失敗したら run を捨てる
-    HRESULT InsertPanelRun(ITfContext* context, const std::wstring& text);
-    // 未判定の文書を、IME が直前に挿入した文字列の読み戻しで分類する。キャレット直前が
+    // run の方式を今の設定で決める (run を始めるとき)
+    void BeginRunMode();
+    // run の読みの composition を張る (開始と文字列の設定は別の edit session)。張れなければ
+    // false を返し、その run はパネル保持入力として続ける
+    bool StartRunComposition(ITfContext* context);
+    // run の composition を text で置き換えて終える (空なら取消)。edit session は composition の
+    // 範囲から得た context で行う
+    HRESULT EndRunComposition(const std::wstring& text);
+    // run の composition を commitText で終え、続けて同じ edit session で新しい composition を
+    // 張る (先頭文節の採用・採用に続く打鍵)。新しい composition を張れなければ、その run は
+    // パネル保持入力として続ける
+    HRESULT RestartRunComposition(ITfContext* context, const std::wstring& commitText);
+    // run の読みの表示 (composition の文字列) を composer_ に合わせる。パネル保持入力は何もしない
+    // (入力行は UpdateBar が描く)
+    HRESULT UpdateRunDisplay(ITfContext* context);
+    // text を run の位置に入れる (composition 入力は composition を text で終え、パネル保持入力は
+    // キャレット位置に挿入する)。文書の分類に使う直前の挿入として覚える。LLM の履歴には
+    // 足さない (呼び出し側の EndRun・FinishBarAdoption が足す)
+    HRESULT WriteRunText(ITfContext* context, const std::wstring& text);
+    // run の文字列 text を文書に入れて run を終える (学習・記憶は EndRun と同じ)。
+    // 入れられなかったら run を捨てる
+    HRESULT CommitRunText(ITfContext* context, const std::wstring& text);
+    // 未判定の文書を、IME が直前に入れた文字列の読み戻しで分類する。キャレット直前が
     // その文字列で終わっていれば読める文書にし、そうでなければ未判定のまま残す。
-    // 照合に使った文字列は忘れる (次に挿入したときにまた判定する)
+    // 照合に使った文字列は忘れる (次に入れたときにまた判定する)
     void ClassifyByLastInsert(ITfContext* context);
-    // 打鍵の前処理: パネル保持入力の設定で run が無いとき、run なしで文書を読む機能
-    // (変換キー・F6〜F10) の打鍵なら、食べるかを決める前に文書を分類する
+    // 打鍵の前処理: run が無いとき、run なしで文書を読む機能 (変換キー・F6〜F10・確定アンドゥ) の
+    // 打鍵なら、食べるかを決める前に文書を分類する
     void ClassifyBeforeIdleKey(ITfContext* context, WPARAM wparam);
 
-    // バー選択中の採用に擬似 Backspace が要る (文書が読めると判定されていない)
-    bool AdoptionNeedsPseudoBackspace() const;
     // Enter (Ctrl+M) を食べて確定し、確定の後に元の打鍵を送り直す (読めると判定されていない
-    // 文書の候補選択中と、擬似 Backspace が要るバーの採用)。composition の有無によらない
+    // 文書の候補選択中と後続語の予測の選択中)
     bool EnterNeedsResend() const;
     // 食べた Enter (Ctrl+M)・改行キーの確定を行い、確定の後で打鍵 vk をアプリへ送り直す
     HRESULT CommitAndResendEnter(ITfContext* context, WPARAM vk, bool ctrl, bool shifted);
-    // 食べた Enter (Ctrl+M) を、確定 (擬似 Backspace による書き換えを含む) の後でアプリへ送り直す
+    // 食べた打鍵を、確定の後でアプリへ送り直す
     void SendResendKey();
     // 改行キー: 入力中なら Enter と同じく確定してから、アプリへ Shift+Enter を送る
     HRESULT InsertNewline(ITfContext* context);
@@ -529,10 +546,10 @@ private:
         bool selection = false;  // 選択範囲 (後置再変換) か、キャレット直前の文字列か
         bool adopted = false;    // 最新の記憶1件が対象か (読みの状態は記憶したものを使う)
     };
-    // 選択があれば、ひらがな・カタカナ・ー だけの選択 (後置再変換)。選択が空なら、読める文書で
-    // キャレット直前が有効な記憶で終わり、最新の記憶の表記がひらがな・ー だけでなければその1件、
-    // それ以外はキャレット直前のひらがな・ー の連続。どちらも kMaxReconvertLength 文字まで。
-    // 対象が無ければ false
+    // 選択があれば、選択開始から読み戻して照合できる、ひらがな・カタカナ・ー だけの選択
+    // (後置再変換)。選択が空なら、読める文書でキャレット直前が有効な記憶で終わり、最新の記憶の
+    // 表記がひらがな・ー だけでなければその1件、それ以外はキャレット直前のひらがな・ー の連続。
+    // どちらも kMaxReconvertLength 文字まで。対象が無ければ false
     bool ReadIdleTarget(ITfContext* context, IdleTarget* target) const;
     // 入力なしの対象を読みとして run を作り、昇格して func (Convert か F6〜F10) の変換に入る
     HRESULT ConvertIdleTarget(ITfContext* context, KeyFunc func);
@@ -540,26 +557,21 @@ private:
     // 返す。キャレットの直前が inRange で終わっていなければ false
     bool ReadTextBeforeCaret(ITfContext* context, const std::wstring& inRange,
                              std::wstring* before) const;
-    // 昇格した直後に、変換の範囲の伸縮に使う状態を始める (before は範囲の前の文書の文字列)。
-    // keepExcluded なら (追記のみの文書) 縮めて外したかなを composition の先頭に残す
-    void BeginRangeTracking(const std::wstring& before, bool keepExcluded);
-    // 候補選択中の ←→ で変換の範囲を伸縮できるか (入力全体の候補選択・英字を含まない run か
-    // F6〜F10 の文字種変換中・
-    // 範囲の前を読めた読める文書か、composition の候補選択中の追記のみの文書)
+    // 昇格した直後に、変換の範囲の伸縮に使う状態を始める。縮めて外したかなは文書に書かず、
+    // composition の先頭に残す
+    void BeginRangeTracking();
+    // 候補選択中の ←→ で変換の範囲を伸縮できるか (入力全体の候補選択で、英字を含まない run か
+    // F6〜F10 の文字種変換中)
     bool RangeResizable() const;
-    // 追記のみの文書で縮めて外し、composition の先頭に残しているかな (無ければ空)
+    // 縮めて外し、composition の先頭に残しているかな (無ければ空)
     std::wstring RangeExcludedInComposition() const;
     // 範囲を変えた後の前文脈を決める (外したかな、または範囲を始めたときの前文脈)
     void ApplyRangeContext();
     // 変換の取消: composition の先頭に残した外したかなを読みに戻す (run 全体のかなに戻る)
     void RestoreExcludedKana();
-    // 範囲の右端をキャレットに固定し、左端を1文字動かして変換をやり直す
-    // (delta < 0 で広げ、delta > 0 で縮める)。できないときは何もしない
+    // 範囲の右端を固定し、左端を1文字動かして変換をやり直す (delta < 0 で広げ、delta > 0 で
+    // 縮める)。広げられるのは縮めて外したかなを戻すところまで。できないときは何もしない
     HRESULT ResizeConversionRange(ITfContext* context, int delta);
-    // 範囲を広げる: 範囲の直前の記憶の最後の文節を、範囲に入らない部分を含めてかなに書き直し、
-    // その読みの最後の1文字を範囲の先頭に足す (降格した run の状態で呼ぶ)。
-    // 文書の書き換えに失敗したら run を捨てて false
-    bool ExtendRangeIntoAdopted(ITfContext* context);
 
     // ---- 採用した文字列の記憶 (docs/design/adopted-reconversion.md) ----
     // run が文書に残した出力1件 (候補バーの採用・候補選択の確定・かなのままの run の終了)
@@ -568,13 +580,13 @@ private:
         std::vector<std::pair<std::wstring, std::wstring>> segments;  // 文節ごとの (読み, 表記)
         RomajiComposer composer;  // 確定前の読みの状態 (Commit() が文節の読みの連結)
     };
-    // 記憶を1件足す (読める文書のときだけ)。文節の読み・表記の連結が composer・surface と
-    // 食い違えば1文節にする。読みの合計が kMaxReconvertLength を超えた分は古いものから捨てる
+    // 記憶を1件足す。文節の読み・表記の連結が composer・surface と食い違えば1文節にする。
+    // 読みの合計が kMaxReconvertLength を超えた分は古いものから捨てる
     void RememberAdopted(const std::wstring& surface,
                          std::vector<std::pair<std::wstring, std::wstring>> segments,
                          const RomajiComposer& composer);
     // 候補選択の確定を記憶する。範囲を追跡していれば、範囲が覆っていた記憶を、範囲の前に残った
-    // 記憶・範囲の外でかなに書き直した部分 (かなの1件)・確定した範囲に置き換える
+    // 記憶・縮めて外したかな (かなの1件)・確定した範囲に置き換える
     void RememberConversion(const std::vector<std::pair<std::wstring, std::wstring>>& committed);
     // 記憶の表記の長さの合計 (照合のために文書を読む長さ)
     size_t AdoptedSurfaceLength() const;
@@ -587,19 +599,16 @@ private:
     void FindAdoptedChain(const std::wstring& preceding, size_t rangeStart, size_t* from,
                           size_t* to) const;
     // BeginRangeTracking の後に、範囲の前の記憶 adopted_[from, to) を範囲の状態に写す。
-    // fromAdopted なら最新の記憶から始めた変換 (取消で変換前の表記に戻す)
+    // fromAdopted なら最新の記憶から始めた変換
     void BeginRangeAdopted(size_t from, size_t to, bool fromAdopted);
     // 記憶から始めた変換の範囲が、始めたときの記憶のままか
     bool RangeAdoptedIntact() const;
     // 記憶から始めた変換の候補の先頭に記憶の表記を置く (文書を変えない)
     void PlaceAdoptedCandidate();
-    // 記憶から始めた変換の取消: 範囲と、伸縮でかなに書き直した部分を変換前の表記に戻して終える
-    HRESULT CancelAdoptedConversion(ITfContext* context);
-    // 候補選択中の確定 (選択を末尾に潰して run を終える)、バー選択中の確定 (選択中の候補を
-    // 採用して run を終える)
+    // バー選択中の確定 (選択中の候補を採用して run を終える)。バーを選んでいなければ
+    // 見えているとおりの読みで run を終える
     HRESULT CommitRunDirect(ITfContext* context);
-    // 文書には確定したかなを、小窓には未完成のローマ字を出してバーを作り直す
-    // (昇格できなかった run の変換を取り消したとき)
+    // run の読みの表示を更新してバーを作り直す
     HRESULT UpdateRunAndBar(ITfContext* context);
     // キャレット直前の expected を newText に置き換える (expected が空なら挿入)
     ReplaceRunResult ReplaceRunText(ITfContext* context, const std::wstring& expected,
@@ -619,44 +628,34 @@ private:
     ReplaceRunResult SelectRunRange(ITfContext* context, const std::wstring& expected,
                                     size_t caretOffset, size_t selectOffset,
                                     size_t selectLength);
-    // surface_ を text に置き換えて run を続ける。失敗したら run を捨てる (文書は触らない)
-    HRESULT ReplaceRunDisplay(ITfContext* context, const std::wstring& text,
-                              size_t selectOffset = 0, size_t selectLength = 0);
-    // run を終えて忘れる (既存の確定処理と同じ学習送信・文脈更新・確定アンドゥ用の記憶)
-    void EndRun();
-    // run の状態を学習せずに捨てる (文書と食い違った run の後始末)
+    // 文書に text を入れた run を終えて忘れる (既存の確定処理と同じ学習送信・文脈更新・
+    // 確定アンドゥ用の記憶)。text が空なら学習せずに捨てる
+    void EndRun(const std::wstring& text);
+    // run の状態を学習せずに捨てる。run の composition が残っていれば空で終える
     void DropRun();
     // run を composition に昇格した結果
     enum class PromoteResult {
-        Promoted,  // composition_ に移った (run の文書上の状態は捨てた)
+        Promoted,  // composition_ に移った
         Dropped,   // 照合が文書と食い違った・入れ直しに失敗した等で run を捨てた
-        Refused,   // StartComposition が失敗・拒否された (消した文字列を入れ直して run を
-                   // 続ける。選択による強調で変換する)
+        Refused,   // StartComposition が失敗・拒否された (消した文字列は入れ直した)
     };
-    // 変換状態に入る直前に、run の文字列を消してキャレット位置に空の composition を張る。
-    // 候補選択中の表示 (下線・現在文節の強調) を composition の経路で行うため。
+    // 入力なしの対象を変換するとき、文書の対象の文字列 text (選択開始が caretOffset 文字目、
+    // 選択の長さ selectLength) を照合込みで消し、キャレット位置に空の composition を張る。
     // 未確定文字列は呼び出し元の表示更新 (StartConversion / ApplyFunctionKey) が設定する
-    PromoteResult PromoteRun(ITfContext* context);
-    // 昇格した composition が変換状態でなくなっていれば、確定したかなのまま
-    // composition を終えて run に戻す (学習はしない)
+    PromoteResult PromoteRun(ITfContext* context, const std::wstring& text, size_t caretOffset,
+                             size_t selectLength);
+    // 昇格した composition が変換状態でなくなっていれば、run に戻す (学習はしない)。
+    // composition 入力はその composition を読みの表示に戻して run の composition にし、
+    // パネル保持入力は composition を空で終えて読みを入力行に戻す
     void DemoteIfLeftConversion(ITfContext* context);
     // 文書が読み戻せると分かっているか (範囲が作れないのをキャレット移動とみなせるか)
     bool DocumentReadable() const;
 
-    // ---- 追記型入力 (実装は text_service_direct.cpp) ----
-    // 文書の分類。読める文書は追記前に照合し、変換・作り直しは置換で行う。
-    // 追記のみの文書は照合せずに追記し、変換・作り直しは擬似 Backspace で消してから行う
+    // ---- 文書の分類 ----
+    // IME が直前に入れた文字列をキャレット直前から読み戻して分類する (ClassifyByLastInsert)
     enum class AppendDocument {
-        Unknown,     // 未判定 (まだ読み戻しを試していない、または run の1文字目)
-        Readable,    // run の文字列を別 session から読み戻せた (照合して追記、置換で変換)
-        AppendOnly,  // 読み戻せなかった (照合せず追記、擬似 Backspace で変換)
-    };
-    // 擬似 Backspace の後、目印の打鍵を受け取った時点で行うこと
-    enum class PseudoKeyAction {
-        None,
-        Compose,  // run の読みで composition を張り、変換 (appendActionFunc_) に入る
-        Append,   // appendActionText_ を追記する (英字切替・ルール3・確定アンドゥ)
-        Adopt,    // バーの採用 (adoption_.written) を追記して FinishBarAdoption を行う
+        Unknown,   // 未判定 (まだ読み戻しを試していない、または一致しなかった)
+        Readable,  // 直前に入れた文字列を読み戻せた (置換で後置再変換・確定アンドゥができる)
     };
     void DebugLog(const std::wstring& message) const;
     // キー押下の診断ログ。state・match は処理前に取ったもの
@@ -664,69 +663,28 @@ private:
                     BOOL eaten, bool disabled) const;
     void LogKeyUp(const wchar_t* where, WPARAM wparam, BOOL eaten) const;
     void SetAppendDocument(AppendDocument document, const wchar_t* reason);
-    // 文書に入っていない未完成のローマ字 (小窓に出す文字列)
-    std::wstring AppendPendingText() const;
-    // 印字キー: 読みを進め、増えたかなを追記して未完成のローマ字の表示を更新する
+    // 印字キー: 読みを進め、読みの表示とバーを更新する (run が無ければ新しい run を始める)
     HRESULT TypeAppend(ITfContext* context, const DirectKey& key);
-    enum class AppendResult {
-        Done,
-        Mismatch,  // 読める文書で照合が一致しなかった (何も書いていない)
-        Failed,
-    };
-    // composer_ に合わせて文書 (追記・作り直し) と未完成ローマ字の表示を更新する
-    AppendResult SyncAppendRun(ITfContext* context);
-    // text を追記する。未判定の文書では照合の結果で分類し、読める文書で不一致なら
-    // 何も書かずに Mismatch
-    AppendResult AppendRunText(ITfContext* context, const std::wstring& text);
-    // run の文字列を newText に作り直す (読める文書は置換、追記のみの文書は擬似 Backspace)。
-    // run の文字列と newText に共通する先頭 (英字区間の切替で残る日本語区間) は書き換えない。
-    // endRunAfter なら作り直した後に run を終える
-    AppendResult RewriteAppendRun(ITfContext* context, const std::wstring& newText,
-                                  bool endRunAfter);
-    // 未完成ローマ字の小窓の表示を pending にする (空なら隠す)。パネルに入力行を出す設定では
-    // 小窓は出さず、パネルの入力行を出し直す
-    void UpdateAppendPending(ITfContext* context, const std::wstring& pending);
-    // 文書に入っていない未完成のローマ字を読みから取り除く
-    void DiscardPendingRomaji();
-    // 未完成ローマ字をそのまま文書に追記する (run を終える前の後始末)
-    AppendResult FlushAppendPending(ITfContext* context);
-    // 未判定の文書を run の文字列の読み戻しで分類する
-    void ClassifyAppendDocument(ITfContext* context);
     HRESULT BackspaceAppend(ITfContext* context);
     HRESULT SpaceAppend(ITfContext* context, bool shifted);
-    // 食べずにアプリへ渡すキー (Enter・矢印など) の前に run を終える
+    // 食べずにアプリへ渡すキー (Enter・矢印など) の前に、見えているとおりの読みで run を終える
     void EndAppendRunForPassthroughKey(ITfContext* context);
-    // 変換キー・F4〜F10: 読める文書は昇格、追記のみの文書は擬似 Backspace の後に composition
+    // 変換キー・F4〜F10: composition 入力は run の composition で、パネル保持入力は空の
+    // composition を張って候補選択に入る
     HRESULT BeginAppendConversion(ITfContext* context, KeyFunc func);
-    // run の文字列 (surface_) の先頭 keep 文字より後ろを擬似 Backspace で文書から消してから
-    // action を行う (消す文字が無ければ即座に)。text は Append で run の文字列にする文字列で、
-    // 先頭 keep 文字は surface_ と同じであること
-    HRESULT ScheduleAppendAction(ITfContext* context, PseudoKeyAction action, KeyFunc func,
-                                 const std::wstring& text, bool endRunAfter, size_t keep = 0);
-    void RunAppendAction(ITfContext* context);
-    // 目印待ちと、目印の後に行う予定だったことを捨てる (フォーカス移動・IME オフ)
-    void CancelAppendAction();
-    // OnTestKeyDown / OnKeyDown の入口: 目印待ちの間の擬似打鍵を処理したら true
-    bool HandlePseudoKey(ITfContext* context, WPARAM wparam, bool keyDown, BOOL* eaten);
-    // 食べなかったキーの後処理 (アプリへ渡した Backspace に run を追従させる。
-    // 追記のみの文書ではアプリへ渡したキーで確定アンドゥの記憶を捨てる)
-    void NoteKeyForAppend(ITfContext* context, WPARAM wparam, bool eaten, bool fromTest);
+    // 食べなかったキーの後処理 (改行・送信をアプリへ渡したら LLM の履歴を捨てる)
+    void NoteKeyForAppend(WPARAM wparam, bool eaten);
     static const wchar_t* AppendDocumentName(AppendDocument document);
     // フォーカス中の文書の最上位 context に ITfTextEditSink を付け替える
     void UpdateTextEditSink(ITfDocumentMgr* docMgr);
-    // 追記のみの文書 (未判定を含む) で run か確定アンドゥの記憶がある間だけ、このスレッドに
-    // マウスフックを仕掛ける (文書を読み戻せないので、クリック・ホイールでのキャレット移動を
-    // 見落とすと擬似 Backspace が別の文字を消す)。状態が変わりうる入口の最後で呼ぶ
-    void UpdateMouseHook();
-    // マウスのボタンを押す操作・ホイールを受けた: 文書に触れずに run を終え、
-    // 確定アンドゥの記憶も捨てる
-    void OnMouseInput();
-    static LRESULT CALLBACK MouseHookProc(int code, WPARAM wparam, LPARAM lparam);
 
     LONG refCount_;
     ITfThreadMgr* threadMgr_;
     TfClientId clientId_;
-    ITfComposition* composition_;   // 進行中の composition (無ければ nullptr)
+    ITfComposition* composition_;   // 候補選択中の composition (無ければ nullptr)
+    // composition 入力の run の読みを出している composition (無ければ nullptr)。変換に入ると
+    // composition_ へ移し、変換を取り消すとここへ戻す
+    ITfComposition* runComposition_;
     RomajiComposer composer_;
     TfGuidAtom inputAttribute_;     // 未確定文字列に付ける表示属性の atom
     TfGuidAtom targetAttribute_;    // 変換対象文節に付ける表示属性の atom
@@ -773,26 +731,25 @@ private:
     std::wstring asciiForm_;
     // 表示中のバーが run の無いときに出した後続語の予測か (候補は barItems_ に予測候補として持つ)
     bool nextWordBar_;
-    // 確定キーの採用が擬似 Backspace の目印待ちになったので、目印の後に後続語の予測を出す
-    bool nextWordPending_;
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)
-    std::wstring llmHistory_;      // IME が文書に入れた文字列の末尾 (追記のみの文書用)
+    // IME が文書に入れた文字列の末尾 (読めると判定されていない文書の左文脈)
+    std::wstring llmHistory_;
     unsigned long long rerankId_;  // 最新の依頼の ID (0 = 依頼なし)
     ULONGLONG rerankTick_;         // 依頼した時刻 (問い合わせの打ち切り用)
     std::wstring rerankKana_;      // 依頼したときの読みと前文脈
     ConversionContext rerankContext_;
     bool rerankDone_;              // 結果を受け取った
     std::vector<SentenceCandidate> rerankResult_;
-    // 採用で文書を書き換えた後に行うこと (追記のみの文書では目印の打鍵まで持ち越す)
+    // 採用を文書に入れた後に行うこと
     struct BarAdoption {
         std::vector<LearnEntry> learn;
         std::wstring contextReading;   // 次の前文脈にする文節
         std::wstring contextSurface;
         size_t readingLength = 0;      // 読みの先頭から取り除く文字数
         size_t adoptedLength = 0;      // written のうち採用部分の長さ
-        std::wstring written;          // 文書の run の文字列を置き換える文字列
+        std::wstring written;          // 文書に入れる文字列
         bool endRun = false;
         RomajiComposer before;         // 採用前の読み (確定アンドゥの復元用)
         // 採用部分の文節ごとの (読み, 表記) (記憶に使う)
@@ -800,31 +757,20 @@ private:
     };
     BarAdoption adoption_;
 
-    // run: 現在文書に入っている、この run 由来の文字列 (未完成のローマ字は含まない)
-    std::wstring surface_;
-    // 文書の選択開始が surface_ の何文字目にあるか (候補選択中は現在文節の先頭、
-    // それ以外は末尾)。置換 session の expected 照合の基点に使う
-    size_t surfaceCaret_;
-    // 文書の選択の長さ (候補選択中は現在文節の長さ、それ以外は 0)
-    size_t surfaceSelectLength_;
     // composition_ が run から昇格したもの (変換状態を抜けたら run に戻す) か。
     // 候補選択中の印字キーで確定して始まった次の composition にも引き継ぐ
     bool promoted_;
-    // 今の run (昇格した composition を含む) がパネル保持入力か。run を始めた時点の設定で決め、
-    // run の途中で設定が読み直されても変えない。パネル保持入力の run は surface_ を常に空にし、
-    // 読みは composer_ とパネルの入力行だけに持つ
-    bool panelRun_;
-    // IME が直前に文書へ挿入した文字列 (パネル保持入力での文書の分類用。照合したら忘れる)
+    // 今の run (昇格した composition を含む) の方式。run を始めた時点の設定で決め、
+    // run の途中で設定が読み直されても変えない
+    RunMode runMode_;
+    // IME が直前に文書へ入れた文字列 (文書の分類用。照合したら忘れる)
     std::wstring lastInserted_;
 
-    // 変換の範囲の伸縮 (docs/design/conversion-range.md)。範囲を作って昇格したときに始める
-    bool rangeTracked_;                   // 範囲の前を読めて、伸縮できる状態か
-    // 追記のみの文書の伸縮: 外したかなを文書に残さず composition の先頭に残す。このとき
-    // rangeBefore_ は空から始まり、外したかなだけを持つ
-    bool rangeKeepsExcluded_;
-    std::wstring rangeBefore_;            // 範囲の先頭より前の文書の文字列
-    // 範囲の先頭が始めたときから何文字右へ動いたか (正: 縮めた、負: 広げた)。
-    // 正のときは rangeBefore_ の末尾 rangeShift_ 文字が縮めて外したかな
+    // 変換の範囲の伸縮 (docs/design/conversion-range.md)。昇格したときに始める
+    bool rangeTracked_;                   // 伸縮できる状態か
+    // 縮めて外したかな (composition の先頭に残す)。末尾 rangeShift_ 文字が外したかな
+    std::wstring rangeBefore_;
+    // 範囲の先頭が始めたときから何文字右へ動いたか (縮めた文字数)
     int rangeShift_;
     // 縮めるたびに積む、縮める直前の読みの状態。← で戻すときに外した文字の打鍵と
     // 英字区間の開始位置ごと戻すため。積んだ順に rangeBefore_ の末尾の文字と対応する
@@ -832,46 +778,23 @@ private:
     ConversionContext rangeBaseContext_;  // 範囲を始めたときの前文脈
     // 範囲を変えたときにやり直す変換 (Convert は通常の変換、それ以外は F6〜F10)
     KeyFunc rangeFunc_;
-    // 範囲の前で伸縮に使う記憶の写し (古い順)。rangeKana_ が空なら rangeBefore_ はこの表記の
-    // 連結で終わる。← で文節をかなに書き直すと写しの方を削り、adopted_ は確定まで変えない
+    // 範囲の前の記憶の写し (古い順)。確定で adopted_ の範囲が覆っていた記憶をこれに置き換える
     std::vector<AdoptedText> rangeAdopted_;
     // 範囲を始めたときの adopted_ のうち、確定でそのまま残す記憶の数 (rangeAdopted_ はこの後ろ)
     size_t rangeAdoptedFrom_;
-    // rangeBefore_ の末尾の、記憶の文節をかなに書き直して範囲に入らなかった部分と縮めて外したかな
-    std::wstring rangeKana_;
-    bool rangeRewritten_;     // 記憶の文節をかなに書き直したか
     bool rangeFromAdopted_;   // 最新の記憶から始めた変換か
     AdoptedText rangeOrigin_;       // 変換を始めた記憶 (rangeFromAdopted_ のとき)
-    std::wstring rangeOrigBefore_;  // 変換を始めたときの rangeBefore_ (取消で戻す)
 
     // 採用した文字列の記憶 (文書に入れた順。末尾が最新)。メモリ上だけに置き、
     // フォーカス移動・IME オフで捨てる
     std::vector<AdoptedText> adopted_;
 
-    // 追記型入力の状態
     AppendDocument appendDocument_;          // フォーカス中の文書の分類
-    SuggestPanel pendingPanel_;              // 未完成のローマ字の小窓
-    bool awaitingMarker_;                    // 擬似 Backspace を送り、目印の打鍵を待っている
-    PseudoKeyAction appendAction_;           // 目印の打鍵を受け取ったときに行うこと
-    KeyFunc appendActionFunc_;               // Compose で行う変換 (Convert は通常の変換)
-    std::wstring appendActionText_;          // Append で入れる文字列
-    bool appendActionEndRun_;                // Append の後に run を終えるか
-    size_t appendActionKeep_;                // 擬似 Backspace で消さずに残す run の先頭の文字数
-    // Adopt の後に入れる印字キー (バー選択中の印字キーで採用したとき)。
-    // 擬似 Backspace より先に追記すると、その文字まで消されるため目印の後に回す
-    DirectKey appendFollowKey_;
-    bool appendFollowKeyPending_;
     // 確定の後にアプリへ送り直す打鍵 (0 なら無し) とその修飾キー
-    // (EnterNeedsResend のときの Enter・Ctrl+M と、改行キーの Shift+Enter)
+    // (EnterNeedsResend・PanelKeyNeedsResend のときのキーと、改行キーの Shift+Enter)
     WPARAM appendResendVk_;
     bool appendResendCtrl_;
     bool appendResendShift_;
-    HHOOK mouseHook_;                        // UpdateMouseHook が仕掛けたマウスフック
-    // 直前の OnTestKeyDown でアプリへ渡した Backspace に run を追従させた (同じ打鍵の
-    // OnKeyDown で二重に削らないため)
-    bool backspaceTested_;
-    // アプリへ渡した Backspace による文書の編集が来る見込み (OnEndEdit で IME 由来とみなす)
-    bool keyEditExpected_;
     mutable int ownEditDepth_;               // 自分の edit session の実行中 (OnEndEdit の判定用)
     ITfContext* textEditSinkContext_;        // ITfTextEditSink を付けた context
     DWORD textEditSinkCookie_;
@@ -892,4 +815,7 @@ private:
     std::bitset<256> pendingKeyUps_;
     // ホストプロセスの exe 名 (改行キー・起動時の IME の対象アプリの判定用。プロセスごとに不変)
     std::wstring hostExeName_;
+    // フォーカス中の文書の InputScope (docs/design/input-scope.md)。後から走る取得の
+    // edit session と共有するため shared_ptr で持つ
+    std::shared_ptr<FocusInputScope> focusInputScope_;
 };

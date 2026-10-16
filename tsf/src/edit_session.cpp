@@ -585,63 +585,6 @@ STDMETHODIMP SelectRunRangeEditSession::DoEditSession(TfEditCookie ec)
     return hr;
 }
 
-// ---- AppendRunEditSession ----
-
-AppendRunEditSession::AppendRunEditSession(ITfContext* context, std::wstring expected,
-                                           bool verify, bool abortOnMismatch, std::wstring text,
-                                           ReplaceRunResult* matchOut, bool* writtenOut)
-    : EditSessionBase(context),
-      expected_(std::move(expected)),
-      verify_(verify),
-      abortOnMismatch_(abortOnMismatch),
-      text_(std::move(text)),
-      matchOut_(matchOut),
-      writtenOut_(writtenOut)
-{
-    *matchOut_ = ReplaceRunResult::Unsupported;
-    *writtenOut_ = false;
-}
-
-STDMETHODIMP AppendRunEditSession::DoEditSession(TfEditCookie ec)
-{
-    TF_SELECTION selection = {};
-    ULONG fetched = 0;
-    HRESULT hr = context_->GetSelection(ec, TF_DEFAULT_SELECTION, 1, &selection, &fetched);
-    if (FAILED(hr) || fetched == 0) {
-        return hr;
-    }
-    ITfRange* range = selection.range;
-
-    ReplaceRunResult match = ReplaceRunResult::Succeeded;
-    if (verify_ && !expected_.empty()) {
-        ITfRange* probe = nullptr;
-        if (SUCCEEDED(range->Clone(&probe)) && probe != nullptr) {
-            HRESULT matchHr = S_OK;
-            match = MatchRunRange(ec, probe, expected_, expected_.size(), &matchHr);
-            probe->Release();
-        } else {
-            match = ReplaceRunResult::Unsupported;
-        }
-    }
-    *matchOut_ = match;
-    if (match != ReplaceRunResult::Succeeded && abortOnMismatch_) {
-        range->Release();
-        return S_OK;
-    }
-
-    bool written = true;
-    if (!text_.empty()) {
-        hr = range->SetText(ec, 0, text_.c_str(), static_cast<LONG>(text_.size()));
-        written = SUCCEEDED(hr);
-        if (written) {
-            CollapseSelectionToEnd(ec, context_, range);
-        }
-    }
-    range->Release();
-    *writtenOut_ = written;
-    return hr;
-}
-
 // ---- MatchRunEditSession ----
 
 MatchRunEditSession::MatchRunEditSession(ITfContext* context, std::wstring expected,
@@ -732,16 +675,70 @@ STDMETHODIMP GetSelectionExtentEditSession::DoEditSession(TfEditCookie ec)
 
 // ---- GetInputScopeEditSession ----
 
+bool IsHalfwidthInputScope(const std::vector<InputScope>& scopes)
+{
+    for (const InputScope scope : scopes) {
+        switch (scope) {
+        case IS_DIGITS:
+        case IS_NUMBER:
+        case IS_TELEPHONE_FULLTELEPHONENUMBER:
+        case IS_TELEPHONE_COUNTRYCODE:
+        case IS_TELEPHONE_AREACODE:
+        case IS_TELEPHONE_LOCALNUMBER:
+        case IS_EMAIL_SMTPEMAILADDRESS:
+        case IS_EMAIL_USERNAME:
+        case IS_URL:
+        case IS_ALPHANUMERIC_HALFWIDTH:
+        case IS_PASSWORD:
+        case IS_NUMERIC_PASSWORD:
+        case IS_NUMERIC_PIN:
+        case IS_ALPHANUMERIC_PIN:
+        case IS_ALPHANUMERIC_PIN_SET:
+            return true;
+        default:
+            break;
+        }
+    }
+    return false;
+}
+
 GetInputScopeEditSession::GetInputScopeEditSession(ITfContext* context)
     : EditSessionBase(context), done_(false)
 {
+}
+
+void GetInputScopeEditSession::SetDeferred(std::shared_ptr<FocusInputScope> target,
+                                           unsigned generation, std::wstring logPath,
+                                           bool passthroughEnabled)
+{
+    target_ = std::move(target);
+    generation_ = generation;
+    logPath_ = std::move(logPath);
+    passthroughEnabled_ = passthroughEnabled;
 }
 
 STDMETHODIMP GetInputScopeEditSession::DoEditSession(TfEditCookie ec)
 {
     result_ = ReadInputScopes(ec);
     done_ = true;
-    WriteDebugLog(logPath_, L"InputScope (後から取得): " + result_);
+    if (target_ == nullptr) {
+        return S_OK;
+    }
+    const bool current = target_->generation == generation_;
+    if (current && !target_->known) {
+        target_->known = true;
+        target_->scopes = scopes_;
+    }
+    if (!logPath_.empty()) {
+        std::wstring message = L"InputScope (後から取得): " + result_;
+        if (current) {
+            message += std::wstring(L" 素通し=") +
+                       (passthroughEnabled_ && IsHalfwidthInputScope(scopes_) ? L"1" : L"0");
+        } else {
+            message += L" (フォーカスが移った後のため使わない)";
+        }
+        WriteDebugLog(logPath_, message);
+    }
     return S_OK;
 }
 
@@ -785,6 +782,7 @@ std::wstring GetInputScopeEditSession::ReadInputScopes(TfEditCookie ec)
                             result += L",";
                         }
                         result += std::to_wstring(static_cast<int>(scopes[i]));
+                        scopes_.push_back(scopes[i]);
                     }
                     result += L"]";
                 }

@@ -2,8 +2,11 @@
 
 #include <windows.h>
 #include <msctf.h>
+#include <inputscope.h>
 
+#include <memory>
 #include <string>
+#include <vector>
 
 // edit session 共通の IUnknown 実装。
 // 派生クラスは DoEditSession だけを実装する。
@@ -196,28 +199,8 @@ private:
     ReplaceRunResult* resultOut_;
 };
 
-// 追記型入力の追記を1つの edit session で行う。書き込み位置は選択範囲。
-// verify を立てると、書き込み位置の直前が expected (run の文字列) と一致するかを
-// MatchRunRange と同じ方法で確かめて *matchOut に返す (立てなければ Succeeded)。
-// 一致せず abortOnMismatch なら何も書かない。書くときは text をその位置に入れる
-class AppendRunEditSession : public EditSessionBase {
-public:
-    AppendRunEditSession(ITfContext* context, std::wstring expected, bool verify,
-                         bool abortOnMismatch, std::wstring text, ReplaceRunResult* matchOut,
-                         bool* writtenOut);
-    STDMETHODIMP DoEditSession(TfEditCookie ec) override;
-
-private:
-    std::wstring expected_;
-    bool verify_;
-    bool abortOnMismatch_;
-    std::wstring text_;
-    ReplaceRunResult* matchOut_;
-    bool* writtenOut_;
-};
-
 // 選択開始の直前が expected (選択開始が caretOffset 文字目) と一致するかを
-// 読み取り専用で確かめる (追記型入力で文書を分類するための読み戻し)
+// 読み取り専用で確かめる (文書の分類と、後置再変換の選択の照合のための読み戻し)
 class MatchRunEditSession : public EditSessionBase {
 public:
     MatchRunEditSession(ITfContext* context, std::wstring expected, size_t caretOffset,
@@ -242,8 +225,8 @@ private:
     std::wstring* textOut_;
 };
 
-// 現在の選択範囲の画面上の矩形 (スクリーン座標) を取得する (direct 方式の候補
-// ウィンドウ・未完成ローマ字の小窓の位置決め用。composition が無いため選択範囲を基準にする)。
+// 現在の選択範囲の画面上の矩形 (スクリーン座標) を取得する (候補バーの位置決め用。
+// run の composition が無いときは選択範囲を基準にする)。
 // SetText 直後は同じロック内でレイアウトが更新されていないアプリがあるため、
 // GetTextExtentEditSession と同様に置換とは別の session で呼ぶ
 class GetSelectionExtentEditSession : public EditSessionBase {
@@ -256,9 +239,23 @@ private:
     bool* succeededOut_;
 };
 
-// 選択範囲の InputScope (GUID_PROP_INPUTSCOPE) を数値の一覧の文字列にして読む (診断ログ用)。
-// 取れなかったときは理由と HRESULT を入れる。同期で走らずに後から走る場合に備え、
-// SetDeferredLog でログのパスを渡しておくと、走った時点で結果をそのパスへ1行書く
+// フォーカス中の文書の InputScope (docs/design/input-scope.md)。TextService と、後から走る
+// GetInputScopeEditSession で共有する。generation はフォーカスの世代で、フォーカスが移るたびに進める
+struct FocusInputScope {
+    unsigned generation = 0;
+    bool known = false;  // 取得済み (取得できなかった・未設定の文書は scopes が空)
+    std::vector<InputScope> scopes;
+};
+
+// 半角英数字を前提にした InputScope (数字・電話番号・メールアドレス・URL・半角英数・
+// パスワード・PIN) を含むか。IS_PRIVATE はシークレットウィンドウの通常の欄にも付くため含めない
+bool IsHalfwidthInputScope(const std::vector<InputScope>& scopes);
+
+// 選択範囲の InputScope (GUID_PROP_INPUTSCOPE) を読む。Result() は数値の一覧の文字列
+// (診断ログ用。取れなかったときは理由と HRESULT)、Scopes() は値の一覧。
+// 同期で走らずに後から走る場合に備え、SetDeferred で結果の入れ先を渡しておくと、
+// 走った時点で target の世代が generation のままなら結果を入れる。logPath が空でなければ
+// 結果と素通しの判定 (passthroughEnabled は設定 input_scope_passthrough) を1行書く
 class GetInputScopeEditSession : public EditSessionBase {
 public:
     explicit GetInputScopeEditSession(ITfContext* context);
@@ -266,12 +263,18 @@ public:
 
     bool Done() const { return done_; }
     const std::wstring& Result() const { return result_; }
-    void SetDeferredLog(std::wstring logPath) { logPath_ = std::move(logPath); }
+    const std::vector<InputScope>& Scopes() const { return scopes_; }
+    void SetDeferred(std::shared_ptr<FocusInputScope> target, unsigned generation,
+                     std::wstring logPath, bool passthroughEnabled);
 
 private:
     std::wstring ReadInputScopes(TfEditCookie ec);
 
     std::wstring result_;
+    std::vector<InputScope> scopes_;
     bool done_;
+    std::shared_ptr<FocusInputScope> target_;
+    unsigned generation_ = 0;
     std::wstring logPath_;
+    bool passthroughEnabled_ = false;
 };

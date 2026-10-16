@@ -151,14 +151,15 @@
 
 ## 確定アンドゥ
 
-操作は README の「入力方式」(Ctrl+Backspace) と「読める文書と追記のみの文書」にある。
+操作は README の「入力方式」(Ctrl+Backspace) と「読める文書」にある。
 
 - 直前の確定の文字列と、確定前の読みの状態 (`RomajiComposer`) を1件だけ覚える
 - 一度きりの操作で、成否によらず押した時点で記憶を消す。確定後に別の編集があって文書と一致しないとき、
   以降の Ctrl+Backspace を奪い続けないため
-- 読める文書ではキャレット直前が確定の文字列と一致するときだけ読みに戻す。追記のみの文書は照合できないため、
-  キャレットが動きうる操作で記憶を捨てておき、Backspace の擬似打鍵で消す
-  ([append-input.md](append-input.md))
+- 読める文書でキャレット直前が確定の文字列と一致するときだけ、その文字列を消して読みの run に戻す。
+  読めると判定されていない文書では消す範囲を照合できないので働かず、打鍵はアプリへ渡す
+  ([input-buffer-modes.md](input-buffer-modes.md))
+- 戻した run の方式 (composition 入力・パネル保持入力) は、確定アンドゥの時点の設定 `input_buffer` で決める
 - 確定を取り消すので、その確定を前提にした前文脈と LLM の左文脈も捨てる
 
 ## ローマ字テーブル
@@ -270,6 +271,7 @@ installer/build.ps1 がバイナリ・辞書・ライセンスを集めてから
   `GUID_COMPARTMENT_EMPTYCONTEXT` が立っているときは、キーを食べない (SampleIME・CorvusSKK と同じ判定)。
   アプリが IME を無効にする手段に従えば足りる
 - そのとき残っている run は、学習・LLM の左文脈・前文脈に残さずに捨てる
-- InputScope では判定しない。Chrome のパスワード欄は両方の compartment を立てるが、InputScope は
-  `IS_PASSWORD` ではなく `IS_PRIVATE` を返すため
+- この判定に InputScope は使わない。Chrome のパスワード欄は両方の compartment を立てるが、InputScope は
+  `IS_PASSWORD` ではなく `IS_PRIVATE` を返すため。半角英数字を前提にした InputScope の欄でキーを食べない
+  扱いは [input-scope.md](input-scope.md)
 - 診断ログ (`debug_log`) には、フォーカス先の無効化の状態と InputScope を出す

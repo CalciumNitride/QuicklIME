@@ -340,6 +340,26 @@ std::wstring CompartmentLogText(ITfContext* context, REFGUID guid)
     return ReadContextCompartment(context, guid, &value) ? std::to_wstring(value) : L"未設定";
 }
 
+// a と b が同じ COM オブジェクトか (IUnknown の同一性で比べる)
+bool SameComObject(IUnknown* a, IUnknown* b)
+{
+    if (a == nullptr || b == nullptr) {
+        return false;
+    }
+    IUnknown* ua = nullptr;
+    IUnknown* ub = nullptr;
+    const bool same = SUCCEEDED(a->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&ua))) &&
+                      SUCCEEDED(b->QueryInterface(IID_IUnknown, reinterpret_cast<void**>(&ub))) &&
+                      ua == ub;
+    if (ua != nullptr) {
+        ua->Release();
+    }
+    if (ub != nullptr) {
+        ub->Release();
+    }
+    return same;
+}
+
 // このプロセスの exe のファイル名部分 (取れなければ空)
 std::wstring HostExeName()
 {
@@ -377,6 +397,7 @@ TextService::TextService()
       threadMgr_(nullptr),
       clientId_(TF_CLIENTID_NULL),
       composition_(nullptr),
+      runComposition_(nullptr),
       inputAttribute_(TF_INVALID_GUIDATOM),
       targetAttribute_(TF_INVALID_GUIDATOM),
       converting_(false),
@@ -389,48 +410,32 @@ TextService::TextService()
       barCaret_{},
       barCaretValid_(false),
       nextWordBar_(false),
-      nextWordPending_(false),
       rerankId_(0),
       rerankTick_(0),
       rerankDone_(false),
-      surfaceCaret_(0),
-      surfaceSelectLength_(0),
       promoted_(false),
-      panelRun_(false),
+      runMode_(RunMode::Composition),
       rangeTracked_(false),
-      rangeKeepsExcluded_(false),
       rangeShift_(0),
       rangeFunc_(KeyFunc::Convert),
       rangeAdoptedFrom_(0),
-      rangeRewritten_(false),
       rangeFromAdopted_(false),
       appendDocument_(AppendDocument::Unknown),
-      awaitingMarker_(false),
-      appendAction_(PseudoKeyAction::None),
-      appendActionFunc_(KeyFunc::None),
-      appendActionEndRun_(false),
-      appendActionKeep_(0),
-      appendFollowKeyPending_(false),
       appendResendVk_(0),
       appendResendCtrl_(false),
       appendResendShift_(false),
-      mouseHook_(nullptr),
-      backspaceTested_(false),
-      keyEditExpected_(false),
       ownEditDepth_(0),
       textEditSinkContext_(nullptr),
       textEditSinkCookie_(TF_INVALID_COOKIE),
       openCloseCookie_(TF_INVALID_COOKIE),
       threadMgrEventCookie_(TF_INVALID_COOKIE),
       langBarButton_(nullptr),
-      hostExeName_(HostExeName())
+      hostExeName_(HostExeName()),
+      focusInputScope_(std::make_shared<FocusInputScope>())
 {
     globals::DllAddRef();
     suggestPanel_.SetLogger([this](const std::wstring& message) {
         DebugLog(L"パネル " + message);
-    });
-    pendingPanel_.SetLogger([this](const std::wstring& message) {
-        DebugLog(L"小窓 " + message);
     });
 }
 
@@ -608,14 +613,11 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
 
 STDMETHODIMP TextService::Deactivate()
 {
-    pendingPanel_.Hide();
-    CancelAppendAction();
     UpdateTextEditSink(nullptr);
     ClearConversion();
     ClearBar();
     ClearContext();
     composer_.Clear();
-    surface_.clear();
     lastCommitText_.clear();
     adopted_.clear();
     promoted_ = false;
@@ -623,7 +625,10 @@ STDMETHODIMP TextService::Deactivate()
         composition_->Release();
         composition_ = nullptr;
     }
-    UpdateMouseHook();
+    if (runComposition_ != nullptr) {
+        runComposition_->Release();
+        runComposition_ = nullptr;
+    }
 
     if (threadMgr_ != nullptr) {
         if (threadMgrEventCookie_ != TF_INVALID_COOKIE) {
@@ -694,23 +699,23 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* docMgr)
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prevFocus)
 {
     UNREFERENCED_PARAMETER(prevFocus);
-    // 擬似 Backspace の目印待ちと未完成ローマ字の表示は離れる文書のもの
-    CancelAppendAction();
-    pendingPanel_.Hide();
     // 直前の挿入は離れる文書のもの (次の文書の分類に使わない)
     lastInserted_.clear();
-    // run は文書を離れた時点で忘れる (パネル保持入力の run は surface_ が空なので、
-    // 元の文書には何も入れずに捨てることになる)
+    // run は文書を離れた時点で学習せずに終える。パネル保持入力の読みは元の文書に入れずに捨て、
+    // composition 入力の composition は終えずに手放す (フォーカスを失った文書への edit session は
+    // 同期で走らないことがあり、残った文字列の扱いはアプリに任せる)
     if (InRun()) {
-        DiscardPendingRomaji();
-        EndRun();
+        if (runComposition_ != nullptr) {
+            runComposition_->Release();
+            runComposition_ = nullptr;
+        }
+        DropRun();
     }
     // 後続語の予測も離れる文書のもの
     if (nextWordBar_) {
         ClearBar();
     }
-    // 確定アンドゥの記憶も離れる文書のもの。追記のみの文書は照合せずに擬似 Backspace で
-    // 消すため、別の文書へ持ち越すと関係ない文字を消してしまう
+    // 確定アンドゥの記憶も離れる文書のもの
     lastCommitText_.clear();
     // 採用した文字列の記憶も離れる文書のもの
     adopted_.clear();
@@ -728,14 +733,89 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 別のドキュメント (アプリ・編集コントロール) に移った可能性があるため、
     // 直前の確定文脈はここでは信用しない
     ClearContext();
-    UpdateMouseHook();
-    if (!config_.Get().debugLog.empty()) {
-        LogFocusDocument(focus);
+    // Chromium は欄を移るたびに SetFocus を呼び直し、InputScope は欄の種類ごとに変わるため、
+    // フォーカスのたびに読み直す。世代を進めて、前のフォーカスで後から走る取得の結果を捨てさせる
+    ++focusInputScope_->generation;
+    focusInputScope_->known = false;
+    focusInputScope_->scopes.clear();
+    const bool logging = !config_.Get().debugLog.empty();
+    std::wstring inputScopeLog;
+    if (focus != nullptr && (logging || config_.Get().inputScopePassthrough)) {
+        inputScopeLog = RequestFocusInputScope(focus);
+    }
+    if (logging) {
+        LogFocusDocument(focus, inputScopeLog);
     }
     return S_OK;
 }
 
-void TextService::LogFocusDocument(ITfDocumentMgr* focus)
+std::wstring TextService::RequestFocusInputScope(ITfDocumentMgr* focus)
+{
+    ITfContext* context = nullptr;
+    if (FAILED(focus->GetTop(&context)) || context == nullptr) {
+        return L"取得失敗 (context なし)";
+    }
+    std::wstring result;
+    auto* session = new (std::nothrow) GetInputScopeEditSession(context);
+    if (session == nullptr) {
+        result = L"取得失敗 (メモリ不足)";
+    } else {
+        // フォーカス通知の中では読み取りのロックを同期で取れないことがあるため、
+        // そのときは後から走らせて結果を入れる (キーの判定が先に来れば同期で読み直す)
+        HRESULT hrSession = S_OK;
+        const HRESULT hr = context->RequestEditSession(
+            clientId_, session, TF_ES_ASYNCDONTCARE | TF_ES_READ, &hrSession);
+        if (FAILED(hr)) {
+            result = L"取得失敗 (RequestEditSession) hr=" + DebugHResultText(hr);
+        } else if (session->Done()) {
+            focusInputScope_->known = true;
+            focusInputScope_->scopes = session->Scopes();
+            result = session->Result() + L" 素通し=" +
+                     (config_.Get().inputScopePassthrough &&
+                              IsHalfwidthInputScope(session->Scopes())
+                          ? L"1"
+                          : L"0");
+        } else if (hrSession == TF_S_ASYNC) {
+            session->SetDeferred(focusInputScope_, focusInputScope_->generation,
+                                 config_.Get().debugLog, config_.Get().inputScopePassthrough);
+            result = L"後から取得 (別の行に出す)";
+        } else {
+            result = L"取得失敗 (edit session が走らない) hr=" + DebugHResultText(hrSession);
+        }
+        session->Release();
+    }
+    context->Release();
+    return result;
+}
+
+bool TextService::IsInputScopePassthrough(ITfContext* context) const
+{
+    if (!config_.Get().inputScopePassthrough) {
+        return false;
+    }
+    FocusInputScope& state = *focusInputScope_;
+    if (!state.known && context != nullptr) {
+        auto* session = new (std::nothrow) GetInputScopeEditSession(context);
+        if (session != nullptr) {
+            session->AddRef();
+            const HRESULT hr = RequestSync(context, session, TF_ES_SYNC | TF_ES_READ);
+            // 読めなかったときは未取得のままにし、後から走る取得の結果を受け入れられるようにする
+            if (session->Done()) {
+                state.known = true;
+                state.scopes = session->Scopes();
+                DebugLog(L"InputScope (キーの判定で取得): " + session->Result() + L" 素通し=" +
+                         (IsHalfwidthInputScope(state.scopes) ? L"1" : L"0"));
+            } else {
+                DebugLog(L"InputScope (キーの判定で取得): 取得失敗 hr=" + DebugHResultText(hr) +
+                         L" 素通しにしない");
+            }
+            session->Release();
+        }
+    }
+    return state.known && IsHalfwidthInputScope(state.scopes);
+}
+
+void TextService::LogFocusDocument(ITfDocumentMgr* focus, const std::wstring& inputScopeLog)
 {
     std::wstring message = std::wstring(L"フォーカスの文書: document=") + (focus ? L"1" : L"0");
     ITfContext* context = nullptr;
@@ -746,28 +826,7 @@ void TextService::LogFocusDocument(ITfDocumentMgr* focus)
     message += L" context=1 KEYBOARD_DISABLED=" +
                CompartmentLogText(context, GUID_COMPARTMENT_KEYBOARD_DISABLED) +
                L" EMPTYCONTEXT=" + CompartmentLogText(context, GUID_COMPARTMENT_EMPTYCONTEXT) +
-               L" InputScope=";
-    auto* session = new (std::nothrow) GetInputScopeEditSession(context);
-    if (session == nullptr) {
-        message += L"取得失敗 (メモリ不足)";
-    } else {
-        // フォーカス通知の中では読み取りのロックを同期で取れないことがあるため、
-        // そのときは後から走らせて結果を別の行に出す
-        HRESULT hrSession = S_OK;
-        const HRESULT hr = context->RequestEditSession(
-            clientId_, session, TF_ES_ASYNCDONTCARE | TF_ES_READ, &hrSession);
-        if (FAILED(hr)) {
-            message += L"取得失敗 (RequestEditSession) hr=" + DebugHResultText(hr);
-        } else if (session->Done()) {
-            message += session->Result();
-        } else if (hrSession == TF_S_ASYNC) {
-            session->SetDeferredLog(config_.Get().debugLog);
-            message += L"後から取得 (別の行に出す)";
-        } else {
-            message += L"取得失敗 (edit session が走らない) hr=" + DebugHResultText(hrSession);
-        }
-        session->Release();
-    }
+               L" InputScope=" + inputScopeLog;
     context->Release();
     DebugLog(message);
 }
@@ -805,11 +864,9 @@ void TextService::RefreshConfig()
     }
     if (configChanged || themeChanged) {
         const PanelTheme& theme = panelTheme_.Get();
-        for (SuggestPanel* panel : {&suggestPanel_, &pendingPanel_}) {
-            panel->SetBlur(config.panelBlur && theme.blurAllowed);
-            panel->SetFont(config.candidateFont, config.candidateFontSize);
-            panel->SetTheme(theme);
-        }
+        suggestPanel_.SetBlur(config.panelBlur && theme.blurAllowed);
+        suggestPanel_.SetFont(config.candidateFont, config.candidateFontSize);
+        suggestPanel_.SetTheme(theme);
     }
     // 自動英字判定の有効/無効はコンポーザが持つ。Clear() でも維持されるフラグなので
     // 設定を読む機会ごとに渡し直すだけでよい
@@ -888,19 +945,6 @@ bool TextService::IsNoLearningApp() const
     return false;
 }
 
-bool TextService::IsAppendOnlyApp() const
-{
-    if (hostExeName_.empty()) {
-        return false;
-    }
-    for (const std::wstring& app : config_.Get().appendOnlyApps) {
-        if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.c_str(), -1, TRUE) == CSTR_EQUAL) {
-            return true;
-        }
-    }
-    return false;
-}
-
 bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
 {
     // 対象外のアプリでは割当なしと同じく食べない (ターミナルや Excel では Shift+Enter が
@@ -927,7 +971,7 @@ bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
         return ReadIdleTarget(context, &target);
     }
     case KeyFunc::UndoCommit:
-        return !lastCommitText_.empty();
+        return CanUndoCommit(context);
     default:
         return true;
     }
@@ -940,7 +984,11 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     if (!IsKeyboardOpen()) {
         return false;
     }
-    // パネル保持入力の run を終えて渡すキーは、挿入より先にアプリへ届かないよう食べて送り直す
+    // 数字・メールアドレスなどの欄では IME オフと同じく何も食べない (docs/design/input-scope.md)
+    if (IsInputScopePassthrough(context)) {
+        return false;
+    }
+    // run を終えて渡すキーは、文書に入れた文字列より先にアプリへ届かないよう食べて送り直す
     if (PanelKeyNeedsResend(context, wparam)) {
         return true;
     }
@@ -1010,9 +1058,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
     const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
     bool disabled = false;
-    if (HandlePseudoKey(context, wparam, false, eaten)) {
-        disabled = logging && IsKeyboardDisabled();
-    } else if (IsKeyboardDisabled()) {
+    if (IsKeyboardDisabled()) {
         disabled = true;
         DiscardRunWhileDisabled();
         *eaten = FALSE;
@@ -1023,12 +1069,11 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         ClassifyBeforeIdleKey(context, wparam);
         EndRunIfPassthroughKey(context, wparam);
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
-        NoteKeyForAppend(context, wparam, *eaten != FALSE, true);
+        NoteKeyForAppend(wparam, *eaten != FALSE);
     }
     if (logging) {
         LogKeyDown(L"OnTestKeyDown", wparam, state, match, *eaten, disabled);
     }
-    UpdateMouseHook();
     return S_OK;
 }
 
@@ -1043,33 +1088,23 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     const bool logging = !config_.Get().debugLog.empty();
     const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
-    if (HandlePseudoKey(context, wparam, true, eaten)) {
-        if (logging) {
-            LogKeyDown(L"OnKeyDown (擬似キー)", wparam, state, match, *eaten,
-                       IsKeyboardDisabled());
-        }
-        UpdateMouseHook();
-        return S_OK;
-    }
     if (IsKeyboardDisabled()) {
         DiscardRunWhileDisabled();
         *eaten = FALSE;
         if (logging) {
             LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, true);
         }
-        UpdateMouseHook();
         return S_OK;
     }
     DismissNextWordForKey(wparam);
     ClassifyBeforeIdleKey(context, wparam);
     EndRunIfPassthroughKey(context, wparam);
     *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
-    NoteKeyForAppend(context, wparam, *eaten != FALSE, false);
+    NoteKeyForAppend(wparam, *eaten != FALSE);
     if (logging) {
         LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, false);
     }
     if (*eaten == FALSE) {
-        UpdateMouseHook();
         return S_OK;
     }
     if (wparam < pendingKeyUps_.size()) {
@@ -1081,7 +1116,6 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     // (失敗 HRESULT を返すと「未処理」とみなして打鍵文字をそのまま挿入する
     //  ホストがあるため。内部の失敗はその打鍵が効かないだけに留める)
     HandleKey(context, wparam);
-    UpdateMouseHook();
     return S_OK;
 }
 
@@ -1173,14 +1207,13 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
         }
         // 現在の状態で F10 に一致する割当が無いとき (割当変更で外したとき) と、入力なしで
         // 変換の対象が無いときはアプリへ再送する
-        const KeyFunc func = (context != nullptr && IsKeyboardOpen())
-                                 ? MatchKeyFunc(VK_F10).func
-                                 : KeyFunc::None;
+        const KeyFunc func =
+            (context != nullptr && IsKeyboardOpen() && !IsInputScopePassthrough(context))
+                ? MatchKeyFunc(VK_F10).func
+                : KeyFunc::None;
         if (func != KeyFunc::None && CanRunKeyFunc(context, func)) {
             *eaten = TRUE;
-            const HRESULT hr = HandleKey(context, VK_F10);
-            UpdateMouseHook();
-            return hr;
+            return HandleKey(context, VK_F10);
         }
         // IME が使わないときは eaten=FALSE だけではアプリに F10 が届かないため、
         // Mozc と同様に WM_SYSKEYDOWN を合成してアプリ本来の F10 動作を再現する
@@ -1212,7 +1245,6 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
         CommitComposition(context);
     }
     SetKeyboardOpen(open);
-    UpdateMouseHook();
     return S_OK;
 }
 
@@ -1345,11 +1377,10 @@ void TextService::DiscardRunWhileDisabled()
     if (nextWordBar_) {
         ClearBar();
     }
-    if (!InRun() && !(converting_ && !Composing())) {
+    if (!InRun()) {
         return;
     }
     DebugLog(L"キー入力が無効な文書で run を学習せずに捨てる");
-    CancelAppendAction();
     DropRun();
 }
 
@@ -1367,10 +1398,8 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     // 誤った文脈補正を避けるためオフになった時点で文脈を破棄する
     // (run もオフの時点で忘れる)
     if (!IsKeyboardOpen()) {
-        CancelAppendAction();
-        pendingPanel_.Hide();
-        if (InRun() && panelRun_ && surface_.empty()) {
-            // パネル保持入力の読みは文書に無いので、捨てずに未完成のローマ字ごと挿入して終える
+        if (InRun()) {
+            // 読みを捨てずに、見えているとおり (未完成のローマ字を含む) に文書へ入れて終える
             ITfContext* context = nullptr;
             ITfDocumentMgr* docMgr = nullptr;
             if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) &&
@@ -1378,13 +1407,10 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
                 docMgr->GetTop(&context);
                 docMgr->Release();
             }
-            InsertPanelRun(context, composer_.Display());
+            CommitRunText(context, composer_.Display());
             if (context != nullptr) {
                 context->Release();
             }
-        } else if (InRun()) {
-            DiscardPendingRomaji();
-            EndRun();
         }
         if (nextWordBar_) {
             ClearBar();
@@ -1413,7 +1439,6 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     if (!IsKeyboardOpen()) {
         adopted_.clear();
     }
-    UpdateMouseHook();
     return S_OK;
 }
 
@@ -1423,8 +1448,20 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
                                                   ITfComposition* composition)
 {
     UNREFERENCED_PARAMETER(ecWrite);
-    UNREFERENCED_PARAMETER(composition);
 
+    if (runComposition_ != nullptr && SameComObject(composition, runComposition_)) {
+        // アプリが run の composition を終えた (クリックなど)。アプリが残した文字列のまま、
+        // 学習せずに run を終える (この通知はアプリの edit session の中なので文書には触れない)
+        DebugLog(L"アプリが run の composition を終えた: run を終える");
+        runComposition_->Release();
+        runComposition_ = nullptr;
+        DropRun();
+        return S_OK;
+    }
+    // フォーカス移動で終えずに手放した composition の終了は、今の入力と関係ない
+    if (composition_ == nullptr || !SameComObject(composition, composition_)) {
+        return S_OK;
+    }
     // アプリ側の操作 (クリックなど) で composition が終了した。候補選択中の状態を捨てる
     ClearConversion();
     ClearBar();
@@ -1433,11 +1470,8 @@ STDMETHODIMP TextService::OnCompositionTerminated(TfEditCookie ecWrite,
     promoted_ = false;
     rangeTracked_ = false;
     rangeStates_.clear();
-    if (composition_ != nullptr) {
-        composition_->Release();
-        composition_ = nullptr;
-    }
-    UpdateMouseHook();
+    composition_->Release();
+    composition_ = nullptr;
     return S_OK;
 }
 
@@ -1480,32 +1514,20 @@ STDMETHODIMP TextService::OnEndEdit(ITfContext* context, TfEditCookie ecReadOnly
     if (FAILED(editRecord->GetSelectionStatus(&selectionChanged)) || !selectionChanged) {
         return S_OK;
     }
-    // 自分の同期 edit session の終わりに呼ばれたもの、またはアプリへ渡した Backspace・
-    // 擬似 Backspace でアプリが文書を編集したものは IME 由来とみなす
+    // 自分の同期 edit session の終わりに呼ばれたものは IME 由来とみなす
     const bool own = ownEditDepth_ > 0;
-    const bool keyEdit = keyEditExpected_ || awaitingMarker_;
-    DebugLog(std::wstring(L"OnEndEdit 選択変更 own=") + (own ? L"1" : L"0") +
-             L" keyEdit=" + (keyEdit ? L"1" : L"0") + L" run=" + (InRun() ? L"1" : L"0") +
-             L" doc=" + AppendDocumentName(appendDocument_));
-    if (own || keyEdit) {
+    DebugLog(std::wstring(L"OnEndEdit 選択変更 own=") + (own ? L"1" : L"0") + L" run=" +
+             (InRun() ? L"1" : L"0") + L" doc=" + AppendDocumentName(appendDocument_));
+    if (own) {
         return S_OK;
     }
-    // キャレットが動いたら、後続語の予測はもうキャレットの前の語に続くとは限らない
+    // キャレットが動いたら、後続語の予測はもうキャレットの前の語に続くとは限らない。
+    // run は続ける (パネル保持入力は採用・確定した時点のキャレット位置に入れ、composition 入力は
+    // アプリが composition を終えたときに OnCompositionTerminated で終える)
     if (nextWordBar_) {
         DebugLog(L"選択の変更で後続語の予測を消す");
         ClearBar();
     }
-    // 読める文書は次の追記の照合でキャレット移動を検出できる。パネル保持入力の run は
-    // 文書のキャレットに結びつかず、挿入した時点のキャレット位置に入れるので続ける
-    if (appendDocument_ != AppendDocument::AppendOnly || !InRun() || panelRun_) {
-        return S_OK;
-    }
-    DebugLog(L"追記のみの文書で run を終了: OnEndEdit の選択変更");
-    pendingPanel_.Hide();
-    DiscardPendingRomaji();
-    EndRun();
-    ClearContext();
-    UpdateMouseHook();
     return S_OK;
 }
 
@@ -1807,8 +1829,7 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         return S_OK;
     default:
         // 文字種変換・記号変換・ユーザ語変換は変換状態に入るキーなので、run 中は
-        // composition に昇格してから適用する。昇格できなかった run の候補選択中は、
-        // 選択による強調のまま適用する
+        // composition に昇格してから適用する
         if (Composing() || converting_) {
             return ApplyFunctionKey(context, match.func);
         }
@@ -1856,7 +1877,7 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         const std::wstring commitText = PrepareConversionCommit();
         FinishConversionState(commitText);
         // ここから新しい run になるので、方式は今の設定で決め直す
-        panelRun_ = config_.Get().panelBuffer;
+        BeginRunMode();
         PushDirectKey(key);
         HRESULT hr = RestartComposition(context, commitText);
         if (FAILED(hr)) {
@@ -1865,11 +1886,16 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         }
         // 新しい composition はまだ空なので、キャレットの前は確定した文字列で終わっている
         CaptureLlmContext(context);
-        if (panelRun_) {
-            // 読みは文書に出さない (composition は直後の降格で空のまま終える)
-            return UpdateBar(context);
+        if (runMode_ == RunMode::Composition) {
+            // 新しい composition をそのまま run の composition にする
+            runComposition_ = composition_;
+            composition_ = nullptr;
+            promoted_ = false;
+            return UpdateRunAndBar(context);
         }
-        return UpdateCompositionAndBar(context);
+        // パネル保持入力の読みは文書に出さない (composition は直後の降格で空のまま終え、
+        // バーもそこで作る)
+        return S_OK;
     }
 
     switch (wparam) {
@@ -1881,9 +1907,8 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         // 変換を取り消して変換前のかな表示に戻る (その後 run に戻す)
         return converting_ ? CancelConversion(context) : S_OK;
     case VK_SPACE: {
-        // 割当 (既定は次候補・前候補) に一致しない Space は、昇格できなかった run の
-        // 候補選択中と同じく確定してスペースを入れる。英字モード中は英文の語の区切り
-        // なので設定 space によらず半角
+        // 割当 (既定は次候補・前候補) に一致しない Space は、確定してスペースを入れる。
+        // 英字モード中は英文の語の区切りなので設定 space によらず半角
         const bool asciiWord = config_.Get().modeless && composer_.AsciiMode();
         const std::wstring space =
             (!shifted && config_.Get().spaceFullwidth && !asciiWord) ? L"　" : L" ";
@@ -1892,9 +1917,8 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
             return hr;
         }
         hr = InsertText(context, space);
-        // 確定アンドゥはスペースまで含めて戻す (run を Space で終えたときと同じ)。
-        // 追記のみの文書は確定文字列を照合せずに擬似 Backspace で消すため、文書の
-        // 末尾と記憶を揃えておく必要がある
+        // 確定アンドゥはスペースまで含めて戻す (run を Space で終えたときと同じ。
+        // キャレット直前との照合もスペースを含めて行う)
         if (SUCCEEDED(hr) && !lastCommitText_.empty()) {
             lastCommitText_ += space;
         }
@@ -2455,34 +2479,12 @@ HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 
 HRESULT TextService::CancelConversion(ITfContext* context)
 {
-    // パネル保持入力は記憶から始めた変換も、変換前の表記に戻さずに読みをパネルの run に戻す
-    // (元の文字列は composition を張るときに文書から消えている)
-    if (rangeTracked_ && rangeFromAdopted_ && !panelRun_) {
-        return CancelAdoptedConversion(context);
-    }
-    return CancelConversionToKana(context);
-}
-
-HRESULT TextService::CancelConversionToKana(ITfContext* context)
-{
+    UNREFERENCED_PARAMETER(context);
+    // 記憶から始めた変換も、変換前の表記に戻さずに読みの run に戻す (元の文字列は composition を
+    // 張るときに文書から消えている)。読みの表示とバーは降格 (DemoteIfLeftConversion) で作り直す
     ClearConversion();
     RestoreExcludedKana();
-    // かな入力に戻るので、バーも作り直して復活させる
-    HRESULT hr = S_OK;
-    if (!Composing()) {
-        hr = UpdateRunAndBar(context);
-    } else if (PanelRunActive()) {
-        // composition は直後の降格で空にして終えるので、かなに書き直さない
-        // (文書を書き換える回数を増やさない)
-        hr = UpdateBar(context);
-    } else {
-        hr = UpdateCompositionAndBar(context);
-    }
-    // 失敗してバーを作り直さなかったときに、共用のパネルに候補一覧を残さない
-    if (FAILED(hr)) {
-        ClearBar();
-    }
-    return hr;
+    return S_OK;
 }
 
 // ---- 候補バー ----
@@ -2702,13 +2704,10 @@ bool TextService::PanelInputLine(SuggestPanel::InputLine* line) const
         return true;
     }
     if (InRun()) {
-        line->pending = AppendPendingText();
-        if (panelRun_) {
-            const std::wstring display = composer_.Display();
-            line->text = display.substr(0, display.size() - line->pending.size());
-        } else {
-            line->text = surface_;
-        }
+        const std::wstring display = composer_.Display();
+        const size_t confirmed = (std::min)(composer_.ConfirmedKana().size(), display.size());
+        line->text = display.substr(0, confirmed);
+        line->pending = display.substr(confirmed);
         return true;
     }
     if (!nextWordBar_ || contextSurface_.empty()) {
@@ -2740,8 +2739,8 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
                                                        : SuggestPanel::Position::Caret;
     placement.caret = caret;
     placement.x = barX_;
-    // 入力行を出す設定では未完成ローマ字の小窓を出さないので、その下に避けなくてよい
-    placement.belowCapsule = !PanelInputActive();
+    // 未完成のローマ字は composition か入力行に含めて出すので、キャレットの下に避ける場所は無い
+    placement.belowCapsule = false;
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
     return suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
@@ -2795,7 +2794,8 @@ constexpr UINT kLlmPollMs = 20;
 constexpr ULONGLONG kLlmPollLimitMs = 1000;
 // 読める文書で run の前を読む長さ (UTF-16 単位)
 constexpr ULONG kLlmContextRead = 80;
-// 追記のみの文書で覚えておく、IME が入れた文字列の長さ (エンジンの LLM_CONTEXT_CHARS と同じ)
+// 読めると判定されていない文書で覚えておく、IME が入れた文字列の長さ
+// (エンジンの LLM_CONTEXT_CHARS と同じ)
 constexpr size_t kLlmContextChars = 40;
 
 // 最後の改行より後ろだけを残し、タブはスペースにする (行をまたぐ文脈と、行プロトコルの区切りを避ける)
@@ -3009,16 +3009,6 @@ bool TextService::TakeRerankedCandidates(const std::wstring& kana,
     return !candidates->empty();
 }
 
-HRESULT TextService::UpdateCompositionAndBar(ITfContext* context)
-{
-    HRESULT hr = UpdateCompositionText(context, composer_.Display());
-    if (FAILED(hr)) {
-        return hr;
-    }
-    UpdateBar(context);
-    return hr;
-}
-
 void TextService::ClearBar()
 {
     ResetBarState();
@@ -3158,7 +3148,7 @@ std::wstring TextService::PrepareConversionCommit()
     if (!committed.empty()) {
         SetCommitContext(committed.back().first, committed.back().second);
     }
-    // 追記のみの文書で外したかなは学習せず、確定文字列には含める
+    // 範囲を縮めて外したかなは学習せず、確定文字列には含める
     return RangeExcludedInComposition() + ConvertedText();
 }
 
@@ -3389,7 +3379,7 @@ std::wstring TextService::ConvertedText() const
 
 HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
 {
-    if (context == nullptr || (!Composing() && !InRun())) {
+    if (context == nullptr || !Composing()) {
         return E_UNEXPECTED;
     }
 
@@ -3401,13 +3391,7 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
     const LONG targetLength =
         static_cast<LONG>(segments_[segmentIndex_].candidates[selected_[segmentIndex_]].size());
 
-    if (!Composing()) {
-        // 昇格できなかった run は composition の表示属性が使えないため、現在文節を
-        // 選択状態にして強調する
-        return ReplaceRunDisplay(context, ConvertedText(), static_cast<size_t>(targetStart),
-                                 static_cast<size_t>(targetLength));
-    }
-    // 追記のみの文書で範囲を縮めて外したかなは、文書に戻さず composition の先頭に入力中の属性で
+    // 範囲を縮めて外したかなは、文書に戻さず composition の先頭に入力中の属性で
     // 残す (強調は範囲の変換結果だけ)
     const std::wstring excluded = RangeExcludedInComposition();
     targetStart += static_cast<LONG>(excluded.size());
@@ -3421,7 +3405,6 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
 RECT TextService::CandidateAnchor(ITfContext* context)
 {
     // composition の矩形を取得して候補ウィンドウの位置を決める
-    // (run では選択範囲 = 昇格できなかった run の現在文節、それ以外は末尾に潰した選択)
     RECT rect = {};
     bool succeeded = false;
     const wchar_t* source = L"なし";
@@ -3463,13 +3446,6 @@ RECT TextService::CandidateAnchor(ITfContext* context)
         DebugLog(message);
     }
     FallbackIfOutsideWindow(context, &rect, L"候補ウィンドウの位置");
-    // 未完成ローマ字の小窓はキャレットに重ねて出すので、候補ウィンドウはその下に出す
-    RECT pendingRect = {};
-    if (pendingPanel_.WindowRect(&pendingRect) && pendingRect.bottom > rect.bottom) {
-        rect.bottom = pendingRect.bottom;
-        DebugLog(L"候補ウィンドウの位置: 小窓の下端に合わせる bottom=" +
-                 std::to_wstring(rect.bottom));
-    }
     return rect;
 }
 
@@ -3595,7 +3571,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
     if (!text.empty()) {
         lastCommitText_ = text;
         lastComposer_ = composer_;
-        // 確定アンドゥは、追記のみの文書で外したかなを含む run 全体の読みに戻す
+        // 確定アンドゥは、範囲を縮めて外したかなを含む run 全体の読みに戻す
         lastComposer_.PrependKana(RangeExcludedInComposition());
     }
 

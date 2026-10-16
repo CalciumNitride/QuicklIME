@@ -32,3 +32,5 @@
     候補選択中の候補送りはできなかった (擬似 Backspace の目印も Ctrl+F24 として届くため、目印も同じく
     key-up で処理する必要があった)
   - 候補ウィンドウ類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
+- InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
+  素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))
