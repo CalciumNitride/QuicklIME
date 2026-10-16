@@ -382,6 +382,7 @@ TextService::TextService()
       converting_(false),
       segmentIndex_(0),
       segmentsResized_(false),
+      conversionPageSize_(SuggestPanel::kMaxItems),
       barIndex_(-1),
       barX_(0),
       barXFixed_(false),
@@ -425,9 +426,6 @@ TextService::TextService()
       hostExeName_(HostExeName())
 {
     globals::DllAddRef();
-    candidateWindow_.SetLogger([this](const std::wstring& message) {
-        DebugLog(L"候補 " + message);
-    });
     suggestPanel_.SetLogger([this](const std::wstring& message) {
         DebugLog(L"パネル " + message);
     });
@@ -798,9 +796,6 @@ void TextService::RefreshConfig()
 {
     const bool configChanged = config_.Refresh();
     const TsfConfig& config = config_.Get();
-    if (configChanged) {
-        candidateWindow_.SetFont(config.candidateFont, config.candidateFontSize);
-    }
     // テーマとアプリモード (ライト/ダーク) は、設定かテーマファイルが変わったときだけ読み直す
     // (打鍵ごとには読まない)
     std::vector<std::wstring> themeLog;
@@ -2130,11 +2125,11 @@ HRESULT TextService::SelectCandidateByNumber(ITfContext* context, size_t number)
     if (!converting_ || segments_.empty()) {
         return E_UNEXPECTED;
     }
-    // 候補ウィンドウは選択位置を含むページを表示していて、行頭の番号は
+    // 候補一覧は選択位置を含むページを表示していて、行頭の番号は
     // ページ内相対。番号もそのページ内の候補に対応付ける
-    const size_t page = selected_[segmentIndex_] / CandidateWindow::kPageSize;
-    const size_t index = page * CandidateWindow::kPageSize + number;
-    if (index >= segments_[segmentIndex_].candidates.size()) {
+    const size_t page = selected_[segmentIndex_] / conversionPageSize_;
+    const size_t index = page * conversionPageSize_ + number;
+    if (number >= conversionPageSize_ || index >= segments_[segmentIndex_].candidates.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
     return ApplyCandidateSelection(context, index);
@@ -2145,11 +2140,8 @@ HRESULT TextService::ApplyCandidateSelection(ITfContext* context, size_t index)
     selected_[segmentIndex_] = index;
     SyncPairedSegment(segmentIndex_);
     HRESULT hr = UpdateConvertingDisplay(context);
-    if (candidateWindow_.Visible()) {
-        candidateWindow_.SetSelection(selected_[segmentIndex_]);
-    } else {
-        ShowCandidateWindow(context); // F7-F10 で閉じた後の候補送りでは出し直す
-    }
+    // ページと入力行も変わるので出し直す (F7-F10 で閉じた後の候補送りでも出し直す)
+    ShowCandidateWindow(context);
     return hr;
 }
 
@@ -2369,9 +2361,9 @@ HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
     SyncPairedSegment(segmentIndex_);
 
     HRESULT hr = UpdateConvertingDisplay(context);
-    // 直接変換は結果が一意 (または連打で循環) なので候補ウィンドウは出さない
+    // 直接変換は結果が一意 (または連打で循環) なので候補一覧は出さない
     // (表示中なら閉じる)
-    candidateWindow_.Hide();
+    HideCandidateList(context);
     return hr;
 }
 
@@ -2448,15 +2440,21 @@ HRESULT TextService::CancelConversionToKana(ITfContext* context)
     ClearConversion();
     RestoreExcludedKana();
     // かな入力に戻るので、バーも作り直して復活させる
+    HRESULT hr = S_OK;
     if (!Composing()) {
-        return UpdateRunAndBar(context);
-    }
-    if (PanelRunActive()) {
+        hr = UpdateRunAndBar(context);
+    } else if (PanelRunActive()) {
         // composition は直後の降格で空にして終えるので、かなに書き直さない
         // (文書を書き換える回数を増やさない)
-        return UpdateBar(context);
+        hr = UpdateBar(context);
+    } else {
+        hr = UpdateCompositionAndBar(context);
     }
-    return UpdateCompositionAndBar(context);
+    // 失敗してバーを作り直さなかったときに、共用のパネルに候補一覧を残さない
+    if (FAILED(hr)) {
+        ClearBar();
+    }
+    return hr;
 }
 
 // ---- 候補バー ----
@@ -2466,8 +2464,12 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     barIndex_ = -1;
     nextWordBar_ = false;
     const TsfConfig& config = config_.Get();
-    // 候補選択中は縦の候補ウィンドウを使う
-    if ((!Composing() && !InRun()) || converting_) {
+    // 候補選択中のパネルは候補一覧を出しているので、隠さない
+    if (converting_) {
+        ResetBarState();
+        return S_OK;
+    }
+    if (!Composing() && !InRun()) {
         ClearBar();
         return S_OK;
     }
@@ -2584,7 +2586,7 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
         }
         heads.push_back(head);
     }
-    const size_t predictionLimit = CandidateWindow::kPageSize - items.size() - heads.size();
+    const size_t predictionLimit = SuggestPanel::kMaxItems - items.size() - heads.size();
     size_t predictionCount = 0;
     for (const PredictionCandidate& candidate : predictions) {
         if (predictionCount >= predictionLimit) {
@@ -3294,7 +3296,6 @@ HRESULT TextService::LaunchConfigTool()
 
 void TextService::ClearConversion()
 {
-    candidateWindow_.Hide();
     converting_ = false;
     segments_.clear();
     selected_.clear();
@@ -3401,10 +3402,58 @@ RECT TextService::CandidateAnchor(ITfContext* context)
 
 void TextService::ShowCandidateWindow(ITfContext* context)
 {
-    if (!segments_.empty()) {
-        candidateWindow_.Show(CandidateAnchor(context), segments_[segmentIndex_].candidates,
-                              selected_[segmentIndex_]);
+    ShowConversionPanel(context, true);
+}
+
+void TextService::HideCandidateList(ITfContext* context)
+{
+    if (!PanelInputActive()) {
+        suggestPanel_.Hide();
+        return;
     }
+    ShowConversionPanel(context, false);
+}
+
+void TextService::ShowConversionPanel(ITfContext* context, bool list)
+{
+    if (segments_.empty()) {
+        return;
+    }
+    // パネルは候補バーと共用なので、バーの並べ替えの結果で候補一覧を上書きさせない
+    StopRerankPolling();
+    const RECT anchor = CandidateAnchor(context);
+    SuggestPanel::Placement placement;
+    placement.position = config_.Get().candidateCenter ? SuggestPanel::Position::Center
+                                                       : SuggestPanel::Position::Caret;
+    placement.caret = &anchor;
+    placement.x = anchor.left;
+    placement.belowCapsule = false;
+    SuggestPanel::InputLine input;
+    const bool hasInput = ConversionInputLine(&input);
+    static const std::vector<std::wstring> kNoCandidates;
+    const size_t pageSize =
+        suggestPanel_.ShowConversion(placement,
+                                     list ? segments_[segmentIndex_].candidates : kNoCandidates,
+                                     selected_[segmentIndex_], hasInput ? &input : nullptr);
+    if (pageSize > 0) {
+        conversionPageSize_ = pageSize;
+    }
+}
+
+bool TextService::ConversionInputLine(SuggestPanel::InputLine* line) const
+{
+    if (!PanelInputActive() || !converting_ || segments_.empty()) {
+        return false;
+    }
+    // 文書の composition と同じ内容 (UpdateConvertingDisplay) を出す
+    if (Composing()) {
+        line->excluded = RangeExcludedInComposition();
+    }
+    for (size_t i = 0; i < segments_.size(); ++i) {
+        line->segments.push_back(segments_[i].candidates[selected_[i]]);
+    }
+    line->currentSegment = segmentIndex_;
+    return true;
 }
 
 // ---- composition 操作 ----

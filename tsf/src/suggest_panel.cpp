@@ -20,6 +20,8 @@ constexpr int kAnchorGap = 2;     // キャレット行とパネルの間
 constexpr float kSoftAlpha = 0.16f;        // selection soft でアクセント色を敷く不透明度
 constexpr float kTagAlpha = 0.16f;         // 種類のタグの背景の不透明度
 constexpr float kTextShadowAlpha = 0.35f;  // text_shadow の影の不透明度
+constexpr float kSegmentAlpha = 0.16f;     // 変換中の入力行で現在文節にアクセント色を敷く不透明度
+constexpr float kPageRowRatio = 1.6f;      // 位置の表示 (12/24) の行の高さ (label_text_size に対する比)
 
 // ぼかしの方式の描画先の種類。hardware (DEFAULT) はホストのプロセスに D3D のデバイスを作るため、
 // まず software で試し、alpha が失われるときに切り替えて比べる
@@ -216,6 +218,43 @@ const PanelColor& KindTagColor(const PanelTheme& theme, SuggestPanel::ItemKind k
     }
 }
 
+// 縦積みで n 行を出すときのパネルの高さ。候補が無ければ入力行だけにする
+int ColumnHeight(const Metrics& m, bool hasInput, size_t n)
+{
+    if (n == 0) {
+        return m.padding * 2 + (hasInput ? m.inputRowHeight : 0);
+    }
+    const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
+    const int count = static_cast<int>(n);
+    return m.padding * 2 + header + m.chipHeight * count +
+           static_cast<int>(std::lround(m.chipGap * static_cast<float>(count - 1)));
+}
+
+// 変換の候補一覧の位置の表示 (12/24) の行の高さ
+int PageRowHeight(const PanelTheme& theme, const Metrics& m)
+{
+    return Scaled(theme.labelTextSize * kPageRowRatio, m.f);
+}
+
+// 画面中央に出す候補バーのパネルの上端。SuggestPanel::Show の Center と同じ規則で求める
+// (変換の候補一覧の上端をそろえ、候補選択に入っても入力行を動かさないため)
+int CenterBarTop(const PanelTheme& theme, const Metrics& m, const RECT& work, bool hasInput)
+{
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+    if (theme.layout == PanelLayout::Column) {
+        size_t fullRows = 0;
+        while (fullRows < SuggestPanel::kMaxItems &&
+               ColumnHeight(m, hasInput, fullRows + 1) <= workHeight) {
+            ++fullRows;
+        }
+        return static_cast<int>(work.top) +
+               (std::max)(0, (workHeight - ColumnHeight(m, hasInput, fullRows)) / 2);
+    }
+    const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
+    const int height = m.padding * 2 + m.chipHeight + header;
+    return static_cast<int>(work.top) + (workHeight - height) / 2;
+}
+
 // パネル (影を除く) の角丸の半径。カプセルは両端を半円にする
 float BodyRadius(bool capsule, const Metrics& m, float height)
 {
@@ -328,7 +367,8 @@ SuggestPanel::SuggestPanel()
       dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
-      kind_(Kind::Panel), inputTop_(0.0f), separator_(false), selection_(0), hasInput_(false),
+      kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false), pageTop_(0.0f),
+      selection_(0), hasInput_(false),
       bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0)
 {
     SetFont(kFallbackFont, 18);
@@ -740,6 +780,8 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     }
 
     kind_ = Kind::Panel;
+    conversion_ = false;
+    pageText_.clear();
     texts.resize(count);
     itemTexts_ = std::move(texts);
     items_.assign(items.begin(), items.begin() + static_cast<std::ptrdiff_t>(count));
@@ -786,6 +828,156 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     return count;
 }
 
+size_t SuggestPanel::ShowConversion(const Placement& placement,
+                                    const std::vector<std::wstring>& candidates, size_t selection,
+                                    const InputLine* input)
+{
+    if (textFormat_ == nullptr ||
+        (placement.position == Position::Caret && placement.caret == nullptr) ||
+        (candidates.empty() && input == nullptr)) {
+        Hide();
+        return 0;
+    }
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const bool ghost = theme_.style == PanelStyle::Ghost;
+    const bool centerAlign = theme_.align == PanelAlign::Center;
+    const bool hasInput = input != nullptr;
+    const size_t total = candidates.size();
+    const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
+    // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+    const auto heightOf = [&](size_t n, bool pages) {
+        return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+    };
+
+    HMONITOR monitor = nullptr;
+    if (placement.position == Position::Center) {
+        if (placement.caret != nullptr) {
+            monitor = MonitorFromRect(placement.caret, MONITOR_DEFAULTTONEAREST);
+        } else {
+            HWND foreground = GetForegroundWindow();
+            monitor = foreground != nullptr
+                          ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+                          : MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY);
+        }
+    } else {
+        // FitToWorkArea と同じモニタで行数を決める
+        const POINT origin = {placement.caret->left, placement.caret->top};
+        monitor = MonitorFromPoint(origin, MONITOR_DEFAULTTONEAREST);
+    }
+    const RECT work = WorkAreaOf(monitor);
+    const int workWidth = static_cast<int>(work.right - work.left);
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+
+    // 作業領域に kMaxItems 行が収まらなければ、収まる行数を 1 ページにしてページ送りで全候補に届かせる
+    const size_t limit = (std::max)(static_cast<size_t>(1), (std::min)(kMaxItems, total));
+    size_t pageSize = 1;
+    while (pageSize < limit && heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
+        ++pageSize;
+    }
+    const bool pages = total > pageSize;
+    const size_t current = total == 0 ? 0 : (std::min)(selection, total - 1);
+    const size_t begin = current / pageSize * pageSize;
+    const size_t count = (std::min)(begin + pageSize, total) - begin;
+
+    std::vector<std::wstring> texts;
+    std::vector<float> widths;  // 切り詰めずに出したときの行の幅
+    for (size_t i = begin; i < begin + count; ++i) {
+        float textWidth = TextWidth(candidates[i], textFormat_);
+        if (theme_.selection == SelectionStyle::Text) {
+            // 選択すると太字になるので、選択によって幅が変わらないよう太字の幅も見込む
+            textWidth = (std::max)(textWidth, TextWidth(candidates[i], boldFormat_));
+        }
+        widths.push_back(m.chipPadding * 2 + m.badgeSlot + textWidth);
+        texts.push_back(candidates[i]);
+    }
+    std::wstring pageText;
+    if (pages) {
+        pageText = std::to_wstring(current + 1) + L"/" + std::to_wstring(total);
+    }
+
+    const int height = heightOf(count, pages);
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    if (placement.position == Position::Center) {
+        width = static_cast<int>((std::min)(
+            theme_.centerWidth * m.f, static_cast<float>(workWidth) * theme_.centerWidthRatio));
+        x = static_cast<int>(work.left) + (workWidth - width) / 2;
+        y = CenterBarTop(theme_, m, work, hasInput);
+        if (y + height > work.bottom) {
+            y = static_cast<int>(work.bottom) - height;
+        }
+        y = (std::max)(y, static_cast<int>(work.top));
+    } else {
+        float widest = 0.0f;
+        for (const float rowWidth : widths) {
+            widest = (std::max)(widest, rowWidth);
+        }
+        if (!pageText.empty()) {
+            widest = (std::max)(widest, m.chipPadding * 2 + TextWidth(pageText, labelFormat_));
+        }
+        if (hasInput) {
+            float inputWidth = TextWidth(input->excluded, inputFormat_);
+            for (const std::wstring& segment : input->segments) {
+                inputWidth += TextWidth(segment, inputFormat_);
+            }
+            widest = (std::max)(widest, inputWidth);
+        }
+        width = m.padding * 2 + static_cast<int>(std::ceil(widest));
+        width = (std::max)(width, m.chipHeight * 2);
+        width = (std::min)(width, workWidth);
+        const RECT& anchor = *placement.caret;
+        const POINT position = FitToWorkArea(anchor, placement.x,
+                                             static_cast<int>(anchor.bottom) + kAnchorGap, width,
+                                             height);
+        x = position.x;
+        y = position.y;
+    }
+
+    kind_ = Kind::Panel;
+    conversion_ = true;
+    itemTexts_ = std::move(texts);
+    items_.clear();
+    for (const std::wstring& text : itemTexts_) {
+        items_.push_back({text, ItemKind::Conversion});
+    }
+    const float padding = static_cast<float>(m.padding);
+    const float contentWidth = static_cast<float>(width) - padding * 2;
+    inputTop_ = padding;
+    float itemsTop = padding;
+    separator_ = false;
+    if (hasInput && count > 0) {
+        itemsTop += static_cast<float>(m.inputRowHeight + m.rowGap * 2 + m.line);
+        // ghost は枠を持たないので区切り線も引かない (間だけ取る)
+        separator_ = !ghost;
+    }
+    itemBoxes_.clear();
+    for (size_t i = 0; i < count; ++i) {
+        // 左揃えでは行の幅をそろえ、中央揃えでは行ごとの幅で中央に置く
+        const float boxWidth = centerAlign ? (std::min)(widths[i], contentWidth) : contentWidth;
+        const float left = padding + (centerAlign ? (contentWidth - boxWidth) / 2 : 0.0f);
+        const float top =
+            itemsTop + static_cast<float>(i) * (static_cast<float>(m.chipHeight) + m.chipGap);
+        itemBoxes_.push_back({left, std::round(top), boxWidth});
+    }
+    pageText_ = std::move(pageText);
+    pageTop_ = itemsTop + static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
+               std::round(m.chipGap);
+    selection_ = current - begin;
+    hasInput_ = hasInput;
+    input_ = hasInput ? *input : InputLine{};
+    capsuleText_.clear();
+    bodyX_ = x;
+    bodyY_ = y;
+    bodyWidth_ = width;
+    bodyHeight_ = height;
+    margin_ = LayeredMargin();
+    if (!Render(L"変換の候補", placement.caret)) {
+        return 0;
+    }
+    return count > 0 ? pageSize : 0;
+}
+
 bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
 {
     if (text.empty() || textFormat_ == nullptr) {
@@ -798,6 +990,8 @@ bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
     const POINT position = FitToWorkArea(caret, caret.left, caret.top, width, height);
 
     kind_ = Kind::Capsule;
+    conversion_ = false;
+    pageText_.clear();
     items_.clear();
     itemTexts_.clear();
     itemBoxes_.clear();
@@ -1055,7 +1249,8 @@ int SuggestPanel::LayeredMargin() const
 
 std::wstring SuggestPanel::GhostText() const
 {
-    if (theme_.style != PanelStyle::Ghost || kind_ != Kind::Panel || itemTexts_.empty()) {
+    if (theme_.style != PanelStyle::Ghost || kind_ != Kind::Panel || conversion_ ||
+        itemTexts_.empty()) {
         return {};
     }
     const size_t index = selection_ < itemTexts_.size() ? selection_ : 0;
@@ -1138,6 +1333,16 @@ void SuggestPanel::Draw()
     for (size_t i = 0; i < itemBoxes_.size(); ++i) {
         DrawItem(i, body.left, body.top);
     }
+    if (!pageText_.empty()) {
+        float pageX = left + m.chipPadding;
+        if (theme_.align == PanelAlign::Center) {
+            const float pageWidth = TextWidth(pageText_, labelFormat_);
+            pageX = left + (std::max)(0.0f, std::round((contentWidth - pageWidth) / 2));
+        }
+        const float pageTop = body.top + pageTop_;
+        DrawLabel(pageText_, labelFormat_, pageX, pageTop, left + contentWidth,
+                  pageTop + static_cast<float>(PageRowHeight(theme_, m)), theme_.secondary);
+    }
 }
 
 void SuggestPanel::DrawShadow()
@@ -1203,6 +1408,10 @@ void SuggestPanel::DrawScrim()
 
 void SuggestPanel::DrawInputLine(float left, float top, float width)
 {
+    if (!input_.segments.empty()) {
+        DrawConversionInput(left, top, width);
+        return;
+    }
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const float rowHeight = static_cast<float>(m.inputRowHeight);
     const float big = 100000.0f;
@@ -1310,11 +1519,122 @@ void SuggestPanel::DrawInputLine(float left, float top, float width)
     drawTarget_->PopAxisAlignedClip();
 }
 
+void SuggestPanel::DrawConversionInput(float left, float top, float width)
+{
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const float rowHeight = static_cast<float>(m.inputRowHeight);
+    const float big = 100000.0f;
+    const float line = static_cast<float>(m.line);
+    const std::vector<std::wstring>& segments = input_.segments;
+    const size_t current = (std::min)(input_.currentSegment, segments.size() - 1);
+
+    // 下線と強調の位置は、文字列全体を同じ書式で並べたときの行の寸法から決める
+    std::wstring whole = input_.excluded;
+    for (const std::wstring& segment : segments) {
+        whole += segment;
+    }
+    float lineTop = top;
+    float lineHeight = rowHeight;
+    float baseline = rowHeight * 0.75f;
+    IDWriteTextLayout* layout = nullptr;
+    if (SUCCEEDED(dwriteFactory_->CreateTextLayout(whole.c_str(), static_cast<UINT32>(whole.size()),
+                                                   inputFormat_, big, rowHeight, &layout))) {
+        DWRITE_TEXT_METRICS metrics = {};
+        DWRITE_LINE_METRICS lineMetrics = {};
+        UINT32 lineCount = 0;
+        if (SUCCEEDED(layout->GetMetrics(&metrics)) &&
+            SUCCEEDED(layout->GetLineMetrics(&lineMetrics, 1, &lineCount)) && lineCount >= 1) {
+            lineTop = top + metrics.top;
+            lineHeight = lineMetrics.height;
+            baseline = lineMetrics.baseline;
+        }
+        layout->Release();
+    }
+    const float underlineY =
+        std::round(lineTop + baseline + (std::max)(2.0f, m.inputTextSize * 0.15f));
+
+    const float excludedWidth = TextWidth(input_.excluded, inputFormat_);
+    std::vector<float> widths;
+    float total = excludedWidth;
+    float currentStart = excludedWidth;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        widths.push_back(TextWidth(segments[i], inputFormat_));
+        if (i < current) {
+            currentStart += widths.back();
+        }
+        total += widths.back();
+    }
+    const float currentEnd = currentStart + widths[current];
+
+    // 現在文節が幅に収まらなければ左を「…」で切り、現在文節の末尾を右端にそろえる
+    // (現在文節だけで幅を超えるときは、その先頭を「…」の直後にそろえる)
+    float x = left;
+    float clipLeft = left;
+    const bool truncated = currentEnd > width;
+    if (truncated) {
+        clipLeft = left + TextWidth(L"…", inputFormat_);
+        x = left + width - currentEnd;
+        if (x + currentStart < clipLeft) {
+            x = clipLeft - currentStart;
+        }
+    } else if (theme_.align == PanelAlign::Center) {
+        x += (std::max)(0.0f, std::round((width - total) / 2));
+    }
+
+    drawTarget_->PushAxisAlignedClip(D2D1::RectF(left, top, left + width, top + rowHeight),
+                                     D2D1_ANTIALIAS_MODE_ALIASED);
+    if (truncated) {
+        DrawLabel(L"…", inputFormat_, left, top, clipLeft, top + rowHeight, theme_.secondary);
+    }
+    drawTarget_->PushAxisAlignedClip(D2D1::RectF(clipLeft, top, left + width, top + rowHeight),
+                                     D2D1_ANTIALIAS_MODE_ALIASED);
+
+    // 文節の境目では、下線を両側から 1px ずつ縮めて 2px 空ける
+    if (!input_.excluded.empty()) {
+        DrawLabel(input_.excluded, inputFormat_, x, top, x + big, top + rowHeight,
+                  theme_.secondary);
+        brush_->SetColor(ToD2D(theme_.secondary));
+        const float dotY = underlineY + line / 2;
+        drawTarget_->DrawLine(D2D1::Point2F(x, dotY),
+                              D2D1::Point2F(x + excludedWidth - 1.0f, dotY), brush_, line,
+                              dotStroke_);
+    }
+    float segmentX = x + excludedWidth;
+    for (size_t i = 0; i < segments.size(); ++i) {
+        const float segmentWidth = widths[i];
+        const float start = segmentX + (i > 0 || !input_.excluded.empty() ? 1.0f : 0.0f);
+        const float end = segmentX + segmentWidth - (i + 1 < segments.size() ? 1.0f : 0.0f);
+        if (i == current) {
+            PanelColor fill = theme_.accent;
+            fill.a *= kSegmentAlpha;
+            brush_->SetColor(ToD2D(fill));
+            drawTarget_->FillRectangle(
+                D2D1::RectF(segmentX, lineTop, segmentX + segmentWidth, lineTop + lineHeight),
+                brush_);
+        }
+        DrawLabel(segments[i], inputFormat_, segmentX, top, segmentX + big, top + rowHeight,
+                  theme_.text);
+        if (i == current) {
+            brush_->SetColor(ToD2D(theme_.accent));
+            drawTarget_->FillRectangle(
+                D2D1::RectF(start, underlineY, end, underlineY + theme_.underlinePx), brush_);
+        } else {
+            brush_->SetColor(ToD2D(theme_.secondary));
+            drawTarget_->FillRectangle(D2D1::RectF(start, underlineY, end, underlineY + line),
+                                       brush_);
+        }
+        segmentX += segmentWidth;
+    }
+    drawTarget_->PopAxisAlignedClip();
+    drawTarget_->PopAxisAlignedClip();
+}
+
 void SuggestPanel::DrawItem(size_t index, float originX, float originY)
 {
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const ItemBox& box = itemBoxes_[index];
-    const bool column = theme_.layout == PanelLayout::Column;
+    // 変換の候補一覧はテーマの layout によらず縦積み
+    const bool column = conversion_ || theme_.layout == PanelLayout::Column;
     const bool underline = theme_.chipShape == ChipShape::Underline;
     const SelectionStyle selectionStyle = theme_.selection;
     const float height = static_cast<float>(m.chipHeight);
@@ -1397,7 +1717,8 @@ void SuggestPanel::DrawItem(size_t index, float originX, float originY)
     float textRight = rect.right;
     if (column) {
         textRight = rect.right - m.chipPadding;
-        if (theme_.kindTag) {
+        // 変換の候補はすべて同じ種類なので、種類のタグは出さない
+        if (theme_.kindTag && !conversion_) {
             const ItemKind kind = items_[index].kind;
             const std::wstring tag = KindTagLabel(kind);
             const PanelColor& tagColor = KindTagColor(theme_, kind);
@@ -1489,10 +1810,12 @@ void SuggestPanel::Hide()
     }
     blurActive_ = false;
     timerCallback_ = nullptr;
+    conversion_ = false;
     items_.clear();
     itemTexts_.clear();
     itemBoxes_.clear();
     separator_ = false;
+    pageText_.clear();
     selection_ = 0;
     hasInput_ = false;
     input_ = InputLine{};

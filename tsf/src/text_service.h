@@ -7,7 +7,6 @@
 #include <string>
 #include <vector>
 
-#include "candidate_window.h"
 #include "config.h"
 #include "engine_client.h"
 #include "romaji.h"
@@ -422,11 +421,18 @@ private:
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
     std::wstring ConvertedText() const;
-    // 現在文節の候補一覧で候補ウィンドウを表示する
+    // 現在文節の候補一覧と変換中の入力行をパネルに出す (docs/design/conversion-panel.md)
     void ShowCandidateWindow(ITfContext* context);
-    // 候補ウィンドウの表示位置 (composition の矩形。取れなければキャレット/マウス位置)
+    // 候補一覧を閉じる (F7〜F10)。入力行を出す設定なら入力行だけのパネルを残す
+    void HideCandidateList(ITfContext* context);
+    // 候補選択中のパネルを出す。list が false なら候補一覧を出さず入力行だけにする
+    void ShowConversionPanel(ITfContext* context, bool list);
+    // 変換中の入力行の内容 (外したかなと文節)。入力行を出さないときは false
+    bool ConversionInputLine(SuggestPanel::InputLine* line) const;
+    // 候補一覧の表示位置 (composition の矩形。取れなければキャレット/マウス位置)
     RECT CandidateAnchor(ITfContext* context);
-    // 変換状態を破棄する (composition は触らない)
+    // 変換状態を破棄する (composition もパネルも触らない。パネルは呼び出し側が
+    // ClearBar か UpdateBar で描き直す)
     void ClearConversion();
 
     // ---- 文脈補正 (直前確定文節の読み・表記を覚えておき、次の変換に渡す) ----
@@ -729,8 +735,9 @@ private:
     std::vector<size_t> preResizeLengths_;
     // 入力全体を1文節にした候補選択 (segment_ui 0) の、候補ごとの文節。確定時の学習に使う
     std::vector<SentenceCandidate> wholeCandidates_;
-    CandidateWindow candidateWindow_;          // 候補選択中の縦の候補一覧
-    SuggestPanel suggestPanel_;                // 候補バーと入力行
+    SuggestPanel suggestPanel_;                // 候補バー・変換の候補一覧と入力行
+    // 変換の候補一覧の 1 ページの件数 (作業領域に収まる行数。数字キーの対応付けに使う)
+    size_t conversionPageSize_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
     PanelThemeLoader panelTheme_;              // サジェストパネルのテーマ (設定 panel_theme)

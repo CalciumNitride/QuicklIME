@@ -34,11 +34,14 @@
   文書を書き換える。バーの全体変換の件数と先頭文節の取り方は [nbest.md](nbest.md) で、見た目・表示位置・
   入力行は [suggest-panel.md](suggest-panel.md) で置き換え
 - [suggest-panel.md](suggest-panel.md): サジェストパネル。候補バーの見た目の刷新 (カプセル)、画面中央への
-  表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)
+  表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
+  [conversion-panel.md](conversion-panel.md) で置き換え
 - [panel-theme.md](panel-theme.md): 候補パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
   テーマファイル)
 - [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
   出し、予測候補の順位にも前文脈を使う
+- [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧をサジェストパネルで出す (テーマ・表示位置・
+  変換中の入力行)
 
 ## 変換
 

@@ -7,7 +7,6 @@ project(quicklime_tsf LANGUAGES CXX)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 add_library(quicklime_tsf SHARED
-    src/candidate_window.cpp
     src/config.cpp
     src/debug_log.cpp
     src/dll_main.cpp

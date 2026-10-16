@@ -17,7 +17,8 @@ struct ID2D1StrokeStyle;
 struct IDWriteFactory;
 struct IDWriteTextFormat;
 
-// 候補バー (横一列または縦積みの候補) と入力行を出すパネル、および未完成ローマ字の小さな
+// 候補バー (横一列または縦積みの候補) と入力行を出すパネル、変換の候補一覧
+// (docs/design/conversion-panel.md)、および未完成ローマ字の小さな
 // カプセル。見た目は PanelTheme (docs/design/panel-theme.md) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
 // ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
@@ -47,6 +48,10 @@ public:
         // text・pending が空のときに副次色で出す文字列 (後続語予測の前文脈)
         std::wstring context;
         bool nextWordLabel = false;  // context の後ろに「次の語」のラベルを付ける
+        // 変換中の内容。segments が空でなければ変換中の表示にし、上の 4 つは使わない
+        std::wstring excluded;               // 範囲を縮めて外したかな (副次色・点線の下線)
+        std::vector<std::wstring> segments;  // 文節ごとの変換結果
+        size_t currentSegment = 0;           // 強調する文節 (segments の番号)
     };
 
     enum class Position {
@@ -73,6 +78,15 @@ public:
     // 候補も入力行も無ければ隠す。selection が範囲外ならどの候補も強調しない
     size_t Show(const Placement& placement, const std::vector<Item>& items, size_t selection,
                 const InputLine* input);
+
+    // 変換の候補一覧。テーマの layout によらず縦積みにし、種類のタグは出さない。selection を含む
+    // ページ (kMaxItems 件。作業領域に収まらなければ収まる行数) を出し、番号はページ内で 1 から振る。
+    // 複数ページなら最後の行の下に位置 (12/24) を出す。Caret では placement.caret (composition の
+    // 矩形) の下 (入らなければ上) の placement.x に、Center では候補バーと同じ上端から下へ伸ばして出す。
+    // candidates が空なら入力行だけを出し、input も無ければ隠す。
+    // 候補一覧を出したときは 1 ページの件数 (数字キーの対応付けに使う) を、出さなかったときは 0 を返す
+    size_t ShowConversion(const Placement& placement, const std::vector<std::wstring>& candidates,
+                          size_t selection, const InputLine* input);
 
     // 未完成ローマ字のカプセル。caret (スクリーン座標) の左上に重ねて出す
     bool ShowCapsule(const RECT& caret, const std::wstring& text);
@@ -145,6 +159,8 @@ private:
     // ghost の背景 (放射状のにじみ)
     void DrawScrim();
     void DrawInputLine(float left, float top, float width);
+    // 変換中の入力行 (外したかなと文節。現在文節を強調する)
+    void DrawConversionInput(float left, float top, float width);
     void DrawItem(size_t index, float left, float top);
     // text_shadow on なら下に影を敷いて文字を描く
     void DrawLabel(const std::wstring& text, IDWriteTextFormat* format, float left, float top,
@@ -183,11 +199,14 @@ private:
 
     // 今のレイアウト (座標は影を除いたパネルの左上を原点とする px)
     Kind kind_;
+    bool conversion_;  // 変換の候補一覧 (ShowConversion) を出している
     std::vector<Item> items_;
     std::vector<std::wstring> itemTexts_;  // 表示する候補文字列 (「…」を付けたもの)
     std::vector<ItemBox> itemBoxes_;
     float inputTop_;  // 入力行の上端 (パネルの左上を原点とする px)
     bool separator_;  // 入力行と候補の間に区切り線を引く
+    std::wstring pageText_;  // 変換の候補一覧の位置の表示 (空なら出さない)
+    float pageTop_;          // 位置の表示の上端 (パネルの左上を原点とする px)
     size_t selection_;
     bool hasInput_;
     InputLine input_;

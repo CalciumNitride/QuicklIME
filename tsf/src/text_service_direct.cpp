@@ -1786,7 +1786,7 @@ void TextService::ShowNextWordBar(ITfContext* context)
     }
     std::vector<BarCandidate> items;
     for (const PredictionCandidate& candidate : candidates) {
-        if (items.size() >= CandidateWindow::kPageSize) {
+        if (items.size() >= SuggestPanel::kMaxItems) {
             break;
         }
         items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
