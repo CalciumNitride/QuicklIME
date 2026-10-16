@@ -35,7 +35,7 @@ use windows_sys::Win32::UI::Controls::{
     InitCommonControlsEx, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_STATE, LVIF_TEXT, LVIR_BOUNDS,
     LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE,
     LVM_GETITEMRECT, LVM_GETNEXTITEM, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
-    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVNI_SELECTED,
+    LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVN_ITEMCHANGED, LVNI_SELECTED,
     LVS_EX_FULLROWSELECT, LVS_NOSORTHEADER, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL,
     NM_DBLCLK, NMHDR, NMITEMACTIVATE, TCIF_TEXT, TCITEMW, TCM_ADJUSTRECT, TCM_GETCURSEL,
     TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE,
@@ -90,6 +90,8 @@ const ID_EDIT_DEBUG_LOG: i32 = 129;
 const ID_TAB: i32 = 130;
 const ID_BUTTON_THEME_DIR: i32 = 131;
 const ID_CHECK_PANEL_BUFFER: i32 = 132;
+const ID_CHECK_APP_NEWLINE: i32 = 133;
+const ID_COMBO_APP_IME_START: i32 = 134;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -155,6 +157,10 @@ const KEY_ITEMS: [(&str, &str, u8, &str); 17] = [
 /// 改行キーが働くアプリの既定 (設定 newline_apps の行が無いとき。TSF 層と合わせる)
 const DEFAULT_NEWLINE_APPS: &str = "Discord.exe,slack.exe,ms-teams.exe,Teams.exe,LINE.exe";
 
+/// 起動時の IME の状態の表示名 (「アプリ」タブの列とコンボの項目の並び)
+const IME_START_LABELS: [(ImeStart, &str); 3] =
+    [(ImeStart::Auto, "自動"), (ImeStart::On, "オン"), (ImeStart::Off, "オフ")];
+
 /// 英字・数字・F1〜F24 以外の名前を持つキー: (表記, 仮想キーコード)
 const NAMED_KEYS: [(&str, u16); 18] = [
     ("Space", 0x20),
@@ -179,6 +185,25 @@ const NAMED_KEYS: [(&str, u16); 18] = [
 
 /// 句読点の選択肢 (設定値そのまま表示する)
 const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
+
+/// アプリの起動時の IME の状態 (docs/design/ime-start-state.md)。自動は ime_start_apps に
+/// 載せないことで表す
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+enum ImeStart {
+    #[default]
+    Auto,
+    On,
+    Off,
+}
+
+/// 「アプリ」タブの1行 (アプリごとの設定。docs/design/app-settings.md)
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct AppSetting {
+    exe: String,
+    /// 改行キーが働く (newline_apps に載る)
+    newline: bool,
+    ime_start: ImeStart,
+}
 
 /// 修飾キーの組と仮想キー
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -425,6 +450,8 @@ struct Config {
     keys: Vec<KeyAssign>,     // KEY_ITEMS の並び順
     /// 改行キーが働くアプリの exe 名
     newline_apps: Vec<String>,
+    /// 起動時の IME をオン/オフにするアプリ (ime_start_apps。自動のアプリは含めない)
+    ime_start_apps: Vec<(String, ImeStart)>,
     /// 診断ログの出力先 (空なら出さない)
     debug_log: String,
 }
@@ -455,6 +482,7 @@ impl Default for Config {
             candidate_font_size: 18,
             keys: default_key_assigns(),
             newline_apps: parse_app_list(DEFAULT_NEWLINE_APPS),
+            ime_start_apps: Vec::new(),
             debug_log: String::new(),
         }
     }
@@ -485,6 +513,96 @@ fn parse_app_list(value: &str) -> Vec<String> {
         }
     }
     apps
+}
+
+/// ime_start_apps の値 (exe名:on|off のカンマ区切り) を読む。TSF 層 (tsf/src/config.cpp の
+/// ParseImeStartApps) と同じく、区切りは最後の `:` で、exe 名と状態から前後の空白・タブを除き、
+/// 状態の on / off は大文字小文字を区別しない。状態が不正な項目・exe 名が空の項目は捨て、
+/// 同じ exe 名が重なれば最初の項目を使う
+fn parse_ime_start_apps(value: &str) -> Vec<(String, ImeStart)> {
+    let mut apps: Vec<(String, ImeStart)> = Vec::new();
+    for item in value.split(',') {
+        let Some((exe, state)) = item.rsplit_once(':') else {
+            continue;
+        };
+        let exe = exe.trim_matches([' ', '\t']);
+        let state = state.trim_matches([' ', '\t']);
+        let state = if state.eq_ignore_ascii_case("on") {
+            ImeStart::On
+        } else if state.eq_ignore_ascii_case("off") {
+            ImeStart::Off
+        } else {
+            continue;
+        };
+        if exe.is_empty() || apps.iter().any(|(app, _)| same_app(app, exe)) {
+            continue;
+        }
+        apps.push((exe.to_string(), state));
+    }
+    apps
+}
+
+/// ime_start_apps の値を作る (自動の項目は書かない)
+fn format_ime_start_apps(apps: &[(String, ImeStart)]) -> String {
+    apps.iter()
+        .filter_map(|(exe, state)| match state {
+            ImeStart::On => Some(format!("{exe}:on")),
+            ImeStart::Off => Some(format!("{exe}:off")),
+            ImeStart::Auto => None,
+        })
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// newline_apps と ime_start_apps からアプリごとの設定の一覧を作る。newline_apps の順に並べ、
+/// 続けて ime_start_apps にだけあるアプリをその順に足す (exe 名の表記は先に出たものを使う)
+fn merge_app_settings(
+    newline_apps: &[String],
+    ime_start_apps: &[(String, ImeStart)],
+) -> Vec<AppSetting> {
+    let mut apps: Vec<AppSetting> = Vec::new();
+    for exe in newline_apps {
+        let index = add_app_setting(&mut apps, exe);
+        apps[index].newline = true;
+    }
+    for (exe, state) in ime_start_apps {
+        let index = add_app_setting(&mut apps, exe);
+        if apps[index].ime_start == ImeStart::Auto {
+            apps[index].ime_start = *state;
+        }
+    }
+    apps
+}
+
+/// アプリごとの設定の一覧を、一覧の順のまま newline_apps と ime_start_apps に分ける
+fn split_app_settings(apps: &[AppSetting]) -> (Vec<String>, Vec<(String, ImeStart)>) {
+    let newline_apps = apps.iter().filter(|app| app.newline).map(|app| app.exe.clone()).collect();
+    let ime_start_apps = apps
+        .iter()
+        .filter(|app| app.ime_start != ImeStart::Auto)
+        .map(|app| (app.exe.clone(), app.ime_start))
+        .collect();
+    (newline_apps, ime_start_apps)
+}
+
+/// 「アプリ」タブの既定: 改行キーの既定のアプリだけ (改行キーあり・自動)
+fn default_app_settings() -> Vec<AppSetting> {
+    merge_app_settings(&parse_app_list(DEFAULT_NEWLINE_APPS), &[])
+}
+
+/// apps に exe 名 name のアプリを「改行キーなし・自動」で足す (すでにあれば足さない)。
+/// 足した、またはすでにあった位置を返す
+fn add_app_setting(apps: &mut Vec<AppSetting>, name: &str) -> usize {
+    if let Some(index) = apps.iter().position(|app| same_app(&app.exe, name)) {
+        return index;
+    }
+    apps.push(AppSetting { exe: name.to_string(), newline: false, ime_start: ImeStart::Auto });
+    apps.len() - 1
+}
+
+/// 起動時の IME の状態の表示名
+fn ime_start_label(state: ImeStart) -> &'static str {
+    IME_START_LABELS.iter().find(|(s, _)| *s == state).map_or("", |(_, label)| *label)
 }
 
 /// パスのファイル名部分
@@ -681,6 +799,7 @@ impl Config {
             }
             // 空の値は「対象なし」としてそのまま持つ
             "newline_apps" => self.newline_apps = parse_app_list(value),
+            "ime_start_apps" => self.ime_start_apps = parse_ime_start_apps(value),
             "debug_log" => self.debug_log = value.to_string(),
             _ => self.apply_key(key, value),
         }
@@ -718,6 +837,17 @@ impl Config {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
+        std::fs::write(&path, self.file_text().as_bytes())
+            .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
+
+        // エンジンに再読込を伝える。未起動なら何もしない
+        // (ファイルが正なので、次のエンジン起動時に読み込まれる)
+        let _ = send_reloadconfig();
+        Ok(())
+    }
+
+    /// config.tsv に書く内容
+    fn file_text(&self) -> String {
         let mut text = String::new();
         text.push_str("# QuicklIME 設定 (quicklime-config.exe が生成)\n");
         text.push_str("# 形式: キー<TAB>値。# 始まりはコメント\n");
@@ -759,17 +889,16 @@ impl Config {
         }
         text.push_str("\n# 改行キー (key.insert_newline) が働くアプリの exe 名 (カンマ区切り)\n");
         text.push_str(&format!("newline_apps\t{}\n", self.newline_apps.join(",")));
+        text.push_str("\n# 起動時の IME の状態 (exe名:on|off のカンマ区切り。無いアプリは自動)\n");
+        text.push_str(&format!(
+            "ime_start_apps\t{}\n",
+            format_ime_start_apps(&self.ime_start_apps)
+        ));
         text.push_str("\n# 開発用 (debug_log は診断ログの出力先。行が無ければ出さない)\n");
         if !self.debug_log.is_empty() {
             text.push_str(&format!("debug_log\t{}\n", self.debug_log));
         }
-        std::fs::write(&path, text.as_bytes())
-            .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
-
-        // エンジンに再読込を伝える。未起動なら何もしない
-        // (ファイルが正なので、次のエンジン起動時に読み込まれる)
-        let _ = send_reloadconfig();
-        Ok(())
+        text
     }
 }
 
@@ -834,7 +963,9 @@ fn main() {
 
         let config = Config::load();
         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = config.keys.clone());
-        NEWLINE_APPS.with(|apps| *apps.borrow_mut() = config.newline_apps.clone());
+        APP_SETTINGS.with(|apps| {
+            *apps.borrow_mut() = merge_app_settings(&config.newline_apps, &config.ime_start_apps)
+        });
 
         let controls = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
@@ -893,7 +1024,17 @@ fn main() {
         let key_list_w = scale(440);
         // 「候補の見た目」の行は、コンボの横に「テーマのフォルダを開く」ボタンを置く
         let theme_button_w = scale(150);
-        let page_w = column_w.max(key_list_w).max(column_w + row_gap + theme_button_w);
+        // 「アプリ」タブは、3列の一覧と右に縦に並べたボタンが収まる幅にする。
+        // 一覧の幅には縦スクロールバーが出ても横スクロールにならない分を足す
+        let app_button_w = scale(190);
+        let app_newline_column_w = scale(64);
+        let app_ime_column_w = scale(90);
+        let app_list_scroll_w = scale(24);
+        let app_list_min_w = scale(150) + app_newline_column_w + app_ime_column_w + app_list_scroll_w;
+        let page_w = column_w
+            .max(key_list_w)
+            .max(column_w + row_gap + theme_button_w)
+            .max(app_list_min_w + row_gap + app_button_w);
 
         // 大きさはタブの中身を作ってから決める
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
@@ -1256,10 +1397,9 @@ fn main() {
         let keys_h = key_button_y + button_h - page_y;
 
         // ---- アプリ ----
-        // 見出し・説明の下に、左に一覧、右に縦に並べたボタン
-        let app_button_w = scale(190);
+        // 見出しの下に、左に一覧、右に縦に並べたボタン。一覧の下に選んでいるアプリの編集欄
         let app_list_w = page_w - row_gap - app_button_w;
-        let app_list_y = page_y + row_h * 2 + row_gap;
+        let app_list_y = page_y + row_h;
         let app_buttons: [(&str, i32); 4] = [
             ("実行中のアプリから追加...", ID_BUTTON_APP_RUNNING),
             ("ファイルから追加...", ID_BUTTON_APP_FILE),
@@ -1267,25 +1407,18 @@ fn main() {
             ("既定に戻す", ID_BUTTON_APP_DEFAULT),
         ];
         let app_button_count = app_buttons.len() as i32;
-        let apps_min_h = app_list_y - page_y + app_button_count * (button_h + row_gap) - row_gap;
+        let app_list_min_h = app_button_count * (button_h + row_gap) - row_gap;
+        // 編集欄は見出し・チェックボックス・コンボ・説明の4行
+        let app_editor_h = row_h * 4 + row_gap * 3;
+        let apps_min_h = app_list_y - page_y + app_list_min_h + row_gap * 2 + app_editor_h;
         // 「開発用」タブの注意書きは折り返すため2行分の高さを取る
         let debug_note_h = row_h * 2;
         let debug_h = (row_h + row_gap) * 2 + debug_note_h;
         let page_h = convert_h.max(display_h).max(keys_h).max(apps_min_h).max(debug_h);
+        let app_editor_y = page_y + page_h - app_editor_h;
 
         current_page.set(Some(4));
-        create_control("STATIC", "改行キーの対象アプリ", label_style, 0, page_x, page_y, page_w, row_h, 0);
-        create_control(
-            "STATIC",
-            "Ctrl+J などの改行キーで Shift+Enter を送るアプリ",
-            label_style,
-            0,
-            page_x,
-            page_y + row_h,
-            page_w,
-            row_h,
-            0,
-        );
+        create_control("STATIC", "アプリごとの設定", label_style, 0, page_x, page_y, page_w, row_h, 0);
         let app_list = create_control(
             "SysListView32",
             "",
@@ -1294,7 +1427,7 @@ fn main() {
             page_x,
             app_list_y,
             app_list_w,
-            page_y + page_h - app_list_y,
+            app_editor_y - row_gap * 2 - app_list_y,
             ID_LIST_APPS,
         );
         SendMessageW(
@@ -1303,16 +1436,64 @@ fn main() {
             LVS_EX_FULLROWSELECT as usize,
             LVS_EX_FULLROWSELECT as isize,
         );
-        let mut column_text = wide("exe 名");
-        let column = LVCOLUMNW {
-            mask: LVCF_TEXT | LVCF_WIDTH,
-            // 縦スクロールバーが出ても横スクロールにならない幅
-            cx: app_list_w - scale(24),
-            pszText: column_text.as_mut_ptr(),
-            ..Default::default()
-        };
-        SendMessageW(app_list, LVM_INSERTCOLUMNW, 0, &column as *const _ as LPARAM);
-        refresh_app_list(app_list, Some(0));
+        let app_columns = [
+            ("exe 名", app_list_w - app_newline_column_w - app_ime_column_w - app_list_scroll_w),
+            ("改行キー", app_newline_column_w),
+            ("起動時の IME", app_ime_column_w),
+        ];
+        for (i, (title, width)) in app_columns.iter().enumerate() {
+            let mut text = wide(title);
+            let column = LVCOLUMNW {
+                mask: LVCF_TEXT | LVCF_WIDTH,
+                cx: *width,
+                pszText: text.as_mut_ptr(),
+                ..Default::default()
+            };
+            SendMessageW(app_list, LVM_INSERTCOLUMNW, i, &column as *const _ as LPARAM);
+        }
+        // 編集欄 (Tab の巡回が一覧 → 編集欄 → ボタンになるよう、ボタンより先に作る)
+        let editor_x = page_x + scale(16);
+        let editor_w = page_x + page_w - editor_x;
+        create_control(
+            "STATIC",
+            "選択中のアプリの設定",
+            label_style,
+            0,
+            page_x,
+            app_editor_y,
+            page_w,
+            row_h,
+            0,
+        );
+        let mut y = app_editor_y + row_h + row_gap;
+        create_control(
+            "BUTTON",
+            "改行キー (Ctrl+J など) で Shift+Enter を送る",
+            check_style,
+            0,
+            editor_x,
+            y,
+            editor_w,
+            row_h,
+            ID_CHECK_APP_NEWLINE,
+        );
+        y += row_h + row_gap;
+        let ime_label_w = scale(100);
+        create_control("STATIC", "起動時の IME:", label_style, 0, editor_x, y + scale(3), ime_label_w, row_h, 0);
+        let ime_labels: Vec<&str> = IME_START_LABELS.iter().map(|(_, label)| *label).collect();
+        add_combo(editor_x + ime_label_w + row_gap, y, ID_COMBO_APP_IME_START, &ime_labels, "");
+        y += row_h + row_gap;
+        create_control(
+            "STATIC",
+            "自動: IME のオン/オフをアプリやシステムに任せます",
+            label_style,
+            0,
+            editor_x,
+            y,
+            editor_w,
+            row_h,
+            0,
+        );
         let app_button_x = page_x + app_list_w + row_gap;
         for (i, (text, id)) in app_buttons.iter().enumerate() {
             create_control(
@@ -1327,6 +1508,8 @@ fn main() {
                 *id,
             );
         }
+        // 行を選ぶと編集欄を合わせるので、編集欄を作ってから行を入れる
+        refresh_app_list(app_list, Some(0));
 
         // ---- 開発用 ----
         current_page.set(Some(5));
@@ -1479,9 +1662,14 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     ID_BUTTON_APP_FILE => on_add_app_file(hwnd),
                     ID_BUTTON_APP_REMOVE => on_remove_app(hwnd),
                     ID_BUTTON_APP_DEFAULT => {
-                        NEWLINE_APPS
-                            .with(|apps| *apps.borrow_mut() = parse_app_list(DEFAULT_NEWLINE_APPS));
+                        APP_SETTINGS.with(|apps| *apps.borrow_mut() = default_app_settings());
                         refresh_app_list(GetDlgItem(hwnd, ID_LIST_APPS), Some(0));
+                    }
+                    ID_CHECK_APP_NEWLINE if ((wparam >> 16) & 0xFFFF) as u32 == BN_CLICKED => {
+                        on_app_editor_changed(hwnd)
+                    }
+                    ID_COMBO_APP_IME_START if ((wparam >> 16) & 0xFFFF) as u32 == CBN_SELCHANGE => {
+                        on_app_editor_changed(hwnd)
                     }
                     _ => {}
                 }
@@ -1494,6 +1682,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     if index >= 0 {
                         show_tab(hwnd, index as usize);
                     }
+                }
+                if header.idFrom == ID_LIST_APPS as usize && header.code == LVN_ITEMCHANGED {
+                    sync_app_editor(hwnd);
                 }
                 0
             }
@@ -1603,7 +1794,9 @@ fn collect(hwnd: HWND) -> Config {
         config.candidate_font_size = n.clamp(10, 40);
     }
     config.keys = KEY_ASSIGNS.with(|keys| keys.borrow().clone());
-    config.newline_apps = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    let (newline_apps, ime_start_apps) = APP_SETTINGS.with(|apps| split_app_settings(&apps.borrow()));
+    config.newline_apps = newline_apps;
+    config.ime_start_apps = ime_start_apps;
     if checked(ID_CHECK_DEBUG_LOG) {
         let path = window_text(unsafe { GetDlgItem(hwnd, ID_EDIT_DEBUG_LOG) });
         let path = path.trim();
@@ -1655,31 +1848,96 @@ fn show_tab(hwnd: HWND, index: usize) {
     });
 }
 
-/// 「アプリ」タブの一覧を作り直し、select の行を選ぶ
+/// 「アプリ」タブの一覧の row 行目の列 (exe 名・改行キー・起動時の IME) を書く。
+/// insert なら行を足す
+fn set_app_row(list: HWND, row: usize, app: &AppSetting, insert: bool) {
+    let texts = [app.exe.as_str(), if app.newline { "✓" } else { "" }, ime_start_label(app.ime_start)];
+    for (column, text) in texts.iter().enumerate() {
+        let mut text = wide(text);
+        let item = LVITEMW {
+            mask: LVIF_TEXT,
+            iItem: row as i32,
+            iSubItem: column as i32,
+            pszText: text.as_mut_ptr(),
+            ..Default::default()
+        };
+        let message = if insert && column == 0 { LVM_INSERTITEMW } else { LVM_SETITEMTEXTW };
+        unsafe { SendMessageW(list, message, row, &item as *const _ as LPARAM) };
+    }
+}
+
+/// 「アプリ」タブの一覧を作り直し、select の行を選ぶ (編集欄も選んだ行に合わせる)
 fn refresh_app_list(list: HWND, select: Option<usize>) {
-    let apps = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    let apps = APP_SETTINGS.with(|apps| apps.borrow().clone());
     unsafe {
         SendMessageW(list, LVM_DELETEALLITEMS, 0, 0);
         for (i, app) in apps.iter().enumerate() {
-            let mut text = wide(app);
-            let item = LVITEMW {
-                mask: LVIF_TEXT,
-                iItem: i as i32,
-                pszText: text.as_mut_ptr(),
-                ..Default::default()
-            };
-            SendMessageW(list, LVM_INSERTITEMW, 0, &item as *const _ as LPARAM);
+            set_app_row(list, i, app, true);
         }
         if let Some(row) = select.filter(|&row| row < apps.len()) {
             select_list_row(list, row);
             SendMessageW(list, LVM_ENSUREVISIBLE, row, 0);
         }
+        sync_app_editor(GetParent(list));
     }
 }
 
-/// 対象アプリに exe 名を足し (すでにあれば足さない)、その行を選ぶ
+/// 「アプリ」タブの一覧で選んでいる行
+fn selected_app_row(hwnd: HWND) -> Option<usize> {
+    let selected = unsafe {
+        SendMessageW(GetDlgItem(hwnd, ID_LIST_APPS), LVM_GETNEXTITEM, usize::MAX, LVNI_SELECTED as isize)
+    };
+    usize::try_from(selected).ok()
+}
+
+/// 編集欄を、一覧で選んでいるアプリの設定に合わせる。選んでいなければ無効にする
+fn sync_app_editor(hwnd: HWND) {
+    let app = selected_app_row(hwnd)
+        .and_then(|row| APP_SETTINGS.with(|apps| apps.borrow().get(row).cloned()));
+    let newline = app.as_ref().is_some_and(|app| app.newline);
+    let state = app.as_ref().map_or(ImeStart::Auto, |app| app.ime_start);
+    let state_index = IME_START_LABELS.iter().position(|(s, _)| *s == state).unwrap_or(0);
+    unsafe {
+        let check = GetDlgItem(hwnd, ID_CHECK_APP_NEWLINE);
+        let combo = GetDlgItem(hwnd, ID_COMBO_APP_IME_START);
+        SendMessageW(check, BM_SETCHECK, newline as usize, 0);
+        SendMessageW(combo, CB_SETCURSEL, state_index, 0);
+        EnableWindow(check, app.is_some() as i32);
+        EnableWindow(combo, app.is_some() as i32);
+    }
+}
+
+/// 編集欄の変更を、選んでいるアプリの設定と一覧の列に反映する
+fn on_app_editor_changed(hwnd: HWND) {
+    let Some(row) = selected_app_row(hwnd) else {
+        return;
+    };
+    let (newline, state_index) = unsafe {
+        (
+            SendMessageW(GetDlgItem(hwnd, ID_CHECK_APP_NEWLINE), BM_GETCHECK, 0, 0)
+                == BST_CHECKED as isize,
+            SendMessageW(GetDlgItem(hwnd, ID_COMBO_APP_IME_START), CB_GETCURSEL, 0, 0),
+        )
+    };
+    let state = usize::try_from(state_index)
+        .ok()
+        .and_then(|index| IME_START_LABELS.get(index))
+        .map_or(ImeStart::Auto, |(state, _)| *state);
+    let app = APP_SETTINGS.with(|apps| {
+        let mut apps = apps.borrow_mut();
+        let app = apps.get_mut(row)?;
+        app.newline = newline;
+        app.ime_start = state;
+        Some(app.clone())
+    });
+    if let Some(app) = app {
+        set_app_row(unsafe { GetDlgItem(hwnd, ID_LIST_APPS) }, row, &app, false);
+    }
+}
+
+/// 一覧にアプリを「改行キーなし・自動」で足し (すでにあれば足さない)、その行を選ぶ
 fn add_app_to_list(hwnd: HWND, name: &str) {
-    let index = NEWLINE_APPS.with(|apps| add_app(&mut apps.borrow_mut(), name));
+    let index = APP_SETTINGS.with(|apps| add_app_setting(&mut apps.borrow_mut(), name));
     refresh_app_list(unsafe { GetDlgItem(hwnd, ID_LIST_APPS) }, Some(index));
 }
 
@@ -1716,7 +1974,7 @@ fn on_add_app_file(hwnd: HWND) {
     unsafe { SetFocus(GetDlgItem(hwnd, ID_LIST_APPS)) };
 }
 
-/// 「削除」ボタン: 選んでいる exe 名を外し、次の行を選ぶ
+/// 「削除」ボタン: 選んでいるアプリを外し (そのアプリの設定がすべて消える)、次の行を選ぶ
 fn on_remove_app(hwnd: HWND) {
     unsafe {
         let list = GetDlgItem(hwnd, ID_LIST_APPS);
@@ -1725,7 +1983,7 @@ fn on_remove_app(hwnd: HWND) {
             return;
         }
         let row = selected as usize;
-        let remaining = NEWLINE_APPS.with(|apps| {
+        let remaining = APP_SETTINGS.with(|apps| {
             let mut apps = apps.borrow_mut();
             if row < apps.len() {
                 apps.remove(row);
@@ -1780,8 +2038,8 @@ struct KeyEdit {
 thread_local! {
     /// 画面上のキー割当 (保存で書き出す。KEY_ITEMS の並び順)
     static KEY_ASSIGNS: RefCell<Vec<KeyAssign>> = const { RefCell::new(Vec::new()) };
-    /// 画面上の改行キーの対象アプリ (保存で書き出す)
-    static NEWLINE_APPS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// 画面上のアプリごとの設定 (保存で newline_apps・ime_start_apps に分けて書き出す)
+    static APP_SETTINGS: RefCell<Vec<AppSetting>> = const { RefCell::new(Vec::new()) };
     /// 「候補の見た目」の選択肢 ((panel_theme の値, 表示名)。コンボの項目と同じ並び)
     static THEME_CHOICES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
     /// タブごとの項目 (TAB_NAMES の並び順)
@@ -2372,7 +2630,8 @@ fn visible_app_windows() -> Vec<(String, String)> {
 
 /// 実行中のアプリから exe を1つ選ぶダイアログ。選んだ exe 名を返す (キャンセルなら None)
 fn open_app_pick_dialog(owner: HWND) -> Option<String> {
-    let registered = NEWLINE_APPS.with(|apps| apps.borrow().clone());
+    let registered: Vec<String> =
+        APP_SETTINGS.with(|apps| apps.borrow().iter().map(|app| app.exe.clone()).collect());
     let choices = running_app_choices(visible_app_windows(), &registered);
     let margin = scaled(16);
     let gap = scaled(8);
@@ -2686,6 +2945,97 @@ mod tests {
         assert_eq!(apps, ["Discord.exe", "Notepad.exe"]);
         assert_eq!(add_app(&mut apps, "CalculatorApp.exe"), 2);
         assert_eq!(apps, ["Discord.exe", "Notepad.exe", "CalculatorApp.exe"]);
+    }
+
+    #[test]
+    fn parses_ime_start_apps_like_tsf() {
+        let app = |exe: &str, state: ImeStart| (exe.to_string(), state);
+        assert_eq!(
+            parse_ime_start_apps("Notepad.exe:on,WindowsTerminal.exe:OFF"),
+            [app("Notepad.exe", ImeStart::On), app("WindowsTerminal.exe", ImeStart::Off)]
+        );
+        // 状態が不正な項目・exe 名が空の項目は捨て、exe 名と状態の前後の空白・タブは除く
+        assert_eq!(
+            parse_ime_start_apps("Notepad.exe:yes,:on, Notepad.exe : off ,\tCode.exe\t:\tOn\t"),
+            [app("Notepad.exe", ImeStart::Off), app("Code.exe", ImeStart::On)]
+        );
+        // 重なれば最初の項目 (大文字小文字は区別しない)
+        assert_eq!(
+            parse_ime_start_apps("Notepad.exe:on,notepad.exe:off"),
+            [app("Notepad.exe", ImeStart::On)]
+        );
+        // 区切りは最後の `:`。`:` の無い項目は捨てる
+        assert_eq!(parse_ime_start_apps("a:b.exe:on,Notepad.exe"), [app("a:b.exe", ImeStart::On)]);
+        assert!(parse_ime_start_apps("").is_empty());
+    }
+
+    #[test]
+    fn merges_app_settings_in_newline_order() {
+        let mut config = Config::default();
+        config.apply("newline_apps", "Discord.exe");
+        config.apply("ime_start_apps", "Notepad.exe:on,discord.exe:off");
+        let apps = merge_app_settings(&config.newline_apps, &config.ime_start_apps);
+        assert_eq!(
+            apps,
+            [
+                AppSetting { exe: "Discord.exe".to_string(), newline: true, ime_start: ImeStart::Off },
+                AppSetting { exe: "Notepad.exe".to_string(), newline: false, ime_start: ImeStart::On },
+            ]
+        );
+        // newline_apps の行が無ければ既定のアプリが「改行キーあり・自動」で並ぶ
+        let apps = merge_app_settings(&Config::default().newline_apps, &[]);
+        assert_eq!(apps, default_app_settings());
+        assert_eq!(apps.len(), 5);
+        assert!(apps.iter().all(|app| app.newline && app.ime_start == ImeStart::Auto));
+    }
+
+    #[test]
+    fn splits_app_settings_for_saving() {
+        let app = |exe: &str, newline: bool, ime_start: ImeStart| AppSetting {
+            exe: exe.to_string(),
+            newline,
+            ime_start,
+        };
+        let mut apps = vec![
+            app("Discord.exe", true, ImeStart::Off),
+            app("Notepad.exe", true, ImeStart::Off),
+            // 既定のままのアプリはどちらのキーにも書かない
+            app("Code.exe", false, ImeStart::Auto),
+        ];
+        let mut config = Config::default();
+        (config.newline_apps, config.ime_start_apps) = split_app_settings(&apps);
+        let text = config.file_text();
+        assert!(text.contains("\nnewline_apps\tDiscord.exe,Notepad.exe\n"));
+        assert!(text.contains("\nime_start_apps\tDiscord.exe:off,Notepad.exe:off\n"));
+        // 削除したアプリはどちらからも消え、空になれば空の値で書く
+        apps.retain(|app| app.exe != "Discord.exe" && app.exe != "Notepad.exe");
+        (config.newline_apps, config.ime_start_apps) = split_app_settings(&apps);
+        let text = config.file_text();
+        assert!(text.contains("\nnewline_apps\t\n"));
+        assert!(text.contains("\nime_start_apps\t\n"));
+        // 書いた内容を読み直すと同じ一覧になる (既定のままのアプリは消える)
+        let mut reloaded = Config::default();
+        for line in text.lines().filter(|line| !line.starts_with('#')) {
+            if let Some((key, value)) = line.split_once('\t') {
+                reloaded.apply(key, value);
+            }
+        }
+        assert!(merge_app_settings(&reloaded.newline_apps, &reloaded.ime_start_apps).is_empty());
+    }
+
+    #[test]
+    fn adds_app_setting_as_default() {
+        let mut apps = default_app_settings();
+        assert_eq!(add_app_setting(&mut apps, "discord.exe"), 0);
+        assert_eq!(apps.len(), 5);
+        assert_eq!(add_app_setting(&mut apps, "Notepad.exe"), 5);
+        assert_eq!(
+            apps[5],
+            AppSetting { exe: "Notepad.exe".to_string(), newline: false, ime_start: ImeStart::Auto }
+        );
+        assert_eq!(ime_start_label(ImeStart::Auto), "自動");
+        assert_eq!(ime_start_label(ImeStart::On), "オン");
+        assert_eq!(ime_start_label(ImeStart::Off), "オフ");
     }
 
     #[test]

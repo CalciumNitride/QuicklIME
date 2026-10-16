@@ -33,8 +33,9 @@ constexpr size_t kMaxResponseBytes = 64 * 1024;
 // エンジン起動を再試行するまでの間隔 (起動失敗の連打を防ぐ)
 constexpr ULONGLONG kLaunchCooldownMs = 10 * 1000;
 
-// エンジン起動後、パイプ作成を待つ最大回数と間隔 (計2秒)
-constexpr int kConnectRetryCount = 20;
+// エンジンを起動してからパイプができるまで待つ上限と、開いてみる間隔。
+// エンジンは辞書を読み終えてからパイプを作り、PC の起動直後は数秒かかる
+constexpr ULONGLONG kLaunchWaitMs = 5 * 1000;
 constexpr DWORD kConnectRetryIntervalMs = 100;
 
 std::string WideToUtf8(const std::wstring& wide)
@@ -151,7 +152,22 @@ bool EngineClient::TryLaunchEngine()
     }
     CloseHandle(processInfo.hThread);
     CloseHandle(processInfo.hProcess);
+    launchedTick_ = now;
     return true;
+}
+
+bool EngineClient::OpenPipeLive()
+{
+    if (pipe_ != INVALID_HANDLE_VALUE || TryOpenPipe()) {
+        return true;
+    }
+    TryLaunchEngine();
+    return false;
+}
+
+void EngineClient::StartEngine()
+{
+    OpenPipeLive();
 }
 
 bool EngineClient::EnsureConnected()
@@ -163,13 +179,15 @@ bool EngineClient::EnsureConnected()
         return true;
     }
 
-    // エンジンが起動していないようなので自動起動を試みる
-    if (!TryLaunchEngine()) {
+    // 起動したばかりのエンジンは辞書の読み込み中なので、新たには起動せずにその続きを待つ
+    const ULONGLONG now = GetTickCount64();
+    const bool launching = launchedTick_ != 0 && now - launchedTick_ < kLaunchWaitMs;
+    if (!launching && !TryLaunchEngine()) {
         return false;
     }
 
-    // 辞書読み込みが終わってパイプができるまで少し待つ
-    for (int i = 0; i < kConnectRetryCount; ++i) {
+    // 辞書読み込みが終わってパイプができるまで、起動から kLaunchWaitMs まで待つ
+    while (GetTickCount64() - launchedTick_ < kLaunchWaitMs) {
         Sleep(kConnectRetryIntervalMs);
         if (TryOpenPipe()) {
             return true;
@@ -283,9 +301,8 @@ std::string EngineClient::BuildSegmentsRequest(const std::wstring& kana,
 bool EngineClient::TransactWithFallback(const std::string& request, const std::string& fallback,
                                         bool live, std::string* response)
 {
-    // ライブ変換・予測は毎打鍵で呼ばれるため、エンジンの自動起動
-    // (最大2秒のブロック) はしない。未接続ならパイプを1回だけ開いてみる
-    if (live && pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+    // ライブ変換・予測は毎打鍵で呼ばれるため、エンジンの起動を待たない
+    if (live && !OpenPipeLive()) {
         return false;
     }
     const auto send = [&](const std::string& line) {
@@ -396,7 +413,7 @@ bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionCo
 bool EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
                                   size_t* element)
 {
-    if (elements.empty() || (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+    if (elements.empty() || !OpenPipeLive()) {
         return false;
     }
     std::string request = match == AsciiMatch::ExactAny ? "ASCIISTART\texact-any\t"
@@ -427,7 +444,7 @@ bool EngineClient::AsciiWordLive(const std::wstring& text, bool* prefix,
                                  std::vector<size_t>* lengths)
 {
     if (text.empty() || prefix == nullptr || lengths == nullptr ||
-        (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+        !OpenPipeLive()) {
         return false;
     }
     std::string response;
@@ -463,7 +480,7 @@ bool EngineClient::AsciiWordLive(const std::wstring& text, bool* prefix,
 bool EngineClient::AsciiFormLive(const std::wstring& text, std::wstring* form)
 {
     if (text.empty() || form == nullptr ||
-        (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe())) {
+        !OpenPipeLive()) {
         return false;
     }
     std::string response;
@@ -488,7 +505,7 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
         return false;
     }
     if (!nbestUnsupported_ && !legacyEngine_) {
-        if (live && pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        if (live && !OpenPipeLive()) {
             return false;
         }
         const std::string contextField =
@@ -558,7 +575,7 @@ unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
     if (kana.empty() || rerankUnsupported_ || legacyEngine_) {
         return 0;
     }
-    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+    if (!OpenPipeLive()) {
         return 0;
     }
     const std::string contextField =
@@ -696,9 +713,8 @@ bool EngineClient::NextWord(const ConversionContext& context,
 bool EngineClient::RequestPredictions(const std::string& request,
                                       std::vector<PredictionCandidate>* candidates)
 {
-    // 毎打鍵で呼ばれるため、エンジンの自動起動 (最大2秒のブロック) はしない。
-    // 未接続ならパイプを1回だけ開いてみて、開けなければ黙って諦める
-    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+    // 毎打鍵で呼ばれるため、エンジンの起動を待たない
+    if (!OpenPipeLive()) {
         return false;
     }
     std::string response;

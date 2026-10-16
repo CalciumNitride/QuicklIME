@@ -332,6 +332,57 @@ void ParseAppList(const std::wstring& value, std::vector<std::wstring>* out)
     }
 }
 
+// 「exe名:on|off」のカンマ区切りを読む。exe 名に `:` を含む余地を残すため区切りは最後の `:` とし、
+// 状態が on / off 以外の項目と exe 名が空の項目は捨てる。同じ exe 名が重なれば最初の項目を使う
+void ParseImeStartApps(const std::wstring& value, std::vector<ImeStartApp>* out)
+{
+    out->clear();
+    const auto trim = [](const std::wstring& text) {
+        const size_t first = text.find_first_not_of(L" \t");
+        if (first == std::wstring::npos) {
+            return std::wstring();
+        }
+        const size_t last = text.find_last_not_of(L" \t");
+        return text.substr(first, last - first + 1);
+    };
+    const auto equalsIgnoreCase = [](const std::wstring& a, const wchar_t* b) {
+        return CompareStringOrdinal(a.c_str(), -1, b, -1, TRUE) == CSTR_EQUAL;
+    };
+    size_t start = 0;
+    while (start <= value.size()) {
+        size_t comma = value.find(L',', start);
+        if (comma == std::wstring::npos) {
+            comma = value.size();
+        }
+        const std::wstring item = value.substr(start, comma - start);
+        start = comma + 1;
+        const size_t colon = item.rfind(L':');
+        if (colon == std::wstring::npos) {
+            continue;
+        }
+        ImeStartApp app;
+        app.exe = trim(item.substr(0, colon));
+        const std::wstring state = trim(item.substr(colon + 1));
+        if (app.exe.empty()) {
+            continue;
+        }
+        if (equalsIgnoreCase(state, L"on")) {
+            app.open = true;
+        } else if (equalsIgnoreCase(state, L"off")) {
+            app.open = false;
+        } else {
+            continue;
+        }
+        const bool duplicate =
+            std::any_of(out->begin(), out->end(), [&](const ImeStartApp& existing) {
+                return equalsIgnoreCase(existing.exe, app.exe.c_str());
+            });
+        if (!duplicate) {
+            out->push_back(std::move(app));
+        }
+    }
+}
+
 // key.<機能>[@<状態>] の行を反映する。上書きはその機能が働く状態にだけ書ける
 void ApplyKeyLine(const std::wstring& key, const std::wstring& value, TsfConfig& config)
 {
@@ -425,6 +476,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         ParseBool(value, config.llm);
     } else if (key == L"newline_apps") {
         ParseAppList(value, &config.newlineApps);
+    } else if (key == L"ime_start_apps") {
+        ParseImeStartApps(value, &config.imeStartApps);
     }
     // 未知キー (エンジン向けを含む) は無視
 }

@@ -64,8 +64,8 @@ public:
                               const ConversionContext& context,
                               std::vector<ConversionSegment>* segments);
 
-    // かなを文節列に変換する (CONVSEG / CONVCTX)。毎打鍵のライブ変換用に、エンジンの
-    // 自動起動や接続待ちはせず、未接続なら即 false を返す (Predict と同じ方式)
+    // かなを文節列に変換する (CONVSEG / CONVCTX)。毎打鍵のライブ変換用に、接続待ちはせず、
+    // 未接続ならエンジンを起動だけして即 false を返す (Predict と同じ方式)
     bool ConvertSegmentsLive(const std::wstring& kana, const ConversionContext& context,
                              std::vector<ConversionSegment>* segments);
 
@@ -74,8 +74,8 @@ public:
     bool ConvertNBest(const std::wstring& kana, const ConversionContext& context,
                       std::vector<SentenceCandidate>* candidates);
 
-    // ConvertNBest の毎打鍵の候補バー用。エンジンの自動起動や接続待ちはせず、
-    // 未接続なら即 false を返す (ConvertSegmentsLive と同じ方式)
+    // ConvertNBest の毎打鍵の候補バー用。接続待ちはせず、未接続ならエンジンを起動だけして
+    // 即 false を返す (ConvertSegmentsLive と同じ方式)
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
 
@@ -87,22 +87,22 @@ public:
     };
 
     // かなのかたまりごとの打鍵列から、英字区間を始める要素の位置を問い合わせる (ASCIISTART)。
-    // 一致すれば true で、位置を element に入れる。打鍵中に呼ぶため、エンジンの自動起動や
-    // 接続待ちはしない。未接続・エラー・ASCIISTART を知らない旧エンジンのときは一致なし (false)
-    // と同じに扱う
+    // 一致すれば true で、位置を element に入れる。打鍵中に呼ぶため、接続待ちはしない
+    // (未接続ならエンジンを起動だけする)。未接続・エラー・ASCIISTART を知らない旧エンジンの
+    // ときは一致なし (false) と同じに扱う
     bool AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
                         size_t* element);
 
     // 英字区間の文字列 + 打った文字が英単語の前方一致か (prefix) と、先頭部分のうち英単語と
     // 完全一致するものの長さ (lengths、昇順) を問い合わせる (ASCIIWORD)。打鍵中に呼ぶため、
-    // エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIIWORD を知らない旧エンジンの
-    // ときは false (呼び出し側は英字区間を閉じない)
+    // 接続待ちはしない (未接続ならエンジンを起動だけする)。未接続・エラー・ASCIIWORD を
+    // 知らない旧エンジンのときは false (呼び出し側は英字区間を閉じない)
     bool AsciiWordLive(const std::wstring& text, bool* prefix, std::vector<size_t>* lengths);
 
     // 英字だけの文字列の大文字小文字を補正した正しい表記を問い合わせる (ASCIIFORM)。応答を
     // 得られれば true で、表記を form に入れる (表記が無い・text と同じなら空)。打鍵中に呼ぶため、
-    // エンジンの自動起動や接続待ちはしない。未接続・エラー・ASCIIFORM を知らない旧エンジンの
-    // ときは false (呼び出し側は補正の候補を出さない)
+    // 接続待ちはしない (未接続ならエンジンを起動だけする)。未接続・エラー・ASCIIFORM を
+    // 知らない旧エンジンのときは false (呼び出し側は補正の候補を出さない)
     bool AsciiFormLive(const std::wstring& text, std::wstring* form);
 
     // RERANKGET の結果
@@ -113,8 +113,8 @@ public:
     };
 
     // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。毎打鍵の候補バー用に、
-    // エンジンの自動起動や接続待ちはしない。受け付けた ID を返す (0 = 並べ替えをしない。未接続・
-    // LLM が無効・RERANK を知らない旧エンジンも 0)
+    // 接続待ちはしない (未接続ならエンジンを起動だけする)。受け付けた ID を返す (0 = 並べ替えを
+    // しない。未接続・LLM が無効・RERANK を知らない旧エンジンも 0)
     unsigned long long Rerank(const std::wstring& llmContext, const ConversionContext& context,
                               const std::wstring& kana);
 
@@ -144,15 +144,19 @@ public:
     bool LearnWords(const std::vector<std::pair<std::wstring, std::wstring>>& words);
 
     // 読みの前方一致で予測候補を取得する (PREDICT)。前文脈があれば送り、その後に確定した語を
-    // 上位に寄せさせる。毎打鍵で呼ばれるため、エンジンの自動起動や接続待ちはせず、
-    // 未接続なら即 false を返す (候補ゼロは true で candidates が空)
+    // 上位に寄せさせる。毎打鍵で呼ばれるため、接続待ちはせず、未接続ならエンジンを起動だけして
+    // 即 false を返す (候補ゼロは true で candidates が空)
     bool Predict(const std::wstring& kana, const ConversionContext& context,
                  std::vector<PredictionCandidate>* candidates);
 
     // 前文脈の後に確定したことのある語を取得する (NEXTWORD。読みなしの後続語予測)。
-    // Predict と同じくエンジンの自動起動や接続待ちはしない。未接続・前文脈が空・NEXTWORD を
+    // Predict と同じく接続待ちはしない。未接続・前文脈が空・NEXTWORD を
     // 知らない旧エンジンのときは false (候補ゼロは true で candidates が空)
     bool NextWord(const ConversionContext& context, std::vector<PredictionCandidate>* candidates);
+
+    // パイプに接続してみて、開けなければエンジンを起動する。起動の完了は待たない
+    // (最初の変換より前にエンジンを立ち上げておくため、アクティブ化のときに呼ぶ)
+    void StartEngine();
 
     // 同梱 exe (エンジン・単語登録ツール) のパスを探す。
     // DLL と同じディレクトリ → 開発レイアウト (engine/target) の順。見つからなければ空
@@ -162,6 +166,9 @@ private:
     bool EnsureConnected();
     // パイプを1回だけ開いてみる (起動待ちはしない)
     bool TryOpenPipe();
+    // 打鍵ごとの問い合わせ用。未接続ならパイプを1回だけ開いてみて、開けなければ
+    // エンジンを起動だけして false を返す (接続は待たない)
+    bool OpenPipeLive();
     // エンジン exe を探して起動する。クールダウン中や exe が無い場合は false
     bool TryLaunchEngine();
     void Disconnect();
@@ -173,7 +180,7 @@ private:
     std::string BuildSegmentsRequest(const std::wstring& kana, const ConversionContext& context,
                                      const std::string& lengthsField) const;
     // 要求を送り、旧エンジンに新コマンドを拒否されたら旧コマンド fallback で再送する。
-    // live = true なら接続確立 (エンジン自動起動) をしない
+    // live = true ならエンジンの起動を待たない
     bool TransactWithFallback(const std::string& request, const std::string& fallback,
                               bool live, std::string* response);
     // CONVSEG 系の要求 (+旧コマンド fallback) を送って応答を segments にパースする
@@ -187,12 +194,15 @@ private:
     // CONVNBEST の応答1行を candidates にパースする
     bool ParseNBestResponse(std::string response, std::vector<SentenceCandidate>* candidates);
     // PREDICT・NEXTWORD の要求を現在の接続で送り、応答を candidates にパースする
-    // (未接続ならパイプを1回だけ開いてみる)
+    // (未接続ならパイプを1回だけ開いてみて、開けなければエンジンを起動だけする)
     bool RequestPredictions(const std::string& request,
                             std::vector<PredictionCandidate>* candidates);
 
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
     ULONGLONG lastLaunchTick_ = 0; // 最後にエンジン起動を試みた時刻 (連続起動の抑止)
+    // 最後にエンジンのプロセスを起動できた時刻。そこから一定時間は起動中とみなし、
+    // 新たに起動せずにパイプができるのを待つ (起動できなかった試行は含めない)
+    ULONGLONG launchedTick_ = 0;
     // 旧エンジン (CONVCTX/LEARN2 未対応) と判定したら以後は旧コマンドのみ送る
     bool legacyEngine_ = false;
     // CONVNBEST を知らないエンジンと判定したら以後は CONVCTX / CONVSEG で代用する

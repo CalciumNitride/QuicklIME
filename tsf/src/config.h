@@ -69,6 +69,12 @@ struct KeyMatch {
 // 機能が働く状態か
 bool KeyFuncWorksIn(KeyFunc func, KeyState state);
 
+// アプリの起動時の IME の状態の1項目 (設定 ime_start_apps。docs/design/ime-start-state.md)
+struct ImeStartApp {
+    std::wstring exe;
+    bool open = true;
+};
+
 // ユーザ設定 (config.tsv) のうち TSF 層で使う項目。
 // エンジン向けのキー (learning, suggest など) はエンジンが同じファイルを読む
 struct TsfConfig {
@@ -110,6 +116,8 @@ struct TsfConfig {
     bool llm = false;
     // 改行キー (InsertNewline) が働くアプリの exe 名 (docs/design/newline-key.md)
     std::vector<std::wstring> newlineApps = DefaultNewlineApps();
+    // 起動時の IME をオン/オフにするアプリ。一覧に無いアプリは自動 (未設定のときだけオン)
+    std::vector<ImeStartApp> imeStartApps;
 
     // 機能ごとのキー割当 (KeyFunc の並び順)
     std::array<KeyAssignment, kKeyFuncCount> keys = DefaultKeyAssignments();

@@ -24,7 +24,9 @@
 - [keymap.md](keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける
 - [panel-buffer.md](panel-buffer.md): パネル保持入力 (設定 `input_buffer panel`)。入力中の読みを文書に
   書かず候補パネルの入力行だけに持ち、採用・確定で挿入する
-- [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる
+- [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
+  設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
+- [ime-start-state.md](ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに決める
 
 ## 候補の表示
 
@@ -70,6 +72,13 @@
 ## 設定・ツール
 
 - [config-tabs.md](config-tabs.md): 設定ツールのメイン画面のタブ化
+- [app-settings.md](app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
+  編集欄にする (改行キー・起動時の IME の状態)
+
+## エンジン
+
+- [engine-autostart.md](engine-autostart.md): エンジンの早期起動。最初の変換より前に起動しておき、起動中の変換は
+  準備ができるまで待つ。named mutex による二重起動の防止
 
 ## 互換
 

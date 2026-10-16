@@ -63,8 +63,36 @@ struct EngineData {
     english: EnglishDict,
 }
 
+/// 二重起動の防止に使う named mutex の名前。パイプ名ごとに分け、隔離したエンジンが
+/// 常用のエンジンと並んで動けるようにする (mutex の名前に `\` は使えない)
+fn engine_mutex_name(pipe: &str) -> String {
+    format!("Local\\quicklime-engine-{}", pipe.replace('\\', "_"))
+}
+
+/// 同じパイプ名の named mutex を作り、ほかのエンジンがすでに作っていれば false を返す。
+/// 辞書の読み込み中はパイプが無いので、パイプへの接続だけでは同時に起動されたエンジンを
+/// 見分けられない。mutex はプロセスの終了まで持ち続ける (ハンドルは閉じず、OS が解放する)。
+/// mutex を作れなかったときは、パイプへの接続の判定だけに任せて起動を続ける
+fn acquire_engine_mutex(pipe: &str) -> bool {
+    use windows_sys::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows_sys::Win32::System::Threading::CreateMutexW;
+    let name: Vec<u16> = engine_mutex_name(pipe)
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        handle.is_null() || GetLastError() != ERROR_ALREADY_EXISTS
+    }
+}
+
 fn main() -> std::io::Result<()> {
     let pipe = pipe_name();
+
+    if !acquire_engine_mutex(&pipe) {
+        eprintln!("ほかのエンジンが起動中か動作中のため終了します");
+        return Ok(());
+    }
 
     // 既に別のエンジンが同じパイプで待機していれば二重起動しない
     // (TSF 側の自動起動が複数アプリから同時に走った場合の保険)
@@ -830,6 +858,23 @@ mod tests {
             llm: test_llm(),
             english: EnglishDict::empty(),
         }
+    }
+
+    #[test]
+    fn engine_mutex_name_uses_pipe_name() {
+        assert_eq!(
+            engine_mutex_name("quicklime-engine"),
+            "Local\\quicklime-engine-quicklime-engine"
+        );
+        assert_eq!(engine_mutex_name("a\\b"), "Local\\quicklime-engine-a_b");
+    }
+
+    #[test]
+    fn engine_mutex_rejects_second_acquire_in_same_name() {
+        let pipe = format!("quicklime-test-mutex-{}", std::process::id());
+        assert!(acquire_engine_mutex(&pipe));
+        assert!(!acquire_engine_mutex(&pipe));
+        assert!(acquire_engine_mutex(&format!("{pipe}-other")));
     }
 
     /// テスト用の LLM ワーカー (偽の子プロセス。設定で有効にするまで起動しない)

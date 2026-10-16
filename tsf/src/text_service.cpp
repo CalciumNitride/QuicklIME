@@ -359,6 +359,17 @@ std::wstring HostExeName()
     return slash == std::wstring::npos ? path : path.substr(slash + 1);
 }
 
+// プロセスで最初の文書フォーカスを処理したか (起動時の IME の状態 ime_start_apps の適用)。
+// TextService はスレッドごとに作られるので、プロセスで1回だけにするためにインスタンスの外に持つ
+LONG s_firstFocusDone = 0;
+
+// プロセスで最初の文書フォーカスの時刻 (GetTickCount64。0 ならまだ)。適用の後にシステムが
+// OPENCLOSE を書き換えるかを確かめるため、そこから一定時間だけ OnChange を診断ログに出す
+LONGLONG s_firstFocusTick = 0;
+
+// 最初の文書フォーカスから OPENCLOSE の変更を診断ログに出す時間
+constexpr ULONGLONG kImeStartLogMs = 5 * 1000;
+
 } // namespace
 
 TextService::TextService()
@@ -531,6 +542,13 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
                               kF10KeyDesc, ARRAYSIZE(kF10KeyDesc) - 1);
     keystrokeMgr->Release();
 
+    // 最初の変換より前にエンジンを立ち上げておく (起動の完了は待たない)
+    engine_.StartEngine();
+
+    // 起動時の IME の状態 (ime_start_apps) を最初の文書フォーカスで使うため、設定はここで読んでおく
+    // (以後はフォーカス切替・IMEオン時に変更を確認する)
+    RefreshConfig();
+
     // IMEオン/オフ状態 (OPENCLOSE compartment) の変更監視。
     // 未設定 (VT_I4 以外) なら初期状態はオンにする (従来の常時オン挙動の維持)
     ITfCompartment* compartment = OpenCloseCompartment();
@@ -547,9 +565,12 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
         const bool unset = FAILED(compartment->GetValue(&value)) || value.vt != VT_I4;
         VariantClear(&value);
         compartment->Release();
+        const std::wstring before = OpenCloseLogText();
         if (unset) {
             SetKeyboardOpen(true);
         }
+        DebugLog(L"起動時の IME: ActivateEx の時点の OPENCLOSE=" + before + L" 処理後=" +
+                 OpenCloseLogText());
     }
 
     // ドキュメントフォーカスの変更通知 (ITfThreadMgrEventSink) の購読 (失敗しても続行)。
@@ -578,10 +599,9 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
         langBarMgr->Release();
     }
 
-    // ユーザ設定の初回読み込み (以後はフォーカス切替・IMEオン時に変更を確認する)
-    RefreshConfig();
     ITfDocumentMgr* focus = nullptr;
     if (SUCCEEDED(threadMgr_->GetFocus(&focus)) && focus != nullptr) {
+        ApplyImeStartOnFirstFocus(L"ActivateEx");
         UpdateTextEditSink(focus);
         focus->Release();
     }
@@ -702,6 +722,9 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 読めるかどうかは文書 (アプリ・編集コントロール) の性質で決まるため、文書ごとに判定し直す
     if (appendDocument_ != AppendDocument::Unknown) {
         SetAppendDocument(AppendDocument::Unknown, L"フォーカス移動");
+    }
+    if (focus != nullptr) {
+        ApplyImeStartOnFirstFocus(L"OnSetFocus");
     }
     UpdateTextEditSink(focus);
     // 別のドキュメント (アプリ・編集コントロール) に移った可能性があるため、
@@ -836,6 +859,21 @@ bool TextService::IsNewlineApp() const
     }
     for (const std::wstring& app : config_.Get().newlineApps) {
         if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.c_str(), -1, TRUE) == CSTR_EQUAL) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TextService::FindImeStartState(bool* open) const
+{
+    if (hostExeName_.empty()) {
+        return false;
+    }
+    for (const ImeStartApp& app : config_.Get().imeStartApps) {
+        if (CompareStringOrdinal(hostExeName_.c_str(), -1, app.exe.c_str(), -1, TRUE) ==
+            CSTR_EQUAL) {
+            *open = app.open;
             return true;
         }
     }
@@ -1207,6 +1245,59 @@ void TextService::SetKeyboardOpen(bool open)
     compartment->Release();
 }
 
+std::wstring TextService::OpenCloseLogText() const
+{
+    ITfCompartment* compartment = OpenCloseCompartment();
+    if (compartment == nullptr) {
+        return L"取得失敗";
+    }
+    std::wstring text = L"未設定";
+    VARIANT value;
+    VariantInit(&value);
+    if (SUCCEEDED(compartment->GetValue(&value)) && value.vt == VT_I4) {
+        text = std::to_wstring(value.lVal);
+    }
+    VariantClear(&value);
+    compartment->Release();
+    return text;
+}
+
+void TextService::ApplyImeStartOnFirstFocus(const wchar_t* where)
+{
+    // ActivateEx の時点で入れた値は、最初の文書フォーカスまでにシステムに書き換えられる
+    // (メモ帳で確認。IMM の入力コンテキストとの同期と思われる) ので、ここで適用する。
+    // 同じプロセスの別スレッド・別の IME からの切替・新しいウィンドウでは適用せず、
+    // ユーザがアプリの中で切り替えたオン/オフを上書きしない
+    if (InterlockedExchange(&s_firstFocusDone, 1) != 0) {
+        return;
+    }
+    InterlockedExchange64(&s_firstFocusTick, static_cast<LONGLONG>(GetTickCount64()));
+    const std::wstring before = OpenCloseLogText();
+    bool open = false;
+    const bool listed = FindImeStartState(&open);
+    if (listed) {
+        SetKeyboardOpen(open);
+    }
+    DebugLog(std::wstring(L"起動時の IME: プロセスで最初の文書フォーカス (") + where +
+             L") の OPENCLOSE=" + before + L" 適用=" + (listed ? (open ? L"on" : L"off") : L"なし") +
+             L" 適用後=" + OpenCloseLogText());
+}
+
+void TextService::LogImeStartChange()
+{
+    const ULONGLONG start =
+        static_cast<ULONGLONG>(InterlockedCompareExchange64(&s_firstFocusTick, 0, 0));
+    if (start == 0) {
+        return;
+    }
+    const ULONGLONG elapsed = GetTickCount64() - start;
+    if (elapsed >= kImeStartLogMs) {
+        return;
+    }
+    DebugLog(L"起動時の IME: OnChange OPENCLOSE=" + OpenCloseLogText() + L" 最初の文書フォーカスから " +
+             std::to_wstring(elapsed) + L" ms");
+}
+
 bool TextService::IsKeyboardDisabled() const
 {
     ITfDocumentMgr* docMgr = nullptr;
@@ -1248,6 +1339,7 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     if (!IsEqualGUID(rguid, GUID_COMPARTMENT_KEYBOARD_OPENCLOSE)) {
         return S_OK;
     }
+    LogImeStartChange();
     // IMEオン/オフの切替も設定ファイルの変更を拾う機会にする
     RefreshConfig();
     // オフの間にキャレットが動かされる可能性があるため、次にオンに戻ったときの
@@ -2400,7 +2492,7 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         return S_OK;
     }
 
-    // どちらもエンジン未接続なら即 false を返す (自動起動・接続待ちで打鍵を止めない)
+    // どちらもエンジン未接続なら即 false を返す (エンジンの起動を待って打鍵を止めない)
     std::vector<SentenceCandidate> sentences;
     if (!suggest || !engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
         sentences.clear();

@@ -115,6 +115,9 @@ private:
     HRESULT RunKeyFunc(ITfContext* context, const KeyMatch& match);
     // ホストの exe 名が改行キーの対象アプリ (設定 newline_apps) にあるか
     bool IsNewlineApp() const;
+    // ホストの exe 名に対する起動時の IME の状態 (設定 ime_start_apps)。一覧にあれば true で
+    // open にオンかを入れる。無ければ false (自動)
+    bool FindImeStartState(bool* open) const;
 
     // 設定ファイルの変更を確認し、変わっていれば反映する
     // (フォーカス切替・IMEオンなどの軽いタイミングで呼ぶ)
@@ -125,6 +128,14 @@ private:
     ITfCompartment* OpenCloseCompartment() const;
     bool IsKeyboardOpen() const;
     void SetKeyboardOpen(bool open);
+    // 診断ログ用の OPENCLOSE の値 ("0" / "1" / "未設定" / "取得失敗")
+    std::wstring OpenCloseLogText() const;
+    // プロセスで最初に文書へフォーカスしたときだけ、起動時の IME の状態 (ime_start_apps) を
+    // 適用し、前後の OPENCLOSE の値を診断ログに出す。where はログ用の呼び出し元
+    void ApplyImeStartOnFirstFocus(const wchar_t* where);
+    // プロセスで最初の文書フォーカスから一定時間だけ、OPENCLOSE の変更を診断ログに出す
+    // (適用した後でシステムが値を書き換えるかを確かめるため)
+    void LogImeStartChange();
     // フォーカス中の文書でキー入力が無効か (フォーカス中の文書・最上位 context が無い、または
     // context の KEYBOARD_DISABLED・EMPTYCONTEXT compartment が立っている。パスワード欄など)
     bool IsKeyboardDisabled() const;
@@ -864,6 +875,6 @@ private:
     // key-down を食べたキー。端末エミュレータは key-up もアプリへ転送するため、
     // 食べたキーの key-up も食べて確定キーなどが漏れないようにする
     std::bitset<256> pendingKeyUps_;
-    // ホストプロセスの exe 名 (改行キーの対象アプリの判定用。プロセスごとに不変)
+    // ホストプロセスの exe 名 (改行キー・起動時の IME の対象アプリの判定用。プロセスごとに不変)
     std::wstring hostExeName_;
 };
