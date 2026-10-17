@@ -60,6 +60,8 @@
   `capsule-blur` を足す。設定 `panel_blur` を廃止
 - [suggest-paging.md](suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の上限を
   `max_predictions` (9 / 18 / 27 / 36) にする
+- [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ候補パネルの上下を出しうる最大の高さで決め、
+  キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 
 ## 変換
 

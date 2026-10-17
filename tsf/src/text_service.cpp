@@ -1788,7 +1788,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     const KeyMatch match = MatchKeyFunc(wparam);
     HRESULT hr;
     if (match.func != KeyFunc::None) {
-        hr = RunKeyFunc(context, match);
+        hr = RunKeyFunc(context, match, wparam);
     } else {
         hr = Composing() ? HandleKeyConverting(context, wparam) : HandleKeyDirect(context, wparam);
     }
@@ -1798,7 +1798,7 @@ HRESULT TextService::HandleKey(ITfContext* context, WPARAM wparam)
     return hr;
 }
 
-HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
+HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match, WPARAM wparam)
 {
     switch (match.func) {
     case KeyFunc::Convert:
@@ -1831,9 +1831,9 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match)
         return hr;
     }
     case KeyFunc::NextWordNext:
-        return MoveNextWordSelection(+1);
+        return MoveNextWordSelection(ArrowOrder(wparam, +1));
     case KeyFunc::NextWordPrev:
-        return MoveNextWordSelection(-1);
+        return MoveNextWordSelection(ArrowOrder(wparam, -1));
     case KeyFunc::ForgetLearning:
         return ForgetBarLearning(context);
     case KeyFunc::UndoCommit:
@@ -1956,9 +1956,9 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
         }
         return S_OK;
     case VK_DOWN:
-        return converting_ ? CycleCandidate(context, +1) : S_OK;
+        return converting_ ? CycleCandidate(context, ArrowOrder(VK_DOWN, +1)) : S_OK;
     case VK_UP:
-        return converting_ ? CycleCandidate(context, -1) : S_OK;
+        return converting_ ? CycleCandidate(context, ArrowOrder(VK_UP, -1)) : S_OK;
     case VK_LEFT:
         // 入力全体の候補選択では ← で範囲を広げる。文節 UI では
         // Shift+← は現在文節を1文字縮める、← は文節移動
@@ -3076,6 +3076,14 @@ HRESULT TextService::MoveBarSelection(int delta)
     }
     suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));
     return S_OK;
+}
+
+int TextService::ArrowOrder(WPARAM vk, int delta) const
+{
+    if ((vk == VK_UP || vk == VK_DOWN) && suggestPanel_.Reversed()) {
+        return -delta;
+    }
+    return delta;
 }
 
 HRESULT TextService::SelectBarByNumber(size_t number)

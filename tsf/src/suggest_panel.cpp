@@ -451,10 +451,10 @@ SuggestPanel::SuggestPanel()
       dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
-      kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false), pageTop_(0.0f),
-      pageInline_(false), pageLeft_(0.0f), pageStart_(0), selection_(0), page_(0),
-      pageLabelWidth_(0.0f), inputWidth_(0.0f), placementCaret_{}, work_{}, pointerHeight_(0),
-      hasInput_(false),
+      kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false),
+      separatorTop_(0.0f), pageTop_(0.0f), pageInline_(false), pageLeft_(0.0f), pageStart_(0),
+      selection_(0), page_(0), pageLabelWidth_(0.0f), inputWidth_(0.0f), placementCaret_{},
+      work_{}, pointerHeight_(0), columnSide_(ColumnSide::None), hasInput_(false),
       bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0), tail_(TailSide::None),
       tailHeight_(0), markerX_(0)
 {
@@ -758,6 +758,11 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
                                         TextWidth(totalText + L"/" + totalText, labelFormat_));
     std::vector<size_t> pageStarts;
     float pageLabelWidth = 0.0f;
+    ColumnSide side = ColumnSide::None;
+    size_t sideRows = 0;
+    if (column && placement.position == Position::Caret) {
+        sideRows = FitColumn(placement, work, hasInput, total, &side);
+    }
     if (total > 0 && column) {
         const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
         // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
@@ -766,8 +771,13 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         };
         const size_t limit = (std::min)(kMaxItems, total);
         size_t pageSize = 1;
-        while (pageSize < limit && heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
-            ++pageSize;
+        if (sideRows > 0) {
+            pageSize = (std::min)(sideRows, limit);
+        } else {
+            while (pageSize < limit &&
+                   heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
+                ++pageSize;
+            }
         }
         for (size_t begin = 0; begin < total; begin += pageSize) {
             pageStarts.push_back(begin);
@@ -826,6 +836,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     }
     work_ = work;
     pointerHeight_ = pointerHeight;
+    columnSide_ = side;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
     capsuleText_.clear();
@@ -836,6 +847,71 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             pageStarts_.begin() - 1);
     }
     return LayoutPage(page, selection, L"Show");
+}
+
+size_t SuggestPanel::FitColumn(const Placement& placement, const RECT& work, bool hasInput,
+                               size_t total, ColumnSide* side) const
+{
+    *side = ColumnSide::None;
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const int pointerHeight = PointerHeight(placement);
+    const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
+    const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
+    const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
+    // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+    const auto heightOf = [&](size_t n, bool pages) {
+        return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+    };
+    // 今の候補の数ではなく出しうる最大の高さ (位置の表示の行を含む) で判定し、打鍵ごとに
+    // 候補の数が変わっても出す側を変えない
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+    size_t fullRows = 1;
+    while (fullRows < kMaxItems && heightOf(fullRows + 1, true) <= workHeight) {
+        ++fullRows;
+    }
+    const int fullHeight = heightOf(fullRows, true);
+
+    const RECT& caret = *placement.caret;
+    int top = static_cast<int>(caret.bottom);
+    if (placement.belowCapsule) {
+        top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
+    }
+    const int below = static_cast<int>(work.bottom) - (top + belowGap);
+    const int above = static_cast<int>(caret.top) - aboveGap - static_cast<int>(work.top);
+    int space = below;
+    if (fullHeight <= below) {
+        *side = ColumnSide::Below;
+    } else if (fullHeight <= above || above > below) {
+        *side = ColumnSide::Above;
+        space = above;
+    } else {
+        *side = ColumnSide::Below;
+    }
+
+    const size_t limit = (std::max)(static_cast<size_t>(1), (std::min)(kMaxItems, total));
+    if (heightOf(1, total > 1) > space) {
+        *side = ColumnSide::None;
+        return 0;
+    }
+    size_t rows = 1;
+    while (rows < limit && heightOf(rows + 1, total > rows + 1) <= space) {
+        ++rows;
+    }
+    return rows;
+}
+
+void SuggestPanel::MirrorColumn(int height)
+{
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const float panelHeight = static_cast<float>(height);
+    // 上端 top・高さ size の行を、パネルの下端から同じ距離の位置へ移す
+    const auto mirror = [&](float top, float size) { return panelHeight - top - size; };
+    inputTop_ = mirror(inputTop_, static_cast<float>(m.inputRowHeight));
+    separatorTop_ = mirror(separatorTop_, static_cast<float>(m.line));
+    for (ItemBox& box : itemBoxes_) {
+        box.top = mirror(box.top, static_cast<float>(m.chipHeight));
+    }
+    pageTop_ = mirror(pageTop_, static_cast<float>(PageRowHeight(theme_, m)));
 }
 
 std::wstring SuggestPanel::PageText(size_t selection) const
@@ -930,8 +1006,9 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
                 top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
             }
             y = top + belowGap;
-            if (y + height > work.bottom) {
-                // 上に出すときは下端をキャレット行の上に揃え、候補が増えると上へ伸ばす
+            // 上に出すときは下端をキャレット行の上に揃え、候補が増えると上へ伸ばす
+            if (columnSide_ == ColumnSide::Above ||
+                (columnSide_ == ColumnSide::None && y + height > work.bottom)) {
                 y = static_cast<int>(caret.top) - height - aboveGap;
             }
             y = (std::max)(y, static_cast<int>(work.top));
@@ -977,6 +1054,7 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
     const float padding = static_cast<float>(m.padding);
     const float contentWidth = static_cast<float>(width) - padding * 2;
     inputTop_ = padding;
+    separatorTop_ = padding + static_cast<float>(m.inputRowHeight + m.rowGap);
     float itemsTop = padding;
     separator_ = false;
     if (hasInput && (!column || count > 0)) {
@@ -1012,6 +1090,9 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
         pageInline_ = true;
         pageLeft_ = chipX;
         pageTop_ = itemsTop;
+    }
+    if (column && columnSide_ == ColumnSide::Above) {
+        MirrorColumn(height);
     }
     page_ = page;
     pageStart_ = begin;
@@ -1072,11 +1153,19 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     const int workWidth = static_cast<int>(work.right - work.left);
     const int workHeight = static_cast<int>(work.bottom - work.top);
 
-    // 作業領域に kMaxItems 行が収まらなければ、収まる行数を 1 ページにしてページ送りで全候補に届かせる
-    const size_t limit = (std::max)(static_cast<size_t>(1), (std::min)(kMaxItems, total));
-    size_t pageSize = 1;
-    while (pageSize < limit && heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
-        ++pageSize;
+    ColumnSide side = ColumnSide::None;
+    size_t pageSize = 0;
+    if (placement.position == Position::Caret) {
+        pageSize = FitColumn(placement, work, hasInput, total, &side);
+    }
+    if (pageSize == 0) {
+        // 作業領域に kMaxItems 行が収まらなければ、収まる行数を 1 ページにしてページ送りで
+        // 全候補に届かせる
+        const size_t limit = (std::max)(static_cast<size_t>(1), (std::min)(kMaxItems, total));
+        pageSize = 1;
+        while (pageSize < limit && heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
+            ++pageSize;
+        }
     }
     const bool pages = total > pageSize;
     const size_t current = total == 0 ? 0 : (std::min)(selection, total - 1);
@@ -1143,6 +1232,11 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
                           static_cast<int>(anchor.bottom) + belowGap, width, height, aboveGap);
         x = position.x;
         y = position.y;
+        if (side == ColumnSide::Below) {
+            y = static_cast<int>(anchor.bottom) + belowGap;
+        } else if (side == ColumnSide::Above) {
+            y = static_cast<int>(anchor.top) - height - aboveGap;
+        }
     }
 
     kind_ = Kind::Panel;
@@ -1155,6 +1249,7 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     const float padding = static_cast<float>(m.padding);
     const float contentWidth = static_cast<float>(width) - padding * 2;
     inputTop_ = padding;
+    separatorTop_ = padding + static_cast<float>(m.inputRowHeight + m.rowGap);
     float itemsTop = padding;
     separator_ = false;
     if (hasInput && count > 0) {
@@ -1175,6 +1270,10 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     pageInline_ = false;
     pageTop_ = itemsTop + static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
                std::round(m.chipGap);
+    columnSide_ = side;
+    if (side == ColumnSide::Above) {
+        MirrorColumn(height);
+    }
     selection_ = current - begin;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
@@ -1209,6 +1308,7 @@ bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
     itemTexts_.clear();
     itemBoxes_.clear();
     separator_ = false;
+    columnSide_ = ColumnSide::None;
     selection_ = 0;
     hasInput_ = false;
     input_ = InputLine{};
@@ -1627,7 +1727,7 @@ void SuggestPanel::Draw()
         const float top = body.top + inputTop_;
         DrawInputLine(left, top, contentWidth);
         if (separator_) {
-            const float separatorY = top + static_cast<float>(m.inputRowHeight + m.rowGap);
+            const float separatorY = body.top + separatorTop_;
             brush_->SetColor(ToD2D(theme_.separator));
             drawTarget_->FillRectangle(
                 D2D1::RectF(left, separatorY, left + contentWidth, separatorY + line), brush_);
@@ -2158,6 +2258,7 @@ void SuggestPanel::Hide()
     itemTexts_.clear();
     itemBoxes_.clear();
     separator_ = false;
+    columnSide_ = ColumnSide::None;
     pageText_.clear();
     pageStart_ = 0;
     selection_ = 0;

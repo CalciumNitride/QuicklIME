@@ -113,8 +113,8 @@ private:
     // 割当に一致した機能を今実行できるか (入力なしの状態では、実行できないときは
     // 打鍵を食べずにアプリへ渡す)
     bool CanRunKeyFunc(ITfContext* context, KeyFunc func) const;
-    // 割当に一致した機能を実行する
-    HRESULT RunKeyFunc(ITfContext* context, const KeyMatch& match);
+    // 割当に一致した機能を実行する (wparam は一致した打鍵の仮想キー)
+    HRESULT RunKeyFunc(ITfContext* context, const KeyMatch& match, WPARAM wparam);
     // ホストの exe 名が改行キーの対象アプリ (設定 newline_apps) にあるか
     bool IsNewlineApp() const;
     // ホストの exe 名に対する起動時の IME の状態 (設定 ime_start_apps)。一覧にあれば true で
@@ -291,6 +291,10 @@ private:
     // バーの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)。
     // 文書は書き換えない
     HRESULT MoveBarSelection(int delta);
+    // ↑ / ↓ の打鍵 vk で候補を動かす向き delta (↓ なら +1、↑ なら -1 を渡す) を、候補の順番での
+    // 向きに直す。キャレット行の上に反転して出しているパネルでは見た目の方向に合わせて逆にする
+    // (docs/design/panel-above-caret.md)。↑ / ↓ 以外の vk では delta のまま
+    int ArrowOrder(WPARAM vk, int delta) const;
     // 数字キー 1〜9: バー選択中に、今出しているページ内の番号 (0始まり) の候補を選ぶ
     // (無ければ何もしない)
     HRESULT SelectBarByNumber(size_t number);

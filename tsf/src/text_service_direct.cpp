@@ -498,9 +498,9 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         case VK_TAB:
             return MoveBarSelection(shifted ? -1 : +1);
         case VK_DOWN:
-            return MoveBarSelection(+1);
+            return MoveBarSelection(ArrowOrder(VK_DOWN, +1));
         case VK_UP:
-            return MoveBarSelection(-1);
+            return MoveBarSelection(ArrowOrder(VK_UP, -1));
         case VK_RIGHT:
         case VK_LEFT:
             if (ArrowMovesBarSelection(wparam)) {
@@ -548,9 +548,9 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     case VK_TAB:
         return MoveBarSelection(shifted ? -1 : +1);
     case VK_DOWN:
-        return MoveBarSelection(+1);
+        return MoveBarSelection(ArrowOrder(VK_DOWN, +1));
     case VK_UP:
-        return MoveBarSelection(-1);
+        return MoveBarSelection(ArrowOrder(VK_UP, -1));
     case VK_RIGHT:
     case VK_LEFT:
         if (ArrowMovesBarSelection(wparam)) {

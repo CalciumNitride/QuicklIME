@@ -146,6 +146,13 @@ public:
     // テーマが候補を横一列に並べるか (変換の候補一覧はこれによらず縦積み)
     bool Horizontal() const { return theme_.layout == PanelLayout::Row; }
 
+    // 縦に並ぶ候補パネルをキャレット行の上に出し、並びを反転している (1 番目の候補がキャレット側の
+    // 下にある) か (docs/design/panel-above-caret.md)。表示していなければ false
+    bool Reversed() const
+    {
+        return hwnd_ != nullptr && kind_ == Kind::Panel && columnSide_ == ColumnSide::Above;
+    }
+
     // ウィンドウクラス登録から参照するため public にしている
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
@@ -162,6 +169,13 @@ private:
         Bottom,  // パネルがキャレット行の上にあり、下向きの尻尾を付ける
     };
 
+    // 縦に並ぶ候補パネルを Caret で出す側
+    enum class ColumnSide {
+        None,   // 決めていない (横一列・Center・どちら側にも 1 行も入らない)
+        Below,  // キャレット行の下
+        Above,  // キャレット行の上 (並びを反転する)
+    };
+
     // 候補 1 件の表示位置 (影を除いたパネルの左上を原点とする px)。高さは行の高さ
     struct ItemBox {
         float left;
@@ -176,6 +190,13 @@ private:
     float TextWidth(const std::wstring& text, IDWriteTextFormat* format) const;
     // Show で区切った候補の page ページ目を組んで出し、出した候補の数を返す (selection は全体での番号)
     size_t LayoutPage(size_t page, size_t selection, const wchar_t* kind);
+    // placement (Caret) で縦の候補パネルを出す側を *side に決め、1 ページに出す行数を返す。
+    // どちら側にも 1 行も入らなければ *side を None にして 0 を返す
+    size_t FitColumn(const Placement& placement, const RECT& work, bool hasInput, size_t total,
+                     ColumnSide* side) const;
+    // 縦積みで上から組んだ入力行・区切り線・候補・位置の表示を、高さ height のパネルの中で
+    // 上下に反転する
+    void MirrorColumn(int height);
     // Show の候補で selection を選んでいるときの位置の表示 (1 ページなら空)
     std::wstring PageText(size_t selection) const;
     // 今のレイアウトをウィンドウ (bodyX_, bodyY_ の位置) に描いて出す
@@ -252,6 +273,7 @@ private:
     std::vector<ItemBox> itemBoxes_;
     float inputTop_;  // 入力行の上端 (パネルの左上を原点とする px)
     bool separator_;  // 入力行と候補の間に区切り線を引く
+    float separatorTop_;  // 区切り線の上端 (パネルの左上を原点とする px)
     std::wstring pageText_;  // 位置の表示 (空なら出さない)
     float pageTop_;          // 位置の表示の上端 (パネルの左上を原点とする px)
     // 位置の表示を横一列のチップと同じ行の pageLeft_ (パネルの左上を原点とする px) に出す
@@ -273,6 +295,7 @@ private:
     RECT placementCaret_;
     RECT work_;             // 出すモニタの作業領域
     int pointerHeight_;     // 尻尾の高さ (Show の時点で決めたもの)
+    ColumnSide columnSide_;  // 縦の候補パネルを出す側 (Show・ShowConversion の時点で決めたもの)
     bool hasInput_;
     InputLine input_;
     std::wstring capsuleText_;
