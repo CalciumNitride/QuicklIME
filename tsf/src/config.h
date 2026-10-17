@@ -107,6 +107,9 @@ struct TsfConfig {
     std::wstring panelTheme = L"capsule";
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
+    // 候補バーの合計の上限 (設定 max_predictions。9 / 18 / 27 / 36。エンジンの PREDICT と同じ設定を読む。
+    // docs/design/suggest-paging.md)
+    int maxPredictions = 9;
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す
     // (docs/design/next-word-prediction.md)
     bool nextWord = true;

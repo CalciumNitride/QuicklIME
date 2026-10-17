@@ -260,8 +260,8 @@ private:
                                             const std::vector<SentenceCandidate>& sentences,
                                             const std::vector<PredictionCandidate>& predictions) const;
     // items を caret の行に固定の x 位置 (設定 candidate_position center なら画面中央) で
-    // 表示する。収まった候補だけを選択の対象にする。caret が null ならキャレットの矩形が
-    // 取れなかったことを表す (画面中央のときだけ出せる)。1件も出せなければ false (何も変えない)
+    // 表示する。ページに区切って出し、すべての候補を選択の対象にする。caret が null ならキャレットの
+    // 矩形が取れなかったことを表す (画面中央のときだけ出せる)。1件も出せなければ false (何も変えない)
     bool ShowBarItems(const RECT* caret, std::vector<BarCandidate> items);
     // バーの候補と選択を破棄し、パネルを隠す
     void ClearBar();
@@ -279,7 +279,7 @@ private:
     // 入力行の内容 (run の確定したかなと未完成のローマ字、run が無ければ後続語の予測の前文脈)。
     // 入力行を出さないときは false
     bool PanelInputLine(SuggestPanel::InputLine* line) const;
-    // labels と入力行をパネルに出し、表示した候補の数を返す。caret が null ならキャレットの
+    // labels と入力行をパネルに出し、出したページの候補の数を返す。caret が null ならキャレットの
     // 矩形が取れなかったことを表す
     size_t ShowPanel(const RECT* caret, const std::vector<SuggestPanel::Item>& labels,
                      size_t selection);
@@ -288,7 +288,8 @@ private:
     // バーの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)。
     // 文書は書き換えない
     HRESULT MoveBarSelection(int delta);
-    // 数字キー 1〜9: バー選択中に番号 (0始まり) の候補を選ぶ (無ければ何もしない)
+    // 数字キー 1〜9: バー選択中に、今出しているページ内の番号 (0始まり) の候補を選ぶ
+    // (無ければ何もしない)
     HRESULT SelectBarByNumber(size_t number);
     // バーの選択を解除する (バーは表示のまま)
     HRESULT DeselectBar();

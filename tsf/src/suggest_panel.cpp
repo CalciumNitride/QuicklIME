@@ -236,6 +236,13 @@ int PageRowHeight(const PanelTheme& theme, const Metrics& m)
     return Scaled(theme.labelTextSize * kPageRowRatio, m.f);
 }
 
+// 画面中央に出す候補バーのパネルの幅
+int CenterWidth(const PanelTheme& theme, const Metrics& m, int workWidth)
+{
+    return static_cast<int>(
+        (std::min)(theme.centerWidth * m.f, static_cast<float>(workWidth) * theme.centerWidthRatio));
+}
+
 // 画面中央に出す候補バーのパネルの上端。SuggestPanel::Show の Center と同じ規則で求める
 // (変換の候補一覧の上端をそろえ、候補選択に入っても入力行を動かさないため)
 int CenterBarTop(const PanelTheme& theme, const Metrics& m, const RECT& work, bool hasInput)
@@ -441,7 +448,9 @@ SuggestPanel::SuggestPanel()
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
       kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false), pageTop_(0.0f),
-      selection_(0), hasInput_(false),
+      pageInline_(false), pageLeft_(0.0f), pageStart_(0), selection_(0), page_(0),
+      pageLabelWidth_(0.0f), inputWidth_(0.0f), placementCaret_{}, work_{}, pointerHeight_(0),
+      hasInput_(false),
       bodyX_(0), bodyY_(0), bodyWidth_(0), bodyHeight_(0), margin_(0), tail_(TailSide::None),
       tailHeight_(0), markerX_(0)
 {
@@ -672,17 +681,12 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const bool column = theme_.layout == PanelLayout::Column;
     const bool ghost = theme_.style == PanelStyle::Ghost;
-    const bool centerAlign = theme_.align == PanelAlign::Center;
-    // 尻尾は先端がキャレット行の下端・上端に届くよう、尻尾の高さだけ離す
     const int pointerHeight = PointerHeight(placement);
-    const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
-    const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
 
     std::vector<std::wstring> texts;
     std::vector<float> widths;  // 切り詰めずに出したときの候補 1 件の幅
-    for (size_t i = 0; i < items.size() && i < kMaxItems; ++i) {
-        std::wstring text =
-            items[i].kind == ItemKind::Partial ? items[i].text + L"…" : items[i].text;
+    for (const Item& item : items) {
+        std::wstring text = item.kind == ItemKind::Partial ? item.text + L"…" : item.text;
         float textWidth = TextWidth(text, textFormat_);
         if (theme_.selection == SelectionStyle::Text) {
             // 選択すると太字になるので、選択によって幅が変わらないよう太字の幅も見込む
@@ -690,7 +694,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         }
         float width = m.chipPadding * 2 + m.badgeSlot + textWidth;
         if (column && theme_.kindTag) {
-            width += m.tagGap + TextWidth(KindTagLabel(items[i].kind), tagFormat_) +
+            width += m.tagGap + TextWidth(KindTagLabel(item.kind), tagFormat_) +
                      m.tagPadding * 2;
         }
         widths.push_back(width);
@@ -719,17 +723,10 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         }
     }
     const bool hasInput = input != nullptr;
-    // 入力行と区切り線 (前後の間を含む) の高さ
-    const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
-    // 縦積みで n 行を出すときのパネルの高さ。候補が無ければ入力行だけにする
-    const auto columnHeight = [&](size_t n) {
-        if (n == 0) {
-            return m.padding * 2 + (hasInput ? m.inputRowHeight : 0);
-        }
-        const int count = static_cast<int>(n);
-        return m.padding * 2 + header + m.chipHeight * count +
-               static_cast<int>(std::lround(m.chipGap * static_cast<float>(count - 1)));
-    };
+    if (texts.empty() && !hasInput) {
+        Hide();
+        return 0;
+    }
 
     HMONITOR monitor = nullptr;
     if (placement.position == Position::Center) {
@@ -748,20 +745,153 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     const RECT work = WorkAreaOf(monitor);
     const int workWidth = static_cast<int>(work.right - work.left);
     const int workHeight = static_cast<int>(work.bottom - work.top);
-    // 画面中央では幅を候補の数によらず固定し、打鍵ごとに候補の位置を動かさない
-    const int centerWidth = static_cast<int>((std::min)(
-        theme_.centerWidth * m.f, static_cast<float>(workWidth) * theme_.centerWidthRatio));
 
+    // ページの区切りは先頭から順に決め、選択によって変えない (同じ候補は常に同じページ・同じ番号)
+    const size_t total = widths.size();
+    const std::wstring totalText = std::to_wstring(total);
+    // 位置の表示の文字は選択で変わるので、いちばん広いものの幅を取る
+    const float labelWidth = (std::max)(TextWidth(L"-/" + totalText, labelFormat_),
+                                        TextWidth(totalText + L"/" + totalText, labelFormat_));
+    std::vector<size_t> pageStarts;
+    float pageLabelWidth = 0.0f;
+    if (total > 0 && column) {
+        const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
+        // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+        const auto heightOf = [&](size_t n, bool pages) {
+            return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+        };
+        const size_t limit = (std::min)(kMaxItems, total);
+        size_t pageSize = 1;
+        while (pageSize < limit && heightOf(pageSize + 1, total > pageSize + 1) <= workHeight) {
+            ++pageSize;
+        }
+        for (size_t begin = 0; begin < total; begin += pageSize) {
+            pageStarts.push_back(begin);
+        }
+        if (pageStarts.size() > 1) {
+            pageLabelWidth = labelWidth;
+        }
+    } else if (total > 0) {
+        const int height = m.padding * 2 + m.chipHeight +
+                           (hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0);
+        float available = 0.0f;
+        if (placement.position == Position::Center) {
+            available = static_cast<float>(CenterWidth(theme_, m, workWidth) - m.padding * 2);
+        } else {
+            const int x = (std::max)(placement.x - PointerLeftShift(m, height, pointerHeight),
+                                     static_cast<int>(work.left));
+            available = static_cast<float>(static_cast<int>(work.right) - x - m.padding * 2);
+        }
+        // begin から reserve (位置の表示の分) を残して幅に収まる件数。1 件も入らなければその 1 件
+        const auto fit = [&](size_t begin, float reserve) {
+            size_t count = 0;
+            float chipsWidth = 0.0f;
+            while (begin + count < total && count < kMaxItems) {
+                const float next =
+                    chipsWidth + (count > 0 ? m.chipGap : 0.0f) + widths[begin + count];
+                if (next + reserve > available) {
+                    break;
+                }
+                chipsWidth = next;
+                ++count;
+            }
+            return (std::max)(count, static_cast<size_t>(1));
+        };
+        if (total <= kMaxItems && fit(0, 0.0f) == total) {
+            pageStarts.push_back(0);
+        } else {
+            pageLabelWidth = labelWidth;
+            for (size_t begin = 0; begin < total; begin += fit(begin, m.chipGap + labelWidth)) {
+                pageStarts.push_back(begin);
+            }
+        }
+    }
+
+    kind_ = Kind::Panel;
+    conversion_ = false;
+    allItems_ = items;
+    allTexts_ = std::move(texts);
+    allWidths_ = std::move(widths);
+    pageStarts_ = std::move(pageStarts);
+    pageLabelWidth_ = pageLabelWidth;
+    inputWidth_ = inputWidth;
+    placement_ = placement;
+    if (placement.caret != nullptr) {
+        placementCaret_ = *placement.caret;
+        placement_.caret = &placementCaret_;
+    }
+    work_ = work;
+    pointerHeight_ = pointerHeight;
+    hasInput_ = hasInput;
+    input_ = hasInput ? *input : InputLine{};
+    capsuleText_.clear();
+    size_t page = 0;
+    if (selection < total) {
+        page = static_cast<size_t>(
+            std::upper_bound(pageStarts_.begin(), pageStarts_.end(), selection) -
+            pageStarts_.begin() - 1);
+    }
+    return LayoutPage(page, selection, L"Show");
+}
+
+std::wstring SuggestPanel::PageText(size_t selection) const
+{
+    if (pageStarts_.size() <= 1) {
+        return {};
+    }
+    const size_t total = allItems_.size();
+    return (selection < total ? std::to_wstring(selection + 1) : std::wstring(L"-")) + L"/" +
+           std::to_wstring(total);
+}
+
+size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* kind)
+{
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const bool column = theme_.layout == PanelLayout::Column;
+    const bool ghost = theme_.style == PanelStyle::Ghost;
+    const bool centerAlign = theme_.align == PanelAlign::Center;
+    const Placement& placement = placement_;
+    const int pointerHeight = pointerHeight_;
+    // 尻尾は先端がキャレット行の下端・上端に届くよう、尻尾の高さだけ離す
+    const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
+    const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
+    const bool hasInput = hasInput_;
+    const RECT& work = work_;
+    const int workWidth = static_cast<int>(work.right - work.left);
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+    // 画面中央では幅を候補の数によらず固定し、打鍵ごとに候補の位置を動かさない
+    const int centerWidth = CenterWidth(theme_, m, workWidth);
+
+    const size_t total = allWidths_.size();
+    const bool pages = pageStarts_.size() > 1;
+    size_t begin = 0;
     size_t count = 0;
+    if (page < pageStarts_.size()) {
+        begin = pageStarts_[page];
+        count = (page + 1 < pageStarts_.size() ? pageStarts_[page + 1] : total) - begin;
+    }
+    const std::vector<float> widths(allWidths_.begin() + static_cast<std::ptrdiff_t>(begin),
+                                    allWidths_.begin() + static_cast<std::ptrdiff_t>(begin + count));
+    // 入力行と区切り線 (前後の間を含む) の高さ
+    const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
+    const int pageRow =
+        pages ? static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m) : 0;
+    // 縦積みで n 行を出すときのパネルの高さ。複数ページなら位置の表示の行を足す
+    const auto columnHeight = [&](size_t n) {
+        return ColumnHeight(m, hasInput, n) + (n > 0 ? pageRow : 0);
+    };
+    // 横一列のチップの列と位置の表示を合わせた幅
     float chipsWidth = 0.0f;
+    for (size_t i = 0; i < widths.size(); ++i) {
+        chipsWidth += (i > 0 ? m.chipGap : 0.0f) + widths[i];
+    }
+    const float rowWidth = chipsWidth + (pages ? m.chipGap + pageLabelWidth_ : 0.0f);
+
     int x = 0;
     int y = 0;
     int width = 0;
     int height = 0;
     if (column) {
-        while (count < widths.size() && columnHeight(count + 1) <= workHeight) {
-            ++count;
-        }
         height = columnHeight(count);
         if (placement.position == Position::Center) {
             width = centerWidth;
@@ -775,9 +905,12 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             const int fullHeight = (std::max)(columnHeight(fullRows), height);
             y = static_cast<int>(work.top) + (std::max)(0, (workHeight - fullHeight) / 2);
         } else {
-            float widest = inputWidth;
-            for (size_t i = 0; i < count; ++i) {
-                widest = (std::max)(widest, widths[i]);
+            float widest = inputWidth_;
+            for (const float rowWidthOfItem : widths) {
+                widest = (std::max)(widest, rowWidthOfItem);
+            }
+            if (pages) {
+                widest = (std::max)(widest, m.chipPadding * 2 + pageLabelWidth_);
             }
             width = m.padding * 2 + static_cast<int>(std::ceil(widest));
             width = (std::max)(width, m.chipHeight * 2);
@@ -804,42 +937,21 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         height = m.padding * 2 + m.chipHeight + header;
         if (placement.position == Position::Center) {
             width = centerWidth;
-            const float available = static_cast<float>(width - m.padding * 2);
-            for (size_t i = 0; i < widths.size(); ++i) {
-                const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
-                if (next > available) {
-                    break;
-                }
-                chipsWidth = next;
-                ++count;
-            }
             x = static_cast<int>(work.left) + (workWidth - width) / 2;
             y = static_cast<int>(work.top) + (workHeight - height) / 2;
         } else {
             const RECT& caret = *placement.caret;
             x = (std::max)(placement.x - PointerLeftShift(m, height, pointerHeight),
                            static_cast<int>(work.left));
-            for (size_t i = 0; i < widths.size(); ++i) {
-                const float next = chipsWidth + (i > 0 ? m.chipGap : 0.0f) + widths[i];
-                if (static_cast<float>(x + m.padding * 2) + next > static_cast<float>(work.right)) {
-                    break;
-                }
-                chipsWidth = next;
-                ++count;
+            const int rowNeeded = m.padding * 2 + static_cast<int>(std::ceil(rowWidth));
+            if (count > 0 && x + rowNeeded > work.right) {
+                // 1 件だけで幅を超える候補のページは、その候補が収まるところまで左へ寄せる
+                x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - rowNeeded);
             }
-            if (count == 0 && !widths.empty()) {
-                // 先頭の候補も入らない位置では、先頭の候補が収まるところまで左へ寄せる
-                count = 1;
-                chipsWidth = widths[0];
-                const int needed = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
-                x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - needed);
-            }
-            const int chipsNeeded = m.padding * 2 + static_cast<int>(std::ceil(chipsWidth));
-            width =
-                m.padding * 2 + static_cast<int>(std::ceil((std::max)(chipsWidth, inputWidth)));
+            width = m.padding * 2 + static_cast<int>(std::ceil((std::max)(rowWidth, inputWidth_)));
             width = (std::max)(width, m.chipHeight * 2);
             // 入力行が長いときは作業領域の右端で切る (候補は上で収まる分だけにしてある)
-            width = (std::max)((std::min)(width, static_cast<int>(work.right) - x), chipsNeeded);
+            width = (std::max)((std::min)(width, static_cast<int>(work.right) - x), rowNeeded);
 
             // 未完成ローマ字のカプセル (チップと同じ高さ) はキャレットに重ねて出し、打鍵ごとに
             // 出たり消えたりする。カプセルの有無で上下に動かないよう、常にその下端より下に出す
@@ -854,17 +966,10 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         }
     }
 
-    if (count == 0 && !hasInput) {
-        Hide();
-        return 0;
-    }
-
-    kind_ = Kind::Panel;
-    conversion_ = false;
-    pageText_.clear();
-    texts.resize(count);
-    itemTexts_ = std::move(texts);
-    items_.assign(items.begin(), items.begin() + static_cast<std::ptrdiff_t>(count));
+    itemTexts_.assign(allTexts_.begin() + static_cast<std::ptrdiff_t>(begin),
+                      allTexts_.begin() + static_cast<std::ptrdiff_t>(begin + count));
+    items_.assign(allItems_.begin() + static_cast<std::ptrdiff_t>(begin),
+                  allItems_.begin() + static_cast<std::ptrdiff_t>(begin + count));
     const float padding = static_cast<float>(m.padding);
     const float contentWidth = static_cast<float>(width) - padding * 2;
     inputTop_ = padding;
@@ -876,6 +981,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         separator_ = !ghost;
     }
     itemBoxes_.clear();
+    pageText_ = PageText(selection);
     if (column) {
         for (size_t i = 0; i < count; ++i) {
             // 左揃えでは行の幅をそろえ、中央揃えでは行ごとの幅で中央に置く
@@ -885,25 +991,34 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
                 itemsTop + static_cast<float>(i) * (static_cast<float>(m.chipHeight) + m.chipGap);
             itemBoxes_.push_back({left, std::round(top), boxWidth});
         }
+        pageInline_ = false;
+        pageTop_ = itemsTop + static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
+                   std::round(m.chipGap);
     } else {
+        // 1 件だけで幅を超える候補 (画面中央の固定幅など) は、チップを幅に収めて文字を「…」で切る
+        const float maxChip =
+            (std::max)(0.0f, contentWidth - (pages ? m.chipGap + pageLabelWidth_ : 0.0f));
         float chipX =
-            padding + (centerAlign ? (std::max)(0.0f, (contentWidth - chipsWidth) / 2) : 0.0f);
+            padding + (centerAlign ? (std::max)(0.0f, (contentWidth - rowWidth) / 2) : 0.0f);
         for (size_t i = 0; i < count; ++i) {
-            itemBoxes_.push_back({chipX, itemsTop, widths[i]});
-            chipX += widths[i] + m.chipGap;
+            const float boxWidth = (std::min)(widths[i], maxChip);
+            itemBoxes_.push_back({chipX, itemsTop, boxWidth});
+            chipX += boxWidth + m.chipGap;
         }
+        pageInline_ = true;
+        pageLeft_ = chipX;
+        pageTop_ = itemsTop;
     }
-    selection_ = selection;
-    hasInput_ = hasInput;
-    input_ = hasInput ? *input : InputLine{};
-    capsuleText_.clear();
+    page_ = page;
+    pageStart_ = begin;
+    selection_ = selection >= begin && selection < begin + count ? selection - begin : count;
     bodyX_ = x;
     bodyY_ = y;
     bodyWidth_ = width;
     bodyHeight_ = height;
     PlaceTail(placement, pointerHeight);
     margin_ = LayeredMargin();
-    if (!Render(L"Show", placement.caret)) {
+    if (!Render(kind, placement.caret)) {
         return 0;
     }
     return count;
@@ -1045,6 +1160,7 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         itemBoxes_.push_back({left, std::round(top), boxWidth});
     }
     pageText_ = std::move(pageText);
+    pageInline_ = false;
     pageTop_ = itemsTop + static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
                std::round(m.chipGap);
     selection_ = current - begin;
@@ -1508,7 +1624,11 @@ void SuggestPanel::Draw()
     for (size_t i = 0; i < itemBoxes_.size(); ++i) {
         DrawItem(i, body.left, body.top);
     }
-    if (!pageText_.empty()) {
+    if (!pageText_.empty() && pageInline_) {
+        const float pageTop = body.top + pageTop_;
+        DrawLabel(pageText_, labelFormat_, body.left + pageLeft_, pageTop, left + contentWidth,
+                  pageTop + static_cast<float>(m.chipHeight), theme_.secondary);
+    } else if (!pageText_.empty()) {
         float pageX = left + m.chipPadding;
         if (theme_.align == PanelAlign::Center) {
             const float pageWidth = TextWidth(pageText_, labelFormat_);
@@ -1954,10 +2074,31 @@ bool SuggestPanel::WindowRect(RECT* rect) const
 
 void SuggestPanel::SetSelection(size_t selection)
 {
-    selection_ = selection;
-    if (hwnd_ != nullptr) {
-        Render(L"SetSelection", nullptr);
+    if (kind_ != Kind::Panel || conversion_ || pageStarts_.empty()) {
+        selection_ = selection;
+        if (hwnd_ != nullptr) {
+            Render(L"SetSelection", nullptr);
+        }
+        return;
     }
+    if (hwnd_ == nullptr) {
+        return;
+    }
+    size_t page = 0;
+    if (selection < allItems_.size()) {
+        page = static_cast<size_t>(
+            std::upper_bound(pageStarts_.begin(), pageStarts_.end(), selection) -
+            pageStarts_.begin() - 1);
+    }
+    if (page != page_) {
+        LayoutPage(page, selection, L"SetSelection");
+        return;
+    }
+    selection_ = selection >= pageStart_ && selection < pageStart_ + items_.size()
+                     ? selection - pageStart_
+                     : items_.size();
+    pageText_ = PageText(selection);
+    Render(L"SetSelection", nullptr);
 }
 
 bool SuggestPanel::StartTimer(UINT intervalMs, std::function<void()> callback)
@@ -2004,7 +2145,13 @@ void SuggestPanel::Hide()
     itemBoxes_.clear();
     separator_ = false;
     pageText_.clear();
+    pageStart_ = 0;
     selection_ = 0;
+    allItems_.clear();
+    allTexts_.clear();
+    allWidths_.clear();
+    pageStarts_.clear();
+    page_ = 0;
     hasInput_ = false;
     input_ = InputLine{};
     capsuleText_.clear();

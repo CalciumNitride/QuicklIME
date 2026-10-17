@@ -67,7 +67,7 @@
 - 未選択から `NextWordNext` で先頭、`NextWordPrev` で末尾を選ぶ
 - 選択した後は状態「サジェスト選択中」(run なし) に入り、今の候補バーの選択と同じキーが働く:
   Tab / ↓ / Shift+Tab / ↑ で選択の移動、数字 1〜9 でその番号を選ぶ、先頭で Shift+Tab / ↑ を
-  押すと未選択に戻る。`NextWordNext` / `NextWordPrev` も引き続き選択を動かす
+  押すと末尾へ循環する。`NextWordNext` / `NextWordPrev` も引き続き選択を動かす
 - 選択では文書を書き換えない。採用は今の候補バーと同じ操作で行う
 
 | 操作 | 選択中の動作 |

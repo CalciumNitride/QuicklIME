@@ -2637,7 +2637,8 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
         }
         heads.push_back(head);
     }
-    const size_t predictionLimit = SuggestPanel::kMaxItems - items.size() - heads.size();
+    const size_t predictionLimit =
+        static_cast<size_t>(config_.Get().maxPredictions) - items.size() - heads.size();
     size_t predictionCount = 0;
     for (const PredictionCandidate& candidate : predictions) {
         if (predictionCount >= predictionLimit) {
@@ -2680,8 +2681,7 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
         labels.push_back({tail ? item.surface + asciiTail : item.surface, kind});
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
-    const size_t shown = ShowPanel(caret, labels, labels.size());
-    if (shown == 0) {
+    if (ShowPanel(caret, labels, labels.size()) == 0) {
         return false;
     }
     barBuilt_ = items;
@@ -2689,9 +2689,6 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
     if (caret != nullptr) {
         barCaret_ = *caret;
     }
-    // 作業領域 (画面中央ではパネルの幅) に収まらず表示しなかった候補は、選択の対象からも外す
-    items.resize(shown);
-    labels.resize(shown);
     barItems_ = std::move(items);
     barLabels_ = std::move(labels);
     return true;
@@ -2787,12 +2784,11 @@ void TextService::RefreshRunPanel(ITfContext* context)
         barCaret_ = caret;
         barCaretValid_ = true;
     }
-    if (shown < barItems_.size()) {
-        barItems_.resize(shown);
-        barLabels_.resize((std::min)(shown, barLabels_.size()));
-        if (barIndex_ >= static_cast<int>(shown)) {
-            barIndex_ = -1;
-        }
+    if (shown == 0 && !barItems_.empty()) {
+        // 候補を出せなかった (描画の失敗など) ときは、見えない候補を選択の対象に残さない
+        barItems_.clear();
+        barLabels_.clear();
+        barIndex_ = -1;
     }
 }
 
@@ -3063,8 +3059,8 @@ HRESULT TextService::MoveBarSelection(int delta)
     } else if (barIndex_ < 0) {
         return S_OK; // 未選択の↑は何もしない
     } else if (barIndex_ == 0) {
-        // 先頭でさらに↑は選択解除
-        return DeselectBar();
+        // 先頭から前へは末尾へ循環する (未選択に戻すのは Esc)
+        barIndex_ = static_cast<int>(barItems_.size()) - 1;
     } else {
         --barIndex_;
     }
@@ -3077,11 +3073,13 @@ HRESULT TextService::SelectBarByNumber(size_t number)
     if (converting_ || barItems_.empty() || barIndex_ < 0) {
         return E_UNEXPECTED; // バー選択中のみ呼ばれる
     }
-    if (number >= barItems_.size()) {
+    // 番号は今出しているページ内の番号
+    const size_t index = suggestPanel_.PageStart() + number;
+    if (number >= suggestPanel_.PageItemCount() || index >= barItems_.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
-    barIndex_ = static_cast<int>(number);
-    suggestPanel_.SetSelection(number);
+    barIndex_ = static_cast<int>(index);
+    suggestPanel_.SetSelection(index);
     return S_OK;
 }
 

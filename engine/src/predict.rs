@@ -300,7 +300,7 @@ mod tests {
             )
             .unwrap();
         }
-        // きょうと は「きょうの」の1かな違い (低コスト) だが、完全一致8件で枠が埋まる
+        // きょうと は「きょうの」の1かな違い (低コスト) だが、完全一致の上限件数で枠が埋まる
         dict.load_from("きょうと\t100\t100\t100\t京都\n".as_bytes()).unwrap();
         dict.finalize();
         let results = predict("きょうの", None, &dict, &no_user(), &LearningStore::in_memory(), &cfg());

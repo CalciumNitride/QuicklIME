@@ -192,6 +192,14 @@ const NAMED_KEYS: [(&str, u16); 18] = [
 /// 句読点の選択肢 (設定値そのまま表示する)
 const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
 
+/// サジェスト件数 (max_predictions) の選択肢
+const MAX_PRED_ITEMS: [u32; 4] = [9, 18, 27, 36];
+
+/// max_predictions を 9 の倍数へ切り上げて [9, 36] に丸める (エンジンの config.rs と同じ規則)
+fn round_max_predictions(n: u32) -> u32 {
+    n.clamp(9, 36).div_ceil(9) * 9
+}
+
 /// アプリの起動時の IME の状態 (docs/design/ime-start-state.md)。自動は ime_start_apps に
 /// 載せないことで表す
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -431,7 +439,7 @@ struct Config {
     learning: bool,
     suggest: bool,
     typo_correction: bool,
-    max_predictions: u32,   // 1-8
+    max_predictions: u32,   // 9 / 18 / 27 / 36
     min_suggest_chars: u32, // 1-5
     space_full: bool,
     punctuation: String,
@@ -472,7 +480,7 @@ impl Default for Config {
             learning: true,
             suggest: true,
             typo_correction: true,
-            max_predictions: 8,
+            max_predictions: 9,
             min_suggest_chars: 2,
             space_full: true,
             punctuation: "、。".to_string(),
@@ -760,7 +768,7 @@ impl Config {
             "typo_correction" => parse_bool(&mut self.typo_correction),
             "max_predictions" => {
                 if let Ok(n) = value.parse::<u32>() {
-                    self.max_predictions = n.clamp(1, 8);
+                    self.max_predictions = round_max_predictions(n);
                 }
             }
             "min_suggest_chars" => {
@@ -1212,7 +1220,7 @@ fn main() {
         check("タイプミス補正 (曖昧一致の補充)", y, ID_CHECK_TYPO, config.typo_correction);
         y += row_h + row_gap;
         create_control("STATIC", "サジェスト件数:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
-        let pred_items: Vec<String> = (1..=8).map(|n| n.to_string()).collect();
+        let pred_items: Vec<String> = MAX_PRED_ITEMS.iter().map(|n| n.to_string()).collect();
         let pred_refs: Vec<&str> = pred_items.iter().map(String::as_str).collect();
         add_combo(ctrl_x, y, ID_COMBO_MAX_PRED, &pred_refs, &config.max_predictions.to_string());
         y += row_h + row_gap;
@@ -1820,7 +1828,7 @@ fn collect(hwnd: HWND) -> Config {
     config.suggest = checked(ID_CHECK_SUGGEST);
     config.typo_correction = checked(ID_CHECK_TYPO);
     if let Ok(n) = combo_text(ID_COMBO_MAX_PRED).parse::<u32>() {
-        config.max_predictions = n.clamp(1, 8);
+        config.max_predictions = round_max_predictions(n);
     }
     if let Ok(n) = combo_text(ID_COMBO_MIN_CHARS).parse::<u32>() {
         config.min_suggest_chars = n.clamp(1, 5);

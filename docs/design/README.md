@@ -58,6 +58,8 @@
   印 (テーマの `caret_marker`。パネルの吹き出しの尻尾か、キャレットの下の三角) で示す
 - [theme-blur.md](theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
   `capsule-blur` を足す。設定 `panel_blur` を廃止
+- [suggest-paging.md](suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の上限を
+  `max_predictions` (9 / 18 / 27 / 36) にする
 
 ## 変換
 

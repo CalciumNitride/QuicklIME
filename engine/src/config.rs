@@ -21,8 +21,8 @@ pub struct Config {
     pub suggest: bool,
     /// タイプミス補正 (曖昧一致での候補補充) を使うか
     pub typo_correction: bool,
-    /// 予測候補の最大数。上限 8 は TSF 層の候補ウィンドウが1ページ (9行) に
-    /// 収まり「選択なし」表示が溢れない制約から
+    /// 予測候補の最大数。TSF 層では候補バーの合計の上限として使う。
+    /// 候補バーの最後のページも埋まるよう 1 ページ (9 件) の倍数にそろえる
     pub max_predictions: usize,
     /// 予測を出す最小の読み文字数
     pub min_suggest_chars: usize,
@@ -45,7 +45,7 @@ impl Default for Config {
             learning: true,
             suggest: true,
             typo_correction: true,
-            max_predictions: 8,
+            max_predictions: 9,
             min_suggest_chars: 2,
             llm: false,
             llm_backend: LlmBackend::Cpu,
@@ -82,7 +82,7 @@ impl Config {
                 "learning" => parse_bool(value, &mut config.learning),
                 "suggest" => parse_bool(value, &mut config.suggest),
                 "typo_correction" => parse_bool(value, &mut config.typo_correction),
-                "max_predictions" => parse_clamped(value, 1, 8, &mut config.max_predictions),
+                "max_predictions" => parse_page_multiple(value, &mut config.max_predictions),
                 "min_suggest_chars" => parse_clamped(value, 1, 5, &mut config.min_suggest_chars),
                 "llm" => parse_bool(value, &mut config.llm),
                 "llm_backend" => match value {
@@ -113,6 +113,14 @@ fn parse_clamped(value: &str, min: usize, max: usize, out: &mut usize) {
     }
 }
 
+/// 整数として読めれば 9 の倍数へ切り上げて [9, 36] に丸めて設定する。読めなければ変更しない。
+/// TSF 層 (config.cpp) と設定ツール (quicklime-config.rs) も同じ規則で読む
+fn parse_page_multiple(value: &str, out: &mut usize) {
+    if let Ok(n) = value.parse::<usize>() {
+        *out = n.clamp(9, 36).div_ceil(9) * 9;
+    }
+}
+
 /// 既定の設定ファイルパス。優先順: QUICKLIME_CONFIG_FILE > %APPDATA%\QuicklIME\config.tsv
 fn default_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("QUICKLIME_CONFIG_FILE") {
@@ -133,7 +141,7 @@ mod tests {
         assert!(config.learning);
         assert!(config.suggest);
         assert!(config.typo_correction);
-        assert_eq!(config.max_predictions, 8);
+        assert_eq!(config.max_predictions, 9);
         assert_eq!(config.min_suggest_chars, 2);
         assert!(!config.llm);
         assert_eq!(config.llm_backend, LlmBackend::Cpu);
@@ -151,12 +159,12 @@ mod tests {
 
     #[test]
     fn 設定を読み込める() {
-        let text = "learning\t0\nsuggest\t0\ntypo_correction\t0\nmax_predictions\t4\nmin_suggest_chars\t3\n";
+        let text = "learning\t0\nsuggest\t0\ntypo_correction\t0\nmax_predictions\t27\nmin_suggest_chars\t3\n";
         let config = Config::load_from(Cursor::new(text));
         assert!(!config.learning);
         assert!(!config.suggest);
         assert!(!config.typo_correction);
-        assert_eq!(config.max_predictions, 4);
+        assert_eq!(config.max_predictions, 27);
         assert_eq!(config.min_suggest_chars, 3);
     }
 
@@ -164,8 +172,20 @@ mod tests {
     fn 数値は範囲に丸められる() {
         let text = "max_predictions\t100\nmin_suggest_chars\t0\n";
         let config = Config::load_from(Cursor::new(text));
-        assert_eq!(config.max_predictions, 8);
+        assert_eq!(config.max_predictions, 36);
         assert_eq!(config.min_suggest_chars, 1);
+    }
+
+    #[test]
+    fn 予測の件数は9の倍数へ切り上げる() {
+        let cases = [
+            ("0", 9), ("1", 9), ("8", 9), ("9", 9), ("10", 18), ("18", 18),
+            ("19", 27), ("30", 36), ("36", 36), ("37", 36),
+        ];
+        for (value, expected) in cases {
+            let config = Config::load_from(Cursor::new(format!("max_predictions\t{value}\n")));
+            assert_eq!(config.max_predictions, expected, "max_predictions {value}");
+        }
     }
 
     #[test]
@@ -173,6 +193,6 @@ mod tests {
         let text = "# コメント\nlearning\tabc\nmax_predictions\txyz\nspace\tfull\nunknown_key\t1\n壊れた行\n";
         let config = Config::load_from(Cursor::new(text));
         assert!(config.learning);
-        assert_eq!(config.max_predictions, 8);
+        assert_eq!(config.max_predictions, 9);
     }
 }

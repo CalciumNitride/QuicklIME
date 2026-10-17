@@ -24,7 +24,7 @@ struct IDWriteTextFormat;
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
 class SuggestPanel {
 public:
-    // 番号 (1〜9) を付けて出せる候補の数
+    // 1 ページに出す候補の最大数 (番号はページ内で 1〜9)
     static constexpr size_t kMaxItems = 9;
 
     // 候補の種類 (縦積みの種類のタグに出す)
@@ -83,8 +83,10 @@ public:
     SuggestPanel& operator=(const SuggestPanel&) = delete;
 
     // 候補をテーマの並べ方 (横一列・縦積み) で並べ、input があれば上に入力行を置いて出す。
-    // 収まる先頭からの候補だけを表示し、表示した候補の数を返す (候補が無く入力行だけを出したときも 0)。
-    // 候補も入力行も無ければ隠す。selection が範囲外ならどの候補も強調しない
+    // 候補はページに区切り (docs/design/suggest-paging.md)、selection を含むページを出す。番号は
+    // ページ内で 1 から振り、複数ページなら位置 (12/24) を出す。selection が範囲外ならどの候補も
+    // 強調せず 1 ページ目を出す。出したページの候補の数を返す (候補が無く入力行だけを出したときも 0)。
+    // 候補も入力行も無ければ隠す
     size_t Show(const Placement& placement, const std::vector<Item>& items, size_t selection,
                 const InputLine* input);
 
@@ -103,8 +105,13 @@ public:
     // 表示中のパネルの矩形 (影を除く。スクリーン座標)。非表示なら false
     bool WindowRect(RECT* rect) const;
 
-    // 選択中の候補を変えて再描画する
+    // 選択中の候補を変えて再描画する。Show の候補では selection は全体での番号で、別のページの
+    // 候補なら Show で区切ったそのページに組み直して出す (範囲外は強調なしで 1 ページ目)
     void SetSelection(size_t selection);
+
+    // 今出している候補のページの、先頭の候補の全体での番号と件数 (数字キーの対応付けに使う)
+    size_t PageStart() const { return pageStart_; }
+    size_t PageItemCount() const { return items_.size(); }
 
     // 描画フォントを差し替える (設定変更の反映用)。height は px 単位の文字高。
     // フォントが見つからなければ Yu Gothic UI を使う。表示中の内容には次の Show から効く
@@ -163,6 +170,10 @@ private:
     void ReleaseTarget();
     // text を format で1行に並べたときの幅 (px)
     float TextWidth(const std::wstring& text, IDWriteTextFormat* format) const;
+    // Show で区切った候補の page ページ目を組んで出し、出した候補の数を返す (selection は全体での番号)
+    size_t LayoutPage(size_t page, size_t selection, const wchar_t* kind);
+    // Show の候補で selection を選んでいるときの位置の表示 (1 ページなら空)
+    std::wstring PageText(size_t selection) const;
     // 今のレイアウトをウィンドウ (bodyX_, bodyY_ の位置) に描いて出す
     bool Render(const wchar_t* kind, const RECT* anchor);
     // ぼかしのウィンドウを作る。使えなければ作りかけを破棄して false (理由はログに出す)
@@ -237,9 +248,27 @@ private:
     std::vector<ItemBox> itemBoxes_;
     float inputTop_;  // 入力行の上端 (パネルの左上を原点とする px)
     bool separator_;  // 入力行と候補の間に区切り線を引く
-    std::wstring pageText_;  // 変換の候補一覧の位置の表示 (空なら出さない)
+    std::wstring pageText_;  // 位置の表示 (空なら出さない)
     float pageTop_;          // 位置の表示の上端 (パネルの左上を原点とする px)
-    size_t selection_;
+    // 位置の表示を横一列のチップと同じ行の pageLeft_ (パネルの左上を原点とする px) に出す
+    // (false なら最後の行の下に align に従って出す)
+    bool pageInline_;
+    float pageLeft_;
+    size_t pageStart_;  // 出しているページの先頭の候補の全体での番号
+    size_t selection_;  // 選択中の候補 (出しているページ内の番号。範囲外なら強調なし)
+
+    // Show で受け取った全候補とページの区切り (SetSelection でページを組み直すのに使う)
+    std::vector<Item> allItems_;
+    std::vector<std::wstring> allTexts_;  // 表示する候補文字列 (「…」を付けたもの)
+    std::vector<float> allWidths_;        // 切り詰めずに出したときの候補 1 件の幅
+    std::vector<size_t> pageStarts_;      // 各ページの先頭の候補の番号 (候補が無ければ空)
+    size_t page_;                         // 出しているページ
+    float pageLabelWidth_;  // 位置の表示に取る幅 (選択によって変わらないよう最大の幅。1 ページなら 0)
+    float inputWidth_;      // 入力行に要る幅
+    Placement placement_;   // Show で受け取った位置の基準 (caret は placementCaret_ を指す)
+    RECT placementCaret_;
+    RECT work_;             // 出すモニタの作業領域
+    int pointerHeight_;     // 尻尾の高さ (Show の時点で決めたもの)
     bool hasInput_;
     InputLine input_;
     std::wstring capsuleText_;

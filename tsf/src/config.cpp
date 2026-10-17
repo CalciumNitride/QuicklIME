@@ -466,6 +466,11 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         }
     } else if (key == L"min_suggest_chars") {
         ParseClamped(value, 1, 5, config.minSuggestChars);
+    } else if (key == L"max_predictions") {
+        // エンジン (config.rs) と同じく 9 の倍数へ切り上げて 9〜36 に丸める
+        int n = config.maxPredictions;
+        ParseClamped(value, 9, 36, n);
+        config.maxPredictions = (n + 8) / 9 * 9;
     } else if (key == L"next_word") {
         ParseBool(value, config.nextWord);
     } else if (key == L"segment_ui") {
