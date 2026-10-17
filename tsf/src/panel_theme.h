@@ -111,6 +111,7 @@ struct PanelTheme {
     PanelColor accent;        // 選択中の候補・run の下線・キャレット
     PanelColor selectedText;  // selection fill の選択中の候補の文字と番号
     PanelColor nextWord;      // 読みなしの後続語予測の縁と「次の語」ラベル
+    PanelColor typo;          // 補正の候補 (docs/design/typo-conversion.md) の縁
     PanelColor shadow;        // 影 (a は重ねたときの最大不透明度)
     PanelColor blurTint;      // ぼかし (blur on) の上に重ねる色
     PanelColor scrim;         // ghost のにじみの中心の色 (外へ向かって透明になる)
@@ -119,6 +120,7 @@ struct PanelTheme {
     PanelColor tagPrediction;
     PanelColor tagPartial;
     PanelColor tagNextWord;
+    PanelColor tagTypo;
     PanelColor caretMarkerColor;  // caret_marker triangle の三角 (書かなければ解決後の accent)
 
     bool operator==(const PanelTheme&) const = default;

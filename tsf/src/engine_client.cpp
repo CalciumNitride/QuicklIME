@@ -511,7 +511,9 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
         const std::string contextField =
             context.Empty() ? std::string()
                             : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-        const std::string request = "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\n";
+        // kinds で補正の候補に種類を付けさせる (旧エンジンは余分なフィールドを無視する)
+        const std::string request =
+            "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\tkinds\n";
         std::string response;
         if (!(live ? SendReceive(request, &response) : Transact(request, &response))) {
             return false;
@@ -539,7 +541,7 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
 bool EngineClient::ParseNBestResponse(std::string response,
                                       std::vector<SentenceCandidate>* candidates)
 {
-    // 応答: "OK\t読み\x1F表記\x1E読み\x1F表記...\t読み\x1F表記...\n"
+    // 応答: "OK\t読み\x1F表記\x1E読み\x1F表記...[\x1D種類]\t読み\x1F表記...\n"
     const size_t newline = response.find('\n');
     if (newline != std::string::npos) {
         response.resize(newline);
@@ -549,8 +551,14 @@ bool EngineClient::ParseNBestResponse(std::string response,
     }
 
     candidates->clear();
-    for (const std::string& candidateField : SplitFields(response.substr(3), '\t')) {
+    for (std::string candidateField : SplitFields(response.substr(3), '\t')) {
         SentenceCandidate candidate;
+        // 知らない種類は印の無い候補として扱う
+        const size_t kind = candidateField.find('\x1d');
+        if (kind != std::string::npos) {
+            candidate.typo = candidateField.compare(kind + 1, std::string::npos, "typo") == 0;
+            candidateField.resize(kind);
+        }
         for (const std::string& segmentField : SplitFields(candidateField, '\x1e')) {
             const std::vector<std::string> parts = SplitFields(segmentField, '\x1f');
             if (parts.size() != 2) {
@@ -582,7 +590,7 @@ unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
         context.Empty() ? std::string()
                         : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
     const std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
-                                WideToUtf8(kana) + "\n";
+                                WideToUtf8(kana) + "\tkinds\n";
     std::string response;
     if (!SendReceive(request, &response)) {
         return 0;

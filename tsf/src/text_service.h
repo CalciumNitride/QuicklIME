@@ -244,6 +244,9 @@ private:
         std::wstring reading;
         // 全体変換の文節ごとの (読み, 表記) (全体変換の学習に使う)
         std::vector<std::pair<std::wstring, std::wstring>> segments;
+        // 補正の候補 (docs/design/typo-conversion.md) の全体変換、またはその先頭文節。
+        // 採用しても学習を送らない
+        bool typo = false;
     };
     // 採用の仕方
     enum class BarAdopt {

@@ -58,6 +58,7 @@ constexpr wchar_t kCapsuleText[] =
     L"dark.chip\t#FFFFFF12\n"
     L"dark.separator\t#FFFFFF17\n"
     L"dark.next_word\t#E3B873\n"
+    L"dark.typo\t#E58F8F\n"
     L"dark.shadow\t#00000073\n"
     L"dark.blur_tint\t#2D343799\n"
     L"light.accent\t#2A7D66\n"
@@ -69,6 +70,7 @@ constexpr wchar_t kCapsuleText[] =
     L"light.chip\t#0000000B\n"
     L"light.separator\t#00000014\n"
     L"light.next_word\t#A8741F\n"
+    L"light.typo\t#B5484A\n"
     L"light.shadow\t#00000047\n"
     L"light.blur_tint\t#FAFBF7B3\n";
 
@@ -161,6 +163,7 @@ const struct {
     {L"accent", &PanelTheme::accent},
     {L"selected_text", &PanelTheme::selectedText},
     {L"next_word", &PanelTheme::nextWord},
+    {L"typo", &PanelTheme::typo},
     {L"shadow", &PanelTheme::shadow},
     {L"blur_tint", &PanelTheme::blurTint},
     {L"scrim", &PanelTheme::scrim},
@@ -169,6 +172,7 @@ const struct {
     {L"tag_prediction", &PanelTheme::tagPrediction},
     {L"tag_partial", &PanelTheme::tagPartial},
     {L"tag_next_word", &PanelTheme::tagNextWord},
+    {L"tag_typo", &PanelTheme::tagTypo},
     {L"caret_marker", &PanelTheme::caretMarkerColor},
 };
 
@@ -568,6 +572,7 @@ PanelTheme PanelTheme::Defaults(bool dark)
         theme.chip = Rgba(0xFFFFFF, 0x12);
         theme.separator = Rgba(0xFFFFFF, 0x17);
         theme.nextWord = Rgba(0xE3B873);
+        theme.typo = Rgba(0xE58F8F);
         theme.shadow = Rgba(0x000000, 0x73);
         theme.blurTint = Rgba(0x2D3437, 0x99);
         theme.scrim = Rgba(0x000000, 0xBF);
@@ -575,6 +580,7 @@ PanelTheme PanelTheme::Defaults(bool dark)
         theme.tagPrediction = Rgba(0x9AA5A3);
         theme.tagPartial = Rgba(0xC08CF0);
         theme.tagNextWord = Rgba(0xE3B873);
+        theme.tagTypo = Rgba(0xE58F8F);
     } else {
         theme.accent = Rgba(0x2A7D66);
         theme.selectedText = Rgba(0xFFFFFF);
@@ -586,6 +592,7 @@ PanelTheme PanelTheme::Defaults(bool dark)
         theme.chip = Rgba(0x000000, 0x0B);
         theme.separator = Rgba(0x000000, 0x14);
         theme.nextWord = Rgba(0xA8741F);
+        theme.typo = Rgba(0xB5484A);
         theme.shadow = Rgba(0x000000, 0x47);
         theme.blurTint = Rgba(0xFAFBF7, 0xB3);
         theme.scrim = Rgba(0xFFFFFF, 0xE6);
@@ -593,6 +600,7 @@ PanelTheme PanelTheme::Defaults(bool dark)
         theme.tagPrediction = Rgba(0x6B7573);
         theme.tagPartial = Rgba(0x8A4FC8);
         theme.tagNextWord = Rgba(0xA8741F);
+        theme.tagTypo = Rgba(0xB5484A);
     }
     theme.caretMarkerColor = theme.accent;
     return theme;

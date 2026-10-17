@@ -15,8 +15,10 @@ mod import;
 mod learn;
 mod llm;
 mod matrix;
+mod number;
 mod pos;
 mod predict;
+mod typo;
 mod userdict;
 
 use std::io::{BufRead, BufReader, Write};
@@ -326,12 +328,14 @@ struct Session {
     conn: u64,
     /// 最後に受け付けた RERANK の ID
     last_id: u64,
+    /// 最後に受け付けた RERANK の要求に kinds があったか (RERANKGET の DONE の候補に種類を付けるか)
+    last_kinds: bool,
 }
 
 impl Session {
     fn new() -> Self {
         static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
-        Session { conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed), last_id: 0 }
+        Session { conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed), last_id: 0, last_kinds: false }
     }
 }
 
@@ -358,14 +362,16 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
     let mut fields = line.split('\t');
     match fields.next() {
         Some("RERANK") => {
-            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな> : LLM による並べ替えを依頼する。
-            // LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
+            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds] : LLM による並べ替えを
+            // 依頼する。LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
             let llm_context = fields.next().unwrap_or("");
             let ctx = fields.next().and_then(parse_context);
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
             };
-            if !data.config.lock().expect("config lock").llm {
+            let kinds = fields.next() == Some(KINDS_FIELD);
+            let cfg = *data.config.lock().expect("config lock");
+            if !cfg.llm {
                 return "OK\t0\n".to_string();
             }
             let candidates = {
@@ -379,6 +385,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                     &data.matrix,
                     &data.functional,
                     &learning,
+                    cfg.typo_correction,
                 )
             };
             let job = llm::Job {
@@ -391,6 +398,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                 return "OK\t0\n".to_string();
             }
             session.last_id += 1;
+            session.last_kinds = kinds;
             format!("OK\t{}\n", session.last_id)
         }
         Some("RERANKGET") => {
@@ -400,8 +408,9 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
             };
             match data.llm.poll(session.conn, id) {
                 llm::Poll::Pending => "OK\tPENDING\n".to_string(),
+                // 結果が返るのは最後に受け付けた ID だけなので、種類の有無はその要求に従う
                 llm::Poll::Done(candidates) => {
-                    format!("OK\tDONE\t{}\n", format_candidates(&candidates))
+                    format!("OK\tDONE\t{}\n", format_candidates(&candidates, session.last_kinds))
                 }
                 llm::Poll::None => "OK\tNONE\n".to_string(),
             }
@@ -485,8 +494,21 @@ fn segments_response(
 /// CONVNBEST 応答で候補内の文節を区切る文字 (ASCII Record Separator)
 const SEGMENT_SEPARATOR: char = '\x1e';
 
-/// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ
-fn nbest_response(kana: &str, ctx: Option<&convert::Context>, data: &EngineData) -> String {
+/// CONVNBEST 応答で候補の末尾に種類を付ける区切り (ASCII Group Separator)
+const KIND_SEPARATOR: char = '\x1d';
+
+/// CONVNBEST・RERANK の要求の末尾に付けると、応答の候補に種類が付く
+const KINDS_FIELD: &str = "kinds";
+
+/// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ。
+/// kinds なら補正の候補の末尾に種類を付ける
+fn nbest_response(
+    kana: &str,
+    ctx: Option<&convert::Context>,
+    kinds: bool,
+    data: &EngineData,
+) -> String {
+    let typo = data.config.lock().expect("config lock").typo_correction;
     let user = data.user.lock().expect("user lock");
     let learning = data.learning.lock().expect("learning lock");
     let candidates = convert::convert_nbest(
@@ -497,20 +519,28 @@ fn nbest_response(kana: &str, ctx: Option<&convert::Context>, data: &EngineData)
         &data.matrix,
         &data.functional,
         &learning,
+        typo,
     );
-    format!("OK\t{}\n", format_candidates(&candidates))
+    format!("OK\t{}\n", format_candidates(&candidates, kinds))
 }
 
-/// 入力全体の候補を CONVNBEST の応答の形 (候補はタブ区切り、文節は \x1e 区切り) にする
-fn format_candidates(candidates: &[convert::SentenceCandidate]) -> String {
+/// 入力全体の候補を CONVNBEST の応答の形 (候補はタブ区切り、文節は \x1e 区切り) にする。
+/// kinds なら補正の候補の末尾に \x1d と種類 typo を付ける
+fn format_candidates(candidates: &[convert::SentenceCandidate], kinds: bool) -> String {
     candidates
         .iter()
         .map(|c| {
-            c.segments
+            let mut field = c
+                .segments
                 .iter()
                 .map(|(reading, surface)| format!("{reading}{FIELD_SEPARATOR}{surface}"))
                 .collect::<Vec<_>>()
-                .join(&SEGMENT_SEPARATOR.to_string())
+                .join(&SEGMENT_SEPARATOR.to_string());
+            if kinds && c.typo {
+                field.push(KIND_SEPARATOR);
+                field.push_str("typo");
+            }
+            field
         })
         .collect::<Vec<_>>()
         .join("\t")
@@ -561,10 +591,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
         }
         Some("CONVNBEST") => {
-            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな> : 入力全体の候補を返す
+            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds] : 入力全体の候補を返す
             let ctx = fields.next().and_then(parse_context);
             match fields.next() {
-                Some(kana) if !kana.is_empty() => nbest_response(kana, ctx.as_ref(), data),
+                Some(kana) if !kana.is_empty() => {
+                    let kinds = fields.next() == Some(KINDS_FIELD);
+                    nbest_response(kana, ctx.as_ref(), kinds, data)
+                }
                 _ => "ERR\tかなが空です\n".to_string(),
             }
         }
@@ -1045,6 +1078,59 @@ mod tests {
         assert_eq!(handle_request("CONVNBEST\tはれ\x1f晴れ\tきょうははれ", &data), response);
     }
 
+    /// 補正の候補のテスト用 (よろしく|お願い|します を変換できる辞書)
+    fn typo_data() -> EngineData {
+        let mut data = sample_data();
+        let mut dictionary = Dictionary::empty();
+        dictionary
+            .load_from(
+                "よろしく\t1\t1\t3000\tよろしく\nおねがい\t1\t1\t3000\tお願い\n\
+                 ねぎ\t1\t1\t4000\tネギ\nします\t2\t2\t1000\tします\n"
+                    .as_bytes(),
+            )
+            .unwrap();
+        dictionary.finalize();
+        data.dictionary = dictionary;
+        data
+    }
+
+    /// 応答の候補のうち、表記 (文節の表記の連結) が surface のものの欄
+    fn candidate_field<'a>(response: &'a str, surface: &str) -> Option<&'a str> {
+        response.trim_end().strip_prefix("OK\t")?.split('\t').find(|field| {
+            let body = field.split(KIND_SEPARATOR).next().unwrap_or("");
+            let joined: String = body
+                .split(SEGMENT_SEPARATOR)
+                .map(|segment| segment.split_once(FIELD_SEPARATOR).map_or("", |s| s.1))
+                .collect();
+            joined == surface
+        })
+    }
+
+    #[test]
+    fn convnbestのkindsで補正の候補に種類が付く() {
+        let data = typo_data();
+        let response = handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds", &data);
+        let field = candidate_field(&response, "よろしくお願いします")
+            .unwrap_or_else(|| panic!("補正の候補が無い: {response}"));
+        assert!(field.ends_with("\x1dtypo"), "{field}");
+        // 種類が付くのは補正の候補だけで、文節の読みは打ったかな
+        assert_eq!(response.matches(KIND_SEPARATOR).count(), 1, "{response}");
+        assert!(field.starts_with("よろしく\x1fよろしく\x1e"), "{field}");
+        // kinds が無ければ同じ候補を印なしで返す
+        let plain = handle_request("CONVNBEST\t\tよろしくおねぎあします", &data);
+        assert!(!plain.contains(KIND_SEPARATOR), "{plain}");
+        assert_eq!(plain, response.replace("\x1dtypo", ""));
+    }
+
+    #[test]
+    fn タイプミス補正が無効ならconvnbestに補正の候補が出ない() {
+        let data = typo_data();
+        data.config.lock().unwrap().typo_correction = false;
+        let response = handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds", &data);
+        assert!(candidate_field(&response, "よろしくお願いします").is_none(), "{response}");
+        assert!(!response.contains(KIND_SEPARATOR), "{response}");
+    }
+
     #[test]
     fn convnbestのかなが空ならエラー() {
         let data = sample_data();
@@ -1439,6 +1525,43 @@ mod tests {
         assert_eq!(handle_line("RERANKGET\t1", &data, &mut session), "OK\tNONE\n");
         let mut other = Session::new();
         assert_eq!(handle_line("RERANKGET\t2", &data, &mut other), "OK\tNONE\n");
+    }
+
+    /// RERANK を送り、DONE になるまで RERANKGET を送り続けて DONE の候補の欄を返す
+    fn rerank_done(line: &str, data: &EngineData, session: &mut Session) -> String {
+        let response = handle_line(line, data, session);
+        let id = response.trim_end().strip_prefix("OK\t").expect("ID の応答").to_string();
+        assert_ne!(id, "0", "RERANK が受け付けられない");
+        let started = Instant::now();
+        loop {
+            let response = handle_line(&format!("RERANKGET\t{id}"), data, session);
+            if response != "OK\tPENDING\n" {
+                return response.strip_prefix("OK\tDONE\t").expect("DONE の応答").to_string();
+            }
+            assert!(started.elapsed().as_secs() < 5, "DONE にならない");
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn rerankの補正の候補は種類が付き位置が変わらない() {
+        let data = typo_data();
+        data.config.lock().unwrap().llm = true;
+        data.llm.configure(true, config::LlmBackend::Cpu);
+        llm::tests::wait_ready(&data.llm);
+        let mut session = Session::new();
+        let nbest = handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds", &data);
+        let fields: Vec<&str> = nbest.strip_prefix("OK\t").unwrap().trim_end().split('\t').collect();
+        let position = fields.iter().position(|f| f.ends_with("\x1dtypo")).expect("補正の候補");
+
+        let body = rerank_done("RERANK\t\t\tよろしくおねぎあします\tkinds", &data, &mut session);
+        let reranked: Vec<&str> = body.trim_end().split('\t').collect();
+        assert_ne!(reranked, fields, "並べ替えで並びが変わっていない");
+        assert_eq!(reranked[position], fields[position]);
+        assert_eq!(body.matches(KIND_SEPARATOR).count(), 1, "{body}");
+        // kinds の無い RERANK の結果には種類を付けない
+        let body = rerank_done("RERANK\t\t\tよろしくおねぎあします", &data, &mut session);
+        assert!(!body.contains(KIND_SEPARATOR), "{body}");
     }
 
     /// ASCIISTART のテスト用の英単語辞書 (1〜2文字の語も入れて、短い英字区間を候補にしないことを確かめる)

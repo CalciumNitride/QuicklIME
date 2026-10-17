@@ -413,7 +413,7 @@ impl Drop for LlmManager {
 }
 
 fn clone_candidate(c: &SentenceCandidate) -> SentenceCandidate {
-    SentenceCandidate { segments: c.segments.clone(), protected: c.protected }
+    SentenceCandidate { segments: c.segments.clone(), protected: c.protected, typo: c.typo }
 }
 
 /// 子プロセスを止めたときに、待っている依頼を失敗にする (RERANKGET は NONE になる)
@@ -628,7 +628,7 @@ pub mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     pub fn candidate(surface: &str, protected: bool) -> SentenceCandidate {
-        SentenceCandidate { segments: vec![("よみ".to_string(), surface.to_string())], protected }
+        SentenceCandidate { segments: vec![("よみ".to_string(), surface.to_string())], protected, typo: false }
     }
 
     fn surfaces(candidates: &[SentenceCandidate]) -> Vec<String> {

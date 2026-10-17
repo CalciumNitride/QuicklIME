@@ -1158,9 +1158,12 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     const size_t readingLength = head ? item.reading.size() : kana.size();
 
     BarAdoption adoption;
+    // 補正の候補は打ち間違えた読みで学習データを汚さないよう学習を送らない (前文脈・記憶は同じ)
     switch (item.kind) {
     case BarKind::Whole:
-        adoption.learn = SentenceLearnEntries(item.segments);
+        if (!item.typo) {
+            adoption.learn = SentenceLearnEntries(item.segments);
+        }
         if (!item.segments.empty()) {
             adoption.contextReading = item.segments.back().first;
             adoption.contextSurface = item.segments.back().second;
@@ -1172,7 +1175,9 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
         break;
     case BarKind::Prediction:
     case BarKind::Head:
-        adoption.learn.push_back({item.reading, item.surface, contextSurface_});
+        if (!item.typo) {
+            adoption.learn.push_back({item.reading, item.surface, contextSurface_});
+        }
         adoption.contextReading = item.reading;
         adoption.contextSurface = item.surface;
         adoption.segments.push_back({item.reading, item.surface});

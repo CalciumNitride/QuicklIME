@@ -3,6 +3,7 @@
 候補バー (入力中の候補と次の語の予測)、変換キーで出る候補一覧と未完成ローマ字の小窓の見た目は、
 テーマで決まる。組み込みのテーマから選ぶか、組み込みのテーマを土台に、変えたい値だけを書いたテーマファイルを作る。
 変換キーで出る候補一覧は、`layout` によらず縦に積み、種類のタグ (`kind_tag`) は出さない。
+ただし補正の候補 (打ち間違いを 1 打直した読みで変換した候補) には、`kind_tag` によらず種類のタグ「補正」を出す。
 
 ## テーマの選び方
 
@@ -71,7 +72,7 @@ dark.background	#101014EE
 | `selection` | `fill` / `soft` / `text` | `fill` | 選択中の候補の強調。`fill` はアクセント色で塗って文字を `selected_text` に、`soft` はアクセント色を薄く敷いて文字をアクセント色に、`text` は文字だけをアクセント色の太字にする |
 | `border` | `on` / `off` | `on` | パネルの外周の縁 |
 | `shadow` | `on` / `off` | `on` | パネルの影 |
-| `kind_tag` | `on` / `off` | `off` | 候補の種類のタグ (英字・変換・予測・文節・次の語)。`layout column` のときだけ効く |
+| `kind_tag` | `on` / `off` | `off` | 候補の種類のタグ (英字・変換・補正・予測・文節・次の語)。`layout column` のときだけ効く |
 | `text_shadow` | `on` / `off` | `off` | 文字の下に薄い影 (ダークでは黒、ライトでは白) を敷き、下の背景によらず読めるようにする |
 | `caret_marker` | `off` / `pointer` / `triangle` | `triangle` | 文書のキャレットの位置を示す印 (下の「キャレットの印」) |
 
@@ -81,6 +82,7 @@ dark.background	#101014EE
   `layout column` では、未選択の行は背景を持たず、選択中の行だけを `selection` に従って強調する
 - `underline` で `selection fill` / `soft` のときは、下線の色だけがアクセント色になる
 - 次の語の予測の候補は、`layout row` の `pill` / `rounded` では `next_word` 色の縁が付く
+- 補正の候補は、`layout row` の `pill` / `rounded` では `typo` 色の縁が付く
 
 ### 寸法
 
@@ -130,6 +132,7 @@ f によらない画素数。
 | `accent` | 選択中の候補・入力中のかなの下線・キャレット | `#7DC7B0` | `#2A7D66` |
 | `selected_text` | `selection fill` の選択中の候補の文字と番号 | `#2D3437` | `#FFFFFF` |
 | `next_word` | 次の語の予測の候補の縁と「次の語」ラベル | `#E3B873` | `#A8741F` |
+| `typo` | 補正の候補の縁 | `#E58F8F` | `#B5484A` |
 | `shadow` | 影 (AA は重なったところの最大の不透明度) | `#00000073` | `#00000047` |
 | `blur_tint` | ぼかし (`blur on`) の上に重ねる色 | `#2D343799` | `#FAFBF7B3` |
 | `scrim` | `ghost` のにじみの色 (内側はこの濃さのまま、外へ向かって透明になる) | `#000000BF` | `#FFFFFFE6` |
@@ -138,6 +141,7 @@ f によらない画素数。
 | `tag_prediction` | 種類のタグ「予測」の文字の色 | `#9AA5A3` | `#6B7573` |
 | `tag_partial` | 種類のタグ「文節」の文字の色 | `#C08CF0` | `#8A4FC8` |
 | `tag_next_word` | 種類のタグ「次の語」の文字の色 | `#E3B873` | `#A8741F` |
+| `tag_typo` | 種類のタグ「補正」の文字の色 | `#E58F8F` | `#B5484A` |
 | `caret_marker` | `caret_marker triangle` の三角の色 | `accent` と同じ | `accent` と同じ |
 
 - 種類のタグの背景は、文字の色を不透明度 0.16 で敷く

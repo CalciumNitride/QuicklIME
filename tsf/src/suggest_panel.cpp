@@ -197,6 +197,8 @@ const wchar_t* KindTagLabel(SuggestPanel::ItemKind kind)
         return L"文節";
     case SuggestPanel::ItemKind::NextWord:
         return L"次の語";
+    case SuggestPanel::ItemKind::Typo:
+        return L"補正";
     default:
         return L"変換";
     }
@@ -213,6 +215,8 @@ const PanelColor& KindTagColor(const PanelTheme& theme, SuggestPanel::ItemKind k
         return theme.tagPartial;
     case SuggestPanel::ItemKind::NextWord:
         return theme.tagNextWord;
+    case SuggestPanel::ItemKind::Typo:
+        return theme.tagTypo;
     default:
         return theme.tagConversion;
     }
@@ -1025,7 +1029,8 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
 }
 
 size_t SuggestPanel::ShowConversion(const Placement& placement,
-                                    const std::vector<std::wstring>& candidates, size_t selection,
+                                    const std::vector<std::wstring>& candidates,
+                                    const std::vector<bool>& typo, size_t selection,
                                     const InputLine* input)
 {
     if (textFormat_ == nullptr ||
@@ -1079,15 +1084,22 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     const size_t count = (std::min)(begin + pageSize, total) - begin;
 
     std::vector<std::wstring> texts;
+    std::vector<ItemKind> kinds;
     std::vector<float> widths;  // 切り詰めずに出したときの行の幅
     for (size_t i = begin; i < begin + count; ++i) {
+        const ItemKind kind = i < typo.size() && typo[i] ? ItemKind::Typo : ItemKind::Conversion;
         float textWidth = TextWidth(candidates[i], textFormat_);
         if (theme_.selection == SelectionStyle::Text) {
             // 選択すると太字になるので、選択によって幅が変わらないよう太字の幅も見込む
             textWidth = (std::max)(textWidth, TextWidth(candidates[i], boldFormat_));
         }
-        widths.push_back(m.chipPadding * 2 + m.badgeSlot + textWidth);
+        float width = m.chipPadding * 2 + m.badgeSlot + textWidth;
+        if (kind == ItemKind::Typo) {
+            width += m.tagGap + TextWidth(KindTagLabel(kind), tagFormat_) + m.tagPadding * 2;
+        }
+        widths.push_back(width);
         texts.push_back(candidates[i]);
+        kinds.push_back(kind);
     }
     std::wstring pageText;
     if (pages) {
@@ -1137,8 +1149,8 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     conversion_ = true;
     itemTexts_ = std::move(texts);
     items_.clear();
-    for (const std::wstring& text : itemTexts_) {
-        items_.push_back({text, ItemKind::Conversion});
+    for (size_t i = 0; i < itemTexts_.size(); ++i) {
+        items_.push_back({itemTexts_[i], kinds[i]});
     }
     const float padding = static_cast<float>(m.padding);
     const float contentWidth = static_cast<float>(width) - padding * 2;
@@ -1969,9 +1981,10 @@ void SuggestPanel::DrawItem(size_t index, float originX, float originY)
             brush_->SetColor(ToD2D(fill));
             drawTarget_->FillRoundedRectangle(D2D1::RoundedRect(rect, radius, radius), brush_);
         }
-        if (!column && items_[index].kind == ItemKind::NextWord) {
+        const ItemKind itemKind = items_[index].kind;
+        if (!column && (itemKind == ItemKind::NextWord || itemKind == ItemKind::Typo)) {
             const float inner = (std::max)(0.0f, radius - half);
-            brush_->SetColor(ToD2D(theme_.nextWord));
+            brush_->SetColor(ToD2D(itemKind == ItemKind::Typo ? theme_.typo : theme_.nextWord));
             drawTarget_->DrawRoundedRectangle(
                 D2D1::RoundedRect(D2D1::RectF(rect.left + half, rect.top + half,
                                               rect.right - half, rect.bottom - half),
@@ -2025,9 +2038,10 @@ void SuggestPanel::DrawItem(size_t index, float originX, float originY)
     float textRight = rect.right;
     if (column) {
         textRight = rect.right - m.chipPadding;
-        // 変換の候補はすべて同じ種類なので、種類のタグは出さない
-        if (theme_.kindTag && !conversion_) {
-            const ItemKind kind = items_[index].kind;
+        // 変換の候補一覧はほぼすべて同じ種類なので種類のタグを出さない。ただし補正の候補は、
+        // 縦に積むので縁では目立たずほかに見分ける方法が無いため、kind_tag によらず出す
+        const ItemKind kind = items_[index].kind;
+        if (conversion_ ? kind == ItemKind::Typo : theme_.kindTag) {
             const std::wstring tag = KindTagLabel(kind);
             const PanelColor& tagColor = KindTagColor(theme_, kind);
             const float tagWidth = TextWidth(tag, tagFormat_) + m.tagPadding * 2;

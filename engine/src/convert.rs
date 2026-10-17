@@ -6,12 +6,14 @@
 // 全文一括の候補 (candidates) も互換のため残している。
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use crate::dict::Dictionary;
 use crate::learn::{LearningStore, MIN_BOUNDARY_CHARS};
 use crate::matrix::ConnectionMatrix;
+use crate::number;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
+use crate::typo;
 use crate::userdict::UserDict;
 
 /// 辞書由来の候補の最大数 (文全体・文節共通)。
@@ -60,6 +62,24 @@ const MAX_NBEST_EXPANSIONS: usize = 3000;
 /// 末尾の1文節の同音異義語だけで N-best の枠が埋まるのを防ぐ
 const MAX_NBEST_PER_CLASS: usize = 4;
 
+/// 補正の語 (1 打の誤りを戻した読みの辞書の語。docs/design/typo-conversion.md) の単語コストに足す量。
+/// TYPO_SHOW・TYPO_TOP とともに、打ち間違いの無い文で補正の候補が先頭にも 2 番目にも出ないよう
+/// examples/typo_eval.rs の計測で決めた (設計書の「計測の結果」)。補正の経路はどれも補正の語を
+/// 1 つだけ通るので、この値は補正の経路どうしの順位を変えず、Δ だけを TYPO_COST / 文字数 下げる
+/// (短い読みほど補正の候補が出にくい)
+const TYPO_COST: i32 = 4000;
+
+/// 補正の候補を出す Δ (通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で
+/// 割った値) の下限
+const TYPO_SHOW: f64 = -50.0;
+
+/// 補正の候補を先頭に置く Δ の下限
+const TYPO_TOP: f64 = 0.0;
+
+/// 補正の語を、打ったかなの区間ごとに入れる上限の語数。補正した読みは数が多く、短い語
+/// (1 文字の助詞など) が同じ区間に積み重なってラティスが膨らむため
+const MAX_TYPO_WORDS: usize = 6;
+
 /// 変換結果の1文節
 pub struct Segment {
     /// この文節の読み (ひらがな)
@@ -80,8 +100,11 @@ struct PathWord {
 pub struct SentenceCandidate {
     pub segments: Vec<(String, String)>,
     /// LLM の並べ替えで位置を動かさない候補 (読み全体の学習表記、学習で表記が変わった 1-best、
-    /// ユーザ辞書の語を含む候補、英字を含む候補。docs/design/llm-rerank.md)
+    /// ユーザ辞書の語を含む候補、英字を含む候補、数字の書き方の候補、補正の候補。
+    /// docs/design/llm-rerank.md)
     pub protected: bool,
+    /// 1 打の誤りを戻した読みで変換した補正の候補 (docs/design/typo-conversion.md)
+    pub typo: bool,
 }
 
 impl SentenceCandidate {
@@ -446,6 +469,15 @@ fn segment_from_group(
         }
     }
 
+    // 数字で打った数の別の書き方 (千二百三十四円・1,234円 など)。書き方は5通りまでで
+    // 助数詞の入れ替え候補に押し出されないよう、MAX_DICT_CANDIDATES の枠には数えない
+    for form in number::forms(&group[0].reading).into_iter().flatten() {
+        let candidate = form + &rest;
+        if !result.contains(&candidate) {
+            result.push(candidate);
+        }
+    }
+
     // 単漢字候補 (「あられ」→ 霰 など)。記号と同じ理由で MAX_DICT_CANDIDATES の枠に数えない
     // (「ひょう」のように単漢字が数十字ある読みで通常語が押し出されるため)
     for kanji in dict.lookup_single_kanji(&reading) {
@@ -554,7 +586,9 @@ pub fn convert_sentence(
 
 /// かな文字列に対する入力全体の候補 (CONVNBEST) を返す。ctx は直前に確定した文節。
 /// 並び: 読み全体の学習表記 → 文節ごとの学習を当てた 1-best → N-best の残り (コスト順)
-///       → 短縮よみ・読み全体の辞書完全一致 → 単漢字・記号・カタカナ・ひらがな。
+///       → 1-best の数を書き方ごとにそろえた候補 → 短縮よみ・読み全体の辞書完全一致
+///       → 単漢字・記号・カタカナ・ひらがな。
+/// typo なら補正の候補 (docs/design/typo-conversion.md) を 1-best の前か直後に 1 件足す。
 /// 表記が同じ候補は先勝ちで除く
 pub fn convert_nbest(
     kana: &str,
@@ -564,10 +598,11 @@ pub fn convert_nbest(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     learning: &LearningStore,
+    typo: bool,
 ) -> Vec<SentenceCandidate> {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
     let Some(lattice) =
-        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning))
+        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning), typo)
     else {
         return Vec::new();
     };
@@ -575,8 +610,8 @@ pub fn convert_nbest(
     let mut result: Vec<SentenceCandidate> = Vec::new();
     let mut surfaces: Vec<String> = Vec::new();
     // protected は学習・ユーザ辞書語の印。英字を含むかは表記から決まるのでここで足す
-    let mut add = |segments: Vec<(String, String)>, protected: bool| -> bool {
-        let mut candidate = SentenceCandidate { segments, protected };
+    let mut add = |segments: Vec<(String, String)>, protected: bool, typo: bool| -> bool {
+        let mut candidate = SentenceCandidate { segments, protected, typo };
         let surface = candidate.surface();
         if surfaces.contains(&surface) {
             return false;
@@ -588,9 +623,17 @@ pub fn convert_nbest(
     };
     let whole = |surface: &str| vec![(kana.to_string(), surface.to_string())];
 
-    if let Some(learned) = learning.get(kana) {
-        add(whole(learned), true);
+    let learned_whole = learning.get(kana);
+    if let Some(learned) = learned_whole {
+        add(whole(learned), true, false);
     }
+    // Δ = 通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で割った値
+    let chars = kana.chars().count() as f64;
+    let corrected = if typo { typo_best(&lattice, matrix, functional) } else { None }
+        .map(|(gain, segments)| (gain as f64 / chars, segments))
+        .filter(|(delta, _)| *delta >= TYPO_SHOW);
+    // 1-best の文節と、その元の単語列 (文節ごと)。数字の書き方の候補に使う
+    let mut best_segments: Option<(Vec<(String, String)>, Vec<Vec<PathWord>>)> = None;
     if let Some(indices) = best_path(&lattice, matrix) {
         let words = lattice.path_words(&indices);
         let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
@@ -602,12 +645,58 @@ pub fn convert_nbest(
         let segments = segments_from_path(words, ctx, dict, user, functional, learning);
         let segments: Vec<(String, String)> =
             segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect();
-        let learned = segments.iter().map(|(_, surface)| surface.as_str()).collect::<String>() != raw;
-        add(segments, learned || has_user);
+        let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect::<String>();
+        let learned = surface != raw;
+        // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
+        let protected = learned || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
+        let top = learned_whole.is_none() && !protected;
+        match corrected {
+            Some((delta, typo_segments)) if top && delta >= TYPO_TOP => {
+                add(typo_segments, true, true);
+                add(segments.clone(), protected, false);
+            }
+            Some((_, typo_segments)) => {
+                add(segments.clone(), protected, false);
+                add(typo_segments, true, true);
+            }
+            None => {
+                add(segments.clone(), protected, false);
+            }
+        }
+        best_segments = Some((segments, group_path(lattice.path_words(&indices), functional)));
     }
     for (_, path, words) in nbest_paths(&lattice, matrix, functional) {
         let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
-        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user);
+        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user, false);
+    }
+
+    // 数字の読みに対する漢数字などは LLM の尤度が高く出やすく、打ったとおりの数より
+    // 上へ並べ替えられないよう保護する
+    if let Some((segments, groups)) = &best_segments {
+        let forms: Vec<[Option<String>; number::FORM_COUNT]> =
+            groups.iter().map(|group| number::forms(&group[0].reading)).collect();
+        for kind in 0..number::FORM_COUNT {
+            if forms.iter().all(|f| f[kind].is_none()) {
+                continue;
+            }
+            let replaced = segments
+                .iter()
+                .zip(groups)
+                .zip(&forms)
+                .map(|(((reading, surface), group), f)| {
+                    let Some(form) = &f[kind] else {
+                        return (reading.clone(), surface.clone());
+                    };
+                    // 文節の表記が学習で数字ごと変わっていれば、続く部分は経路の表記を使う
+                    let tail = surface.strip_prefix(group[0].surface.as_str()).map_or_else(
+                        || group[1..].iter().map(|w| w.surface.as_str()).collect(),
+                        str::to_string,
+                    );
+                    (reading.clone(), form.clone() + &tail)
+                })
+                .collect();
+            add(replaced, true, false);
+        }
     }
 
     // 縦の候補リストで、読みそのものの別表記を選べるようにする (CONVERT の並びと同じ)
@@ -620,18 +709,18 @@ pub fn convert_nbest(
         if dict_count >= MAX_DICT_CANDIDATES {
             break;
         }
-        if add(whole(surface), from_user) {
+        if add(whole(surface), from_user, false) {
             dict_count += 1;
         }
     }
     for kanji in dict.lookup_single_kanji(kana) {
-        add(whole(kanji), false);
+        add(whole(kanji), false, false);
     }
     for symbol in dict.lookup_symbols(kana) {
-        add(whole(symbol), false);
+        add(whole(symbol), false, false);
     }
-    add(whole(&to_katakana(kana)), false);
-    add(whole(kana), false);
+    add(whole(&to_katakana(kana)), false, false);
+    add(whole(kana), false, false);
     result
 }
 
@@ -806,6 +895,14 @@ struct Node {
     best_cost: i64,
     /// 最小コスト経路での直前ノード (nodes 内の index)
     best_prev: usize,
+    /// 補正の語 (読みは打ったかなの区間、表記は補正した読みの辞書の語)。
+    /// 補正の語を通っていない状態 (best_cost) では到達できない
+    typo: bool,
+    /// 補正の語を 1 つ通った状態での、BOS からこのノードまでの最小コスト
+    typo_cost: i64,
+    /// typo_cost の経路での直前ノード。このノードが補正の語なら、直前ノードは補正の語を
+    /// 通っていない状態 (best_prev の側) にある
+    typo_prev: usize,
 }
 
 /// 前向きの Viterbi まで済ませたラティス
@@ -894,7 +991,7 @@ fn viterbi_path(
     learning: Option<&LearningStore>,
 ) -> Option<Vec<PathWord>> {
     let mut lattice =
-        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning)?;
+        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning, false)?;
     let indices = best_path(&lattice, matrix)?;
     Some(
         indices
@@ -910,7 +1007,8 @@ fn viterbi_path(
 }
 
 /// ラティスを構築し、前向きの Viterbi で各ノードの最小コストを求める。
-/// 引数は viterbi_path と同じ。入力が空なら None
+/// typo 以外の引数は viterbi_path と同じ。typo なら補正の語のノードを足し、補正の語を 1 つ
+/// 通った状態の最小コストも求める。入力が空なら None
 fn build_lattice(
     kana: &str,
     dict: &Dictionary,
@@ -919,6 +1017,7 @@ fn build_lattice(
     functional: &FunctionalIds,
     left_context_id: u16,
     learning: Option<&LearningStore>,
+    typo: bool,
 ) -> Option<Lattice> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
@@ -939,6 +1038,9 @@ fn build_lattice(
         penalty: 0,
         best_cost: 0,
         best_prev: 0,
+        typo: false,
+        typo_cost: i64::MAX,
+        typo_prev: 0,
     }];
 
     // ending_at[p] = 位置 p で終わるノードの index 一覧 (BOS は位置 0 で終わる扱い)
@@ -976,6 +1078,9 @@ fn build_lattice(
                     penalty: 0,
                     best_cost: i64::MAX,
                     best_prev: 0,
+                    typo: false,
+                    typo_cost: i64::MAX,
+                    typo_prev: 0,
                 });
                 ending_at[end].push(nodes.len() - 1);
             }
@@ -996,6 +1101,9 @@ fn build_lattice(
                 penalty: 0,
                 best_cost: i64::MAX,
                 best_prev: 0,
+                typo: false,
+                typo_cost: i64::MAX,
+                typo_prev: 0,
             });
             ending_at[end].push(nodes.len() - 1);
         }
@@ -1016,6 +1124,9 @@ fn build_lattice(
                     penalty: 0,
                     best_cost: i64::MAX,
                     best_prev: 0,
+                    typo: false,
+                    typo_cost: i64::MAX,
+                    typo_prev: 0,
                 });
                 ending_at[end].push(nodes.len() - 1);
             }
@@ -1046,6 +1157,9 @@ fn build_lattice(
             penalty: 0,
             best_cost: i64::MAX,
             best_prev: 0,
+            typo: false,
+            typo_cost: i64::MAX,
+            typo_prev: 0,
         });
         ending_at[end].push(nodes.len() - 1);
         if let Some(form) = form {
@@ -1059,9 +1173,16 @@ fn build_lattice(
                 penalty: 0,
                 best_cost: i64::MAX,
                 best_prev: 0,
+                typo: false,
+                typo_cost: i64::MAX,
+                typo_prev: 0,
             });
             ending_at[end].push(nodes.len() - 1);
         }
+    }
+    // 補正の語は通常の語の後ろに足す (ending_at の並びの先頭側は通常の語のまま)
+    if typo {
+        add_typo_nodes(kana, &chars, &inside_ascii, dict, user, &mut nodes, &mut ending_at);
     }
 
     // Viterbi: ノードを開始位置順に処理し、直前ノード群から最小コストを選ぶ。
@@ -1081,14 +1202,29 @@ fn build_lattice(
         };
         let mut best_cost = i64::MAX;
         let mut best_prev = 0;
+        // 補正の語を 1 つ通った状態。補正の語へは通っていない状態からだけ入り、
+        // 通常の語へは通った状態から進む (補正の語を 2 つ以上通る経路は作らない)
+        let mut typo_cost = i64::MAX;
+        let mut typo_prev = 0;
         for &p in &ending_at[nodes[i].start] {
+            let step = i64::from(matrix.get(nodes[p].right_id, nodes[i].left_id))
+                + i64::from(nodes[i].word_cost)
+                + penalty;
+            if nodes[i].typo {
+                if nodes[p].best_cost != i64::MAX && nodes[p].best_cost + step < typo_cost {
+                    typo_cost = nodes[p].best_cost + step;
+                    typo_prev = p;
+                }
+                continue;
+            }
+            if nodes[p].typo_cost != i64::MAX && nodes[p].typo_cost + step < typo_cost {
+                typo_cost = nodes[p].typo_cost + step;
+                typo_prev = p;
+            }
             if nodes[p].best_cost == i64::MAX {
                 continue; // 到達不能な経路
             }
-            let cost = nodes[p].best_cost
-                + i64::from(matrix.get(nodes[p].right_id, nodes[i].left_id))
-                + i64::from(nodes[i].word_cost)
-                + penalty;
+            let cost = nodes[p].best_cost + step;
             if cost < best_cost {
                 best_cost = cost;
                 best_prev = p;
@@ -1097,38 +1233,173 @@ fn build_lattice(
         nodes[i].penalty = penalty;
         nodes[i].best_cost = best_cost;
         nodes[i].best_prev = best_prev;
+        nodes[i].typo_cost = typo_cost;
+        nodes[i].typo_prev = typo_prev;
     }
     Some(Lattice { nodes, ending_at })
+}
+
+/// 打ったかな kana (文字の列は chars) の 1 打の誤りを戻した読み (typo.rs) ごとに、変わった所を
+/// 覆う辞書の語 (システム辞書・ユーザ辞書・インポート辞書) を、打ったかなの対応する区間の補正の語にして足す。
+/// 補正後の読みの区間 [s, e2) の語は、打ったかなの区間 [s, e2 − (補正後の変わった所の終わり −
+/// 打ったかなの変わった所の終わり)) に置く
+fn add_typo_nodes<'a>(
+    kana: &str,
+    chars: &[char],
+    inside_ascii: &[bool],
+    dict: &'a Dictionary,
+    user: &'a UserDict,
+    nodes: &mut Vec<Node>,
+    ending_at: &mut [Vec<usize>],
+) {
+    // 打ったかなの区間 → (単語コスト, 表記, left_id, right_id)。区間の並びを毎回同じにして、
+    // 同じコストの経路の選び方を一定にする
+    let mut words: BTreeMap<(usize, usize), Vec<(i16, &'a str, u16, u16)>> = BTreeMap::new();
+    for correction in typo::corrections(kana) {
+        let fixed: Vec<char> = correction.reading.chars().collect();
+        let first = correction.corrected_end.saturating_sub(MAX_READING_CHARS);
+        for s in first..=correction.start {
+            let mut hit = |len: usize, cost: i16, surface: &'a str, left: u16, right: u16| {
+                let end2 = s + len;
+                if end2 < correction.corrected_end {
+                    return;
+                }
+                let end = end2 - correction.corrected_end + correction.typed_end;
+                if end <= s || inside_ascii[s] || inside_ascii[end] {
+                    return;
+                }
+                words.entry((s, end)).or_default().push((cost, surface, left, right));
+            };
+            for (len, entries) in dict.common_prefix_search(&fixed[s..], MAX_READING_CHARS) {
+                for e in entries {
+                    hit(len, e.cost, &e.surface, e.left_id, e.right_id);
+                }
+            }
+            for (len, w) in user.common_prefix_words(&fixed[s..]) {
+                hit(len, w.cost, &w.surface, w.left_id, w.right_id);
+            }
+            for (len, entries) in user.imported_common_prefix(&fixed[s..], MAX_READING_CHARS) {
+                for e in entries {
+                    hit(len, e.cost, &e.surface, e.left_id, e.right_id);
+                }
+            }
+        }
+    }
+    for ((start, end), mut list) in words {
+        // 同じ語を複数の補正が覆うときは 1 つにする (安定ソートなのでコストの安いものが残る)
+        list.sort_by_key(|&(cost, _, _, _)| cost);
+        let mut kept: Vec<(i16, &'a str, u16, u16)> = Vec::new();
+        for word in list {
+            if kept.len() >= MAX_TYPO_WORDS {
+                break;
+            }
+            if !kept.iter().any(|k| (k.1, k.2, k.3) == (word.1, word.2, word.3)) {
+                kept.push(word);
+            }
+        }
+        let reading: String = chars[start..end].iter().collect();
+        for (cost, surface, left_id, right_id) in kept {
+            nodes.push(Node {
+                start,
+                reading: reading.clone(),
+                left_id,
+                right_id,
+                word_cost: i32::from(cost) + TYPO_COST,
+                surface: surface.to_string(),
+                penalty: 0,
+                best_cost: i64::MAX,
+                best_prev: 0,
+                typo: true,
+                typo_cost: i64::MAX,
+                typo_prev: 0,
+            });
+            ending_at[end].push(nodes.len() - 1);
+        }
+    }
 }
 
 /// 前向きの結果から最小コスト経路のノード index 列 (BOS を含まない) を返す
 fn best_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<Vec<usize>> {
     let nodes = &lattice.nodes;
-    let n = lattice.ending_at.len() - 1;
-
-    // EOS: 位置 n で終わるノードから文末への接続コストを含めて最良を選ぶ
-    let mut best_end: Option<usize> = None;
-    let mut best_end_cost = i64::MAX;
-    for &i in &lattice.ending_at[n] {
-        if nodes[i].best_cost == i64::MAX {
-            continue;
-        }
-        let cost = nodes[i].best_cost + lattice.eos_cost(i, matrix);
-        if cost < best_end_cost {
-            best_end_cost = cost;
-            best_end = Some(i);
-        }
-    }
-
     // 経路を逆順にたどって単語列を作る
     let mut indices: Vec<usize> = Vec::new();
-    let mut cursor = best_end?;
+    let mut cursor = best_end(lattice, matrix, false)?.1;
     while cursor != 0 {
         indices.push(cursor);
         cursor = nodes[cursor].best_prev;
     }
     indices.reverse();
     Some(indices)
+}
+
+/// EOS: 位置 n で終わるノードから文末への接続コストを含めて最良を選び、(総コスト, ノード) を返す。
+/// typo なら補正の語を 1 つ通った状態で選ぶ
+fn best_end(lattice: &Lattice, matrix: &ConnectionMatrix, typo: bool) -> Option<(i64, usize)> {
+    let nodes = &lattice.nodes;
+    let n = lattice.ending_at.len() - 1;
+    let mut best: Option<(i64, usize)> = None;
+    for &i in &lattice.ending_at[n] {
+        let cost = if typo { nodes[i].typo_cost } else { nodes[i].best_cost };
+        if cost == i64::MAX {
+            continue;
+        }
+        let cost = cost + lattice.eos_cost(i, matrix);
+        if best.is_none_or(|(c, _)| cost < c) {
+            best = Some((cost, i));
+        }
+    }
+    best
+}
+
+/// 補正の語を 1 つ通る最小コスト経路の (総コスト, ノード index 列 (BOS を含まない))
+fn typo_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<(i64, Vec<usize>)> {
+    let nodes = &lattice.nodes;
+    let (cost, end) = best_end(lattice, matrix, true)?;
+    let mut indices: Vec<usize> = Vec::new();
+    let mut cursor = end;
+    // 補正の語に着くまでは通った状態の直前ノード、その先は通っていない状態の直前ノードをたどる
+    let mut passed = true;
+    while cursor != 0 {
+        indices.push(cursor);
+        if passed {
+            passed = !nodes[cursor].typo;
+            cursor = nodes[cursor].typo_prev;
+        } else {
+            cursor = nodes[cursor].best_prev;
+        }
+    }
+    indices.reverse();
+    Some((cost, indices))
+}
+
+/// 補正の最良経路の、通常の最良経路とのコストの差 (通常 − 補正。TYPO_COST を含む) と、
+/// N-best と同じ規則で区切った文節 (読みは打ったかなの区間)。補正の語を通る経路が無ければ None
+fn typo_best(
+    lattice: &Lattice,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Option<(i64, Vec<(String, String)>)> {
+    let (normal, _) = best_end(lattice, matrix, false)?;
+    let (cost, indices) = typo_path(lattice, matrix)?;
+    let (segments, _) = path_segments(lattice.path_words(&indices), functional);
+    Some((normal - cost, segments.into_iter().map(|s| (s.reading, s.surface)).collect()))
+}
+
+/// 計測用 (examples/typo_eval.rs): 補正の最良経路の、通常の最良経路とのコストの差
+/// (通常 − 補正。TYPO_COST を含めない) と表記。補正の語を通る経路が無ければ None
+#[allow(dead_code)]
+pub fn typo_gain(
+    kana: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> Option<(i64, String)> {
+    let lattice = build_lattice(kana, dict, user, matrix, functional, 0, Some(learning), true)?;
+    let (gain, segments) = typo_best(&lattice, matrix, functional)?;
+    let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect();
+    Some((gain + i64::from(TYPO_COST), surface))
 }
 
 /// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
@@ -1282,7 +1553,7 @@ mod tests {
 
         let got = convert_nbest(
             "きょう", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
-            &LearningStore::in_memory());
+            &LearningStore::in_memory(), false);
         assert_eq!(surfaces_of(&got), ["今日", "京", "今", "凶", "↑", "キョウ", "きょう"]);
         assert!(got.iter().all(|c| !c.protected));
     }
@@ -1330,7 +1601,7 @@ mod tests {
         let nbest = |dict: &Dictionary| {
             surfaces_of(&convert_nbest(
                 "かん", None, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
-                &LearningStore::in_memory()))
+                &LearningStore::in_memory(), false))
         };
         let without = nbest(&build(false));
         let with = nbest(&build(true));
@@ -1572,7 +1843,7 @@ mod tests {
 
         let got = convert_nbest(
             "きょうはgithubでさぎょう", None, &mixed_dict(), &no_user(),
-            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory(), false);
         let surfaces = surfaces_of(&got);
         assert_eq!(surfaces[0], "今日はgithubで作業");
         // 英字の連続の一部だけに一致する語 (UB・ハブ) で割れた候補は出ない
@@ -1591,7 +1862,7 @@ mod tests {
         let user = user_with_name_forms();
         let got = convert_nbest(
             "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
-            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory(), false);
         let surfaces = surfaces_of(&got);
         assert_eq!(surfaces[0], "今日はGitHubで作業");
         assert!(surfaces.contains(&"今日はgithubで作業".to_string()), "{surfaces:?}");
@@ -1605,7 +1876,7 @@ mod tests {
         // 英字だけの読みも補正した表記が先頭
         let got = convert_nbest(
             "github", None, &mixed_dict(), &user, &ConnectionMatrix::empty(),
-            &sample_functional(), &LearningStore::in_memory());
+            &sample_functional(), &LearningStore::in_memory(), false);
         let surfaces = surfaces_of(&got);
         assert_eq!(surfaces[0], "GitHub");
         assert!(surfaces.contains(&"github".to_string()), "{surfaces:?}");
@@ -1613,7 +1884,7 @@ mod tests {
         // 打ったとおりが正しい表記なら、ノードを足さない (候補は1つの表記だけ)
         let got = convert_nbest(
             "GitHub", None, &mixed_dict(), &user, &ConnectionMatrix::empty(),
-            &sample_functional(), &LearningStore::in_memory());
+            &sample_functional(), &LearningStore::in_memory(), false);
         assert_eq!(surfaces_of(&got)[0], "GitHub");
         assert!(!surfaces_of(&got).contains(&"github".to_string()));
     }
@@ -1628,7 +1899,7 @@ mod tests {
         learning.record("さぎょう", "作業");
         let got = convert_nbest(
             "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
-            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+            &ConnectionMatrix::empty(), &sample_functional(), &learning, false);
         assert_eq!(surfaces_of(&got)[0], "今日はgithubで作業");
     }
 
@@ -1641,7 +1912,7 @@ mod tests {
         // 連続全体にちょうど一致する辞書語は残る
         let got = convert_nbest(
             "hub", None, &mixed_dict(), &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &LearningStore::in_memory());
+            &sample_functional(), &LearningStore::in_memory(), false);
         assert!(surfaces_of(&got).contains(&"ハブ".to_string()));
     }
 
@@ -1967,6 +2238,61 @@ mod tests {
         assert_eq!(best, vec!["1.5時"]);
     }
 
+    /// 0〜9 と「えん」(円・縁)・「と」を持つ辞書
+    fn number_form_dict() -> Dictionary {
+        let mut data = String::new();
+        for d in 0..10 {
+            data.push_str(&format!("{d}\t4\t4\t1900\t{d}\n"));
+        }
+        data.push_str("えん\t5\t5\t100\t円\nえん\t5\t5\t200\t縁\nと\t2\t2\t500\tと\n");
+        let mut dict = Dictionary::empty();
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 数字文節に数字の書き方の候補が助数詞の入れ替えの後ろに出る() {
+        let segments = convert_segments(
+            "1234えん",
+            None,
+            &number_form_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        assert_eq!(
+            segments[0].candidates,
+            vec![
+                "1234円",
+                "1234縁",
+                "千二百三十四円",
+                "一二三四円",
+                "1,234円",
+                "１２３４円",
+                "1234エン",
+                "1234えん",
+            ]
+        );
+    }
+
+    #[test]
+    fn 区切りを含む数字には数字の書き方の候補が出ない() {
+        let segments = convert_segments(
+            "0。5",
+            None,
+            &number_form_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &sample_functional(),
+            &LearningStore::in_memory(),
+        );
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].candidates, vec!["0.5", "0。5"]);
+    }
+
     #[test]
     fn 文節境界を固定すれば数字も分かれる() {
         // Shift+← などでユーザが数字を手動分割した場合はそのまま尊重する
@@ -2184,7 +2510,7 @@ mod tests {
         matrix: &ConnectionMatrix,
         functional: &FunctionalIds,
     ) -> Vec<(i64, String)> {
-        let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None).unwrap();
+        let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None, false).unwrap();
         nbest_paths(&lattice, matrix, functional)
             .into_iter()
             .map(|(cost, segments, _)| {
@@ -2319,7 +2645,7 @@ mod tests {
         learning.record("きょうは", "京は");
         let got = convert_nbest(
             "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(
             got[0].segments,
             vec![("きょうははれです".to_string(), "今日は晴れデス".to_string())]
@@ -2348,7 +2674,7 @@ mod tests {
         learning.record("きょうは", "京は");
         let got = convert_nbest(
             "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         // 読み全体の学習表記と、学習で表記が変わった 1-best は保護する
         assert!(got[0].protected && got[1].protected);
         assert_eq!(got[2].surface(), "今日は晴れです");
@@ -2357,7 +2683,7 @@ mod tests {
         // 学習で表記が変わらなければ 1-best は保護しない
         let got = convert_nbest(
             "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &LearningStore::in_memory());
+            &sample_functional(), &LearningStore::in_memory(), false);
         assert_eq!(got[0].surface(), "今日は晴れです");
         assert!(!got[0].protected);
     }
@@ -2376,7 +2702,7 @@ mod tests {
         user.load_from("はれ\t腫れ\t名詞\n".as_bytes(), &sample_functional());
         let got = convert_nbest(
             "きょうははれ", None, &dict, &user, &ConnectionMatrix::empty(), &sample_functional(),
-            &LearningStore::in_memory());
+            &LearningStore::in_memory(), false);
         let find = |surface: &str| {
             got.iter().find(|c| c.surface() == surface).unwrap_or_else(|| {
                 panic!("{surface} が候補に無い: {:?}", surfaces_of(&got))
@@ -2389,10 +2715,52 @@ mod tests {
     }
 
     #[test]
+    fn 入力全体の候補に1bestの数を書き方ごとにそろえた候補が入る() {
+        let got = convert_nbest(
+            "1234えんと5600えん", None, &number_form_dict(), &no_user(),
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory(), false);
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "1234円と5600円");
+        let expected = [
+            "千二百三十四円と五千六百円",
+            "一二三四円と五六〇〇円",
+            "1,234円と5,600円",
+            "１２３４円と５６００円",
+        ];
+        let start = surfaces.iter().position(|s| s == expected[0]).unwrap_or_else(|| {
+            panic!("数字の書き方の候補が無い: {surfaces:?}")
+        });
+        assert_eq!(&surfaces[start..start + expected.len()], expected);
+        // N-best の後ろ、カタカナ・ひらがなの前
+        assert!(surfaces[..start].contains(&"1234縁と5600円".to_string()), "{surfaces:?}");
+        assert_eq!(surfaces.len(), start + expected.len() + 2, "{surfaces:?}");
+        for candidate in &got[start..start + expected.len()] {
+            assert!(candidate.protected);
+            // 文節は 1-best の文節のまま
+            let readings: Vec<&str> = candidate.segments.iter().map(|(r, _)| r.as_str()).collect();
+            assert_eq!(readings, vec!["1234えんと", "5600えん"]);
+        }
+    }
+
+    #[test]
+    fn 学習で数字の表記が変わった1bestでも数字の書き方の候補が入る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("1234えん", "1,234円");
+        let got = convert_nbest(
+            "1234えん", None, &number_form_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &learning, false);
+        let surfaces = surfaces_of(&got);
+        assert_eq!(surfaces[0], "1,234円");
+        for expected in ["千二百三十四円", "一二三四円", "１２３４円"] {
+            assert!(surfaces.contains(&expected.to_string()), "{expected}: {surfaces:?}");
+        }
+    }
+
+    #[test]
     fn 入力全体の候補に読み全体の辞書完全一致が入る() {
         let got = convert_nbest(
             "にほんご", None, &sample_dict(), &user_with_shortcut("にほんご", "NIHONGO"),
-            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory(), false);
         let surfaces = surfaces_of(&got);
         assert_eq!(surfaces[0], "日本語");
         assert!(surfaces.contains(&"NIHONGO".to_string()), "{surfaces:?}");
@@ -2404,11 +2772,11 @@ mod tests {
         let (dict, matrix) = context_dict_and_matrix();
         let learning = LearningStore::in_memory();
         let got = convert_nbest(
-            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning, false);
         assert_eq!(got[0].surface(), "阿");
         let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
         let got = convert_nbest(
-            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning, false);
         assert_eq!(got[0].surface(), "亜");
     }
 
@@ -2419,5 +2787,128 @@ mod tests {
             "かな", &Dictionary::empty(), &no_user(), &ConnectionMatrix::empty(),
             &FunctionalIds::empty());
         assert_eq!(got, vec!["カナ", "かな"]);
+    }
+
+    /// 補正の候補のテスト用の辞書 (よろしく|お願い|します。ねぎ は打ち間違いの読みの一部に一致する語)
+    fn typo_dict() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "よろしく\t1\t1\t3000\tよろしく\n\
+             おねがい\t1\t1\t3000\tお願い\n\
+             ねぎ\t1\t1\t4000\tネギ\n\
+             します\t3\t3\t1000\tします\n\
+             きょう\t1\t1\t2000\t今日\n\
+             は\t2\t2\t500\tは\n\
+             はれ\t1\t1\t3000\t晴れ\n\
+             です\t3\t3\t1000\tです\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        dict
+    }
+
+    fn typo_nbest(kana: &str, learning: &LearningStore, typo: bool) -> Vec<SentenceCandidate> {
+        convert_nbest(
+            kana, None, &typo_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            learning, typo)
+    }
+
+    #[test]
+    fn 補正の語を足しても通常の1bestとnbestは変わらない() {
+        let dict = typo_dict();
+        let matrix = ConnectionMatrix::empty();
+        let functional = sample_functional();
+        for kana in ["よろしくおねぎあします", "よろしくおねがいします", "きょうははれです", "きょうははれでう"] {
+            let without =
+                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, false).unwrap();
+            let with =
+                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, true).unwrap();
+            assert!(with.nodes.iter().any(|n| n.typo), "{kana}: 補正の語が無い");
+            let surfaces = |lattice: &Lattice| -> Vec<(i64, String)> {
+                nbest_paths(lattice, &matrix, &functional)
+                    .into_iter()
+                    .map(|(cost, segments, _)| (cost, segments.iter().map(|s| s.surface.as_str()).collect()))
+                    .collect()
+            };
+            let best = |lattice: &Lattice| -> Vec<PathWord> {
+                lattice.path_words(&best_path(lattice, &matrix).unwrap())
+            };
+            let joined = |words: Vec<PathWord>| -> String {
+                words.iter().map(|w| w.surface.as_str()).collect()
+            };
+            assert_eq!(joined(best(&without)), joined(best(&with)), "{kana}");
+            assert_eq!(surfaces(&without), surfaces(&with), "{kana}");
+        }
+    }
+
+    #[test]
+    fn 補正の経路は補正の語をちょうど1つ通る() {
+        let dict = typo_dict();
+        let matrix = ConnectionMatrix::empty();
+        let functional = sample_functional();
+        let lattice = build_lattice(
+            "よろしくおねぎあします", &dict, &no_user(), &matrix, &functional, 0, None, true,
+        )
+        .unwrap();
+        let (_, indices) = typo_path(&lattice, &matrix).unwrap();
+        assert_eq!(indices.iter().filter(|&&i| lattice.nodes[i].typo).count(), 1);
+        let words = lattice.path_words(&indices);
+        let surface: String = words.iter().map(|w| w.surface.as_str()).collect();
+        let reading: String = words.iter().map(|w| w.reading.as_str()).collect();
+        assert_eq!(surface, "よろしくお願いします");
+        // ノードの読みは打ったかなの区間
+        assert_eq!(reading, "よろしくおねぎあします");
+    }
+
+    #[test]
+    fn 打ち間違いがはっきりしていれば補正の候補が先頭に出る() {
+        let got = typo_nbest("よろしくおねぎあします", &LearningStore::in_memory(), true);
+        assert_eq!(got[0].surface(), "よろしくお願いします");
+        assert!(got[0].typo && got[0].protected);
+        // 文節の読みは打ったかなの区間で、連結すると打ったかなになる
+        let readings: Vec<&str> = got[0].segments.iter().map(|(r, _)| r.as_str()).collect();
+        assert_eq!(readings.concat(), "よろしくおねぎあします");
+        assert_eq!(readings[0], "よろしく");
+        // 元の 1-best は 2 番目。補正の候補は 1 件だけ
+        assert!(!got[1].typo);
+        assert_eq!(got.iter().filter(|c| c.typo).count(), 1);
+    }
+
+    #[test]
+    fn 読み全体の学習表記があれば補正の候補はその後ろの1bestの直後に出る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("よろしくおねぎあします", "よろしく御願明日");
+        let got = typo_nbest("よろしくおねぎあします", &learning, true);
+        assert_eq!(got[0].surface(), "よろしく御願明日");
+        assert!(!got[1].typo);
+        assert!(got[2].typo);
+        assert_eq!(got[2].surface(), "よろしくお願いします");
+    }
+
+    #[test]
+    fn 学習で表記が変わった1bestは補正の候補で2番目に下がらない() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("よろしく", "宜しく");
+        let got = typo_nbest("よろしくおねぎあします", &learning, true);
+        assert!(got[0].surface().starts_with("宜しく"), "{:?}", surfaces_of(&got));
+        assert!(!got[0].typo && got[0].protected);
+        assert!(got[1].typo);
+    }
+
+    #[test]
+    fn 打ち間違いの無い読みと補正の設定が無効なら補正の候補は出ない() {
+        let learning = LearningStore::in_memory();
+        assert!(typo_nbest("よろしくおねがいします", &learning, true).iter().all(|c| !c.typo));
+        assert!(typo_nbest("きょうははれです", &learning, true).iter().all(|c| !c.typo));
+        let got = typo_nbest("よろしくおねぎあします", &learning, false);
+        assert!(got.iter().all(|c| !c.typo));
+        assert!(!surfaces_of(&got).contains(&"よろしくお願いします".to_string()));
+    }
+
+    #[test]
+    fn 三文字未満の読みには補正の候補が出ない() {
+        let got = typo_nbest("はr", &LearningStore::in_memory(), true);
+        assert!(got.iter().all(|c| !c.typo));
     }
 }

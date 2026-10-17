@@ -8,9 +8,8 @@
 - 確定済みの任意の選択範囲の再変換 (TSF の ITfFnReconversion)。今の後置再変換の対象は、かなだけの
   選択範囲・キャレット直前のかな・採用した文字列の記憶 ([adopted-reconversion.md](design/adopted-reconversion.md))
   の範囲だけ
-- 数字表記変換 (「1234」→ 千二百三十四 など)
-- 変換 (CONVERT / CONVSEG) へのタイプミス補正候補の追加。今の補正は予測の補充だけ
-  ([basics.md](design/basics.md) の「タイプミス補正」)
+- 文節 UI (CONVSEG / CONVCTX) へのタイプミス補正。今の変換の補正は入力全体の候補 (CONVNBEST・RERANK)
+  だけ ([typo-conversion.md](design/typo-conversion.md))
 - 学習の改良。今は読みごとに最後に確定した表記を先頭にする単純な方式 (頻度ベースなど)
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
@@ -20,6 +19,15 @@
   効果を実験で確かめる必要がある ([conversion-range.md](design/conversion-range.md))
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
   ([llm-rerank-notes.md](archive/llm-rerank-notes.md))
+- (保留・後で検討) LLM の並べ替えの段階式の省略。統計変換の 1 位と 2 位のコスト差 (読み 1 字あたり) が
+  しきい値を超えるときは RERANK を送らず、LLM の呼び出しと遅延を減らす。しきい値は `nbest_eval --llm` で
+  正解率を落とさない値を測って決める。shunti IME (Japanese-IME-for-HarmonyOS-next) は同じ方式で、
+  正解率をほぼ保ったまま普段の入力でのモデルの呼び出しを約 4 割に減らしている
+- (保留・後で検討) 変換精度の評価セットの拡充。今の `engine/examples/data/llm_cases.tsv` は手作りの
+  小さなセットのため、AJIMEE-Bench (CC BY-SA 3.0。ローマ字で打てない字を含む問題は除く) と、
+  学習データの確定を今のエンジンで変換し直して確定した表記の順位を採点する再生評価を足す。
+  再生評価の入力と結果は実ユーザの文を含むので git に入れない。しきい値などの調整に使ったセットと
+  評価だけに使うセットは分ける
 
 ## 見送り・既知の問題
 

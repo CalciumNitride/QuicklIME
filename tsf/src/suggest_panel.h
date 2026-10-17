@@ -34,6 +34,9 @@ public:
         Prediction,  // 予測
         Partial,     // 先頭文節 (部分採用。末尾に「…」を付けて表示する)
         NextWord,    // 読みなしの後続語予測 (横一列では「次の語」色の縁を付ける)
+        // 1 打の誤りを戻した読みの全体変換 (横一列では「補正」色の縁を付ける。変換の候補一覧でも
+        // 種類のタグを出す)
+        Typo,
     };
 
     struct Item {
@@ -90,14 +93,15 @@ public:
     size_t Show(const Placement& placement, const std::vector<Item>& items, size_t selection,
                 const InputLine* input);
 
-    // 変換の候補一覧。テーマの layout によらず縦積みにし、種類のタグは出さない。selection を含む
+    // 変換の候補一覧。テーマの layout によらず縦積みにし、種類のタグは補正の候補 (typo[i] が true。
+    // typo が candidates より短ければ足りない分は false) にだけ出す。selection を含む
     // ページ (kMaxItems 件。作業領域に収まらなければ収まる行数) を出し、番号はページ内で 1 から振る。
     // 複数ページなら最後の行の下に位置 (12/24) を出す。Caret では placement.caret (composition の
     // 矩形) の下 (入らなければ上) の placement.x に、Center では候補バーと同じ上端から下へ伸ばして出す。
     // candidates が空なら入力行だけを出し、input も無ければ隠す。
     // 候補一覧を出したときは 1 ページの件数 (数字キーの対応付けに使う) を、出さなかったときは 0 を返す
     size_t ShowConversion(const Placement& placement, const std::vector<std::wstring>& candidates,
-                          size_t selection, const InputLine* input);
+                          const std::vector<bool>& typo, size_t selection, const InputLine* input);
 
     // 未完成ローマ字のカプセル。caret (スクリーン座標) の左上に重ねて出す
     bool ShowCapsule(const RECT& caret, const std::wstring& text);

@@ -28,8 +28,14 @@ mod learn;
 #[path = "../src/matrix.rs"]
 mod matrix;
 #[allow(dead_code)]
+#[path = "../src/number.rs"]
+mod number;
+#[allow(dead_code)]
 #[path = "../src/pos.rs"]
 mod pos;
+#[allow(dead_code)]
+#[path = "../src/typo.rs"]
+mod typo;
 #[allow(dead_code)]
 #[path = "../src/userdict.rs"]
 mod userdict;

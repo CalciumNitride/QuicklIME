@@ -2615,7 +2615,8 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
             break;
         }
         if (sentence.surface != kana && !contains(sentence.surface)) {
-            items.push_back({BarKind::Whole, sentence.surface, kana, sentence.segments});
+            items.push_back(
+                {BarKind::Whole, sentence.surface, kana, sentence.segments, sentence.typo});
             ++wholeCount;
         }
     }
@@ -2623,6 +2624,15 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
     // (区切りの違う「今日は…」「今日…」が並ぶ)
     constexpr size_t kMaxHeads = 3;
     std::vector<std::pair<std::wstring, std::wstring>> heads;
+    // 補正の候補の第1文節は、打ち間違えた読みのまま学習させないよう補正の候補として扱う。
+    // ほかの候補にも同じ第1文節があれば、ふつうの先頭文節にする
+    const auto typoHead = [&sentences](const std::pair<std::wstring, std::wstring>& head) {
+        return std::none_of(sentences.begin(), sentences.end(),
+                            [&head](const SentenceCandidate& sentence) {
+                                return !sentence.typo && !sentence.segments.empty() &&
+                                       sentence.segments[0] == head;
+                            });
+    };
     for (const SentenceCandidate& sentence : sentences) {
         if (heads.size() >= kMaxHeads) {
             break;
@@ -2650,9 +2660,9 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
         items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
         ++predictionCount;
     }
-    for (const auto& [reading, surface] : heads) {
-        if (!contains(surface)) {
-            items.push_back({BarKind::Head, surface, reading, {}});
+    for (const auto& head : heads) {
+        if (!contains(head.second)) {
+            items.push_back({BarKind::Head, head.second, head.first, {}, typoHead(head)});
         }
     }
     return items;
@@ -2676,7 +2686,7 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
         } else if (item.kind == BarKind::Ascii) {
             kind = SuggestPanel::ItemKind::Ascii;
         } else if (item.kind == BarKind::Whole) {
-            kind = SuggestPanel::ItemKind::Conversion;
+            kind = item.typo ? SuggestPanel::ItemKind::Typo : SuggestPanel::ItemKind::Conversion;
         }
         labels.push_back({tail ? item.surface + asciiTail : item.surface, kind});
     }
@@ -2996,7 +3006,7 @@ void TextService::OnRerankTimer()
     std::vector<BarCandidate> items = BuildBarItems(barKana_, rerankResult_, barPredictions_);
     const auto same = [](const BarCandidate& a, const BarCandidate& b) {
         return a.kind == b.kind && a.surface == b.surface && a.reading == b.reading &&
-               a.segments == b.segments;
+               a.segments == b.segments && a.typo == b.typo;
     };
     if (items.empty() ||
         std::equal(items.begin(), items.end(), barBuilt_.begin(), barBuilt_.end(), same)) {
@@ -3143,6 +3153,8 @@ std::wstring TextService::PrepareConversionCommit()
     // 文節ごとの確定結果をエンジンに学習させる (失敗しても確定は続行する)。
     // 入力全体の候補を選んだときは、その候補の文節を確定した文節とする
     std::vector<std::pair<std::wstring, std::wstring>> committed;
+    // 補正の候補は打ち間違えた読みで学習データを汚さないよう学習を送らない (前文脈・記憶は同じ)
+    bool typo = false;
     if (segments_.size() == 1) {
         const std::wstring& surface = segments_[0].candidates[selected_[0]];
         const auto it = std::find_if(
@@ -3150,6 +3162,7 @@ std::wstring TextService::PrepareConversionCommit()
             [&surface](const SentenceCandidate& candidate) { return candidate.surface == surface; });
         if (it != wholeCandidates_.end()) {
             committed = it->segments;
+            typo = it->typo;
         }
     }
     if (committed.empty()) {
@@ -3157,7 +3170,7 @@ std::wstring TextService::PrepareConversionCommit()
             committed.push_back({segments_[i].reading, segments_[i].candidates[selected_[i]]});
         }
     }
-    if (!IsNoLearningApp()) {
+    if (!IsNoLearningApp() && !typo) {
         engine_.Learn(SentenceLearnEntries(committed));
         // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
         if (segmentsResized_) {
@@ -3503,10 +3516,21 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
     SuggestPanel::InputLine input;
     const bool hasInput = ConversionInputLine(&input);
     static const std::vector<std::wstring> kNoCandidates;
-    const size_t pageSize =
-        suggestPanel_.ShowConversion(placement,
-                                     list ? segments_[segmentIndex_].candidates : kNoCandidates,
-                                     selected_[segmentIndex_], hasInput ? &input : nullptr);
+    const std::vector<std::wstring>& candidates =
+        list ? segments_[segmentIndex_].candidates : kNoCandidates;
+    // 確定 (PrepareConversionCommit) と同じく、表記で入力全体の候補を引いて補正の候補を見分ける
+    std::vector<bool> typo(candidates.size(), false);
+    if (segments_.size() == 1) {
+        for (size_t i = 0; i < candidates.size(); ++i) {
+            const auto it = std::find_if(wholeCandidates_.begin(), wholeCandidates_.end(),
+                                         [&](const SentenceCandidate& candidate) {
+                                             return candidate.surface == candidates[i];
+                                         });
+            typo[i] = it != wholeCandidates_.end() && it->typo;
+        }
+    }
+    const size_t pageSize = suggestPanel_.ShowConversion(
+        placement, candidates, typo, selected_[segmentIndex_], hasInput ? &input : nullptr);
     if (pageSize > 0) {
         conversionPageSize_ = pageSize;
     }

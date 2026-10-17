@@ -17,6 +17,9 @@ struct SentenceCandidate {
     // 文節ごとの (読み, 表記)。確定・採用時の学習に使う
     std::vector<std::pair<std::wstring, std::wstring>> segments;
     std::wstring surface;  // 文節の表記の連結
+    // 1 打の誤りを戻した読みで変換した補正の候補 (docs/design/typo-conversion.md)。
+    // 採用・確定しても学習を送らない
+    bool typo = false;
 };
 
 // 予測入力の1候補

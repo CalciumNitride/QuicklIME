@@ -70,6 +70,8 @@
   ←→ による変換の範囲の伸縮
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す
+- [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す
+- [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す
 
 ## モードレス入力
 
