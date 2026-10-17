@@ -202,8 +202,9 @@ void EngineClient::Disconnect()
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
     }
-    // 次の接続の相手は RERANK に対応したエンジンに入れ替わっているかもしれない
+    // 次の接続の相手は RERANK・kinds に対応したエンジンに入れ替わっているかもしれない
     rerankUnsupported_ = false;
+    segmentKindsUnsupported_ = false;
 }
 
 bool EngineClient::Transact(const std::string& request, std::string* response)
@@ -325,8 +326,21 @@ bool EngineClient::ConvertSegments(const std::wstring& kana, const ConversionCon
     if (segments == nullptr || kana.empty()) {
         return false;
     }
-    return RequestSegments(BuildSegmentsRequest(kana, context, ""),
-                           "CONVSEG\t" + WideToUtf8(kana) + "\n", false, segments);
+    const std::string fallback = "CONVSEG\t" + WideToUtf8(kana) + "\n";
+    if (!segmentKindsUnsupported_) {
+        // CONVCTX を知らないエンジンは kinds も知らないので、fallback には kinds を付けない
+        std::string response;
+        if (!TransactWithFallback(BuildSegmentsRequest(kana, context, "kinds"), fallback, false,
+                                  &response)) {
+            return false;
+        }
+        // 旧エンジンは kinds を文節長として読んで ERR を返す
+        if (response.rfind("ERR", 0) != 0) {
+            return ParseSegmentsResponse(std::move(response), segments);
+        }
+        segmentKindsUnsupported_ = true;
+    }
+    return RequestSegments(BuildSegmentsRequest(kana, context, ""), fallback, false, segments);
 }
 
 bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
@@ -373,7 +387,7 @@ bool EngineClient::RequestSegments(const std::string& request, const std::string
 bool EngineClient::ParseSegmentsResponse(std::string response,
                                          std::vector<ConversionSegment>* segments)
 {
-    // 応答: "OK\t読み\x1F候補1\x1F候補2...\t読み\x1F候補...\n"
+    // 応答: "OK\t読み\x1F候補1[\x1D種類]\x1F候補2...\t読み\x1F候補...\n"
     const size_t newline = response.find('\n');
     if (newline != std::string::npos) {
         response.resize(newline);
@@ -391,7 +405,19 @@ bool EngineClient::ParseSegmentsResponse(std::string response,
         ConversionSegment segment;
         segment.reading = Utf8ToWide(fields[0]);
         for (size_t i = 1; i < fields.size(); ++i) {
-            segment.candidates.push_back(Utf8ToWide(fields[i]));
+            std::string field = fields[i];
+            // 知らない種類は印の無い候補として扱う
+            const size_t kind = field.find('\x1d');
+            bool typo = false;
+            if (kind != std::string::npos) {
+                typo = field.compare(kind + 1, std::string::npos, "typo") == 0;
+                field.resize(kind);
+            }
+            std::wstring candidate = Utf8ToWide(field);
+            if (typo) {
+                segment.typoSurfaces.push_back(candidate);
+            }
+            segment.candidates.push_back(std::move(candidate));
         }
         segments->push_back(std::move(segment));
     }

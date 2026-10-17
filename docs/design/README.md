@@ -74,6 +74,8 @@
   部分も変換キーで変換し直す
 - [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す
 - [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す
+- [typo-segment-ui.md](typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
+  区切り、打ち間違えた語を含む文節の候補に補正の表記を足す
 
 ## モードレス入力
 

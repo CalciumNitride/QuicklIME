@@ -3173,15 +3173,34 @@ std::wstring TextService::PrepareConversionCommit()
             typo = it->typo;
         }
     }
+    // 補正の表記を選んだ文節 (docs/design/typo-segment-ui.md)。その文節の学習と、打ち間違えた
+    // 読みを含む読み全体の学習・伸縮の学習は送らない
+    std::vector<bool> typoSegments;
     if (committed.empty()) {
         for (size_t i = 0; i < segments_.size(); ++i) {
-            committed.push_back({segments_[i].reading, segments_[i].candidates[selected_[i]]});
+            const std::wstring& surface = segments_[i].candidates[selected_[i]];
+            committed.push_back({segments_[i].reading, surface});
+            const std::vector<std::wstring>& typoSurfaces = segments_[i].typoSurfaces;
+            typoSegments.push_back(std::find(typoSurfaces.begin(), typoSurfaces.end(), surface) !=
+                                   typoSurfaces.end());
         }
     }
+    const bool typoSegment =
+        std::find(typoSegments.begin(), typoSegments.end(), true) != typoSegments.end();
     if (!IsNoLearningApp() && !typo) {
-        engine_.Learn(SentenceLearnEntries(committed));
+        std::vector<LearnEntry> entries = SentenceLearnEntries(committed);
+        if (typoSegment) {
+            // 末尾の読み全体の学習を落とし、補正の文節の学習を除く (文脈は除く前の並びで決まっている)
+            entries.resize(committed.size());
+            for (size_t i = committed.size(); i-- > 0;) {
+                if (typoSegments[i]) {
+                    entries.erase(entries.begin() + i);
+                }
+            }
+        }
+        engine_.Learn(entries);
         // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
-        if (segmentsResized_) {
+        if (segmentsResized_ && !typoSegment) {
             LearnResizedSegments();
         }
     }
@@ -3526,15 +3545,21 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
     static const std::vector<std::wstring> kNoCandidates;
     const std::vector<std::wstring>& candidates =
         list ? segments_[segmentIndex_].candidates : kNoCandidates;
-    // 確定 (PrepareConversionCommit) と同じく、表記で入力全体の候補を引いて補正の候補を見分ける
+    // 確定 (PrepareConversionCommit) と同じく、表記で入力全体の候補と文節の補正の表記を引いて
+    // 補正の候補を見分ける
     std::vector<bool> typo(candidates.size(), false);
+    const std::vector<std::wstring>& typoSurfaces = segments_[segmentIndex_].typoSurfaces;
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        typo[i] = std::find(typoSurfaces.begin(), typoSurfaces.end(), candidates[i]) !=
+                  typoSurfaces.end();
+    }
     if (segments_.size() == 1) {
         for (size_t i = 0; i < candidates.size(); ++i) {
             const auto it = std::find_if(wholeCandidates_.begin(), wholeCandidates_.end(),
                                          [&](const SentenceCandidate& candidate) {
                                              return candidate.surface == candidates[i];
                                          });
-            typo[i] = it != wholeCandidates_.end() && it->typo;
+            typo[i] = typo[i] || (it != wholeCandidates_.end() && it->typo);
         }
     }
     const size_t pageSize = suggestPanel_.ShowConversion(

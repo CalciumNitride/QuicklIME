@@ -66,7 +66,7 @@
 ### D. 対象と設定
 
 - 対象は CONVNBEST と RERANK (候補バーの全体変換と、変換キーの候補一覧)。文節 UI (設定 `segment_ui`)
-  の CONVSEG・CONVCTX と、CONVERT には入れない
+  の CONVSEG・CONVCTX の補正は [typo-segment-ui.md](typo-segment-ui.md)。CONVERT には入れない
 - 設定 `typo_correction` (既定 1) が 0 なら作らない。予測の補正と同じ設定で切り替える。新しい設定は設けない
 
 ### E. プロトコル: 候補の種類
@@ -179,7 +179,7 @@
 
 ## 未決事項
 
-- 文節 UI (CONVSEG・CONVCTX) の文節ごとの補正は本書の対象外。必要になったら別の設計にする
+- 文節 UI (CONVSEG・CONVCTX) の補正は [typo-segment-ui.md](typo-segment-ui.md)
 - かな入力 (ローマ字を使わない入力) は今の QuicklIME に無いため、かな単位の誤り (清濁・大小) は戻さない
 - よくある誤読 (げっきょく → 月極) の対応表は本書の対象外
 

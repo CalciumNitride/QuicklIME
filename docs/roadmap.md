@@ -8,8 +8,6 @@
 - 確定済みの任意の選択範囲の再変換 (TSF の ITfFnReconversion)。今の後置再変換の対象は、かなだけの
   選択範囲・キャレット直前のかな・採用した文字列の記憶 ([adopted-reconversion.md](design/adopted-reconversion.md))
   の範囲だけ
-- 文節 UI (CONVSEG / CONVCTX) へのタイプミス補正。今の変換の補正は入力全体の候補 (CONVNBEST・RERANK)
-  だけ ([typo-conversion.md](design/typo-conversion.md))
 - 学習の改良。今は読みごとに最後に確定した表記を先頭にする単純な方式 (頻度ベースなど)
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))

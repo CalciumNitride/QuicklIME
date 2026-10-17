@@ -442,13 +442,20 @@ fn parse_context(field: &str) -> Option<convert::Context> {
 }
 
 /// CONVSEG / CONVCTX 共通の文節変換応答を作る。
-/// lengths_field は文節長 (カンマ区切り、文節伸縮時の境界固定用)、無ければ通常の文節分割
+/// lengths_field は文節長 (カンマ区切り、文節伸縮時の境界固定用)、無ければ通常の文節分割。
+/// lengths_field が kinds なら文節長の指定なしで、補正の表記 (docs/design/typo-segment-ui.md) を
+/// 足して種類を付ける。文節長の後ろの kinds は読まない (文節長を指定した変換には補正を入れない)
 fn segments_response(
     kana: &str,
     lengths_field: Option<&str>,
     ctx: Option<&convert::Context>,
     data: &EngineData,
 ) -> String {
+    let (lengths_field, kinds) = match lengths_field {
+        Some(KINDS_FIELD) => (None, true),
+        other => (other, false),
+    };
+    let typo = kinds && data.config.lock().expect("config lock").typo_correction;
     let user = data.user.lock().expect("user lock");
     let learning = data.learning.lock().expect("learning lock");
     let segments = if let Some(lengths_field) = lengths_field {
@@ -477,13 +484,20 @@ fn segments_response(
             &data.matrix,
             &data.functional,
             &learning,
+            typo,
         )
     };
     let body = segments
         .iter()
         .map(|s| {
-            let mut fields = vec![s.reading.as_str()];
-            fields.extend(s.candidates.iter().map(String::as_str));
+            let mut fields = vec![s.reading.clone()];
+            fields.extend(s.candidates.iter().map(|candidate| {
+                if s.typo.as_ref() == Some(candidate) {
+                    format!("{candidate}{KIND_SEPARATOR}typo")
+                } else {
+                    candidate.clone()
+                }
+            }));
             fields.join(&FIELD_SEPARATOR.to_string())
         })
         .collect::<Vec<_>>()
@@ -494,10 +508,10 @@ fn segments_response(
 /// CONVNBEST 応答で候補内の文節を区切る文字 (ASCII Record Separator)
 const SEGMENT_SEPARATOR: char = '\x1e';
 
-/// CONVNBEST 応答で候補の末尾に種類を付ける区切り (ASCII Group Separator)
+/// CONVNBEST・CONVSEG 応答で候補の末尾に種類を付ける区切り (ASCII Group Separator)
 const KIND_SEPARATOR: char = '\x1d';
 
-/// CONVNBEST・RERANK の要求の末尾に付けると、応答の候補に種類が付く
+/// CONVNBEST・RERANK・CONVSEG・CONVCTX の要求の末尾に付けると、応答の候補に種類が付く
 const KINDS_FIELD: &str = "kinds";
 
 /// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ。
@@ -580,7 +594,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("CONVCTX") => {
-            // CONVCTX\t<文脈読み>\x1f<文脈表記>\t<かな>[\t<文節長>] :
+            // CONVCTX\t<文脈読み>\x1f<文脈表記>\t<かな>[\t<文節長>][\tkinds] :
             // 前文脈 (直前確定の文節) 付きの文節変換。応答は CONVSEG と同一形式
             let ctx = fields.next().and_then(parse_context);
             match fields.next() {
@@ -1120,6 +1134,95 @@ mod tests {
         let plain = handle_request("CONVNBEST\t\tよろしくおねぎあします", &data);
         assert!(!plain.contains(KIND_SEPARATOR), "{plain}");
         assert_eq!(plain, response.replace("\x1dtypo", ""));
+    }
+
+    #[test]
+    fn 補正なしのconvsegは今と同じ応答になる() {
+        let data = typo_data();
+        assert_eq!(
+            handle_request("CONVSEG\tよろしくおねぎあします", &data),
+            "OK\tよろしく\x1fよろしく\x1fヨロシク\tお\x1fお\x1fオ\tねぎ\x1fネギ\x1fねぎ\t\
+             あします\x1fあします\x1fアシマス\n"
+        );
+        assert_eq!(
+            handle_request("CONVSEG\tよろしくおねがいします", &data),
+            "OK\tよろしく\x1fよろしく\x1fヨロシク\t\
+             おねがいします\x1fお願いします\x1fオネガイシマス\x1fおねがいします\n"
+        );
+        assert_eq!(
+            handle_request("CONVCTX\tはれ\x1f晴れ\tよろしくおねぎあします", &data),
+            handle_request("CONVSEG\tよろしくおねぎあします", &data)
+        );
+        assert_eq!(
+            handle_request("CONVSEG\tきょうははれ", &sample_data()),
+            "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\tはれ\x1f晴れ\x1fハレ\x1fはれ\n"
+        );
+    }
+
+    #[test]
+    fn convsegのkindsで補正の文節の先頭に種類付きの補正の表記が出る() {
+        let data = typo_data();
+        let response = handle_request("CONVSEG\tよろしくおねぎあします\tkinds", &data);
+        assert_eq!(
+            response,
+            "OK\tよろしく\x1fよろしく\x1fヨロシク\t\
+             おねぎあします\x1fお願いします\x1dtypo\x1fおネギあします\x1fオネギアシマス\x1f\
+             おねぎあします\n"
+        );
+        // 前文脈付きの CONVCTX でも同じ
+        let response = handle_request("CONVCTX\tはれ\x1f晴れ\tよろしくおねぎあします\tkinds", &data);
+        assert_eq!(response.matches(KIND_SEPARATOR).count(), 1, "{response}");
+        assert!(response.contains("\x1fお願いします\x1dtypo\x1f"), "{response}");
+    }
+
+    #[test]
+    fn 打ち間違いの無い読みのconvsegはkindsの有無によらず同じ応答になる() {
+        let data = typo_data();
+        assert_eq!(
+            handle_request("CONVSEG\tよろしくおねがいします\tkinds", &data),
+            handle_request("CONVSEG\tよろしくおねがいします", &data)
+        );
+        let data = sample_data();
+        assert_eq!(
+            handle_request("CONVSEG\tきょうははれ\tkinds", &data),
+            handle_request("CONVSEG\tきょうははれ", &data)
+        );
+    }
+
+    #[test]
+    fn 補正が無効か三文字未満の読みのconvsegには補正が入らない() {
+        let data = typo_data();
+        assert_eq!(
+            handle_request("CONVSEG\tはr\tkinds", &data),
+            handle_request("CONVSEG\tはr", &data)
+        );
+        data.config.lock().unwrap().typo_correction = false;
+        let response = handle_request("CONVSEG\tよろしくおねぎあします\tkinds", &data);
+        assert_eq!(response, handle_request("CONVSEG\tよろしくおねぎあします", &data));
+        assert!(!response.contains(KIND_SEPARATOR), "{response}");
+    }
+
+    #[test]
+    fn 文節長を指定したconvsegにはkindsがあっても補正が入らない() {
+        let data = typo_data();
+        let response = handle_request("CONVSEG\tよろしくおねぎあします\t4,7\tkinds", &data);
+        assert_eq!(response, handle_request("CONVSEG\tよろしくおねぎあします\t4,7", &data));
+        assert!(!response.contains(KIND_SEPARATOR), "{response}");
+        assert!(!response.contains("お願いします"), "{response}");
+        let response = handle_request("CONVCTX\tはれ\x1f晴れ\tよろしくおねぎあします\t4,7\tkinds", &data);
+        assert!(!response.contains(KIND_SEPARATOR), "{response}");
+    }
+
+    #[test]
+    fn 文節長の欄がkindsのconvsegは文節長の指定なしとして読む() {
+        let data = typo_data();
+        let response = handle_request("CONVSEG\tよろしくおねぎあします\tkinds", &data);
+        assert!(response.starts_with("OK\t"), "{response}");
+        // 種類の印を除けば、補正の経路で区切った文節長の指定なしの変換
+        assert!(response.starts_with("OK\tよろしく\x1f"), "{response}");
+        assert!(response.contains("\tおねぎあします\x1f"), "{response}");
+        let response = handle_request("CONVSEG\tきょうははれ\tkinds", &sample_data());
+        assert_eq!(response, "OK\tきょうは\x1f今日は\x1fキョウハ\x1fきょうは\tはれ\x1f晴れ\x1fハレ\x1fはれ\n");
     }
 
     #[test]

@@ -110,7 +110,7 @@ fn main() -> BoxResult<()> {
     let learning = LearningStore::in_memory();
 
     let best = |kana: &str, dict: &Dictionary| -> String {
-        convert::convert_segments(kana, None, dict, &user, &matrix, &functional, &learning)
+        convert::convert_segments(kana, None, dict, &user, &matrix, &functional, &learning, false)
             .iter()
             .map(|s| s.candidates[0].as_str())
             .collect()

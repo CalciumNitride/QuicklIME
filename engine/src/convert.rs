@@ -86,6 +86,8 @@ pub struct Segment {
     pub reading: String,
     /// 候補リスト (先頭が最良)
     pub candidates: Vec<String>,
+    /// 候補に足した補正の表記 (docs/design/typo-segment-ui.md)。補正の文節でなければ None
+    pub typo: Option<String>,
 }
 
 /// Viterbi 経路上の1単語
@@ -181,7 +183,9 @@ pub fn resolve_context_id(
     0
 }
 
-/// かな文字列を文節列へ変換する。ctx は直前に確定した文節 (無ければ None)
+/// かな文字列を文節列へ変換する。ctx は直前に確定した文節 (無ければ None)。
+/// typo なら、補正の最良経路 (docs/design/typo-segment-ui.md) の Δ が TYPO_SHOW 以上のときに
+/// その経路で文節を区切り、補正の語を含む文節の候補に補正の表記を 1 件足す
 pub fn convert_segments(
     kana: &str,
     ctx: Option<&Context>,
@@ -190,13 +194,114 @@ pub fn convert_segments(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     learning: &LearningStore,
+    typo: bool,
 ) -> Vec<Segment> {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
-    let Some(path) = viterbi_path(kana, dict, user, matrix, functional, ctx_id, Some(learning))
+    let Some(lattice) =
+        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning), typo)
     else {
         return Vec::new();
     };
-    segments_from_path(path, ctx, dict, user, functional, learning)
+    let Some(indices) = best_path(&lattice, matrix) else {
+        return Vec::new();
+    };
+    let corrected = if typo { typo_route(&lattice, matrix, kana) } else { None };
+    // 補正の語の打ったかなの区間。補正の語は経路に 1 つなので、それを含む文節も 1 つ
+    let Some((delta, typo_indices, (typo_start, typo_end))) = corrected.and_then(|(d, route)| {
+        let node = route.iter().map(|&i| &lattice.nodes[i]).find(|n| n.typo)?;
+        let span = (node.start, node.start + node.reading.chars().count());
+        Some((d, route, span))
+    }) else {
+        let words = lattice.path_words(&indices);
+        return segments_from_path(words, ctx, dict, user, functional, learning);
+    };
+    let (_, protected) =
+        protected_best(&lattice, &indices, ctx, dict, user, functional, learning);
+    let top = delta >= TYPO_TOP && learning.get(kana).is_none() && !protected;
+
+    let mut segments: Vec<Segment> = Vec::new();
+    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
+    let mut start = 0;
+    for group in &group_path(lattice.path_words(&typo_indices), functional) {
+        let end = start + group.iter().map(|w| w.reading.chars().count()).sum::<usize>();
+        let segment = if start <= typo_start && typo_end <= end {
+            // 区間の通常の変換は文節長を固定した変換 (convert_segments_fixed) と同じく作る
+            let left_id = segments.last().map_or(ctx_id, |prev: &Segment| {
+                let prev_ctx = Context {
+                    reading: prev.reading.clone(),
+                    surface: prev.candidates[0].clone(),
+                };
+                resolve_context_id(&prev_ctx, dict, user, matrix, functional)
+            });
+            let learn_ctx = prev_surface.as_deref();
+            typo_segment(group, top, left_id, learn_ctx, dict, user, matrix, functional, learning)
+        } else {
+            segment_from_group(group, dict, user, learning, prev_surface.as_deref())
+        };
+        prev_surface = Some(segment.candidates[0].clone());
+        segments.push(segment);
+        start = end;
+    }
+    segments
+}
+
+/// 補正の文節 (補正の経路で補正の語を含む文節 group) の Segment を作る。候補は、区間の読みだけの
+/// 経路 (文頭の文脈 ID は left_id) の通常の候補に、補正の表記 (group の表記) を 1 件足したもの。
+/// 補正の表記は、top で通常の候補の先頭が学習で変わっていなければ先頭、それ以外は 2 番目に置き、
+/// 通常の候補に既にあれば足さない
+fn typo_segment(
+    group: &[PathWord],
+    top: bool,
+    left_id: u16,
+    learn_ctx: Option<&str>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> Segment {
+    let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
+    let corrected: String = group.iter().map(|w| w.surface.as_str()).collect();
+    let words =
+        viterbi_path(&reading, dict, user, matrix, functional, left_id, None).unwrap_or_else(|| {
+            vec![PathWord {
+                reading: reading.clone(),
+                surface: reading.clone(),
+                left_id: DEFAULT_NOUN_ID,
+                right_id: DEFAULT_NOUN_ID,
+            }]
+        });
+    let raw: String = words.iter().map(|w| w.surface.as_str()).collect();
+    let mut segment = segment_from_group(&words, dict, user, learning, learn_ctx);
+    if !segment.candidates.contains(&corrected) {
+        let position = if top && segment.candidates[0] == raw { 0 } else { 1 };
+        segment.candidates.insert(position, corrected.clone());
+        segment.typo = Some(corrected);
+    }
+    segment
+}
+
+/// 1-best の経路 (ノード index 列 indices) を文節ごとの学習を当てた文節にまとめ、補正の候補に先頭を
+/// 譲らない印 (学習で表記が変わった、ユーザ辞書の語・英字を含む) とともに返す
+fn protected_best(
+    lattice: &Lattice,
+    indices: &[usize],
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> (Vec<Segment>, bool) {
+    let words = lattice.path_words(indices);
+    let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
+    // 数字列の結合で区切り記号の表記が変わるため、学習の有無は結合後の表記どうしで比べる
+    let raw: String =
+        merge_digit_runs(lattice.path_words(indices)).iter().map(|w| w.surface.as_str()).collect();
+    let segments = segments_from_path(words, ctx, dict, user, functional, learning);
+    let surface: String = segments.iter().map(|s| s.candidates[0].as_str()).collect();
+    let learned = surface != raw;
+    let protected = learned || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
+    (segments, protected)
 }
 
 /// 経路の単語列を文節にまとめる (連続する数字を1語にし、付属語を前の自立語に付ける)
@@ -514,7 +619,7 @@ fn segment_from_group(
             result.insert(0, learned.to_string());
         }
     }
-    Segment { reading, candidates: result }
+    Segment { reading, candidates: result, typo: None }
 }
 
 /// かな文字列に対する全文一括の変換候補リストを返す (クエリツール・互換用)
@@ -635,20 +740,11 @@ pub fn convert_nbest(
     // 1-best の文節と、その元の単語列 (文節ごと)。数字の書き方の候補に使う
     let mut best_segments: Option<(Vec<(String, String)>, Vec<Vec<PathWord>>)> = None;
     if let Some(indices) = best_path(&lattice, matrix) {
-        let words = lattice.path_words(&indices);
-        let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
-        // 数字列の結合で区切り記号の表記が変わるため、学習の有無は結合後の表記どうしで比べる
-        let raw: String = merge_digit_runs(lattice.path_words(&indices))
-            .iter()
-            .map(|w| w.surface.as_str())
-            .collect();
-        let segments = segments_from_path(words, ctx, dict, user, functional, learning);
+        // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
+        let (segments, protected) =
+            protected_best(&lattice, &indices, ctx, dict, user, functional, learning);
         let segments: Vec<(String, String)> =
             segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect();
-        let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect::<String>();
-        let learned = surface != raw;
-        // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
-        let protected = learned || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
         let top = learned_whole.is_none() && !protected;
         match corrected {
             Some((delta, typo_segments)) if top && delta >= TYPO_TOP => {
@@ -1385,6 +1481,20 @@ fn typo_best(
     Some((normal - cost, segments.into_iter().map(|s| (s.reading, s.surface)).collect()))
 }
 
+/// 補正の最良経路の Δ (通常の最良経路とのコストの差を、打ったかな kana の文字数で割った値。
+/// TYPO_COST を含む) とノード index 列 (BOS を含まない)。Δ が TYPO_SHOW 未満か、補正の語を通る
+/// 経路が無ければ None
+fn typo_route(
+    lattice: &Lattice,
+    matrix: &ConnectionMatrix,
+    kana: &str,
+) -> Option<(f64, Vec<usize>)> {
+    let (normal, _) = best_end(lattice, matrix, false)?;
+    let (cost, indices) = typo_path(lattice, matrix)?;
+    let delta = (normal - cost) as f64 / kana.chars().count() as f64;
+    (delta >= TYPO_SHOW).then_some((delta, indices))
+}
+
 /// 計測用 (examples/typo_eval.rs): 補正の最良経路の、通常の最良経路とのコストの差
 /// (通常 − 補正。TYPO_COST を含めない) と表記。補正の語を通る経路が無ければ None
 #[allow(dead_code)]
@@ -1472,6 +1582,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "はれです"]);
@@ -1489,6 +1600,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         let c = &segments[0].candidates;
@@ -1512,6 +1624,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         let c = &segments[0].candidates;
@@ -1539,6 +1652,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].candidates, ["今日", "京", "今", "凶", "↑", "キョウ", "きょう"]);
@@ -1584,6 +1698,7 @@ mod tests {
                 &ConnectionMatrix::empty(),
                 &sample_functional(),
                 &LearningStore::in_memory(),
+                false,
             )
             .remove(0)
             .candidates
@@ -1640,6 +1755,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         let c = &segments[0].candidates;
@@ -1659,6 +1775,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &learning,
+            false,
         );
         let c = &segments[0].candidates;
         assert_eq!(c[0], "京");
@@ -1702,6 +1819,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let c = &segments[0].candidates;
         let user_word = c.iter().position(|s| s == "匡").unwrap();
@@ -1737,6 +1855,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let c = &segments[0].candidates;
         let imported = c.iter().position(|s| s == "匡").unwrap();
@@ -1761,6 +1880,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let c = &segments[0].candidates;
         assert_eq!(c[1], "mail@example.com");
@@ -1780,6 +1900,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let c = &segments[0].candidates;
         assert_eq!(c.iter().filter(|s| *s == "匡").count(), 1);
@@ -1797,6 +1918,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &FunctionalIds::empty(),
             &LearningStore::in_memory(),
+            false,
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょう", "は"]);
@@ -1835,6 +1957,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["きょうは", "githubで", "さぎょう"]);
@@ -1869,7 +1992,7 @@ mod tests {
 
         let segments = convert_segments(
             "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
-            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory());
+            &ConnectionMatrix::empty(), &sample_functional(), &LearningStore::in_memory(), false);
         let best: String = segments.iter().map(|s| s.candidates[0].as_str()).collect();
         assert_eq!(best, "今日はGitHubで作業");
 
@@ -1952,7 +2075,7 @@ mod tests {
             &no_user(),
             &ConnectionMatrix::empty(),
             &FunctionalIds::empty(),
-            &LearningStore::in_memory()
+            &LearningStore::in_memory(), false
         )
         .is_empty());
     }
@@ -1967,6 +2090,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         // 経路は 今日+は。先頭語を 京 に入れ替えた「京は」も候補に入る
         assert!(segments[0].candidates.contains(&"京は".to_string()));
@@ -2003,6 +2127,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         let c = &segments[0].candidates;
@@ -2022,6 +2147,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert!(segments[0].candidates.contains(&"下".to_string()));
     }
@@ -2076,6 +2202,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &learning,
+            false,
         );
         // 学習した「京は」(辞書候補に無い表記) が先頭に挿入される
         assert_eq!(segments[0].candidates[0], "京は");
@@ -2127,6 +2254,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["12じ"]);
@@ -2154,6 +2282,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let c = &segments[0].candidates;
         assert_eq!(c[0], "12次");
@@ -2171,6 +2300,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         let readings: Vec<&str> = segments.iter().map(|s| s.reading.as_str()).collect();
         assert_eq!(readings, vec!["１２じ"]);
@@ -2187,6 +2317,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         (
             segments.iter().map(|s| s.reading.clone()).collect(),
@@ -2261,6 +2392,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         assert_eq!(
@@ -2288,6 +2420,7 @@ mod tests {
             &ConnectionMatrix::empty(),
             &sample_functional(),
             &LearningStore::in_memory(),
+            false,
         );
         assert_eq!(segments.len(), 1);
         assert_eq!(segments[0].candidates, vec!["0.5", "0。5"]);
@@ -2364,13 +2497,13 @@ mod tests {
 
         // 前文脈なし: BOS からの連接コストで「阿」
         let segments = convert_segments(
-            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+            "あ", None, &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning, false);
         assert_eq!(segments[0].candidates[0], "阿");
 
         // 前文脈「を」あり: を(右3) → 亜(左1) の連接が安く「亜」
         let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
         let segments = convert_segments(
-            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning);
+            "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning, false);
         assert_eq!(segments[0].candidates[0], "亜");
     }
 
@@ -2384,14 +2517,14 @@ mod tests {
         // 前文脈なし: 文脈なし学習の「今日」が先頭
         let segments = convert_segments(
             "きょう", None, &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(segments[0].candidates[0], "今日");
 
         // 前文脈「晴れ」: 文脈学習の「京」が最優先
         let ctx = Context { reading: "はれ".to_string(), surface: "晴れ".to_string() };
         let segments = convert_segments(
             "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(segments[0].candidates[0], "京");
         assert_eq!(segments[0].candidates[1], "今日");
 
@@ -2399,7 +2532,7 @@ mod tests {
         let ctx = Context { reading: "です".to_string(), surface: "です".to_string() };
         let segments = convert_segments(
             "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(segments[0].candidates[0], "今日");
     }
 
@@ -2410,7 +2543,7 @@ mod tests {
         learning.record_ctx("今日は", "はれです", "ハレです");
         let segments = convert_segments(
             "きょうははれです", None, &sample_dict(), &no_user(),
-            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+            &ConnectionMatrix::empty(), &sample_functional(), &learning, false);
         assert_eq!(segments[0].candidates[0], "今日は");
         assert_eq!(segments[1].candidates[0], "ハレです");
     }
@@ -2447,7 +2580,7 @@ mod tests {
         let dict = boundary_dict();
         let segments = convert_segments(
             "きょうはいい", None, &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &LearningStore::in_memory());
+            &sample_functional(), &LearningStore::in_memory(), false);
         assert_eq!(readings_of(&segments), vec!["きょう", "はいい"]);
 
         // 人が伸縮で直した「きょうは|いい」を学習すると、そちらへ寄る
@@ -2456,7 +2589,7 @@ mod tests {
         learning.record_boundary("いい");
         let segments = convert_segments(
             "きょうはいい", None, &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(readings_of(&segments), vec!["きょうは", "いい"]);
         assert_eq!(segments[0].candidates[0], "今日は");
         assert_eq!(segments[1].candidates[0], "良い");
@@ -2470,7 +2603,7 @@ mod tests {
         learning.record_boundary("いい");
         let segments = convert_segments(
             "きょうはい", None, &boundary_dict(), &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning);
+            &sample_functional(), &learning, false);
         assert_eq!(readings_of(&segments)[0], "きょうは");
     }
 
@@ -2910,5 +3043,122 @@ mod tests {
     fn 三文字未満の読みには補正の候補が出ない() {
         let got = typo_nbest("はr", &LearningStore::in_memory(), true);
         assert!(got.iter().all(|c| !c.typo));
+    }
+
+    /// 文節 UI の変換の (読み, 候補) の並び
+    fn segment_pairs(segments: &[Segment]) -> Vec<(String, Vec<String>)> {
+        segments.iter().map(|s| (s.reading.clone(), s.candidates.clone())).collect()
+    }
+
+    fn pairs(list: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        list.iter()
+            .map(|(reading, candidates)| {
+                (reading.to_string(), candidates.iter().map(|c| c.to_string()).collect())
+            })
+            .collect()
+    }
+
+    fn typo_segments(kana: &str, learning: &LearningStore, typo: bool) -> Vec<Segment> {
+        convert_segments(
+            kana, None, &typo_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            learning, typo)
+    }
+
+    #[test]
+    fn 補正なしの文節の変換は今と同じ区切りと候補になる() {
+        let learning = LearningStore::in_memory();
+        let got = typo_segments("よろしくおねぎあします", &learning, false);
+        assert_eq!(
+            segment_pairs(&got),
+            pairs(&[
+                ("よろしく", &["よろしく", "ヨロシク"]),
+                ("お", &["お", "オ"]),
+                ("ねぎ", &["ネギ", "ねぎ"]),
+                ("あします", &["あします", "アシマス"]),
+            ])
+        );
+        assert!(got.iter().all(|s| s.typo.is_none()));
+        // 打ち間違いの無い読みは、補正の有無によらず同じ
+        for typo in [false, true] {
+            let got = typo_segments("よろしくおねがいします", &learning, typo);
+            assert_eq!(
+                segment_pairs(&got),
+                pairs(&[
+                    ("よろしく", &["よろしく", "ヨロシク"]),
+                    ("おねがいします", &["お願いします", "オネガイシマス", "おねがいします"]),
+                ]),
+                "typo {typo}"
+            );
+            assert!(got.iter().all(|s| s.typo.is_none()));
+            let got = typo_segments("きょうははれです", &learning, typo);
+            assert_eq!(
+                segment_pairs(&got),
+                pairs(&[
+                    ("きょうは", &["今日は", "キョウハ", "きょうは"]),
+                    ("はれです", &["晴れです", "ハレデス", "はれです"]),
+                ]),
+                "typo {typo}"
+            );
+            assert!(got.iter().all(|s| s.typo.is_none()));
+        }
+    }
+
+    #[test]
+    fn 文節の変換は補正の経路で区切り補正の文節の先頭に補正の表記が出る() {
+        let learning = LearningStore::in_memory();
+        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
+        assert_eq!(got[0].candidates, vec!["よろしく", "ヨロシク"]);
+        assert!(got[0].typo.is_none());
+        assert_eq!(got[1].candidates[0], "お願いします");
+        assert_eq!(got[1].typo.as_deref(), Some("お願いします"));
+        // 2 番目以降は、補正の文節の区間を文節長の固定で変換した通常の候補
+        let fixed = convert_segments_fixed(
+            "よろしくおねぎあします", &[4, 7], None, &typo_dict(), &no_user(),
+            &ConnectionMatrix::empty(), &sample_functional(), &learning);
+        assert_eq!(got[1].candidates[1..], fixed[1].candidates[..]);
+        assert_eq!(got[1].candidates[1], "おネギあします");
+    }
+
+    #[test]
+    fn 補正の文節の読みに学習があれば補正の表記は2番目に出る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("おねぎあします", "オネギアシマス");
+        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
+        assert_eq!(got[1].candidates[0], "オネギアシマス");
+        assert_eq!(got[1].candidates[1], "お願いします");
+        assert_eq!(got[1].typo.as_deref(), Some("お願いします"));
+    }
+
+    #[test]
+    fn 通常の1bestが学習で変わっていれば補正の表記は2番目に出る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("よろしく", "宜しく");
+        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
+        assert_eq!(got[0].candidates[0], "宜しく");
+        assert_eq!(got[1].candidates[0], "おネギあします");
+        assert_eq!(got[1].candidates[1], "お願いします");
+    }
+
+    #[test]
+    fn 読み全体の学習表記があれば補正の表記は2番目に出る() {
+        let mut learning = LearningStore::in_memory();
+        learning.record("よろしくおねぎあします", "よろしく御願明日");
+        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
+        assert_eq!(got[1].candidates[1], "お願いします");
+        assert_eq!(got[1].typo.as_deref(), Some("お願いします"));
+    }
+
+    #[test]
+    fn 三文字未満の読みの文節の変換には補正が入らない() {
+        let learning = LearningStore::in_memory();
+        assert_eq!(
+            segment_pairs(&typo_segments("はr", &learning, true)),
+            segment_pairs(&typo_segments("はr", &learning, false))
+        );
+        assert!(typo_segments("はr", &learning, true).iter().all(|s| s.typo.is_none()));
     }
 }

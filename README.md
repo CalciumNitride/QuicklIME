@@ -201,6 +201,10 @@ copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
   よろしくお願いします)。候補一覧では補正の候補に「補正」のタグが付く。補正の候補は確定しても
   学習しない。設定 `typo_correction` (既定 1) が 0 なら出さない。仕様は
   [docs/design/typo-conversion.md](docs/design/typo-conversion.md)。
+  文節単位の変換 (`segment_ui` 1) では、文節を直した読みの区切りで分け、打ち間違えた語を含む文節の
+  候補に補正の表記が「補正」のタグ付きで先頭か 2 番目に入る (`asitanokiagihanannjikaradesuka` から
+  明日の会議は / 何時からですか)。補正の表記を選んだ文節は学習しない。Shift+←→ で長さを固定した
+  文節には入らない。仕様は [docs/design/typo-segment-ui.md](docs/design/typo-segment-ui.md)。
   候補選択中は未確定文字列に下線と変換対象の強調を出す。候補選択中は Space で次候補、
   Shift+Space で前候補、↑↓・数字 1〜9・F4〜F10 (入力全体にかかる) も使える。run 中の
   F4〜F10 も同様に候補選択に入って働く。未確定文字列を出せない文書では変換できず、読みは

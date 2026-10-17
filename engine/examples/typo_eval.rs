@@ -7,6 +7,8 @@
 //    打ち間違いのある文で補正の候補が出て正しい文になった割合・先頭になった割合を出す
 // 2. 今の定数での convert_nbest の結果 (補正の候補の有無と位置) を同じ数え方で出す
 // 3. convert_nbest の応答時間 (中央値・最大) を補正なしと比べる
+// 4. 文節 UI の変換 (convert_segments。kinds 付きの CONVSEG) の応答時間を補正なしと比べる
+//    (docs/design/typo-segment-ui.md)
 // 正しい文は、打ち間違いの無い読みの補正なしの 1-best の表記とする。
 // 学習・ユーザ辞書は空 (メモリ上のみ) で、前文脈は使わない。エンジンは lib を持たないため、
 // 変換に使うモジュールをソースごと取り込む (ut_diff と同じ方式)。結果は Markdown で標準出力へ書く。
@@ -403,27 +405,36 @@ fn main() -> BoxResult<()> {
 
     // 応答時間
     let all: Vec<&str> = clean.iter().map(|(r, _, _)| r.as_str()).chain(typos.iter().map(|t| t.reading.as_str())).collect();
-    println!("\n## 応答時間 (convert_nbest の 1 回、{} 回/読み、{} 読み)\n", args.iters, all.len());
-    println!("| 補正 | 中央値 (ms) | 最大 (ms) | 最大の読み |");
-    println!("|---|---|---|---|");
-    for typo in [false, true] {
-        let mut times: Vec<f64> = Vec::new();
-        let mut slowest = (0.0f64, "");
-        for kana in &all {
-            nbest(kana, typo);
-            for _ in 0..args.iters {
-                let started = Instant::now();
-                nbest(kana, typo);
-                let ms = started.elapsed().as_secs_f64() * 1000.0;
-                if ms > slowest.0 {
-                    slowest = (ms, kana);
+    let segments = |kana: &str, typo: bool| {
+        convert::convert_segments(kana, None, &dictionary, &user, &matrix, &functional, &learning, typo)
+    };
+    let timings: [(&str, &dyn Fn(&str, bool)); 2] = [
+        ("convert_nbest", &|kana, typo| drop(nbest(kana, typo))),
+        ("convert_segments", &|kana, typo| drop(segments(kana, typo))),
+    ];
+    for (name, run) in timings {
+        println!("\n## 応答時間 ({name} の 1 回、{} 回/読み、{} 読み)\n", args.iters, all.len());
+        println!("| 補正 | 中央値 (ms) | 最大 (ms) | 最大の読み |");
+        println!("|---|---|---|---|");
+        for typo in [false, true] {
+            let mut times: Vec<f64> = Vec::new();
+            let mut slowest = (0.0f64, "");
+            for kana in &all {
+                run(kana, typo);
+                for _ in 0..args.iters {
+                    let started = Instant::now();
+                    run(kana, typo);
+                    let ms = started.elapsed().as_secs_f64() * 1000.0;
+                    if ms > slowest.0 {
+                        slowest = (ms, kana);
+                    }
+                    times.push(ms);
                 }
-                times.push(ms);
             }
+            times.sort_by(|a, b| a.total_cmp(b));
+            let median = times[times.len() / 2];
+            println!("| {} | {median:.2} | {:.2} | {} |", if typo { "あり" } else { "なし" }, slowest.0, slowest.1);
         }
-        times.sort_by(|a, b| a.total_cmp(b));
-        let median = times[times.len() / 2];
-        println!("| {} | {median:.2} | {:.2} | {} |", if typo { "あり" } else { "なし" }, slowest.0, slowest.1);
     }
     Ok(())
 }

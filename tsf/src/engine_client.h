@@ -10,6 +10,9 @@
 struct ConversionSegment {
     std::wstring reading;                  // この文節の読み
     std::vector<std::wstring> candidates;  // 候補リスト (先頭が最良)
+    // 候補のうち補正の表記 (docs/design/typo-segment-ui.md)。候補の並びは後から入れ替わるので
+    // 位置ではなく表記で持つ。選んで確定しても学習を送らない
+    std::vector<std::wstring> typoSurfaces;
 };
 
 // 入力全体の候補 (CONVNBEST の1件)
@@ -57,7 +60,8 @@ public:
     EngineClient(const EngineClient&) = delete;
     EngineClient& operator=(const EngineClient&) = delete;
 
-    // かなを文節列に変換する (CONVSEG / 前文脈があれば CONVCTX)。
+    // かなを文節列に変換する (CONVSEG / 前文脈があれば CONVCTX)。kinds を付けて、補正の表記を
+    // typoSurfaces に受け取る。kinds を知らない旧エンジンには付けずに送り直す。
     // エンジンに接続できない・応答が不正な場合は false を返す (呼び出し側でフォールバック)
     bool ConvertSegments(const std::wstring& kana, const ConversionContext& context,
                          std::vector<ConversionSegment>* segments);
@@ -218,4 +222,7 @@ private:
     bool nbestUnsupported_ = false;
     // RERANK を知らないエンジンと判定したら、この接続では以後送らない
     bool rerankUnsupported_ = false;
+    // CONVSEG / CONVCTX の kinds を知らない (文節長として読んで ERR を返す) エンジンと判定したら、
+    // この接続では以後 kinds を付けない
+    bool segmentKindsUnsupported_ = false;
 };
