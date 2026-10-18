@@ -113,6 +113,9 @@ struct TsfConfig {
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す
     // (docs/design/next-word-prediction.md)
     bool nextWord = true;
+    // オン/オフの切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
+    // (設定 mode_popup。docs/design/mode-popup.md)
+    bool modePopup = true;
     // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
     // オフなら入力全体の候補から選ぶ (docs/design/nbest.md)
     bool segmentUi = false;

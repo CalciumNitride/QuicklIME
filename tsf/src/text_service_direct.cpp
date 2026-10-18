@@ -1859,7 +1859,9 @@ void TextService::UpdateCaretMarker(ITfContext* context)
     }
     const int height = static_cast<int>(
         std::lround(theme.triangleSize * static_cast<float>(config_.Get().candidateFontSize)));
-    caretMarker_.Show(markerCaret_, height, theme.caretMarkerColor);
+    if (caretMarker_.Show(markerCaret_, height, theme.caretMarkerColor)) {
+        modePopup_.Hide();
+    }
 }
 
 void TextService::HideCaretMarkerOutsidePeriod()

@@ -15,8 +15,10 @@ add_library(quicklime_tsf SHARED
     src/edit_session.cpp
     src/engine_client.cpp
     src/globals.cpp
+    src/icon_font.cpp
     src/kana_forms.cpp
     src/lang_bar.cpp
+    src/mode_popup.cpp
     src/panel_theme.cpp
     src/registry.cpp
     src/romaji.cpp

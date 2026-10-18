@@ -473,6 +473,8 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         config.maxPredictions = (n + 8) / 9 * 9;
     } else if (key == L"next_word") {
         ParseBool(value, config.nextWord);
+    } else if (key == L"mode_popup") {
+        ParseBool(value, config.modePopup);
     } else if (key == L"segment_ui") {
         ParseBool(value, config.segmentUi);
     } else if (key == L"llm") {

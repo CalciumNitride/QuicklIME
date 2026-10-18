@@ -5,14 +5,13 @@
 #include <ctffunc.h> // GUID_LBI_INPUTMODE
 #include <olectl.h>  // CONNECT_E_*
 
+#include "icon_font.h"
+
 class TextService;
 
 struct ID2D1Factory;
 struct ID2D1DCRenderTarget;
 struct ID2D1SolidColorBrush;
-struct IDWriteFactory;
-struct IDWriteFontFace;
-struct IDWriteFontFileLoader;
 
 // タスクバーの IME アイコンに対応する言語バー項目 (GUID_LBI_INPUTMODE)。
 // Windows 11 では入力インジケータのアイコンとして表示され、
@@ -52,7 +51,6 @@ public:
 private:
     ~LangBarButton();
 
-    bool EnsureFontFace();
     bool EnsureTarget();
     void ReleaseTarget();
     // 入力モードの文字アイコンを作る。返した HICON は呼び出し側 (TSF) が破棄する
@@ -64,9 +62,7 @@ private:
 
     // アイコンの描画 (最初の GetIcon で作って使い回す)
     ID2D1Factory* d2dFactory_;
-    IDWriteFactory* dwriteFactory_;
-    IDWriteFontFileLoader* fontLoader_;  // dwriteFactory_ に登録したリソースのフォントの loader
-    IDWriteFontFace* fontFace_;          // リソースのフォント (読めなければ Yu Gothic UI)
+    IconFont font_;
     ID2D1DCRenderTarget* target_;
     ID2D1SolidColorBrush* brush_;
 };

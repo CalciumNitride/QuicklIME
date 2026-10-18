@@ -620,6 +620,7 @@ STDMETHODIMP TextService::Deactivate()
     ClearBar();
     caretMarker_.Hide();
     markerCaretValid_ = false;
+    modePopup_.Hide();
     ClearContext();
     composer_.Clear();
     lastCommitText_.clear();
@@ -702,7 +703,6 @@ STDMETHODIMP TextService::OnUninitDocumentMgr(ITfDocumentMgr* docMgr)
 
 STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prevFocus)
 {
-    UNREFERENCED_PARAMETER(prevFocus);
     // 直前の挿入は離れる文書のもの (次の文書の分類に使わない)
     lastInserted_.clear();
     // run は文書を離れた時点で学習せずに終える。パネル保持入力の読みは元の文書に入れずに捨て、
@@ -722,6 +722,7 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 三角は離れる文書のキャレットを指している
     caretMarker_.Hide();
     markerCaretValid_ = false;
+    modePopup_.Hide();
     // 確定アンドゥの記憶も離れる文書のもの
     lastCommitText_.clear();
     // 採用した文字列の記憶も離れる文書のもの
@@ -756,6 +757,11 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     // 入力欄かどうか (アイコンの「×」) はフォーカスの文書で変わる
     if (langBarButton_ != nullptr) {
         langBarButton_->NotifyUpdate();
+    }
+    // 同じ文書への OnSetFocus (ダイアログの開閉などで戻っただけ) のたびに出すと目障りなため、
+    // 別の文書に移ったときだけ出す
+    if (focus != nullptr && focus != prevFocus) {
+        ShowModePopup();
     }
     return S_OK;
 }
@@ -1065,6 +1071,7 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    modePopup_.Hide();
     const bool logging = !config_.Get().debugLog.empty();
     const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
@@ -1097,6 +1104,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    modePopup_.Hide();
     const bool logging = !config_.Get().debugLog.empty();
     const KeyState state = logging ? CurrentKeyState() : KeyState::Idle;
     const KeyMatch match = logging ? MatchKeyFunc(wparam) : KeyMatch{};
@@ -1201,6 +1209,8 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
     if (eaten == nullptr) {
         return E_INVALIDARG;
     }
+    // オン/オフの切替キーで出す一時表示は、この後の OPENCLOSE の OnChange で出し直す
+    modePopup_.Hide();
     if (!config_.Get().debugLog.empty()) {
         const wchar_t* name = L"不明";
         if (IsEqualGUID(rguid, globals::kPreservedKeyF10Guid)) {
@@ -1353,6 +1363,9 @@ void TextService::ApplyImeStartOnFirstFocus(const wchar_t* where)
     DebugLog(std::wstring(L"起動時の IME: プロセスで最初の文書フォーカス (") + where +
              L") の OPENCLOSE=" + before + L" 適用=" + (listed ? (open ? L"on" : L"off") : L"なし") +
              L" 適用後=" + OpenCloseLogText());
+    if (listed) {
+        ShowModePopup();
+    }
 }
 
 void TextService::LogImeStartChange()
@@ -1389,6 +1402,33 @@ bool TextService::IsKeyboardDisabled() const
         (ReadContextCompartment(context, GUID_COMPARTMENT_EMPTYCONTEXT, &value) && value != 0);
     context->Release();
     return disabled;
+}
+
+void TextService::ShowModePopup()
+{
+    if (!config_.Get().modePopup || IsKeyboardDisabled()) {
+        modePopup_.Hide();
+        return;
+    }
+    ITfContext* context = nullptr;
+    ITfDocumentMgr* docMgr = nullptr;
+    if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) && docMgr != nullptr) {
+        docMgr->GetTop(&context);
+        docMgr->Release();
+    }
+    RECT caret = {};
+    bool replaced = false;
+    // 代わりの位置はキャレットの位置ではなく、状態と無関係な場所に出るため出さない。
+    // フォーカス移動の直後でアプリがまだキャレットを置いていないときも、待たずに出さない
+    if (CaretRect(context, &caret, nullptr, &replaced) && !replaced) {
+        modePopup_.Show(caret, IsKeyboardOpen(), panelTheme_.Get(),
+                        config_.Get().candidateFontSize);
+    } else {
+        modePopup_.Hide();
+    }
+    if (context != nullptr) {
+        context->Release();
+    }
 }
 
 void TextService::DiscardRunWhileDisabled()
@@ -1457,6 +1497,11 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     // 採用した文字列の記憶は、オフの時点で確定した文字列まで含めて捨てる
     if (!IsKeyboardOpen()) {
         adopted_.clear();
+    }
+    // 起動時の IME の状態 (ime_start_apps) を適用する前の変化 (ActivateEx の既定のオンや、システムに
+    // よる書き換え) では出さない。適用前の状態を一瞬出してから切り替わって見えるため
+    if (InterlockedCompareExchange(&s_firstFocusDone, 0, 0) != 0) {
+        ShowModePopup();
     }
     HideCaretMarkerOutsidePeriod();
     return S_OK;
@@ -2776,6 +2821,7 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
     ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
+    modePopup_.Hide();
     return suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
 }
 
@@ -3566,6 +3612,7 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
             typo[i] = typo[i] || (it != wholeCandidates_.end() && it->typo);
         }
     }
+    modePopup_.Hide();
     const size_t pageSize = suggestPanel_.ShowConversion(
         placement, candidates, typo, selected_[segmentIndex_], hasInput ? &input : nullptr);
     if (pageSize > 0) {

@@ -11,6 +11,7 @@
 #include "caret_marker.h"
 #include "config.h"
 #include "engine_client.h"
+#include "mode_popup.h"
 #include "romaji.h"
 #include "suggest_panel.h"
 
@@ -135,7 +136,8 @@ private:
     // 診断ログ用の OPENCLOSE の値 ("0" / "1" / "未設定" / "取得失敗")
     std::wstring OpenCloseLogText() const;
     // プロセスで最初に文書へフォーカスしたときだけ、起動時の IME の状態 (ime_start_apps) を
-    // 適用し、前後の OPENCLOSE の値を診断ログに出す。where はログ用の呼び出し元
+    // 適用し、前後の OPENCLOSE の値を診断ログに出す。適用したら入力モードの一時表示を出す。
+    // where はログ用の呼び出し元
     void ApplyImeStartOnFirstFocus(const wchar_t* where);
     // プロセスで最初の文書フォーカスから一定時間だけ、OPENCLOSE の変更を診断ログに出す
     // (適用した後でシステムが値を書き換えるかを確かめるため)
@@ -361,6 +363,11 @@ private:
     void HideCaretMarkerOutsidePeriod();
     // placement に、キャレットの印に合わせた尻尾・三角の指定を入れる
     void ApplyCaretMarker(SuggestPanel::Placement* placement) const;
+
+    // ---- 入力モードの一時表示 (docs/design/mode-popup.md) ----
+    // フォーカス中の文書のキャレットの近くに今のオン/オフを一時表示する。設定 mode_popup 0・
+    // 入力欄でない・キャレットの矩形が取れない・代わりの位置に置き換えたときは出さない (表示中なら消す)
+    void ShowModePopup();
 
     // ---- LLM による並べ替え (docs/design/llm-rerank.md) ----
     // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
@@ -765,6 +772,8 @@ private:
     CaretMarker caretMarker_;
     RECT markerCaret_;
     bool markerCaretValid_;  // markerCaret_ を印に使えるか
+
+    ModePopup modePopup_;  // 入力モードの一時表示
 
     // LLM による並べ替え。左文脈は run の先頭より前の文字列で、メモリ上だけで使う
     std::wstring llmRunContext_;   // この run の左文脈 (run を始めたときに取る)

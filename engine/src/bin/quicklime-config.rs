@@ -93,6 +93,7 @@ const ID_CHECK_APP_NEWLINE: i32 = 133;
 const ID_COMBO_APP_IME_START: i32 = 134;
 const ID_CHECK_APP_NO_LEARNING: i32 = 135;
 const ID_CHECK_INPUT_SCOPE: i32 = 136;
+const ID_CHECK_MODE_POPUP: i32 = 137;
 const ID_BUTTON_SAVE: i32 = 140;
 const ID_BUTTON_CANCEL: i32 = 141;
 // キー割当の編集ダイアログ。区画 k (0 = 基本の割当、1〜4 = STATES[k - 1] の上書き) ごとに +k*10
@@ -457,6 +458,8 @@ struct Config {
     candidate_position: String,
     /// 入力中の読みも候補と同じパネルに出す
     panel_input: bool,
+    /// 切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
+    mode_popup: bool,
     segment_ui: bool,
     llm: bool,
     /// LLM のバックエンド ("cpu" / "vulkan")
@@ -493,6 +496,7 @@ impl Default for Config {
             panel_theme: BUILTIN_THEMES[0].0.to_string(),
             candidate_position: "caret".to_string(),
             panel_input: false,
+            mode_popup: true,
             segment_ui: false,
             llm: false,
             llm_backend: "cpu".to_string(),
@@ -803,6 +807,7 @@ impl Config {
                 }
             }
             "panel_input" => parse_bool(&mut self.panel_input),
+            "mode_popup" => parse_bool(&mut self.mode_popup),
             "segment_ui" => parse_bool(&mut self.segment_ui),
             "llm" => parse_bool(&mut self.llm),
             "llm_backend" => {
@@ -909,6 +914,7 @@ impl Config {
         text.push_str(&format!("panel_theme\t{}\n", self.panel_theme));
         text.push_str(&format!("candidate_position\t{}\n", self.candidate_position));
         text.push_str(&format!("panel_input\t{}\n", self.panel_input as u32));
+        text.push_str(&format!("mode_popup\t{}\n", self.mode_popup as u32));
         text.push_str(&format!("candidate_font\t{}\n", self.candidate_font));
         text.push_str(&format!("candidate_font_size\t{}\n", self.candidate_font_size));
         text.push_str("\n# キー割当 (key.<機能>@<状態> は状態別の上書き)\n");
@@ -1336,6 +1342,20 @@ fn main() {
         add_combo(ctrl_x, y, ID_COMBO_CANDIDATE_POSITION, &position_labels, current_position);
         y += row_h + row_gap;
         check("入力中の読みも候補と同じ場所に表示する", y, ID_CHECK_PANEL_INPUT, config.panel_input);
+        y += row_h + row_gap;
+        // 文言が長く column_w に収まらないため、タブの幅いっぱいに置く
+        let mode_popup_check = create_control(
+            "BUTTON",
+            "切り替えたときに入力モードをキャレットの近くに表示する",
+            check_style,
+            0,
+            page_x,
+            y,
+            page_w,
+            row_h,
+            ID_CHECK_MODE_POPUP,
+        );
+        SendMessageW(mode_popup_check, BM_SETCHECK, config.mode_popup as usize, 0);
         y += row_h + row_gap;
         create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
@@ -1859,6 +1879,7 @@ fn collect(hwnd: HWND) -> Config {
         config.candidate_position = name.to_string();
     }
     config.panel_input = checked(ID_CHECK_PANEL_INPUT);
+    config.mode_popup = checked(ID_CHECK_MODE_POPUP);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     config.llm = checked(ID_CHECK_LLM);
     let backend = combo_text(ID_COMBO_LLM_BACKEND);
@@ -2947,6 +2968,21 @@ mod tests {
         config.apply("panel_input", "2");
         assert_eq!(config.candidate_position, "center");
         assert!(config.panel_input);
+    }
+
+    #[test]
+    fn reads_mode_popup() {
+        let mut config = Config::default();
+        assert!(config.mode_popup);
+        assert!(config.file_text().contains("\nmode_popup\t1\n"));
+        config.apply("mode_popup", "0");
+        assert!(!config.mode_popup);
+        assert!(config.file_text().contains("\nmode_popup\t0\n"));
+        // 不正な値は読み飛ばす
+        config.apply("mode_popup", "2");
+        assert!(!config.mode_popup);
+        config.apply("mode_popup", "1");
+        assert!(config.mode_popup);
     }
 
     #[test]
