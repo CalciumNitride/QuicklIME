@@ -2,3 +2,4 @@
 #include "resource.h"
 
 IDI_QUICKLIME  ICON  "Icon\\QuicklIME.ico"
+IDR_ICON_FONT  RCDATA  "Font\\MPLUSRounded1c-Regular-icon.ttf"

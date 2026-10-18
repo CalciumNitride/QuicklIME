@@ -101,6 +101,8 @@
 - [config-tabs.md](config-tabs.md): 設定ツールのメイン画面のタブ化
 - [app-settings.md](app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
   編集欄にする (改行キー・起動時の IME の状態)
+- [mode-icon.md](mode-icon.md): タスクバーの入力モードのアイコン (あ・A・入力欄でないときの ×) を、同梱の
+  M PLUS Rounded 1c で透明な背景にテーマの色で描く
 
 ## エンジン
 

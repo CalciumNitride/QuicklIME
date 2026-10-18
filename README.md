@@ -77,6 +77,11 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
   LICENSE-zenz.txt (Apache License 2.0) を同梱している。LLM の子プロセスは VC++ ランタイムを
   動的にリンクするため、再頒布可能な DLL (msvcp140・vcruntime140・vcruntime140_1・vcomp140) を
   exe と同じディレクトリに置く (ビルド環境の Visual Studio の `VC\Redist\MSVC\<版>\x64` から取る)
+- タスクバーの入力モードのアイコンは、M PLUS Rounded 1c Regular (SIL Open Font License 1.1) を
+  「あ」「A」「×」の 3 字にサブセット化したもの (`tsf\src\Font\MPLUSRounded1c-Regular-icon.ttf`) を
+  DLL のリソースに入れて描く。サブセットは `scripts\subset-icon-font.py` で Google Fonts の
+  `ofl/mplusrounded1c/MPLUSRounded1c-Regular.ttf` から作る。著作権表示と許諾文
+  LICENSE-MPLUSRounded1c.txt を同梱している
 
 登録後、Win+Space で「QuicklIME」を選択して使用する。
 

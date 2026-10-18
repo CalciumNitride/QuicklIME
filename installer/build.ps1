@@ -191,6 +191,7 @@ foreach ($license in $sudachiLicenses) {
 Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-zenz.txt') $staging
+Copy-Item (Join-Path $root 'tsf\src\Font\LICENSE-MPLUSRounded1c.txt') $staging
 
 $size = (Get-ChildItem -Recurse $staging | Measure-Object -Property Length -Sum).Sum / 1MB
 Write-Host ("staging 合計: {0:N1} MB" -f $size)

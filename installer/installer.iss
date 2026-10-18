@@ -66,6 +66,7 @@ Source: "{#Staging}\LICENSE-mozcdic-ut.txt"; DestDir: "{app}"; Flags: ignorevers
 Source: "{#Staging}\LICENSE-SCOWL.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-llama.cpp.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-zenz.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Staging}\LICENSE-MPLUSRounded1c.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\QuicklIME 設定"; Filename: "{app}\quicklime-config.exe"

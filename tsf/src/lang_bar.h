@@ -7,6 +7,13 @@
 
 class TextService;
 
+struct ID2D1Factory;
+struct ID2D1DCRenderTarget;
+struct ID2D1SolidColorBrush;
+struct IDWriteFactory;
+struct IDWriteFontFace;
+struct IDWriteFontFileLoader;
+
 // タスクバーの IME アイコンに対応する言語バー項目 (GUID_LBI_INPUTMODE)。
 // Windows 11 では入力インジケータのアイコンとして表示され、
 // 左クリックで IME オン/オフのトグル、右クリックでメニュー (設定・単語登録)
@@ -39,13 +46,27 @@ public:
     STDMETHODIMP AdviseSink(REFIID riid, IUnknown* unknown, DWORD* cookie) override;
     STDMETHODIMP UnadviseSink(DWORD cookie) override;
 
-    // IME オン/オフ切替時にアイコンの再取得を促す
+    // IME オン/オフの切替・フォーカスの移動でアイコンの再取得を促す
     void NotifyUpdate();
 
 private:
     ~LangBarButton();
 
+    bool EnsureFontFace();
+    bool EnsureTarget();
+    void ReleaseTarget();
+    // 入力モードの文字アイコンを作る。返した HICON は呼び出し側 (TSF) が破棄する
+    HICON CreateModeIcon(wchar_t ch);
+
     LONG refCount_;
     TextService* service_;      // 所有元のテキストサービス (AddRef して保持)
     ITfLangBarItemSink* sink_;  // 言語バーからの更新通知先 (AdviseSink で設定)
+
+    // アイコンの描画 (最初の GetIcon で作って使い回す)
+    ID2D1Factory* d2dFactory_;
+    IDWriteFactory* dwriteFactory_;
+    IDWriteFontFileLoader* fontLoader_;  // dwriteFactory_ に登録したリソースのフォントの loader
+    IDWriteFontFace* fontFace_;          // リソースのフォント (読めなければ Yu Gothic UI)
+    ID2D1DCRenderTarget* target_;
+    ID2D1SolidColorBrush* brush_;
 };

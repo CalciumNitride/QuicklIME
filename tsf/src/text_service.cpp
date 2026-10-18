@@ -753,6 +753,10 @@ STDMETHODIMP TextService::OnSetFocus(ITfDocumentMgr* focus, ITfDocumentMgr* prev
     if (logging) {
         LogFocusDocument(focus, inputScopeLog);
     }
+    // 入力欄かどうか (アイコンの「×」) はフォーカスの文書で変わる
+    if (langBarButton_ != nullptr) {
+        langBarButton_->NotifyUpdate();
+    }
     return S_OK;
 }
 
