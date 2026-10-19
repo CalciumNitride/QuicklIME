@@ -18,6 +18,7 @@ mod matrix;
 mod number;
 mod pos;
 mod predict;
+mod suggest;
 mod typo;
 mod userdict;
 
@@ -362,14 +363,17 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
     let mut fields = line.split('\t');
     match fields.next() {
         Some("RERANK") => {
-            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds] : LLM による並べ替えを
-            // 依頼する。LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
+            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : LLM による
+            // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
             let llm_context = fields.next().unwrap_or("");
             let ctx = fields.next().and_then(parse_context);
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
             };
-            let kinds = fields.next() == Some(KINDS_FIELD);
+            let (kinds, keys) = match parse_kinds_and_keys(&mut fields, kana) {
+                Ok(parsed) => parsed,
+                Err(e) => return format!("ERR\t{e}\n"),
+            };
             let cfg = *data.config.lock().expect("config lock");
             if !cfg.llm {
                 return "OK\t0\n".to_string();
@@ -377,7 +381,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
             let candidates = {
                 let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
-                convert::convert_nbest(
+                convert::convert_nbest_scored(
                     kana,
                     ctx.as_ref(),
                     &data.dictionary,
@@ -385,8 +389,10 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                     &data.matrix,
                     &data.functional,
                     &learning,
-                    cfg.typo_correction,
+                    typo_source(cfg.typo_correction, keys.as_ref()),
+                    &typo::TUNING,
                 )
+                .candidates
             };
             let job = llm::Job {
                 id: session.last_id + 1,
@@ -514,18 +520,41 @@ const KIND_SEPARATOR: char = '\x1d';
 /// CONVNBEST・RERANK・CONVSEG・CONVCTX の要求の末尾に付けると、応答の候補に種類が付く
 const KINDS_FIELD: &str = "kinds";
 
+/// CONVNBEST・RERANK の要求の、かなの後ろの kinds と、その後ろの省略できる打鍵のフィールドを読む。
+/// 打鍵の要素の数がかなの文字数と合わなければ Err
+fn parse_kinds_and_keys<'a>(
+    fields: &mut impl Iterator<Item = &'a str>,
+    kana: &str,
+) -> Result<(bool, Option<typo::Keys>), String> {
+    if fields.next() != Some(KINDS_FIELD) {
+        return Ok((false, None));
+    }
+    let keys = fields.next().map(|field| typo::Keys::parse(kana, field)).transpose()?;
+    Ok((true, keys))
+}
+
+/// 入力全体の候補の補正の元。打鍵が無ければかなを戻した近似
+fn typo_source(typo: bool, keys: Option<&typo::Keys>) -> convert::TypoSource<'_> {
+    match (typo, keys) {
+        (false, _) => convert::TypoSource::Off,
+        (true, Some(keys)) => convert::TypoSource::Keys(keys),
+        (true, None) => convert::TypoSource::Kana,
+    }
+}
+
 /// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ。
-/// kinds なら補正の候補の末尾に種類を付ける
+/// kinds なら補正の候補の末尾に種類を付ける。keys は打鍵 (無ければかなを戻した近似で補正する)
 fn nbest_response(
     kana: &str,
     ctx: Option<&convert::Context>,
     kinds: bool,
+    keys: Option<&typo::Keys>,
     data: &EngineData,
 ) -> String {
     let typo = data.config.lock().expect("config lock").typo_correction;
     let user = data.user.lock().expect("user lock");
     let learning = data.learning.lock().expect("learning lock");
-    let candidates = convert::convert_nbest(
+    let candidates = convert::convert_nbest_scored(
         kana,
         ctx,
         &data.dictionary,
@@ -533,9 +562,53 @@ fn nbest_response(
         &data.matrix,
         &data.functional,
         &learning,
-        typo,
-    );
+        typo_source(typo, keys),
+        &typo::TUNING,
+    )
+    .candidates;
     format!("OK\t{}\n", format_candidates(&candidates, kinds))
+}
+
+/// SUGGEST の応答を作る。候補は「種類\x1d読み\x1f表記\x1e読み\x1f表記...」のタブ区切り、
+/// 候補なしは OK のみ
+fn suggest_response(
+    kana: &str,
+    ctx: Option<&convert::Context>,
+    keys: &typo::Keys,
+    data: &EngineData,
+) -> String {
+    let cfg = *data.config.lock().expect("config lock");
+    let user = data.user.lock().expect("user lock");
+    let learning = data.learning.lock().expect("learning lock");
+    let list = suggest::suggest(
+        kana,
+        ctx,
+        keys,
+        &data.dictionary,
+        &user,
+        &data.matrix,
+        &data.functional,
+        &learning,
+        &cfg,
+        &typo::TUNING,
+    );
+    if list.is_empty() {
+        return "OK\n".to_string();
+    }
+    let body = list
+        .iter()
+        .map(|s| {
+            let segments = s
+                .segments
+                .iter()
+                .map(|(reading, surface)| format!("{reading}{FIELD_SEPARATOR}{surface}"))
+                .collect::<Vec<_>>()
+                .join(&SEGMENT_SEPARATOR.to_string());
+            format!("{}{KIND_SEPARATOR}{segments}", s.kind.name())
+        })
+        .collect::<Vec<_>>()
+        .join("\t");
+    format!("OK\t{body}\n")
 }
 
 /// 入力全体の候補を CONVNBEST の応答の形 (候補はタブ区切り、文節は \x1e 区切り) にする。
@@ -605,14 +678,30 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
         }
         Some("CONVNBEST") => {
-            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds] : 入力全体の候補を返す
+            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : 入力全体の候補を返す
             let ctx = fields.next().and_then(parse_context);
             match fields.next() {
-                Some(kana) if !kana.is_empty() => {
-                    let kinds = fields.next() == Some(KINDS_FIELD);
-                    nbest_response(kana, ctx.as_ref(), kinds, data)
-                }
+                Some(kana) if !kana.is_empty() => match parse_kinds_and_keys(&mut fields, kana) {
+                    Ok((kinds, keys)) => {
+                        nbest_response(kana, ctx.as_ref(), kinds, keys.as_ref(), data)
+                    }
+                    Err(e) => format!("ERR\t{e}\n"),
+                },
                 _ => "ERR\tかなが空です\n".to_string(),
+            }
+        }
+        Some("SUGGEST") => {
+            // SUGGEST\t<文脈読み>\x1f<文脈表記>\t<かな>\t<打鍵> : 全体変換と予測を 1 つの並びで返す
+            let ctx = fields.next().and_then(parse_context);
+            let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
+                return "ERR\tかなが空です\n".to_string();
+            };
+            let Some(field) = fields.next() else {
+                return "ERR\t打鍵がありません\n".to_string();
+            };
+            match typo::Keys::parse(kana, field) {
+                Ok(keys) => suggest_response(kana, ctx.as_ref(), &keys, data),
+                Err(e) => format!("ERR\t{e}\n"),
             }
         }
         Some("CONVSYM") => match fields.next() {
@@ -1232,6 +1321,75 @@ mod tests {
         let response = handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds", &data);
         assert!(candidate_field(&response, "よろしくお願いします").is_none(), "{response}");
         assert!(!response.contains(KIND_SEPARATOR), "{response}");
+    }
+
+    /// よろしくおねぎあします の打鍵 (onegiasimasu: gi|a の入れ替え)
+    const TYPO_KEYS: &str = "yo\x1fro\x1fsi\x1fku\x1fo\x1fne\x1fgi\x1fa\x1fsi\x1fma\x1fsu";
+
+    #[test]
+    fn convnbestに打鍵を付けると打鍵から補正の候補を作る() {
+        let data = typo_data();
+        let response =
+            handle_request(&format!("CONVNBEST\t\tよろしくおねぎあします\tkinds\t{TYPO_KEYS}"), &data);
+        let field = candidate_field(&response, "よろしくお願いします")
+            .unwrap_or_else(|| panic!("補正の候補が無い: {response}"));
+        assert!(field.ends_with("\x1dtypo"), "{field}");
+        // 打鍵なしの要素 (文書から読んだかな) は標準の綴りで補うので ERR にならない
+        let response = handle_request(
+            "CONVNBEST\t\tよろしくおねぎあします\tkinds\tよ\x1fろ\x1fし\x1fく\x1fお\x1fね\x1fぎ\x1fあ\x1fし\x1fま\x1fす",
+            &data,
+        );
+        assert!(candidate_field(&response, "よろしくお願いします").is_some(), "{response}");
+        // 要素の数がかなの文字数と合わなければ ERR
+        assert!(
+            handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds\tyo\x1fro", &data)
+                .starts_with("ERR\t")
+        );
+        let mut session = Session::new();
+        assert!(
+            handle_line("RERANK\t\t\tよろしくおねぎあします\tkinds\tyo\x1fro", &data, &mut session)
+                .starts_with("ERR\t")
+        );
+    }
+
+    #[test]
+    fn suggestは種類付きの全体変換と予測を返す() {
+        let data = typo_data();
+        let response = handle_request(&format!("SUGGEST\t\tよろしくおねぎあします\t{TYPO_KEYS}"), &data);
+        let fields: Vec<&str> = response.trim_end().strip_prefix("OK\t").unwrap().split('\t').collect();
+        // 候補は「種類\x1d読み\x1f表記\x1e...」
+        let typo = fields.iter().find(|f| f.starts_with("typo\x1d")).unwrap_or_else(|| panic!("{response}"));
+        let body = typo.strip_prefix("typo\x1d").unwrap();
+        let surface: String =
+            body.split(SEGMENT_SEPARATOR).map(|s| s.split_once(FIELD_SEPARATOR).unwrap().1).collect();
+        assert_eq!(surface, "よろしくお願いします");
+        // CONVNBEST に打鍵を付けたときと同じ補正の候補
+        let nbest =
+            handle_request(&format!("CONVNBEST\t\tよろしくおねぎあします\tkinds\t{TYPO_KEYS}"), &data);
+        let field = candidate_field(&nbest, "よろしくお願いします").unwrap();
+        assert_eq!(field.strip_suffix("\x1dtypo").unwrap(), body);
+        assert!(fields.iter().all(|f| ["whole\x1d", "typo\x1d", "predict\x1d", "predict_typo\x1d"]
+            .iter()
+            .any(|k| f.starts_with(k))));
+    }
+
+    #[test]
+    fn suggestの予測は辞書の正しい読みで返る() {
+        let data = typo_data();
+        // yorosik (未完成のローマ字 k)
+        let response = handle_request("SUGGEST\t\tよろし\tyo\x1fro\x1fsi\x1ek", &data);
+        assert!(response.contains("predict\x1dよろしく\x1fよろしく"), "{response}");
+    }
+
+    #[test]
+    fn suggestの打鍵が無いか合わなければエラー() {
+        let data = typo_data();
+        assert!(handle_request("SUGGEST\t\tよろし", &data).starts_with("ERR\t"));
+        assert!(handle_request("SUGGEST\t\tよろし\tyo\x1fro", &data).starts_with("ERR\t"));
+        assert!(handle_request("SUGGEST\t\t\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("SUGGEST", &data).starts_with("ERR\t"));
+        // 候補が無ければ OK のみ
+        assert_eq!(handle_request("SUGGEST\t\tx\tx", &empty_data()), "OK\n");
     }
 
     #[test]

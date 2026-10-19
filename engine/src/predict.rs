@@ -1,21 +1,27 @@
-// 予測入力 (PREDICT) と読みなしの後続語予測 (NEXTWORD) の候補生成
+// 予測入力 (PREDICT・SUGGEST の予測) と読みなしの後続語予測 (NEXTWORD) の候補生成
 //
 // PREDICT は読みの前方一致でユーザ辞書の短縮よみ (記載順) → 前文脈付きの学習 (前文脈があるとき、
 // 新しい順) → ユーザ辞書の名詞系 (記載順) → 履歴 (確定履歴、新しい順)
 // → 同梱辞書とインポート辞書の名詞系 (両者を混ぜてコスト順。同コストは同梱辞書が先)
 // を検索し、この順に合成して返す。表記の重複は先勝ちで除き、表記が入力かなそのままの候補は出しても意味が無いため除外する。
-// 完全一致で枠が埋まらないときは、タイプミス補正 (1かな誤りの曖昧一致) で補充する。
+// 完全一致で枠が埋まらないときは、タイプミス補正 (かなを標準の綴りに戻した打鍵のファジィ照合) で補充する。
+// SUGGEST の予測 (scored) は同じ対象を打鍵のファジィ照合で常に引き、候補に点数を付ける
+// (docs/design/unified-suggest.md の C・E)。
 // NEXTWORD は前文脈付きの学習だけを前文脈で引く (辞書には語の連接の統計が無いため)。
 // 候補の最大数・最小読み文字数・補正の有無は設定 (config.rs) に従う。
 
 use crate::config::Config;
 use crate::dict::Dictionary;
 use crate::learn::LearningStore;
+use crate::typo;
 use crate::userdict::UserDict;
 
 /// タイプミス補正 (曖昧一致) を使う最小の読み文字数。
 /// 短い読みは1かな違いの別語が多すぎて誤補正だらけになる
 const MIN_FUZZY_CHARS: usize = 3;
+
+/// ファジィ照合で打鍵を使い切った位置のうち、その先の語を列挙する位置の数
+const MAX_FUZZY_PREFIXES: usize = 8;
 
 /// 読みの前方一致で予測候補 (読み, 表記) を返す。context は前文脈 (直前に確定した文節の表記)。
 /// 読みは採用時の LEARN に使うため、入力の接頭辞ではなく候補の完全な読みを返す
@@ -62,9 +68,22 @@ pub fn predict(
         push_unique(&mut results, kana, reading, surface);
     }
     // 完全一致で枠が埋まらないときだけタイプミス補正で補充する
-    // (埋まっていれば曖昧検索そのものを実行せず、通常時のコストをゼロにする)
+    // (埋まっていれば曖昧検索そのものを実行せず、通常時のコストをゼロにする)。
+    // PREDICT には打鍵が届かないので、かなを標準の綴りに戻した打鍵で照合する
     if cfg.typo_correction && results.len() < max && kana.chars().count() >= MIN_FUZZY_CHARS {
-        for (reading, surface) in dict.fuzzy_predict_prefix(kana, max * 2 + 1) {
+        let keys = typo::Keys::standard(kana);
+        let matcher = typo::Matcher::new(&keys, typo::TUNING.allowed_edits(keys.len()), &typo::TUNING);
+        let mut fuzzy: Vec<(i16, String, String)> = Vec::new();
+        for position in dict.fuzzy_prefixes(&matcher, MAX_FUZZY_PREFIXES) {
+            if position.edits == 0 {
+                continue;
+            }
+            for (reading, entry) in dict.predict_prefix_entries(&position.prefix, max * 2 + 1) {
+                fuzzy.push((entry.cost, reading, entry.surface.clone()));
+            }
+        }
+        fuzzy.sort_by_key(|(cost, _, _)| *cost);
+        for (_, reading, surface) in fuzzy {
             if results.len() >= max {
                 break;
             }
@@ -72,6 +91,94 @@ pub fn predict(
         }
     }
     results.truncate(max);
+    results
+}
+
+/// 点数付きの予測の候補 (SUGGEST の並びに入れるもの)
+#[derive(Debug, Clone, PartialEq)]
+pub struct Prediction {
+    /// 候補の完全な読み (辞書の正しい読み)
+    pub reading: String,
+    pub surface: String,
+    /// 点数 (小さいほど上。docs/design/unified-suggest.md の E)
+    pub score: i64,
+    /// 照合に使ったずれの数
+    pub edits: usize,
+}
+
+/// 打鍵のファジィ照合 matcher で予測の候補を集め、点数を付けて返す (SUGGEST の予測)。
+/// 並びは短縮よみ → 前文脈付きの学習 → ユーザ辞書の名詞系 → 確定履歴 → 同梱辞書とインポート辞書の語
+/// (点数順) で、呼び出し側が点数で並べ直す。表記が入力かなそのままの候補は除く。
+/// word_score(left_id, right_id, 単語コスト) は、その語 1 語だけの経路のコストから全体変換の
+/// 通常の最良経路のコストを引き、PREDICT_BIAS を足した値
+pub fn scored(
+    kana: &str,
+    matcher: &typo::Matcher,
+    context: Option<&str>,
+    dict: &Dictionary,
+    user: &UserDict,
+    learning: &LearningStore,
+    cfg: &Config,
+    word_score: &dyn Fn(u16, u16, i16) -> i64,
+) -> Vec<Prediction> {
+    let max = cfg.max_predictions;
+    let mut results: Vec<Prediction> = Vec::new();
+    let mut push = |reading: &str, surface: &str, score: i64, edits: usize| {
+        if surface != kana {
+            results.push(Prediction {
+                reading: reading.to_string(),
+                surface: surface.to_string(),
+                score,
+                edits,
+            });
+        }
+    };
+    // 学習と短縮よみの点数は仮の値 (学習の点数付けは別の設計で決める)
+    for (reading, surface, cost, edits) in user.shortcut_fuzzy(matcher, max) {
+        push(reading, surface, -1 + i64::from(cost), edits);
+    }
+    if let Some(context) = context {
+        for (i, (reading, surface, cost, edits)) in
+            learning.fuzzy_context(context, matcher, max).into_iter().enumerate()
+        {
+            push(reading, surface, 100 * i as i64 + i64::from(cost), edits);
+        }
+    }
+    for (word, cost, edits) in user.word_fuzzy(matcher, max) {
+        let score = word_score(word.left_id, word.right_id, word.cost) + i64::from(cost);
+        push(&word.reading, &word.surface, score, edits);
+    }
+    for (i, (reading, surface, cost, edits)) in
+        learning.fuzzy_prefix(matcher, max).into_iter().enumerate()
+    {
+        push(reading, surface, 500 + 100 * i as i64 + i64::from(cost), edits);
+    }
+    // 同じ語は複数の位置から引けるので、点数の安いほうを残す
+    let mut hits: Vec<(i64, String, String, usize)> = Vec::new();
+    let positions = dict.fuzzy_prefixes(matcher, MAX_FUZZY_PREFIXES);
+    for position in &positions {
+        for (reading, entry) in dict.predict_prefix_entries(&position.prefix, max * 2 + 1) {
+            let score = word_score(entry.left_id, entry.right_id, entry.cost) + i64::from(position.cost);
+            hits.push((score, reading, entry.surface.clone(), position.edits));
+        }
+    }
+    for position in user.imported_fuzzy_prefixes(matcher, MAX_FUZZY_PREFIXES) {
+        for (reading, entry) in user.imported_prefix_entries(&position.prefix, max * 2 + 1) {
+            let score = word_score(entry.left_id, entry.right_id, entry.cost) + i64::from(position.cost);
+            hits.push((score, reading, entry.surface.clone(), position.edits));
+        }
+    }
+    // 安定ソートなので同じ点数は同梱辞書が先
+    hits.sort_by_key(|(score, _, _, _)| *score);
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for (score, reading, surface, edits) in hits {
+        let key = (reading, surface);
+        if seen.contains(&key) {
+            continue;
+        }
+        push(&key.0, &key.1, score, edits);
+        seen.push(key);
+    }
     results
 }
 
@@ -312,16 +419,16 @@ mod tests {
     fn 補正候補は完全一致の後に出る() {
         let mut dict = Dictionary::empty();
         dict.load_from(
-            "きょうの\t100\t100\t5000\t今日の\nきょうと\t100\t100\t100\t京都\n".as_bytes(),
+            "きょうの\t100\t100\t5000\t今日の\nきょうも\t100\t100\t100\t今日も\n".as_bytes(),
         )
         .unwrap();
         dict.finalize();
-        // 補正の「京都」の方が低コストでも、完全一致の「今日の」が先
+        // 補正の「今日も」(mo の m を隣の n と打った) の方が低コストでも、完全一致の「今日の」が先
         assert_eq!(
             predict("きょうの", None, &dict, &no_user(), &LearningStore::in_memory(), &cfg()),
             vec![
                 ("きょうの".to_string(), "今日の".to_string()),
-                ("きょうと".to_string(), "京都".to_string()),
+                ("きょうも".to_string(), "今日も".to_string()),
             ]
         );
     }

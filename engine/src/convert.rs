@@ -62,18 +62,19 @@ const MAX_NBEST_EXPANSIONS: usize = 3000;
 /// 末尾の1文節の同音異義語だけで N-best の枠が埋まるのを防ぐ
 const MAX_NBEST_PER_CLASS: usize = 4;
 
-/// 補正の語 (1 打の誤りを戻した読みの辞書の語。docs/design/typo-conversion.md) の単語コストに足す量。
+/// 文節 UI (CONVSEG・CONVCTX。docs/design/typo-segment-ui.md) の補正の語の単語コストに足す量。
 /// TYPO_SHOW・TYPO_TOP とともに、打ち間違いの無い文で補正の候補が先頭にも 2 番目にも出ないよう
-/// examples/typo_eval.rs の計測で決めた (設計書の「計測の結果」)。補正の経路はどれも補正の語を
-/// 1 つだけ通るので、この値は補正の経路どうしの順位を変えず、Δ だけを TYPO_COST / 文字数 下げる
-/// (短い読みほど補正の候補が出にくい)
+/// examples/typo_eval.rs の計測で決めた (docs/design/typo-conversion.md の「計測の結果」)。補正の経路は
+/// どれも補正の語を 1 つだけ通るので、この値は補正の経路どうしの順位を変えず、Δ だけを
+/// TYPO_COST / 文字数 下げる (短い読みほど補正の候補が出にくい)。入力全体の候補 (CONVNBEST) の補正は
+/// 誤りの種類ごとのコスト (typo::Tuning) を使う
 const TYPO_COST: i32 = 4000;
 
-/// 補正の候補を出す Δ (通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で
-/// 割った値) の下限
+/// 文節 UI の補正の Δ (通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で
+/// 割った値) の、補正の文節を出す下限
 const TYPO_SHOW: f64 = -50.0;
 
-/// 補正の候補を先頭に置く Δ の下限
+/// 文節 UI の補正の表記を先頭に置く Δ の下限
 const TYPO_TOP: f64 = 0.0;
 
 /// 補正の語を、打ったかなの区間ごとに入れる上限の語数。補正した読みは数が多く、短い語
@@ -105,7 +106,8 @@ pub struct SentenceCandidate {
     /// ユーザ辞書の語を含む候補、英字を含む候補、数字の書き方の候補、補正の候補。
     /// docs/design/llm-rerank.md)
     pub protected: bool,
-    /// 1 打の誤りを戻した読みで変換した補正の候補 (docs/design/typo-conversion.md)
+    /// 1 打の誤りを戻した読みの語 (補正の語) を通る経路の補正の候補 (docs/design/typo-conversion.md、
+    /// docs/design/unified-suggest.md の D)
     pub typo: bool,
 }
 
@@ -197,9 +199,10 @@ pub fn convert_segments(
     typo: bool,
 ) -> Vec<Segment> {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
-    let Some(lattice) =
-        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning), typo)
-    else {
+    let typo_words = typo.then(|| TypoWords::segment(kana));
+    let Some(lattice) = build_lattice(
+        kana, dict, user, matrix, functional, ctx_id, Some(learning), typo_words.as_ref(),
+    ) else {
         return Vec::new();
     };
     let Some(indices) = best_path(&lattice, matrix) else {
@@ -693,8 +696,9 @@ pub fn convert_sentence(
 /// 並び: 読み全体の学習表記 → 文節ごとの学習を当てた 1-best → N-best の残り (コスト順)
 ///       → 1-best の数を書き方ごとにそろえた候補 → 短縮よみ・読み全体の辞書完全一致
 ///       → 単漢字・記号・カタカナ・ひらがな。
-/// typo なら補正の候補 (docs/design/typo-conversion.md) を 1-best の前か直後に 1 件足す。
-/// 表記が同じ候補は先勝ちで除く
+/// typo なら、かなを標準のローマ字に戻した近似で補正の候補 (docs/design/typo-conversion.md) を
+/// 1-best の前か直後に 1 件足す。表記が同じ候補は先勝ちで除く
+#[allow(dead_code)] // エンジン本体は convert_nbest_scored を使う。テストと計測用の example から使う
 pub fn convert_nbest(
     kana: &str,
     ctx: Option<&Context>,
@@ -705,65 +709,118 @@ pub fn convert_nbest(
     learning: &LearningStore,
     typo: bool,
 ) -> Vec<SentenceCandidate> {
+    let source = if typo { TypoSource::Kana } else { TypoSource::Off };
+    convert_nbest_scored(kana, ctx, dict, user, matrix, functional, learning, source, &typo::TUNING)
+        .candidates
+}
+
+/// 入力全体の候補 (convert_nbest_scored の結果)
+pub struct NBest {
+    pub candidates: Vec<SentenceCandidate>,
+    /// 候補ごとの経路のコスト。経路のコストを持たない候補 (読み全体の学習表記・先頭に置いた補正の
+    /// 候補・数字の書き方・辞書の完全一致など) は None
+    pub costs: Vec<Option<i64>>,
+    /// 通常の最良経路 (文節ごとの学習を当てた 1-best) の候補の位置
+    pub best: Option<usize>,
+    /// 通常の最良経路のコスト
+    pub best_cost: Option<i64>,
+    /// 先頭が読み全体の学習表記か
+    pub learned: bool,
+    /// 文頭の文脈 ID (前文脈から復元したもの。無ければ 0)
+    pub context_id: u16,
+}
+
+/// convert_nbest と同じ並びを、候補ごとの経路のコストなどとともに返す (SUGGEST 用)。
+/// 補正の候補の元は source、補正のコスト・状態の数・Δ のしきい値は tuning に従う
+pub fn convert_nbest_scored(
+    kana: &str,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+    source: TypoSource,
+    tuning: &typo::Tuning,
+) -> NBest {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
-    let Some(lattice) =
-        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(learning), typo)
-    else {
-        return Vec::new();
+    let typo_words = TypoWords::sentence(kana, source, tuning);
+    let mut nbest = NBest {
+        candidates: Vec::new(),
+        costs: Vec::new(),
+        best: None,
+        best_cost: None,
+        learned: false,
+        context_id: ctx_id,
+    };
+    let Some(lattice) = build_lattice(
+        kana, dict, user, matrix, functional, ctx_id, Some(learning), typo_words.as_ref(),
+    ) else {
+        return nbest;
     };
 
-    let mut result: Vec<SentenceCandidate> = Vec::new();
     let mut surfaces: Vec<String> = Vec::new();
-    // protected は学習・ユーザ辞書語の印。英字を含むかは表記から決まるのでここで足す
-    let mut add = |segments: Vec<(String, String)>, protected: bool, typo: bool| -> bool {
+    let result = &mut nbest.candidates;
+    let costs = &mut nbest.costs;
+    // protected は学習・ユーザ辞書語の印。英字を含むかは表記から決まるのでここで足す。
+    // 戻り値は候補の位置 (表記が既にあればその候補の位置) と、足したか
+    let mut add = |segments: Vec<(String, String)>,
+                   protected: bool,
+                   typo: bool,
+                   cost: Option<i64>|
+     -> (usize, bool) {
         let mut candidate = SentenceCandidate { segments, protected, typo };
         let surface = candidate.surface();
-        if surfaces.contains(&surface) {
-            return false;
+        if let Some(i) = surfaces.iter().position(|s| *s == surface) {
+            return (i, false);
         }
         candidate.protected |= surface.chars().any(|c| c.is_ascii_alphabetic());
         surfaces.push(surface);
         result.push(candidate);
-        true
+        costs.push(cost);
+        (result.len() - 1, true)
     };
     let whole = |surface: &str| vec![(kana.to_string(), surface.to_string())];
 
     let learned_whole = learning.get(kana);
     if let Some(learned) = learned_whole {
-        add(whole(learned), true, false);
+        add(whole(learned), true, false, None);
+        nbest.learned = true;
     }
     // Δ = 通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で割った値
     let chars = kana.chars().count() as f64;
-    let corrected = if typo { typo_best(&lattice, matrix, functional) } else { None }
-        .map(|(gain, segments)| (gain as f64 / chars, segments))
-        .filter(|(delta, _)| *delta >= TYPO_SHOW);
+    let corrected = if typo_words.is_some() { typo_best(&lattice, matrix, functional) } else { None }
+        .map(|(gain, segments, cost)| (gain as f64 / chars, segments, cost))
+        .filter(|(delta, _, _)| *delta >= tuning.typo_show);
     // 1-best の文節と、その元の単語列 (文節ごと)。数字の書き方の候補に使う
     let mut best_segments: Option<(Vec<(String, String)>, Vec<Vec<PathWord>>)> = None;
     if let Some(indices) = best_path(&lattice, matrix) {
+        let best_cost = best_end(&lattice, matrix, 0).map(|(cost, _)| cost);
+        nbest.best_cost = best_cost;
         // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
         let (segments, protected) =
             protected_best(&lattice, &indices, ctx, dict, user, functional, learning);
         let segments: Vec<(String, String)> =
             segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect();
         let top = learned_whole.is_none() && !protected;
-        match corrected {
-            Some((delta, typo_segments)) if top && delta >= TYPO_TOP => {
-                add(typo_segments, true, true);
-                add(segments.clone(), protected, false);
+        let best = match corrected {
+            Some((delta, typo_segments, _)) if top && delta >= tuning.typo_top => {
+                add(typo_segments, true, true, None);
+                add(segments.clone(), protected, false, best_cost).0
             }
-            Some((_, typo_segments)) => {
-                add(segments.clone(), protected, false);
-                add(typo_segments, true, true);
+            Some((_, typo_segments, typo_cost)) => {
+                let best = add(segments.clone(), protected, false, best_cost).0;
+                add(typo_segments, true, true, Some(typo_cost));
+                best
             }
-            None => {
-                add(segments.clone(), protected, false);
-            }
-        }
+            None => add(segments.clone(), protected, false, best_cost).0,
+        };
+        nbest.best = Some(best);
         best_segments = Some((segments, group_path(lattice.path_words(&indices), functional)));
     }
-    for (_, path, words) in nbest_paths(&lattice, matrix, functional) {
+    for (cost, path, words) in nbest_paths(&lattice, matrix, functional) {
         let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
-        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user, false);
+        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user, false, Some(cost));
     }
 
     // 数字の読みに対する漢数字などは LLM の尤度が高く出やすく、打ったとおりの数より
@@ -791,7 +848,7 @@ pub fn convert_nbest(
                     (reading.clone(), form.clone() + &tail)
                 })
                 .collect();
-            add(replaced, true, false);
+            add(replaced, true, false, None);
         }
     }
 
@@ -805,22 +862,22 @@ pub fn convert_nbest(
         if dict_count >= MAX_DICT_CANDIDATES {
             break;
         }
-        if add(whole(surface), from_user, false) {
+        if add(whole(surface), from_user, false, None).1 {
             dict_count += 1;
         }
     }
     for kanji in dict.lookup_single_kanji(kana) {
-        add(whole(kanji), false, false);
+        add(whole(kanji), false, false, None);
     }
     for symbol in dict.lookup_symbols(kana) {
-        add(whole(symbol), false, false);
+        add(whole(symbol), false, false, None);
     }
-    add(whole(&to_katakana(kana)), false, false);
-    add(whole(kana), false, false);
-    result
+    add(whole(&to_katakana(kana)), false, false, None);
+    add(whole(kana), false, false, None);
+    nbest
 }
 
-/// (読み, 表記) がユーザ辞書 (手動登録・学習した複合語・インポート辞書) の名詞系の語か
+// (読み, 表記) がユーザ辞書 (手動登録・学習した複合語・インポート辞書) の名詞系の語か
 fn is_user_word(reading: &str, surface: &str, user: &UserDict) -> bool {
     user.lookup_words(reading).iter().any(|w| w.surface == surface)
         || user.imported_words(reading).iter().any(|e| e.surface == surface)
@@ -994,11 +1051,12 @@ struct Node {
     /// 補正の語 (読みは打ったかなの区間、表記は補正した読みの辞書の語)。
     /// 補正の語を通っていない状態 (best_cost) では到達できない
     typo: bool,
-    /// 補正の語を 1 つ通った状態での、BOS からこのノードまでの最小コスト
-    typo_cost: i64,
-    /// typo_cost の経路での直前ノード。このノードが補正の語なら、直前ノードは補正の語を
-    /// 通っていない状態 (best_prev の側) にある
-    typo_prev: usize,
+    /// typo_costs[s - 1] は補正の語を s 個通った状態での、BOS からこのノードまでの最小コスト
+    /// (s は 1 から補正の状態の数まで。補正の語を足さないラティスでは空)
+    typo_costs: Vec<i64>,
+    /// typo_costs の経路での直前ノード。このノードが補正の語なら、直前ノードは補正の語を
+    /// 1 つ少なく通った状態 (s = 1 なら best_prev の側) にある
+    typo_prevs: Vec<usize>,
 }
 
 /// 前向きの Viterbi まで済ませたラティス
@@ -1007,6 +1065,53 @@ struct Lattice {
     nodes: Vec<Node>,
     /// ending_at[p] = 位置 p で終わるノードの index 一覧 (BOS は位置 0 で終わる扱い)
     ending_at: Vec<Vec<usize>>,
+    /// 補正の状態の数 (通る補正の語の数の上限)。補正の語を足さなければ 0
+    typo_states: usize,
+}
+
+/// ラティスに足す補正の語の元
+struct TypoWords {
+    /// 1 打の誤りを戻した読み
+    corrections: Vec<typo::Correction>,
+    /// 補正の状態の数 (通る補正の語の数の上限)
+    states: usize,
+    /// 補正の語の単語コストに足す量を誤りの種類によらず固定するとき (文節 UI) の値
+    fixed_cost: Option<i32>,
+}
+
+/// 入力全体の候補の補正の元
+#[derive(Clone, Copy)]
+pub enum TypoSource<'a> {
+    /// 補正しない
+    Off,
+    /// 打鍵が無いので、かなを標準のローマ字に戻した近似で補正する
+    Kana,
+    /// TSF 層が送った打鍵で補正する
+    Keys(&'a typo::Keys),
+}
+
+impl TypoWords {
+    /// 文節 UI (CONVSEG・CONVCTX) の補正。かなを戻した近似で、補正の語を 1 つだけ通し、
+    /// 単語コストに TYPO_COST を足す (docs/design/typo-segment-ui.md)
+    fn segment(kana: &str) -> TypoWords {
+        TypoWords {
+            corrections: typo::corrections(kana, &typo::TUNING),
+            states: 1,
+            fixed_cost: Some(TYPO_COST),
+        }
+    }
+
+    /// 入力全体の候補の補正 (docs/design/unified-suggest.md の D)。補正の語のコストは誤りの種類の
+    /// コストで、状態の数は打鍵の数から決めた許すずれの数
+    fn sentence(kana: &str, source: TypoSource, tuning: &typo::Tuning) -> Option<TypoWords> {
+        let (corrections, keys) = match source {
+            TypoSource::Off => return None,
+            TypoSource::Kana => (typo::corrections(kana, tuning), typo::Keys::standard(kana).len()),
+            TypoSource::Keys(keys) => (typo::key_corrections(kana, keys, tuning), keys.len()),
+        };
+        let states = tuning.allowed_edits(keys);
+        (states > 0).then_some(TypoWords { corrections, states, fixed_cost: None })
+    }
 }
 
 impl Lattice {
@@ -1087,7 +1192,7 @@ fn viterbi_path(
     learning: Option<&LearningStore>,
 ) -> Option<Vec<PathWord>> {
     let mut lattice =
-        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning, false)?;
+        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning, None)?;
     let indices = best_path(&lattice, matrix)?;
     Some(
         indices
@@ -1103,8 +1208,8 @@ fn viterbi_path(
 }
 
 /// ラティスを構築し、前向きの Viterbi で各ノードの最小コストを求める。
-/// typo 以外の引数は viterbi_path と同じ。typo なら補正の語のノードを足し、補正の語を 1 つ
-/// 通った状態の最小コストも求める。入力が空なら None
+/// typo 以外の引数は viterbi_path と同じ。typo があれば補正の語のノードを足し、補正の語を
+/// 1 つから補正の状態の数まで通った状態の最小コストも求める。入力が空なら None
 fn build_lattice(
     kana: &str,
     dict: &Dictionary,
@@ -1113,7 +1218,7 @@ fn build_lattice(
     functional: &FunctionalIds,
     left_context_id: u16,
     learning: Option<&LearningStore>,
-    typo: bool,
+    typo: Option<&TypoWords>,
 ) -> Option<Lattice> {
     let chars: Vec<char> = kana.chars().collect();
     let n = chars.len();
@@ -1135,8 +1240,8 @@ fn build_lattice(
         best_cost: 0,
         best_prev: 0,
         typo: false,
-        typo_cost: i64::MAX,
-        typo_prev: 0,
+        typo_costs: Vec::new(),
+        typo_prevs: Vec::new(),
     }];
 
     // ending_at[p] = 位置 p で終わるノードの index 一覧 (BOS は位置 0 で終わる扱い)
@@ -1175,8 +1280,8 @@ fn build_lattice(
                     best_cost: i64::MAX,
                     best_prev: 0,
                     typo: false,
-                    typo_cost: i64::MAX,
-                    typo_prev: 0,
+                    typo_costs: Vec::new(),
+                    typo_prevs: Vec::new(),
                 });
                 ending_at[end].push(nodes.len() - 1);
             }
@@ -1198,8 +1303,8 @@ fn build_lattice(
                 best_cost: i64::MAX,
                 best_prev: 0,
                 typo: false,
-                typo_cost: i64::MAX,
-                typo_prev: 0,
+                typo_costs: Vec::new(),
+                typo_prevs: Vec::new(),
             });
             ending_at[end].push(nodes.len() - 1);
         }
@@ -1221,8 +1326,8 @@ fn build_lattice(
                     best_cost: i64::MAX,
                     best_prev: 0,
                     typo: false,
-                    typo_cost: i64::MAX,
-                    typo_prev: 0,
+                    typo_costs: Vec::new(),
+                    typo_prevs: Vec::new(),
                 });
                 ending_at[end].push(nodes.len() - 1);
             }
@@ -1254,8 +1359,8 @@ fn build_lattice(
             best_cost: i64::MAX,
             best_prev: 0,
             typo: false,
-            typo_cost: i64::MAX,
-            typo_prev: 0,
+            typo_costs: Vec::new(),
+            typo_prevs: Vec::new(),
         });
         ending_at[end].push(nodes.len() - 1);
         if let Some(form) = form {
@@ -1270,15 +1375,18 @@ fn build_lattice(
                 best_cost: i64::MAX,
                 best_prev: 0,
                 typo: false,
-                typo_cost: i64::MAX,
-                typo_prev: 0,
+                typo_costs: Vec::new(),
+                typo_prevs: Vec::new(),
             });
             ending_at[end].push(nodes.len() - 1);
         }
     }
     // 補正の語は通常の語の後ろに足す (ending_at の並びの先頭側は通常の語のまま)
-    if typo {
-        add_typo_nodes(kana, &chars, &inside_ascii, dict, user, &mut nodes, &mut ending_at);
+    let states = typo.map_or(0, |t| t.states);
+    if let Some(typo) = typo {
+        add_typo_nodes(typo, &chars, &inside_ascii, dict, user, &mut nodes, &mut ending_at);
+        nodes[0].typo_costs = vec![i64::MAX; states];
+        nodes[0].typo_prevs = vec![0; states];
     }
 
     // Viterbi: ノードを開始位置順に処理し、直前ノード群から最小コストを選ぶ。
@@ -1298,24 +1406,30 @@ fn build_lattice(
         };
         let mut best_cost = i64::MAX;
         let mut best_prev = 0;
-        // 補正の語を 1 つ通った状態。補正の語へは通っていない状態からだけ入り、
-        // 通常の語へは通った状態から進む (補正の語を 2 つ以上通る経路は作らない)
-        let mut typo_cost = i64::MAX;
-        let mut typo_prev = 0;
+        // 補正の語を s 個通った状態。補正の語へは s - 1 個通った状態から入り、
+        // 通常の語へは同じ状態から進む (補正の状態の数より多く通る経路は作らない)
+        let mut typo_costs = vec![i64::MAX; states];
+        let mut typo_prevs = vec![0; states];
         for &p in &ending_at[nodes[i].start] {
             let step = i64::from(matrix.get(nodes[p].right_id, nodes[i].left_id))
                 + i64::from(nodes[i].word_cost)
                 + penalty;
             if nodes[i].typo {
-                if nodes[p].best_cost != i64::MAX && nodes[p].best_cost + step < typo_cost {
-                    typo_cost = nodes[p].best_cost + step;
-                    typo_prev = p;
+                for s in 0..states {
+                    let from = if s == 0 { nodes[p].best_cost } else { nodes[p].typo_costs[s - 1] };
+                    if from != i64::MAX && from + step < typo_costs[s] {
+                        typo_costs[s] = from + step;
+                        typo_prevs[s] = p;
+                    }
                 }
                 continue;
             }
-            if nodes[p].typo_cost != i64::MAX && nodes[p].typo_cost + step < typo_cost {
-                typo_cost = nodes[p].typo_cost + step;
-                typo_prev = p;
+            for s in 0..states {
+                let from = nodes[p].typo_costs[s];
+                if from != i64::MAX && from + step < typo_costs[s] {
+                    typo_costs[s] = from + step;
+                    typo_prevs[s] = p;
+                }
             }
             if nodes[p].best_cost == i64::MAX {
                 continue; // 到達不能な経路
@@ -1329,18 +1443,18 @@ fn build_lattice(
         nodes[i].penalty = penalty;
         nodes[i].best_cost = best_cost;
         nodes[i].best_prev = best_prev;
-        nodes[i].typo_cost = typo_cost;
-        nodes[i].typo_prev = typo_prev;
+        nodes[i].typo_costs = typo_costs;
+        nodes[i].typo_prevs = typo_prevs;
     }
-    Some(Lattice { nodes, ending_at })
+    Some(Lattice { nodes, ending_at, typo_states: states })
 }
 
-/// 打ったかな kana (文字の列は chars) の 1 打の誤りを戻した読み (typo.rs) ごとに、変わった所を
+/// 打ったかな (文字の列は chars) の 1 打の誤りを戻した読み (typo.rs) ごとに、変わった所を
 /// 覆う辞書の語 (システム辞書・ユーザ辞書・インポート辞書) を、打ったかなの対応する区間の補正の語にして足す。
 /// 補正後の読みの区間 [s, e2) の語は、打ったかなの区間 [s, e2 − (補正後の変わった所の終わり −
-/// 打ったかなの変わった所の終わり)) に置く
+/// 打ったかなの変わった所の終わり)) に置く。単語コストには戻した誤りのコストを足す
 fn add_typo_nodes<'a>(
-    kana: &str,
+    typo: &TypoWords,
     chars: &[char],
     inside_ascii: &[bool],
     dict: &'a Dictionary,
@@ -1348,10 +1462,11 @@ fn add_typo_nodes<'a>(
     nodes: &mut Vec<Node>,
     ending_at: &mut [Vec<usize>],
 ) {
-    // 打ったかなの区間 → (単語コスト, 表記, left_id, right_id)。区間の並びを毎回同じにして、
-    // 同じコストの経路の選び方を一定にする
-    let mut words: BTreeMap<(usize, usize), Vec<(i16, &'a str, u16, u16)>> = BTreeMap::new();
-    for correction in typo::corrections(kana) {
+    // 打ったかなの区間 → (誤りのコストを足した単語コスト, 表記, left_id, right_id)。区間の並びを
+    // 毎回同じにして、同じコストの経路の選び方を一定にする
+    let mut words: BTreeMap<(usize, usize), Vec<(i32, &'a str, u16, u16)>> = BTreeMap::new();
+    for correction in &typo.corrections {
+        let edit_cost = typo.fixed_cost.unwrap_or(correction.cost);
         let fixed: Vec<char> = correction.reading.chars().collect();
         let first = correction.corrected_end.saturating_sub(MAX_READING_CHARS);
         for s in first..=correction.start {
@@ -1364,7 +1479,7 @@ fn add_typo_nodes<'a>(
                 if end <= s || inside_ascii[s] || inside_ascii[end] {
                     return;
                 }
-                words.entry((s, end)).or_default().push((cost, surface, left, right));
+                words.entry((s, end)).or_default().push((i32::from(cost) + edit_cost, surface, left, right));
             };
             for (len, entries) in dict.common_prefix_search(&fixed[s..], MAX_READING_CHARS) {
                 for e in entries {
@@ -1384,7 +1499,7 @@ fn add_typo_nodes<'a>(
     for ((start, end), mut list) in words {
         // 同じ語を複数の補正が覆うときは 1 つにする (安定ソートなのでコストの安いものが残る)
         list.sort_by_key(|&(cost, _, _, _)| cost);
-        let mut kept: Vec<(i16, &'a str, u16, u16)> = Vec::new();
+        let mut kept: Vec<(i32, &'a str, u16, u16)> = Vec::new();
         for word in list {
             if kept.len() >= MAX_TYPO_WORDS {
                 break;
@@ -1400,14 +1515,14 @@ fn add_typo_nodes<'a>(
                 reading: reading.clone(),
                 left_id,
                 right_id,
-                word_cost: i32::from(cost) + TYPO_COST,
+                word_cost: cost,
                 surface: surface.to_string(),
                 penalty: 0,
                 best_cost: i64::MAX,
                 best_prev: 0,
                 typo: true,
-                typo_cost: i64::MAX,
-                typo_prev: 0,
+                typo_costs: Vec::new(),
+                typo_prevs: Vec::new(),
             });
             ending_at[end].push(nodes.len() - 1);
         }
@@ -1419,7 +1534,7 @@ fn best_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<Vec<usize>>
     let nodes = &lattice.nodes;
     // 経路を逆順にたどって単語列を作る
     let mut indices: Vec<usize> = Vec::new();
-    let mut cursor = best_end(lattice, matrix, false)?.1;
+    let mut cursor = best_end(lattice, matrix, 0)?.1;
     while cursor != 0 {
         indices.push(cursor);
         cursor = nodes[cursor].best_prev;
@@ -1428,14 +1543,14 @@ fn best_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<Vec<usize>>
     Some(indices)
 }
 
-/// EOS: 位置 n で終わるノードから文末への接続コストを含めて最良を選び、(総コスト, ノード) を返す。
-/// typo なら補正の語を 1 つ通った状態で選ぶ
-fn best_end(lattice: &Lattice, matrix: &ConnectionMatrix, typo: bool) -> Option<(i64, usize)> {
+//// EOS: 位置 n で終わるノードから文末への接続コストを含めて最良を選び、(総コスト, ノード) を返す。
+/// state は補正の語を通った数 (0 なら通常の経路)
+fn best_end(lattice: &Lattice, matrix: &ConnectionMatrix, state: usize) -> Option<(i64, usize)> {
     let nodes = &lattice.nodes;
     let n = lattice.ending_at.len() - 1;
     let mut best: Option<(i64, usize)> = None;
     for &i in &lattice.ending_at[n] {
-        let cost = if typo { nodes[i].typo_cost } else { nodes[i].best_cost };
+        let cost = if state == 0 { nodes[i].best_cost } else { nodes[i].typo_costs[state - 1] };
         if cost == i64::MAX {
             continue;
         }
@@ -1447,38 +1562,49 @@ fn best_end(lattice: &Lattice, matrix: &ConnectionMatrix, typo: bool) -> Option<
     best
 }
 
-/// 補正の語を 1 つ通る最小コスト経路の (総コスト, ノード index 列 (BOS を含まない))
+/// 補正の語を 1 つ以上 (補正の状態の数まで) 通る最小コスト経路の (総コスト, ノード index 列 (BOS を含まない))
 fn typo_path(lattice: &Lattice, matrix: &ConnectionMatrix) -> Option<(i64, Vec<usize>)> {
     let nodes = &lattice.nodes;
-    let (cost, end) = best_end(lattice, matrix, true)?;
+    let mut best: Option<(i64, usize, usize)> = None;
+    for state in 1..=lattice.typo_states {
+        if let Some((cost, end)) = best_end(lattice, matrix, state) {
+            if best.is_none_or(|(c, _, _)| cost < c) {
+                best = Some((cost, end, state));
+            }
+        }
+    }
+    let (cost, end, mut state) = best?;
     let mut indices: Vec<usize> = Vec::new();
     let mut cursor = end;
-    // 補正の語に着くまでは通った状態の直前ノード、その先は通っていない状態の直前ノードをたどる
-    let mut passed = true;
+    // 補正の語を通るたびに状態を 1 つ戻し、通っていない状態になったら通常の直前ノードをたどる
     while cursor != 0 {
         indices.push(cursor);
-        if passed {
-            passed = !nodes[cursor].typo;
-            cursor = nodes[cursor].typo_prev;
-        } else {
+        if state == 0 {
             cursor = nodes[cursor].best_prev;
+        } else {
+            let prev = nodes[cursor].typo_prevs[state - 1];
+            if nodes[cursor].typo {
+                state -= 1;
+            }
+            cursor = prev;
         }
     }
     indices.reverse();
     Some((cost, indices))
 }
 
-/// 補正の最良経路の、通常の最良経路とのコストの差 (通常 − 補正。TYPO_COST を含む) と、
-/// N-best と同じ規則で区切った文節 (読みは打ったかなの区間)。補正の語を通る経路が無ければ None
+/// 補正の最良経路の、通常の最良経路とのコストの差 (通常 − 補正。誤りのコストを含む)、
+/// N-best と同じ規則で区切った文節 (読みは打ったかなの区間)、補正の最良経路の総コスト。
+/// 補正の語を通る経路が無ければ None
 fn typo_best(
     lattice: &Lattice,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
-) -> Option<(i64, Vec<(String, String)>)> {
-    let (normal, _) = best_end(lattice, matrix, false)?;
+) -> Option<(i64, Vec<(String, String)>, i64)> {
+    let (normal, _) = best_end(lattice, matrix, 0)?;
     let (cost, indices) = typo_path(lattice, matrix)?;
     let (segments, _) = path_segments(lattice.path_words(&indices), functional);
-    Some((normal - cost, segments.into_iter().map(|s| (s.reading, s.surface)).collect()))
+    Some((normal - cost, segments.into_iter().map(|s| (s.reading, s.surface)).collect(), cost))
 }
 
 /// 補正の最良経路の Δ (通常の最良経路とのコストの差を、打ったかな kana の文字数で割った値。
@@ -1489,14 +1615,15 @@ fn typo_route(
     matrix: &ConnectionMatrix,
     kana: &str,
 ) -> Option<(f64, Vec<usize>)> {
-    let (normal, _) = best_end(lattice, matrix, false)?;
+    let (normal, _) = best_end(lattice, matrix, 0)?;
     let (cost, indices) = typo_path(lattice, matrix)?;
     let delta = (normal - cost) as f64 / kana.chars().count() as f64;
     (delta >= TYPO_SHOW).then_some((delta, indices))
 }
 
-/// 計測用 (examples/typo_eval.rs): 補正の最良経路の、通常の最良経路とのコストの差
-/// (通常 − 補正。TYPO_COST を含めない) と表記。補正の語を通る経路が無ければ None
+/// 計測用 (examples/typo_eval.rs): 補正の語を 1 つだけ通す文節 UI の補正で、補正の最良経路の、
+/// 通常の最良経路とのコストの差 (通常 − 補正。TYPO_COST を含めない) と表記。補正の語を通る経路が
+/// 無ければ None
 #[allow(dead_code)]
 pub fn typo_gain(
     kana: &str,
@@ -1506,13 +1633,32 @@ pub fn typo_gain(
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Option<(i64, String)> {
-    let lattice = build_lattice(kana, dict, user, matrix, functional, 0, Some(learning), true)?;
-    let (gain, segments) = typo_best(&lattice, matrix, functional)?;
+    let typo = TypoWords::segment(kana);
+    let lattice =
+        build_lattice(kana, dict, user, matrix, functional, 0, Some(learning), Some(&typo))?;
+    let (gain, segments, _) = typo_best(&lattice, matrix, functional)?;
     let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect();
     Some((gain + i64::from(TYPO_COST), surface))
 }
 
-/// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
+/// 1 語だけの経路を Viterbi と同じ式 (前文脈からの接続・単語コスト・文節境界ペナルティ・文末への接続)
+/// で評価したコスト。予測の語の点数に使う (docs/design/unified-suggest.md の E)
+pub fn word_path_cost(
+    left_context_id: u16,
+    left_id: u16,
+    right_id: u16,
+    cost: i16,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> i64 {
+    let penalty = if functional.is_functional(left_id) { 0 } else { i64::from(SEGMENT_PENALTY) };
+    i64::from(matrix.get(left_context_id, left_id))
+        + i64::from(cost)
+        + penalty
+        + i64::from(matrix.get(right_id, 0))
+}
+
+// ひらがなをカタカナへ変換する (対象外の文字はそのまま)
 pub(crate) fn to_katakana(kana: &str) -> String {
     kana.chars()
         .map(|c| {
@@ -2643,7 +2789,7 @@ mod tests {
         matrix: &ConnectionMatrix,
         functional: &FunctionalIds,
     ) -> Vec<(i64, String)> {
-        let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None, false).unwrap();
+        let lattice = build_lattice(kana, dict, &no_user(), matrix, functional, 0, None, None).unwrap();
         nbest_paths(&lattice, matrix, functional)
             .into_iter()
             .map(|(cost, segments, _)| {
@@ -2941,6 +3087,11 @@ mod tests {
         dict
     }
 
+    /// 入力全体の候補の補正の語 (かなを戻した近似、既定の調整値)
+    fn sentence_typo(kana: &str) -> TypoWords {
+        TypoWords::sentence(kana, TypoSource::Kana, &typo::TUNING).unwrap()
+    }
+
     fn typo_nbest(kana: &str, learning: &LearningStore, typo: bool) -> Vec<SentenceCandidate> {
         convert_nbest(
             kana, None, &typo_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
@@ -2954,9 +3105,9 @@ mod tests {
         let functional = sample_functional();
         for kana in ["よろしくおねぎあします", "よろしくおねがいします", "きょうははれです", "きょうははれでう"] {
             let without =
-                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, false).unwrap();
+                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, None).unwrap();
             let with =
-                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, true).unwrap();
+                build_lattice(kana, &dict, &no_user(), &matrix, &functional, 0, None, Some(&sentence_typo(kana))).unwrap();
             assert!(with.nodes.iter().any(|n| n.typo), "{kana}: 補正の語が無い");
             let surfaces = |lattice: &Lattice| -> Vec<(i64, String)> {
                 nbest_paths(lattice, &matrix, &functional)
@@ -2981,7 +3132,8 @@ mod tests {
         let matrix = ConnectionMatrix::empty();
         let functional = sample_functional();
         let lattice = build_lattice(
-            "よろしくおねぎあします", &dict, &no_user(), &matrix, &functional, 0, None, true,
+            "よろしくおねぎあします", &dict, &no_user(), &matrix, &functional, 0, None,
+            Some(&sentence_typo("よろしくおねぎあします")),
         )
         .unwrap();
         let (_, indices) = typo_path(&lattice, &matrix).unwrap();

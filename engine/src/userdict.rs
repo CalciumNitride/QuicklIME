@@ -27,10 +27,11 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use crate::dict::{Dictionary, Entry};
+use crate::dict::{Dictionary, Entry, FuzzyPrefix};
 use crate::english;
 use crate::learn;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
+use crate::typo;
 
 /// 短縮よみの品詞名 (ファイル上の表記)
 pub const SHORTCUT_POS: &str = "短縮よみ";
@@ -507,6 +508,24 @@ impl UserDict {
         result
     }
 
+    /// shortcut_prefix の照合を打鍵のファジィ照合 matcher にしたもの。
+    /// (読み, 表記, ずれのコスト, ずれの数) を返す
+    pub fn shortcut_fuzzy(&self, matcher: &typo::Matcher, limit: usize) -> Vec<(&str, &str, i32, usize)> {
+        let mut result: Vec<(&str, &str, i32, usize)> = Vec::new();
+        for (r, s) in self.all_shortcuts() {
+            if result.len() >= limit {
+                break;
+            }
+            if result.iter().any(|(rr, ss, _, _)| *rr == r.as_str() && *ss == s.as_str()) {
+                continue;
+            }
+            if let Some((cost, edits)) = matcher.match_reading(r) {
+                result.push((r, s, cost, edits));
+            }
+        }
+        result
+    }
+
     /// 手動登録の短縮よみとインポート辞書の短縮よみをこの順に走査する
     fn all_shortcuts(&self) -> impl Iterator<Item = &(String, String)> {
         self.shortcuts.iter().chain(self.imported_shortcuts.iter())
@@ -535,6 +554,16 @@ impl UserDict {
     /// 表記の重複は呼び出し側 (予測の合成) で除く
     pub fn imported_prefix(&self, prefix: &str, limit: usize) -> Vec<(i16, String, String)> {
         self.imported.predict_prefix_scored(prefix, limit)
+    }
+
+    /// インポート辞書の打鍵のファジィ照合 (Dictionary::fuzzy_prefixes)
+    pub fn imported_fuzzy_prefixes(&self, matcher: &typo::Matcher, limit: usize) -> Vec<FuzzyPrefix> {
+        self.imported.fuzzy_prefixes(matcher, limit)
+    }
+
+    /// インポート辞書の Dictionary::predict_prefix_entries
+    pub fn imported_prefix_entries(&self, prefix: &str, limit: usize) -> Vec<(String, &Entry)> {
+        self.imported.predict_prefix_entries(prefix, limit)
     }
 
     /// 読みに完全一致する名詞系単語を返す (手動登録が先、自動学習した複合語が後)
@@ -570,6 +599,15 @@ impl UserDict {
             .filter(|w| w.reading.starts_with(prefix))
             .take(limit)
             .map(|w| (w.reading.as_str(), w.surface.as_str()))
+            .collect()
+    }
+
+    /// word_prefix の照合を打鍵のファジィ照合 matcher にしたもの。(単語, ずれのコスト, ずれの数) を
+    /// 記載順に返す
+    pub fn word_fuzzy(&self, matcher: &typo::Matcher, limit: usize) -> Vec<(&UserWord, i32, usize)> {
+        self.all_words()
+            .filter_map(|w| matcher.match_reading(&w.reading).map(|(cost, edits)| (w, cost, edits)))
+            .take(limit)
             .collect()
     }
 
@@ -635,6 +673,24 @@ mod tests {
                     よみだけ\n";
         dict.load_from(data.as_bytes(), &sample_functional());
         dict
+    }
+
+    #[test]
+    fn 打鍵のファジィ照合で短縮よみと名詞系の語を引ける() {
+        let dict = sample();
+        // me-r: めー + 未完成の r (る の綴りの途中)
+        let keys = typo::Keys::parse("めー", "me\x1f-\x1er").unwrap();
+        let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
+        assert_eq!(
+            dict.shortcut_fuzzy(&matcher, 8),
+            vec![("めーる", "mail@example.com", 0, 0), ("めーる", "second@example.jp", 0, 0)]
+        );
+        // kannbr: かんべ の e を隣の r と打った
+        let keys = typo::Keys::parse("かんbr", "ka\x1fnn\x1fb\x1fr").unwrap();
+        let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
+        let got: Vec<(&str, i32, usize)> =
+            dict.word_fuzzy(&matcher, 8).into_iter().map(|(w, c, e)| (w.surface.as_str(), c, e)).collect();
+        assert_eq!(got, vec![("神戸", typo::TUNING.edit_adjacent, 1)]);
     }
 
     #[test]

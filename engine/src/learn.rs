@@ -16,6 +16,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use crate::typo;
+
 /// 文脈キー (直前文節の表記) の最大文字数。
 /// 長文の貼り付けなど異常に長い文脈は末尾だけをキーにする
 const MAX_CONTEXT_KEY_CHARS: usize = 16;
@@ -235,6 +237,39 @@ impl LearningStore {
         results
     }
 
+    /// predict_context の照合を打鍵のファジィ照合 matcher にしたもの。(読み, 表記, ずれのコスト, ずれの数)
+    /// を記録が新しい順に返す。表記の重複は先勝ちで除く
+    pub fn fuzzy_context(
+        &self,
+        context: &str,
+        matcher: &typo::Matcher,
+        limit: usize,
+    ) -> Vec<(&str, &str, i32, usize)> {
+        let key = context_key(context);
+        let Some(readings) = self.ctx_index.get(&key) else {
+            return Vec::new();
+        };
+        let mut matches: Vec<(&str, &str, u64, i32, usize)> = readings
+            .iter()
+            .filter_map(|reading| {
+                let (cost, edits) = matcher.match_reading(reading)?;
+                let (surface, seq) = self.ctx_map.get(&(key.clone(), reading.clone()))?;
+                Some((reading.as_str(), surface.as_str(), *seq, cost, edits))
+            })
+            .collect();
+        matches.sort_by(|a, b| b.2.cmp(&a.2));
+        let mut results: Vec<(&str, &str, i32, usize)> = Vec::new();
+        for (reading, surface, _, cost, edits) in matches {
+            if results.len() >= limit {
+                break;
+            }
+            if !results.iter().any(|(_, s, _, _)| *s == surface) {
+                results.push((reading, surface, cost, edits));
+            }
+        }
+        results
+    }
+
     /// 境界学習の追記ログ (1行1読み) を読み込む
     pub fn load_boundary_from(&mut self, reader: impl BufRead) {
         for line in reader.lines() {
@@ -348,6 +383,22 @@ impl LearningStore {
         matches.sort_by(|a, b| b.2.cmp(&a.2));
         matches.truncate(limit);
         matches.into_iter().map(|(reading, surface, _)| (reading, surface)).collect()
+    }
+
+    /// predict_prefix の照合を打鍵のファジィ照合 matcher にしたもの。(読み, 表記, ずれのコスト, ずれの数)
+    /// を新しい順に返す
+    pub fn fuzzy_prefix(&self, matcher: &typo::Matcher, limit: usize) -> Vec<(&str, &str, i32, usize)> {
+        let mut matches: Vec<(&str, &str, u64, i32, usize)> = self
+            .map
+            .iter()
+            .filter_map(|(reading, (surface, seq))| {
+                let (cost, edits) = matcher.match_reading(reading)?;
+                Some((reading.as_str(), surface.as_str(), *seq, cost, edits))
+            })
+            .collect();
+        matches.sort_by(|a, b| b.2.cmp(&a.2));
+        matches.truncate(limit);
+        matches.into_iter().map(|(r, s, _, cost, edits)| (r, s, cost, edits)).collect()
     }
 }
 
@@ -652,6 +703,31 @@ mod tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(&ctx_path);
         let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn 打鍵のファジィ照合で前方一致する履歴を新しい順に返す() {
+        let mut store = LearningStore::in_memory();
+        store.record("きょうと", "京都");
+        store.record("きょうしつ", "教室");
+        store.record("はれ", "晴れ");
+        store.record_ctx("今日は", "いいてんき", "いい天気");
+        // kyousi: きょうし まで打った。ずれ 0
+        let keys = typo::Keys::parse("きょうし", "kyo\x1f\x1fu\x1fsi").unwrap();
+        let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
+        assert_eq!(store.fuzzy_prefix(&matcher, 8), vec![("きょうしつ", "教室", 0, 0)]);
+        // kyouto の o を隣の i と打った (kyouti)
+        let keys = typo::Keys::parse("きょうち", "kyo\x1f\x1fu\x1fti").unwrap();
+        let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
+        assert_eq!(
+            store.fuzzy_prefix(&matcher, 8),
+            vec![("きょうと", "京都", typo::TUNING.edit_adjacent, 1)]
+        );
+        // 前文脈付きの学習も同じ照合で引く (iitenk + 未完成の k)
+        let keys = typo::Keys::parse("いいてん", "i\x1fi\x1fte\x1fn\x1ek").unwrap();
+        let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
+        assert_eq!(store.fuzzy_context("今日は", &matcher, 8), vec![("いいてんき", "いい天気", 0, 0)]);
+        assert!(store.fuzzy_context("明日は", &matcher, 8).is_empty());
     }
 
     #[test]
