@@ -44,7 +44,8 @@
 
 - [candidate-bar.md](candidate-bar.md): 候補バー。入力中に変換結果と予測候補を横一列に出し、採用時だけ
   文書を書き換える。バーの全体変換の件数と先頭文節の取り方は [nbest.md](nbest.md) で、見た目・表示位置・
-  入力行は [suggest-panel.md](suggest-panel.md) で置き換え
+  入力行は [suggest-panel.md](suggest-panel.md) で、バーの並び・先頭文節の候補・エンジンへの問い合わせは
+  [unified-suggest.md](unified-suggest.md) で置き換え
 - [suggest-panel.md](suggest-panel.md): サジェストパネル。候補バーの見た目の刷新 (カプセル)、画面中央への
   表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
   [conversion-panel.md](conversion-panel.md)、設定 `panel_blur` は [theme-blur.md](theme-blur.md) で置き換え
@@ -59,21 +60,27 @@
 - [theme-blur.md](theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
   `capsule-blur` を足す。設定 `panel_blur` を廃止
 - [suggest-paging.md](suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の上限を
-  `max_predictions` (9 / 18 / 27 / 36) にする
+  `max_predictions` (9 / 18 / 27 / 36) にする。候補バーの組み立ての件数は [unified-suggest.md](unified-suggest.md)
+  で置き換え
+- [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
+  予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
+  Shift+← / → で縮める
 - [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ候補パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 
 ## 変換
 
 - [nbest.md](nbest.md): 入力全体の N-best。候補バーと変換キーの候補に使い、文節 UI を設定 `segment_ui`
-  のオプションにする
+  のオプションにする。候補バーの並びと先頭文節は [unified-suggest.md](unified-suggest.md) で置き換え
 - [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え
 - [conversion-range.md](conversion-range.md): run が無いときのキャレット直前のかなの変換と、候補選択中の
   ←→ による変換の範囲の伸縮
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す
 - [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す
-- [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す
+- [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す。
+  補正の元 (打鍵)、補正の語のコストと Viterbi の状態の数、候補バーの先頭文節は
+  [unified-suggest.md](unified-suggest.md) で置き換え
 - [typo-segment-ui.md](typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
   区切り、打ち間違えた語を含む文節の候補に補正の表記を足す
 

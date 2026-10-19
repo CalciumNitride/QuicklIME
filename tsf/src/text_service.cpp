@@ -2105,7 +2105,8 @@ void TextService::BuildConversionSegments()
         // 入力全体を1文節として候補を選ぶ。候補ごとの文節は確定時の学習に使う。
         // この読みの並べ替えの結果が出ていればその並びを使う (待たない)
         ok = TakeRerankedCandidates(kana, &wholeCandidates_) ||
-             engine_.ConvertNBest(kana, CurrentContext(), &wholeCandidates_);
+             engine_.ConvertNBest(kana, CurrentContext(), composer_.CommitKeyField(),
+                                  &wholeCandidates_);
         if (ok) {
             ConversionSegment segment;
             segment.reading = kana;
@@ -2560,6 +2561,7 @@ HRESULT TextService::CancelConversion(ITfContext* context)
 HRESULT TextService::UpdateBar(ITfContext* context)
 {
     barIndex_ = -1;
+    barShrink_ = 0;
     nextWordBar_ = false;
     const TsfConfig& config = config_.Get();
     // 候補選択中のパネルは候補一覧を出しているので、隠さない
@@ -2594,22 +2596,35 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         return S_OK;
     }
 
-    // どちらもエンジン未接続なら即 false を返す (エンジンの起動を待って打鍵を止めない)
-    std::vector<SentenceCandidate> sentences;
-    if (!suggest || !engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
-        sentences.clear();
-    }
-    // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
-    std::vector<PredictionCandidate> predictions;
-    if (!suggest || SplitAsciiRun() || !engine_.Predict(kana, CurrentContext(), &predictions)) {
-        predictions.clear();
-    }
-
-    // BuildBarItems が英字候補を先頭に入れる (並べ替えの結果で組み直すときも同じ)
+    // BuildBarItems が英字候補を先頭に入れる
     barHasAscii_ = hasAscii;
     barAscii_ = std::move(ascii);
     barAsciiSource_ = composer_.Display();
-    std::vector<BarCandidate> items = BuildBarItems(kana, sentences, predictions);
+    // どの問い合わせもエンジン未接続なら即 false を返す (エンジンの起動を待って打鍵を止めない)
+    std::vector<BarCandidate> items;
+    std::wstring keys = BarKeys();
+    if (suggest) {
+        std::vector<SuggestCandidate> suggestions;
+        if (engine_.SuggestLive(kana, CurrentContext(), keys, &suggestions)) {
+            items = BuildBarItems(suggestions);
+        } else if (engine_.SuggestUnsupported()) {
+            // 旧エンジンには打鍵を送らない (並べ替えも同じ並びの元で頼む)
+            keys.clear();
+            std::vector<SentenceCandidate> sentences;
+            if (!engine_.ConvertNBestLive(kana, CurrentContext(), &sentences)) {
+                sentences.clear();
+            }
+            // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
+            std::vector<PredictionCandidate> predictions;
+            if (SplitAsciiRun() || !engine_.Predict(kana, CurrentContext(), &predictions)) {
+                predictions.clear();
+            }
+            items = BuildLegacyBarItems(kana, sentences, predictions);
+        }
+    }
+    if (items.empty() && hasAscii) {
+        items = BuildBarItems({});
+    }
     if (items.empty()) {
         ClearBarKeepingInput(context);
         return S_OK;
@@ -2631,9 +2646,8 @@ HRESULT TextService::UpdateBar(ITfContext* context)
         return S_OK;
     }
     barKana_ = kana;
-    barPredictions_ = std::move(predictions);
     if (suggest) {
-        RequestRerank(kana);
+        RequestRerank(kana, keys);
     }
     return S_OK;
 }
@@ -2645,7 +2659,60 @@ std::wstring TextService::BarReading() const
     return SplitAsciiRun() ? kana.substr(0, composer_.AsciiStart()) : kana;
 }
 
+std::wstring TextService::BarKeys() const
+{
+    // 区間分割した run の未完成のローマ字は英字区間の後ろにあり、バーの読みに続かない
+    return composer_.KeyField(BarReading().size(), !SplitAsciiRun());
+}
+
 std::vector<TextService::BarCandidate> TextService::BuildBarItems(
+    const std::vector<SuggestCandidate>& suggestions) const
+{
+    std::vector<BarCandidate> items;
+    if (barHasAscii_) {
+        items.push_back({BarKind::Ascii, barAscii_.Commit(), L"", {}});
+    }
+    const std::wstring kana = BarReading();
+    for (const SuggestCandidate& candidate : suggestions) {
+        // エンジンは全体変換と予測の表記の重複を除いて返すので、英字候補との重複だけを除く
+        if (barHasAscii_ && candidate.surface == items.front().surface) {
+            continue;
+        }
+        switch (candidate.kind) {
+        case SuggestCandidate::Kind::Whole:
+        case SuggestCandidate::Kind::Typo:
+            items.push_back({BarKind::Whole, candidate.surface, kana, candidate.segments,
+                             candidate.kind == SuggestCandidate::Kind::Typo});
+            break;
+        case SuggestCandidate::Kind::Predict:
+        case SuggestCandidate::Kind::PredictTypo:
+            // 区間分割した run は日本語区間の後ろに英単語が続いているので、読みを延ばす予測は合わない
+            if (SplitAsciiRun()) {
+                break;
+            }
+            items.push_back({BarKind::Prediction, candidate.surface,
+                             candidate.segments.front().first, {},
+                             candidate.kind == SuggestCandidate::Kind::PredictTypo});
+            break;
+        }
+    }
+    // 英字候補の分だけ max_predictions を超えたら、エンジンの並びの最後を落とす。最後が全体変換の先頭
+    // (エンジンが 9 番目に入れたもの) なら、2 ページ目に送らないようその 1 つ前を落とす
+    const size_t maxItems = static_cast<size_t>(config_.Get().maxPredictions);
+    if (barHasAscii_ && items.size() > maxItems && items.size() >= 3) {
+        const auto firstWhole = std::find_if(items.begin(), items.end(), [](const BarCandidate& item) {
+            return item.kind == BarKind::Whole;
+        });
+        auto drop = items.end() - 1;
+        if (drop == firstWhole) {
+            --drop;
+        }
+        items.erase(drop);
+    }
+    return items;
+}
+
+std::vector<TextService::BarCandidate> TextService::BuildLegacyBarItems(
     const std::wstring& kana, const std::vector<SentenceCandidate>& sentences,
     const std::vector<PredictionCandidate>& predictions) const
 {
@@ -2669,80 +2736,60 @@ std::vector<TextService::BarCandidate> TextService::BuildBarItems(
             ++wholeCount;
         }
     }
-    // 先頭文節は上位の候補から順に、2文節以上の候補の第1文節を (読み, 表記) の重複なく集める
-    // (区切りの違う「今日は…」「今日…」が並ぶ)
-    constexpr size_t kMaxHeads = 3;
-    std::vector<std::pair<std::wstring, std::wstring>> heads;
-    // 補正の候補の第1文節は、打ち間違えた読みのまま学習させないよう補正の候補として扱う。
-    // ほかの候補にも同じ第1文節があれば、ふつうの先頭文節にする
-    const auto typoHead = [&sentences](const std::pair<std::wstring, std::wstring>& head) {
-        return std::none_of(sentences.begin(), sentences.end(),
-                            [&head](const SentenceCandidate& sentence) {
-                                return !sentence.typo && !sentence.segments.empty() &&
-                                       sentence.segments[0] == head;
-                            });
-    };
-    for (const SentenceCandidate& sentence : sentences) {
-        if (heads.size() >= kMaxHeads) {
-            break;
-        }
-        if (sentence.segments.size() < 2) {
-            continue;
-        }
-        const auto& head = sentence.segments[0];
-        if (head.first.empty() || kana.compare(0, head.first.size(), head.first) != 0 ||
-            std::find(heads.begin(), heads.end(), head) != heads.end()) {
-            continue;
-        }
-        heads.push_back(head);
-    }
-    const size_t predictionLimit =
-        static_cast<size_t>(config_.Get().maxPredictions) - items.size() - heads.size();
-    size_t predictionCount = 0;
+    const size_t maxItems = static_cast<size_t>(config_.Get().maxPredictions);
     for (const PredictionCandidate& candidate : predictions) {
-        if (predictionCount >= predictionLimit) {
+        if (items.size() >= maxItems) {
             break;
         }
         if (contains(candidate.surface)) {
             continue;
         }
         items.push_back({BarKind::Prediction, candidate.surface, candidate.reading, {}});
-        ++predictionCount;
-    }
-    for (const auto& head : heads) {
-        if (!contains(head.second)) {
-            items.push_back({BarKind::Head, head.second, head.first, {}, typoHead(head)});
-        }
     }
     return items;
 }
 
+SuggestPanel::Item TextService::BarLabel(const BarCandidate& item, size_t shrink) const
+{
+    SuggestPanel::Item label;
+    label.text = item.surface;
+    if (item.kind == BarKind::Ascii) {
+        label.kind = SuggestPanel::ItemKind::Ascii;
+        return label;
+    }
+    // 区間分割した run の全体変換は、採用後の文字列が分かるよう英字区間を付けて見せる
+    if (SplitAsciiRun()) {
+        label.text += composer_.ConfirmedKana().substr(composer_.AsciiStart());
+    }
+    if (nextWordBar_) {
+        // 後続語の予測は予測候補 (BarKind::Prediction) として作るが、表示では種類を分ける
+        label.kind = SuggestPanel::ItemKind::NextWord;
+    } else if (item.kind == BarKind::Whole && shrink > 0 && shrink < item.segments.size()) {
+        label.kind = SuggestPanel::ItemKind::Partial;
+        size_t adopted = 0;
+        for (size_t i = 0; i + shrink < item.segments.size(); ++i) {
+            adopted += item.segments[i].second.size();
+        }
+        label.dimFrom = adopted;
+    } else if (item.kind == BarKind::Whole) {
+        label.kind = item.typo ? SuggestPanel::ItemKind::Typo : SuggestPanel::ItemKind::Conversion;
+    } else {
+        label.kind = item.typo ? SuggestPanel::ItemKind::Typo : SuggestPanel::ItemKind::Prediction;
+    }
+    return label;
+}
+
 bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> items)
 {
-    // 区間分割した run の全体変換は、採用後の文字列が分かるよう英字区間を付けて見せる
-    const std::wstring asciiTail =
-        SplitAsciiRun() ? composer_.ConfirmedKana().substr(composer_.AsciiStart()) : L"";
     std::vector<SuggestPanel::Item> labels;
     for (const BarCandidate& item : items) {
-        const bool head = item.kind == BarKind::Head;
-        const bool tail = !head && item.kind != BarKind::Ascii;
-        // 後続語の予測は予測候補 (BarKind::Prediction) として作るが、表示では種類を分ける
-        SuggestPanel::ItemKind kind = SuggestPanel::ItemKind::Prediction;
-        if (nextWordBar_) {
-            kind = SuggestPanel::ItemKind::NextWord;
-        } else if (head) {
-            kind = SuggestPanel::ItemKind::Partial;
-        } else if (item.kind == BarKind::Ascii) {
-            kind = SuggestPanel::ItemKind::Ascii;
-        } else if (item.kind == BarKind::Whole) {
-            kind = item.typo ? SuggestPanel::ItemKind::Typo : SuggestPanel::ItemKind::Conversion;
-        }
-        labels.push_back({tail ? item.surface + asciiTail : item.surface, kind});
+        labels.push_back(BarLabel(item, 0));
     }
     // selection に範囲外を渡し、どの候補も強調しない表示にする
     if (ShowPanel(caret, labels, labels.size()) == 0) {
         return false;
     }
+    barShrink_ = 0;
     barBuilt_ = items;
     barCaretValid_ = caret != nullptr;
     if (caret != nullptr) {
@@ -2993,13 +3040,13 @@ void TextService::ExtendLlmContext(const std::wstring& adopted)
     llmRunContext_ = KeepTail(TrimLlmContext(llmRunContext_ + adopted), kLlmContextRead);
 }
 
-void TextService::RequestRerank(const std::wstring& kana)
+void TextService::RequestRerank(const std::wstring& kana, const std::wstring& keys)
 {
     ResetRerank();
     if (!config_.Get().llm) {
         return;
     }
-    const unsigned long long id = engine_.Rerank(llmRunContext_, CurrentContext(), kana);
+    const unsigned long long id = engine_.Rerank(llmRunContext_, CurrentContext(), kana, keys);
     if (id == 0) {
         return;
     }
@@ -3053,7 +3100,7 @@ void TextService::OnRerankTimer()
     if (barIndex_ >= 0 || converting_ || barItems_.empty() || barKana_ != rerankKana_) {
         return;
     }
-    std::vector<BarCandidate> items = BuildBarItems(barKana_, rerankResult_, barPredictions_);
+    std::vector<BarCandidate> items = RerankedBarItems(rerankResult_);
     const auto same = [](const BarCandidate& a, const BarCandidate& b) {
         return a.kind == b.kind && a.surface == b.surface && a.reading == b.reading &&
                a.segments == b.segments && a.typo == b.typo;
@@ -3063,6 +3110,41 @@ void TextService::OnRerankTimer()
         return;
     }
     ShowBarItems(barCaretValid_ ? &barCaret_ : nullptr, std::move(items));
+}
+
+std::vector<TextService::BarCandidate> TextService::RerankedBarItems(
+    const std::vector<SentenceCandidate>& result) const
+{
+    std::vector<BarCandidate> items = barBuilt_;
+    std::vector<size_t> positions;
+    std::vector<BarCandidate> wholes;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (items[i].kind == BarKind::Whole) {
+            positions.push_back(i);
+            wholes.push_back(items[i]);
+        }
+    }
+    std::vector<BarCandidate> ordered;
+    std::vector<bool> used(wholes.size(), false);
+    for (const SentenceCandidate& candidate : result) {
+        for (size_t i = 0; i < wholes.size(); ++i) {
+            if (!used[i] && wholes[i].surface == candidate.surface) {
+                used[i] = true;
+                ordered.push_back(wholes[i]);
+                break;
+            }
+        }
+    }
+    // 結果に無いバーの全体変換は、元の順のまま後ろに残す
+    for (size_t i = 0; i < wholes.size(); ++i) {
+        if (!used[i]) {
+            ordered.push_back(wholes[i]);
+        }
+    }
+    for (size_t i = 0; i < positions.size(); ++i) {
+        items[positions[i]] = ordered[i];
+    }
+    return items;
 }
 
 bool TextService::TakeRerankedCandidates(const std::wstring& kana,
@@ -3099,9 +3181,9 @@ void TextService::ResetBarState()
     barLabels_.clear();
     barKana_.clear();
     barIndex_ = -1;
+    barShrink_ = 0;
     nextWordBar_ = false;
     barBuilt_.clear();
-    barPredictions_.clear();
     barHasAscii_ = false;
     barAscii_.Clear();
     barAsciiSource_.clear();
@@ -3113,19 +3195,44 @@ HRESULT TextService::MoveBarSelection(int delta)
     if (converting_ || barItems_.empty()) {
         return S_OK;
     }
+    int index = barIndex_;
     if (delta > 0) {
         // 未選択 (-1) からは先頭へ、末尾からは先頭へ循環する
-        barIndex_ = (barIndex_ + 1) % static_cast<int>(barItems_.size());
+        index = (barIndex_ + 1) % static_cast<int>(barItems_.size());
     } else if (barIndex_ < 0) {
         return S_OK; // 未選択の↑は何もしない
     } else if (barIndex_ == 0) {
         // 先頭から前へは末尾へ循環する (未選択に戻すのは Esc)
-        barIndex_ = static_cast<int>(barItems_.size()) - 1;
+        index = static_cast<int>(barItems_.size()) - 1;
     } else {
-        --barIndex_;
+        --index;
     }
-    suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));
+    SelectBarIndex(index);
     return S_OK;
+}
+
+void TextService::SelectBarIndex(int index)
+{
+    const bool restore = barShrink_ > 0 && barIndex_ >= 0 &&
+                         static_cast<size_t>(barIndex_) < barItems_.size() &&
+                         static_cast<size_t>(barIndex_) < barLabels_.size();
+    if (restore) {
+        barLabels_[static_cast<size_t>(barIndex_)] =
+            BarLabel(barItems_[static_cast<size_t>(barIndex_)], 0);
+    }
+    barShrink_ = 0;
+    barIndex_ = index;
+    const size_t selection = index >= 0 ? static_cast<size_t>(index) : barItems_.size();
+    if (!restore) {
+        suggestPanel_.SetSelection(selection);
+        return;
+    }
+    // 種類のタグが変わり候補の幅が変わりうるので、選択だけでなく並びを組み直す
+    if (ShowPanel(barCaretValid_ ? &barCaret_ : nullptr, barLabels_, selection) == 0) {
+        barItems_.clear();
+        barLabels_.clear();
+        barIndex_ = -1;
+    }
 }
 
 int TextService::ArrowOrder(WPARAM vk, int delta) const
@@ -3146,15 +3253,13 @@ HRESULT TextService::SelectBarByNumber(size_t number)
     if (number >= suggestPanel_.PageItemCount() || index >= barItems_.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
-    barIndex_ = static_cast<int>(index);
-    suggestPanel_.SetSelection(index);
+    SelectBarIndex(static_cast<int>(index));
     return S_OK;
 }
 
 HRESULT TextService::DeselectBar()
 {
-    barIndex_ = -1;
-    suggestPanel_.SetSelection(barItems_.size()); // 範囲外 = 強調なし
+    SelectBarIndex(-1); // 範囲外 = 強調なし
     return S_OK;
 }
 

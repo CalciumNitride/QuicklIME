@@ -314,7 +314,7 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
             return converting_ || !barItems_.empty();
         case VK_LEFT:
         case VK_RIGHT:
-            if (ArrowMovesBarSelection(wparam)) {
+            if (ArrowMovesBarSelection(wparam) || BarRangeKey(wparam)) {
                 return true;
             }
             // 入力全体の候補選択の ←→ は変換の範囲の伸縮 (伸縮できなくても食べる)
@@ -389,6 +389,50 @@ bool TextService::ArrowMovesBarSelection(WPARAM wparam) const
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     return !ctrl && !alt && !IsShiftPressed() && !converting_ && barIndex_ >= 0 &&
            suggestPanel_.Horizontal();
+}
+
+bool TextService::BarRangeKey(WPARAM wparam) const
+{
+    if (wparam != VK_LEFT && wparam != VK_RIGHT) {
+        return false;
+    }
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    return !ctrl && !alt && IsShiftPressed() && InRun() && !converting_ && barIndex_ >= 0 &&
+           static_cast<size_t>(barIndex_) < barItems_.size();
+}
+
+HRESULT TextService::ResizeBarRange(ITfContext* context, int delta)
+{
+    if (!InRun() || converting_ || barIndex_ < 0 ||
+        static_cast<size_t>(barIndex_) >= barItems_.size()) {
+        return S_OK;
+    }
+    const size_t index = static_cast<size_t>(barIndex_);
+    const BarCandidate& item = barItems_[index];
+    if (item.kind != BarKind::Whole || item.segments.size() < 2 || index >= barLabels_.size() ||
+        BarReading() != barKana_) {
+        return S_OK;
+    }
+    // 文節の読みがバーの読みを先頭から覆っていなければ、範囲で読みを切り分けられない
+    std::wstring reading;
+    for (const auto& segment : item.segments) {
+        reading += segment.first;
+    }
+    if (reading != barKana_) {
+        return S_OK;
+    }
+    if (delta < 0 && barShrink_ + 1 < item.segments.size()) {
+        ++barShrink_;
+    } else if (delta > 0 && barShrink_ > 0) {
+        --barShrink_;
+    } else {
+        return S_OK;
+    }
+    barLabels_[index] = BarLabel(item, barShrink_);
+    // 種類のタグが変わり候補の幅が変わりうるので、選択だけでなく並びを組み直す
+    RefreshRunPanel(context);
+    return S_OK;
 }
 
 bool TextService::EnterNeedsResend() const
@@ -553,6 +597,9 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         return MoveBarSelection(ArrowOrder(VK_UP, -1));
     case VK_RIGHT:
     case VK_LEFT:
+        if (BarRangeKey(wparam)) {
+            return ResizeBarRange(context, wparam == VK_RIGHT ? +1 : -1);
+        }
         if (ArrowMovesBarSelection(wparam)) {
             return MoveBarSelection(wparam == VK_RIGHT ? +1 : -1);
         }
@@ -1154,53 +1201,79 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     if (item.kind == BarKind::Ascii) {
         return AdoptAsciiCandidate(context, mode, suffix, followKey);
     }
-    const bool head = item.kind == BarKind::Head;
-    const size_t readingLength = head ? item.reading.size() : kana.size();
+    // 採用範囲を縮めた全体変換は、範囲の文節だけを置き換えて残りのかなで run を続ける
+    const size_t shrink = static_cast<int>(index) == barIndex_ ? barShrink_ : 0;
+    const bool partial = item.kind == BarKind::Whole && shrink > 0 && shrink < item.segments.size();
+    const bool prediction = item.kind == BarKind::Prediction;
 
     BarAdoption adoption;
-    // 補正の候補は打ち間違えた読みで学習データを汚さないよう学習を送らない (前文脈・記憶は同じ)
+    std::wstring surface = item.surface;
+    size_t readingLength = kana.size();
+    // 全体変換の補正の候補は打ち間違えた読みで学習データを汚さないよう学習を送らない
+    // (前文脈・記憶は同じ)
     switch (item.kind) {
     case BarKind::Whole:
-        if (!item.typo) {
-            adoption.learn = SentenceLearnEntries(item.segments);
+        if (partial) {
+            adoption.segments.assign(item.segments.begin(),
+                                     item.segments.end() - static_cast<std::ptrdiff_t>(shrink));
+            surface.clear();
+            readingLength = 0;
+            std::wstring previous = contextSurface_;
+            for (const auto& [segmentReading, segmentSurface] : adoption.segments) {
+                surface += segmentSurface;
+                readingLength += segmentReading.size();
+                if (!item.typo) {
+                    adoption.learn.push_back({segmentReading, segmentSurface, previous});
+                }
+                previous = segmentSurface;
+            }
+        } else {
+            if (!item.typo) {
+                adoption.learn = SentenceLearnEntries(item.segments);
+            }
+            adoption.segments = item.segments;
         }
-        if (!item.segments.empty()) {
-            adoption.contextReading = item.segments.back().first;
-            adoption.contextSurface = item.segments.back().second;
+        if (!adoption.segments.empty()) {
+            adoption.contextReading = adoption.segments.back().first;
+            adoption.contextSurface = adoption.segments.back().second;
         }
-        adoption.segments = item.segments;
         if (adoption.segments.empty()) {
-            adoption.segments.push_back({kana.substr(0, readingLength), item.surface});
+            adoption.segments.push_back({kana.substr(0, readingLength), surface});
         }
         break;
     case BarKind::Prediction:
-    case BarKind::Head:
-        if (!item.typo) {
-            adoption.learn.push_back({item.reading, item.surface, contextSurface_});
-        }
+        // ずれを使った予測も、候補の読み (辞書の正しい読み) と表記で学習する
+        adoption.learn.push_back({item.reading, item.surface, contextSurface_});
         adoption.contextReading = item.reading;
         adoption.contextSurface = item.surface;
         adoption.segments.push_back({item.reading, item.surface});
         break;
     }
     adoption.readingLength = readingLength;
-    adoption.adoptedLength = item.surface.size();
-    adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !head);
-    // 文書に入れるのは採用部分だけ。run を終えるときは残りの読み (未完成のローマ字を含む) と
-    // suffix も続けて入れる
-    adoption.written = item.surface;
+    adoption.adoptedLength = surface.size();
+    adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !partial);
+    // 予測は未完成のローマ字も含めて照合しているので、採用したら未完成のローマ字は捨てる
+    adoption.dropPending = prediction;
+    // 文書に入れるのは採用部分だけ。run を終えるときは残りの読み (予測以外は未完成のローマ字を
+    // 含む) と suffix も続けて入れる
+    adoption.written = surface;
     if (adoption.endRun) {
-        adoption.written += composer_.Display().substr(readingLength) + suffix;
+        const std::wstring rest = prediction ? composer_.ConfirmedKana() : composer_.Display();
+        adoption.written += rest.substr((std::min)(readingLength, rest.size())) + suffix;
     }
     adoption.before = composer_;
     adoption_ = std::move(adoption);
     DebugLog(L"バーの候補を採用: " + adoption_.written);
 
-    // 採用の後も run が続くとき (先頭文節の採用・採用に続く打鍵) は、composition の終了と
+    // 採用の後も run が続くとき (採用範囲を縮めた採用・採用に続く打鍵) は、composition の終了と
     // 次の composition の開始を1つの edit session で行う (分割すると Word や CUAS 経由の
     // アプリで新しい composition が生き残らない)
     RomajiComposer rest = composer_;
     rest.RemoveFront(readingLength);
+    if (adoption_.dropPending) {
+        // 予測は区間分割していない run にだけ出すので、読みを外した残りは未完成のローマ字だけ
+        rest.Clear();
+    }
     const bool restart = runComposition_ != nullptr && !adoption_.endRun &&
                          (!rest.Empty() || followKey != nullptr);
     const HRESULT hr = restart ? RestartRunComposition(context, adoption_.written)
@@ -1259,6 +1332,10 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
     // 採用した部分は run から外す
     composer_.RemoveFront(adoption_.readingLength);
+    if (adoption_.dropPending) {
+        // AdoptBarItem と同じく、残りは未完成のローマ字だけ
+        composer_.Clear();
+    }
     const std::wstring adopted = adoption_.written.substr(0, adoption_.adoptedLength);
     const std::wstring rest = adoption_.written.substr(adoption_.adoptedLength);
     // 採用した部分を1件として記憶する (残りのかなは run の終わりで別の1件になる)
@@ -1273,7 +1350,7 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     // run の先頭が変わったので、次にバーを出す位置はその時点で取り直す
     barXFixed_ = false;
     if (adoption_.endRun && !composer_.ConfirmedKana().empty()) {
-        // 先頭文節を採用して run を終える: 残りのかなは採用せずに終えた run と同じ扱い
+        // 範囲を縮めた全体変換を採用して run を終える: 残りのかなは採用せずに終えた run と同じ扱い
         EndRun(rest);
         return;
     }
@@ -2031,7 +2108,7 @@ bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
         return barItems_.empty();
     case VK_LEFT:
     case VK_RIGHT:
-        return !ArrowMovesBarSelection(wparam);
+        return !ArrowMovesBarSelection(wparam) && !BarRangeKey(wparam);
     default:
         return IsEditingKey(wparam);
     }

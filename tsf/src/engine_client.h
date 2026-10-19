@@ -25,6 +25,20 @@ struct SentenceCandidate {
     bool typo = false;
 };
 
+// SUGGEST の1候補 (docs/design/unified-suggest.md の E)
+struct SuggestCandidate {
+    enum class Kind {
+        Whole,        // 全体変換 (whole)
+        Typo,         // 全体変換の補正の候補 (typo)
+        Predict,      // 予測 (predict)
+        PredictTypo,  // ずれを 1 つ以上使った予測 (predict_typo)
+    };
+    Kind kind = Kind::Whole;
+    // 全体変換は文節ごとの (読み, 表記)、予測は 1 つの (候補の完全な読み, 表記)
+    std::vector<std::pair<std::wstring, std::wstring>> segments;
+    std::wstring surface;  // 文節の表記の連結
+};
+
 // 予測入力の1候補
 struct PredictionCandidate {
     std::wstring reading;  // 候補の完全な読み (採用時の LEARN に使う)
@@ -76,15 +90,26 @@ public:
     bool ConvertSegmentsLive(const std::wstring& kana, const ConversionContext& context,
                              std::vector<ConversionSegment>* segments);
 
-    // かなに対する入力全体の候補を取得する (CONVNBEST)。CONVNBEST を知らない旧エンジンには
+    // かなに対する入力全体の候補を取得する (CONVNBEST)。keys はかなの打鍵
+    // (docs/design/unified-suggest.md の A の書式。空なら送らない)。CONVNBEST を知らない旧エンジンには
     // CONVCTX / CONVSEG を送り、各文節の先頭候補を連結した1件だけを返す
     bool ConvertNBest(const std::wstring& kana, const ConversionContext& context,
-                      std::vector<SentenceCandidate>* candidates);
+                      const std::wstring& keys, std::vector<SentenceCandidate>* candidates);
 
-    // ConvertNBest の毎打鍵の候補バー用。接続待ちはせず、未接続ならエンジンを起動だけして
-    // 即 false を返す (ConvertSegmentsLive と同じ方式)
+    // ConvertNBest の毎打鍵の候補バー用 (SUGGEST を知らない旧エンジンでバーを作る。打鍵は送らない)。
+    // 接続待ちはせず、未接続ならエンジンを起動だけして即 false を返す (ConvertSegmentsLive と同じ方式)
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
+
+    // 全体変換と予測を 1 つの並びで取得する (SUGGEST。毎打鍵の候補バー用)。keys はかなの打鍵
+    // (docs/design/unified-suggest.md の A の書式)。接続待ちはせず、未接続ならエンジンを起動だけして
+    // 即 false を返す。SUGGEST を知らない旧エンジンのときも false で、以後 SuggestUnsupported が
+    // true になる (候補ゼロは true で candidates が空)
+    bool SuggestLive(const std::wstring& kana, const ConversionContext& context,
+                     const std::wstring& keys, std::vector<SuggestCandidate>* candidates);
+
+    // 今の接続の相手が SUGGEST を知らないエンジンか (CONVNBEST と PREDICT で代用する)
+    bool SuggestUnsupported() const { return suggestUnsupported_ || legacyEngine_; }
 
     // ASCIISTART の照合方法
     enum class AsciiMatch {
@@ -119,11 +144,12 @@ public:
         None,     // ID が古い・不明、推論に失敗、LLM が無効
     };
 
-    // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。毎打鍵の候補バー用に、
-    // 接続待ちはしない (未接続ならエンジンを起動だけする)。受け付けた ID を返す (0 = 並べ替えを
-    // しない。未接続・LLM が無効・RERANK を知らない旧エンジンも 0)
+    // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。keys はかなの打鍵
+    // (ConvertNBest と同じ。空なら送らない)。毎打鍵の候補バー用に、接続待ちはしない (未接続なら
+    // エンジンを起動だけする)。受け付けた ID を返す (0 = 並べ替えをしない。未接続・LLM が無効・
+    // RERANK を知らない旧エンジンも 0)
     unsigned long long Rerank(const std::wstring& llmContext, const ConversionContext& context,
-                              const std::wstring& kana);
+                              const std::wstring& kana, const std::wstring& keys);
 
     // 並べ替えの結果を問い合わせる (RERANKGET)。Done のときは candidates に CONVNBEST と同じ形の
     // 候補を入れる。通信に失敗したら false
@@ -201,10 +227,13 @@ private:
     // CONVSEG 系の応答1行を segments にパースする
     bool ParseSegmentsResponse(std::string response, std::vector<ConversionSegment>* segments);
     // CONVNBEST (旧エンジンには CONVCTX / CONVSEG) を送って入力全体の候補を得る
-    bool RequestNBest(const std::wstring& kana, const ConversionContext& context, bool live,
+    bool RequestNBest(const std::wstring& kana, const ConversionContext& context,
+                      const std::wstring& keys, bool live,
                       std::vector<SentenceCandidate>* candidates);
     // CONVNBEST の応答1行を candidates にパースする
     bool ParseNBestResponse(std::string response, std::vector<SentenceCandidate>* candidates);
+    // SUGGEST の応答1行を candidates にパースする
+    bool ParseSuggestResponse(std::string response, std::vector<SuggestCandidate>* candidates);
     // PREDICT・NEXTWORD の要求を現在の接続で送り、応答を candidates にパースする
     // (未接続ならパイプを1回だけ開いてみて、開けなければエンジンを起動だけする)
     bool RequestPredictions(const std::string& request,
@@ -222,6 +251,8 @@ private:
     bool nbestUnsupported_ = false;
     // RERANK を知らないエンジンと判定したら、この接続では以後送らない
     bool rerankUnsupported_ = false;
+    // SUGGEST を知らないエンジンと判定したら、この接続では以後送らない
+    bool suggestUnsupported_ = false;
     // CONVSEG / CONVCTX の kinds を知らない (文節長として読んで ERR を返す) エンジンと判定したら、
     // この接続では以後 kinds を付けない
     bool segmentKindsUnsupported_ = false;

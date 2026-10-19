@@ -456,7 +456,7 @@ fn main() -> BoxResult<()> {
     let pct = |n: usize, total: usize| format!("{:.0}%", 100.0 * n as f64 / total.max(1) as f64);
 
     println!("\n## 調整値ごとの結果\n");
-    println!("先頭変化 = 崩さない打ち終えた入力で SUGGEST の先頭が CONVNBEST (打鍵つき。表記が読みのかなと同じ候補を除く) の先頭と変わった件数。");
+    println!("先頭変化 = 崩さない打ち終えた入力で SUGGEST の先頭が CONVNBEST (打鍵つき。表記が読みのかなと同じ候補と、書き換えの候補を除く) の先頭と変わった件数。");
     println!("崩し 1/3/9 = 崩した打ち終えた入力で正解が 1 位・3 位以内・9 位以内の割合 (誤り 1〜3 か所の合計)。");
     println!("誤補正 = 崩さない打ち終えた入力で、補正の候補かずれのある予測が 3 位以内に出た件数 / 先頭に出た件数。");
     println!("補正=正解 = 崩した打ち終えた入力で、CONVNBEST (打鍵つき) の補正の候補が正解になった割合。");
@@ -484,8 +484,26 @@ fn main() -> BoxResult<()> {
             let nbest = convert::convert_nbest_scored(
                 &input.kana, None, &dictionary, &user, &matrix, &functional, &learning, source, &tuning,
             );
-            // SUGGEST は表記が読みのかなと同じ候補を除くので、比べる CONVNBEST の先頭も同じく除く
-            let top = nbest.candidates.iter().map(|c| c.surface()).find(|s| *s != input.kana);
+            // SUGGEST は表記が読みのかなと同じ候補を除き、書き換えの候補 (表記をひらがなに直すと読みと同じ。
+            // 最良経路と読み全体の学習表記を除く) を全体変換の最後に置くので、比べる CONVNBEST の先頭は
+            // そのどちらでもない最初の候補 (無ければ最初の書き換えの候補) にする
+            let shown: Vec<(usize, String)> = nbest
+                .candidates
+                .iter()
+                .enumerate()
+                .map(|(i, c)| (i, c.surface()))
+                .filter(|(_, s)| *s != input.kana)
+                .collect();
+            let rewrite = |i: usize, s: &str| {
+                nbest.best != Some(i)
+                    && !(nbest.learned && i == 0)
+                    && suggest::to_hiragana(s) == input.kana
+            };
+            let top = shown
+                .iter()
+                .find(|(i, s)| !rewrite(*i, s))
+                .or_else(|| shown.first())
+                .map(|(_, s)| s.clone());
             if list.first().map(|s| s.surface()) != top {
                 changed += 1;
                 if ci == 0 && args.detail {

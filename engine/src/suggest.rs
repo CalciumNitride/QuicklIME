@@ -85,25 +85,41 @@ pub fn suggest(
     );
     let c0 = nbest.best_cost.unwrap_or(0);
 
-    // 全体変換: CONVNBEST の順を崩さないよう、前の候補の s を下回る値は前の候補の s に切り上げる
+    // 書き換えの候補 (表記をひらがなに直すと読みと同じ候補) は、辞書の読み全体の書き換えの項目が
+    // 2 語に分かれる変換より安く出て全体変換の枠を埋めるので、1 件だけを最後に置く。最良経路と読み全体の
+    // 学習表記は、表記がかなの種類だけ違っても書き換えとして扱わない
+    let is_rewrite = |i: usize, surface: &str| {
+        nbest.best != Some(i) && !(nbest.learned && i == 0) && to_hiragana(surface) == kana
+    };
+    let shown: Vec<usize> =
+        (0..nbest.candidates.len()).filter(|&i| nbest.candidates[i].surface() != kana).collect();
+    let rewrite =
+        shown.iter().take(MAX_WHOLES).copied().find(|&i| is_rewrite(i, &nbest.candidates[i].surface()));
+    let mut taken: Vec<usize> = shown
+        .iter()
+        .copied()
+        .filter(|&i| !is_rewrite(i, &nbest.candidates[i].surface()))
+        .take(MAX_WHOLES - usize::from(rewrite.is_some()))
+        .collect();
+    taken.extend(rewrite);
+
+    // 全体変換: CONVNBEST の順を崩さないよう、前の候補の s を下回る値は前の候補の s に切り上げる。
+    // 最後に置いた書き換えの候補は前の候補の s
     let mut pinned: Option<Item> = None;
     let mut items: Vec<Item> = Vec::new();
     // 全体変換の先頭 (読み全体の学習表記が無ければ通常の最良経路) の表記
     let head_index = if nbest.learned { Some(0) } else { nbest.best };
     let mut head: Option<String> = None;
     let mut prev: Option<i64> = None;
-    let mut wholes = 0;
-    for (i, candidate) in nbest.candidates.iter().enumerate() {
-        if wholes >= MAX_WHOLES {
-            break;
-        }
+    for &i in &taken {
+        let candidate = &nbest.candidates[i];
         let surface = candidate.surface();
-        if surface == kana {
-            continue;
-        }
-        wholes += 1;
-        let score = nbest.costs[i].map_or(prev.unwrap_or(0), |cost| cost - c0);
-        let score = prev.map_or(score, |p| score.max(p));
+        let score = if rewrite == Some(i) {
+            prev.unwrap_or(0)
+        } else {
+            let score = nbest.costs[i].map_or(prev.unwrap_or(0), |cost| cost - c0);
+            prev.map_or(score, |p| score.max(p))
+        };
         prev = Some(score);
         if head_index == Some(i) {
             head = Some(surface);
@@ -186,6 +202,19 @@ pub fn suggest(
     }
     list.truncate(cfg.max_predictions);
     list
+}
+
+/// カタカナをひらがなにする (convert::to_katakana の逆。対象外の文字はそのまま)
+pub(crate) fn to_hiragana(text: &str) -> String {
+    text.chars()
+        .map(|c| {
+            if ('ァ'..='ヶ').contains(&c) {
+                char::from_u32(c as u32 - 0x60).unwrap_or(c)
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -431,6 +460,70 @@ mod tests {
         predicted.sort();
         expected.sort();
         assert_eq!(predicted, expected);
+    }
+
+    fn oyasumi_dict(with_second: bool) -> Dictionary {
+        // UT 辞書と同じく、読み全体の書き換えの項目が 2 語の変換 (お休み / なさい) より安い
+        let mut data = String::from(
+            "おやすみなさい\t1\t1\t3500\tおやすみなさい\n\
+             おやすみなさい\t1\t1\t4000\tオヤスミなさい\n\
+             おやすみなさい\t1\t1\t4100\tおやすみなサイ\n\
+             おやすみなさい\t1\t1\t4200\tオヤスミナサイ\n\
+             おやすみ\t1\t1\t3300\tお休み\n\
+             なさい\t3\t3\t1000\tなさい\n",
+        );
+        if with_second {
+            // N-best のコストの幅の外の、読み全体の辞書の語 (CONVNBEST の辞書の完全一致の候補として後ろに入る)
+            data.push_str("おやすみなさい\t1\t1\t9000\t御休みなさい\n");
+        }
+        dict_from(&data)
+    }
+
+    const OYASUMI_KEYS: &str = "o\x1fya\x1fsu\x1fmi\x1fna\x1fsa\x1fi";
+
+    #[test]
+    fn 書き換えの候補は1件だけを全体変換の最後に置く() {
+        let mut cfg = Config::default();
+        cfg.suggest = false;
+        let got = run(
+            "おやすみなさい", OYASUMI_KEYS, &oyasumi_dict(true), &UserDict::empty(),
+            &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        // CONVNBEST では 5・6 番目の 2 語の変換が、書き換えより先に入る
+        assert_eq!(surfaces(&got), vec!["お休みなさい", "御休みなさい", "オヤスミなさい"]);
+        // 読み全体の学習表記は書き換えの候補として扱わない
+        let mut learning = LearningStore::in_memory();
+        learning.record("おやすみなさい", "オヤスミナサイ");
+        let got = run(
+            "おやすみなさい", OYASUMI_KEYS, &oyasumi_dict(true), &UserDict::empty(), &learning, &cfg,
+            &typo::TUNING,
+        );
+        assert_eq!(got[0].surface(), "オヤスミナサイ", "{:?}", surfaces(&got));
+        assert_eq!(got.len(), MAX_WHOLES, "{:?}", surfaces(&got));
+        assert_eq!(got[MAX_WHOLES - 1].surface(), "オヤスミなさい", "{:?}", surfaces(&got));
+    }
+
+    #[test]
+    fn 書き換えでない候補が足りなければ全体変換の枠を空ける() {
+        let mut cfg = Config::default();
+        cfg.suggest = false;
+        let got = run(
+            "おやすみなさい", OYASUMI_KEYS, &oyasumi_dict(false), &UserDict::empty(),
+            &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        assert_eq!(surfaces(&got), vec!["お休みなさい", "オヤスミなさい"]);
+    }
+
+    #[test]
+    fn 最良経路がカタカナの読みはカタカナが先頭のまま() {
+        let dict = dict_from("てれび\t1\t1\t3000\tテレビ\nてれび\t1\t1\t5000\t手れび\n");
+        let mut cfg = Config::default();
+        cfg.suggest = false;
+        let got = run(
+            "てれび", "te\x1fre\x1fbi", &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg,
+            &typo::TUNING,
+        );
+        assert_eq!(got[0].surface(), "テレビ", "{:?}", surfaces(&got));
     }
 
     #[test]

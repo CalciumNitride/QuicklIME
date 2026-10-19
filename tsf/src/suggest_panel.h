@@ -32,16 +32,19 @@ public:
         Ascii,       // 英字
         Conversion,  // 全体変換
         Prediction,  // 予測
-        Partial,     // 先頭文節 (部分採用。末尾に「…」を付けて表示する)
+        Partial,     // 採用範囲を縮めた全体変換 (部分採用)
         NextWord,    // 読みなしの後続語予測 (横一列では「次の語」色の縁を付ける)
-        // 1 打の誤りを戻した読みの全体変換 (横一列では「補正」色の縁を付ける。変換の候補一覧でも
-        // 種類のタグを出す)
+        // 打ち間違いを戻した全体変換と、ずれを使った予測 (横一列では「補正」色の縁を付ける。
+        // 変換の候補一覧でも種類のタグを出す)
         Typo,
     };
 
     struct Item {
         std::wstring text;
         ItemKind kind = ItemKind::Conversion;
+        // text のこの位置から後ろを文字の色の不透明度 0.5 で描く (採用範囲の外。npos なら全部を
+        // ふつうに描く)
+        size_t dimFrom = std::wstring::npos;
     };
 
     // 入力行の内容。パネルは内容を解釈せずにそのまま出す
@@ -269,7 +272,7 @@ private:
     Kind kind_;
     bool conversion_;  // 変換の候補一覧 (ShowConversion) を出している
     std::vector<Item> items_;
-    std::vector<std::wstring> itemTexts_;  // 表示する候補文字列 (「…」を付けたもの)
+    std::vector<std::wstring> itemTexts_;  // 表示する候補文字列
     std::vector<ItemBox> itemBoxes_;
     float inputTop_;  // 入力行の上端 (パネルの左上を原点とする px)
     bool separator_;  // 入力行と候補の間に区切り線を引く
@@ -285,7 +288,7 @@ private:
 
     // Show で受け取った全候補とページの区切り (SetSelection でページを組み直すのに使う)
     std::vector<Item> allItems_;
-    std::vector<std::wstring> allTexts_;  // 表示する候補文字列 (「…」を付けたもの)
+    std::vector<std::wstring> allTexts_;  // 表示する候補文字列
     std::vector<float> allWidths_;        // 切り詰めずに出したときの候補 1 件の幅
     std::vector<size_t> pageStarts_;      // 各ページの先頭の候補の番号 (候補が無ければ空)
     size_t page_;                         // 出しているページ

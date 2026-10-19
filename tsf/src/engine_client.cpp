@@ -202,8 +202,9 @@ void EngineClient::Disconnect()
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
     }
-    // 次の接続の相手は RERANK・kinds に対応したエンジンに入れ替わっているかもしれない
+    // 次の接続の相手は RERANK・SUGGEST・kinds に対応したエンジンに入れ替わっているかもしれない
     rerankUnsupported_ = false;
+    suggestUnsupported_ = false;
     segmentKindsUnsupported_ = false;
 }
 
@@ -425,15 +426,94 @@ bool EngineClient::ParseSegmentsResponse(std::string response,
 }
 
 bool EngineClient::ConvertNBest(const std::wstring& kana, const ConversionContext& context,
+                                const std::wstring& keys,
                                 std::vector<SentenceCandidate>* candidates)
 {
-    return RequestNBest(kana, context, false, candidates);
+    return RequestNBest(kana, context, keys, false, candidates);
 }
 
 bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                                     std::vector<SentenceCandidate>* candidates)
 {
-    return RequestNBest(kana, context, true, candidates);
+    return RequestNBest(kana, context, L"", true, candidates);
+}
+
+bool EngineClient::SuggestLive(const std::wstring& kana, const ConversionContext& context,
+                               const std::wstring& keys,
+                               std::vector<SuggestCandidate>* candidates)
+{
+    if (candidates == nullptr || kana.empty() || SuggestUnsupported()) {
+        return false;
+    }
+    if (!OpenPipeLive()) {
+        return false;
+    }
+    const std::string contextField =
+        context.Empty() ? std::string()
+                        : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+    const std::string request = "SUGGEST\t" + contextField + "\t" + WideToUtf8(kana) + "\t" +
+                                WideToUtf8(keys) + "\n";
+    std::string response;
+    if (!SendReceive(request, &response)) {
+        return false;
+    }
+    if (IsUnknownCommandError(response)) {
+        suggestUnsupported_ = true;
+        return false;
+    }
+    return ParseSuggestResponse(std::move(response), candidates);
+}
+
+bool EngineClient::ParseSuggestResponse(std::string response,
+                                        std::vector<SuggestCandidate>* candidates)
+{
+    // 応答: "OK\t種類\x1D読み\x1F表記\x1E読み\x1F表記...\t...\n" (候補なしなら "OK\n")
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK", 0) != 0) {
+        return false;
+    }
+    candidates->clear();
+    if (response.size() <= 3) {
+        return true;
+    }
+    for (const std::string& candidateField : SplitFields(response.substr(3), '\t')) {
+        const size_t kindEnd = candidateField.find('\x1d');
+        if (kindEnd == std::string::npos) {
+            return false;
+        }
+        const std::string kind = candidateField.substr(0, kindEnd);
+        SuggestCandidate candidate;
+        if (kind == "whole") {
+            candidate.kind = SuggestCandidate::Kind::Whole;
+        } else if (kind == "typo") {
+            candidate.kind = SuggestCandidate::Kind::Typo;
+        } else if (kind == "predict") {
+            candidate.kind = SuggestCandidate::Kind::Predict;
+        } else if (kind == "predict_typo") {
+            candidate.kind = SuggestCandidate::Kind::PredictTypo;
+        } else {
+            // 知らない種類は採用の仕方が分からないので出さない
+            continue;
+        }
+        for (const std::string& segmentField :
+             SplitFields(candidateField.substr(kindEnd + 1), '\x1e')) {
+            const std::vector<std::string> parts = SplitFields(segmentField, '\x1f');
+            if (parts.size() != 2) {
+                return false; // 文節は読み + 表記の組
+            }
+            std::wstring surface = Utf8ToWide(parts[1]);
+            candidate.surface += surface;
+            candidate.segments.push_back({Utf8ToWide(parts[0]), std::move(surface)});
+        }
+        if (candidate.segments.empty()) {
+            return false;
+        }
+        candidates->push_back(std::move(candidate));
+    }
+    return true;
 }
 
 bool EngineClient::AsciiStartLive(const std::vector<std::wstring>& elements, AsciiMatch match,
@@ -525,7 +605,8 @@ bool EngineClient::AsciiFormLive(const std::wstring& text, std::wstring* form)
 }
 
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
-                                bool live, std::vector<SentenceCandidate>* candidates)
+                                const std::wstring& keys, bool live,
+                                std::vector<SentenceCandidate>* candidates)
 {
     if (candidates == nullptr || kana.empty()) {
         return false;
@@ -537,9 +618,12 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
         const std::string contextField =
             context.Empty() ? std::string()
                             : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-        // kinds で補正の候補に種類を付けさせる (旧エンジンは余分なフィールドを無視する)
-        const std::string request =
-            "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\tkinds\n";
+        // kinds で補正の候補に種類を付けさせる (旧エンジンは kinds・打鍵の余分なフィールドを無視する)
+        std::string request = "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\tkinds";
+        if (!keys.empty()) {
+            request += "\t" + WideToUtf8(keys);
+        }
+        request += "\n";
         std::string response;
         if (!(live ? SendReceive(request, &response) : Transact(request, &response))) {
             return false;
@@ -604,7 +688,7 @@ bool EngineClient::ParseNBestResponse(std::string response,
 
 unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
                                         const ConversionContext& context,
-                                        const std::wstring& kana)
+                                        const std::wstring& kana, const std::wstring& keys)
 {
     if (kana.empty() || rerankUnsupported_ || legacyEngine_) {
         return 0;
@@ -615,8 +699,12 @@ unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
     const std::string contextField =
         context.Empty() ? std::string()
                         : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-    const std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
-                                WideToUtf8(kana) + "\tkinds\n";
+    std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
+                          WideToUtf8(kana) + "\tkinds";
+    if (!keys.empty()) {
+        request += "\t" + WideToUtf8(keys);
+    }
+    request += "\n";
     std::string response;
     if (!SendReceive(request, &response)) {
         return 0;

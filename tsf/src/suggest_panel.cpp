@@ -20,6 +20,7 @@ constexpr int kAnchorGap = 2;     // キャレット行とパネルの間
 constexpr float kSoftAlpha = 0.16f;        // selection soft でアクセント色を敷く不透明度
 constexpr float kTagAlpha = 0.16f;         // 種類のタグの背景の不透明度
 constexpr float kTextShadowAlpha = 0.35f;  // text_shadow の影の不透明度
+constexpr float kDimTextAlpha = 0.5f;      // 採用範囲の外の文字の不透明度
 constexpr float kSegmentAlpha = 0.16f;     // 変換中の入力行で現在文節にアクセント色を敷く不透明度
 constexpr float kPageRowRatio = 1.6f;      // 位置の表示 (12/24) の行の高さ (label_text_size に対する比)
 
@@ -690,7 +691,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     std::vector<std::wstring> texts;
     std::vector<float> widths;  // 切り詰めずに出したときの候補 1 件の幅
     for (const Item& item : items) {
-        std::wstring text = item.kind == ItemKind::Partial ? item.text + L"…" : item.text;
+        std::wstring text = item.text;
         float textWidth = TextWidth(text, textFormat_);
         if (theme_.selection == SelectionStyle::Text) {
             // 選択すると太字になるので、選択によって幅が変わらないよう太字の幅も見込む
@@ -2165,7 +2166,25 @@ void SuggestPanel::DrawItem(size_t index, float originX, float originY)
     const std::wstring& text = itemTexts_[index];
     IDWriteTextFormat* format = bold ? boldFormat_ : textFormat_;
     textRight = (std::max)(textRight, x);
-    DrawLabel(text, format, x, rect.top, textRight, rect.bottom, textColor);
+    const size_t dimFrom = items_[index].dimFrom;
+    if (dimFrom < text.size()) {
+        // 1 つの文字列として描いた位置のまま、採用範囲の外だけを切り分けて薄くする
+        // (分けて描くと、収まらないときの末尾の「…」の位置が変わるため)
+        const float split =
+            (std::min)(x + TextWidth(text.substr(0, dimFrom), format), textRight);
+        PanelColor dimColor = textColor;
+        dimColor.a *= kDimTextAlpha;
+        drawTarget_->PushAxisAlignedClip(D2D1::RectF(rect.left, rect.top, split, rect.bottom),
+                                         D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawLabel(text, format, x, rect.top, textRight, rect.bottom, textColor);
+        drawTarget_->PopAxisAlignedClip();
+        drawTarget_->PushAxisAlignedClip(D2D1::RectF(split, rect.top, rect.right, rect.bottom),
+                                         D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawLabel(text, format, x, rect.top, textRight, rect.bottom, dimColor);
+        drawTarget_->PopAxisAlignedClip();
+    } else {
+        DrawLabel(text, format, x, rect.top, textRight, rect.bottom, textColor);
+    }
 
     if (underline && selected) {
         const float underlineWidth = (std::min)(TextWidth(text, format), textRight - x);

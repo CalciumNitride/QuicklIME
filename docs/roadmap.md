@@ -8,7 +8,17 @@
 - 確定済みの任意の選択範囲の再変換 (TSF の ITfFnReconversion)。今の後置再変換の対象は、かなだけの
   選択範囲・キャレット直前のかな・採用した文字列の記憶 ([adopted-reconversion.md](design/adopted-reconversion.md))
   の範囲だけ
-- 学習の改良。今は読みごとに最後に確定した表記を先頭にする単純な方式 (頻度ベースなど)
+- 学習の改良。今は読みごとに最後に確定した表記を先頭にする単純な方式 (頻度ベースなど)。頻度・新しさ・文脈による
+  学習の点数付けで、SUGGEST の学習と短縮よみの仮の点数 ([unified-suggest.md](design/unified-suggest.md) の E) を
+  置き換える。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶことも含む
+- LLM による候補の生成 (読みに沿うよう制約したデコード) と、補正の候補の LLM での採点
+  ([unified-suggest.md](design/unified-suggest.md))
+- 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
+- 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
+- 候補バーの数字キーでの採用。今の数字キーは選ぶだけで、採用はしない
+- LLM の並べ替えの結果で、候補バーの全体変換の位置を結果の上位から埋め直す。今はバーにある全体変換の中で
+  入れ替えるだけで、全体変換の 3 枠の外にあった候補は LLM が上位にしても出ない
+  ([unified-suggest.md](design/unified-suggest.md) の G)
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - run が無いときのキャレット直前のかなの変換を、候補バーの対象にする
@@ -29,6 +39,8 @@
 
 ## 見送り・既知の問題
 
+- ずれのある予測 (候補バーの「補正」の予測) に、UT 辞書の不自然な表記の語 (「おやすまないと → おやスマナイト」)
+  が出ることがある。辞書の質の問題 ([unified-suggest.md](design/unified-suggest.md))
 - マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない (対応は見送り)。回避策は Convert キーを使うこと
   - ゲームは OnTestKeyDown を呼び、IME が食べると答えても OnKeyDown を呼ばない (Ctrl なしのキーでは呼ぶ)。
     key-up では OnTestKeyUp だけが呼ばれ、OnKeyUp は来ない

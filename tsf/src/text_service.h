@@ -228,12 +228,11 @@ private:
 
     struct DirectKey;
 
-    // ---- 候補バー (docs/design/candidate-bar.md) ----
+    // ---- 候補バー (docs/design/candidate-bar.md、docs/design/unified-suggest.md) ----
     // 候補の種類
     enum class BarKind {
-        Whole,       // 全体変換 (確定済みかな全体の CONVNBEST の上位)
+        Whole,       // 全体変換 (SUGGEST の whole・typo、旧エンジンでは CONVNBEST の上位)
         Prediction,  // 予測候補
-        Head,        // 先頭文節 (部分採用)
         // 英字候補 (今 run を終えたら英字になる形) または英字区間の大文字小文字の補正候補。
         // どちらも barAscii_ の確定文字列 (英字モード中は前者を作らないので両方は並ばない)
         Ascii,
@@ -241,33 +240,48 @@ private:
     struct BarCandidate {
         BarKind kind;
         std::wstring surface;  // 採用する表記
-        // 学習に送る読み (全体変換は確定済みかな、予測候補は候補の完全な読み、
-        // 先頭文節はその文節の読み)
+        // 学習に送る読み (全体変換は確定済みかな、予測候補は候補の完全な読み)
         std::wstring reading;
-        // 全体変換の文節ごとの (読み, 表記) (全体変換の学習に使う)
+        // 全体変換の文節ごとの (読み, 表記) (全体変換の学習と採用範囲の縮めに使う)
         std::vector<std::pair<std::wstring, std::wstring>> segments;
-        // 補正の候補 (docs/design/typo-conversion.md) の全体変換、またはその先頭文節。
-        // 採用しても学習を送らない
+        // 補正の候補 (全体変換の typo、ずれを使った予測 predict_typo)。「補正」の表示にする。
+        // 全体変換の補正の候補は、打ち間違えた読みで学習データを汚さないよう採用しても学習を送らない
         bool typo = false;
     };
     // 採用の仕方
     enum class BarAdopt {
         End,        // run を終える (Enter・Space)
-        CommitKey,  // 確定キー: 先頭文節は run を続け、それ以外は run を終える
+        CommitKey,  // 確定キー: 採用範囲を縮めた全体変換は run を続け、それ以外は run を終える
         Continue,   // 採用した部分だけを run から外して続ける (印字キー)
     };
     // 現在の確定済みかなで候補を作り直して表示する (条件を満たさなければ消す)。選択は解除する
     HRESULT UpdateBar(ITfContext* context);
     // バーの候補を作る読み (区間分割した run は日本語区間、それ以外は確定済みかな全体)
     std::wstring BarReading() const;
-    // 入力全体の候補 (CONVNBEST の並び) と予測候補からバーの候補を組み立てる
-    std::vector<BarCandidate> BuildBarItems(const std::wstring& kana,
-                                            const std::vector<SentenceCandidate>& sentences,
-                                            const std::vector<PredictionCandidate>& predictions) const;
+    // BarReading の打鍵 (docs/design/unified-suggest.md の A。区間分割した run は未完成のローマ字を
+    // 付けない)
+    std::wstring BarKeys() const;
+    // SUGGEST の並びからバーの候補を組み立てる (英字候補を先頭に置く)
+    std::vector<BarCandidate> BuildBarItems(const std::vector<SuggestCandidate>& suggestions) const;
+    // SUGGEST を知らない旧エンジン: 入力全体の候補 (CONVNBEST の並び) と予測候補からバーの候補を
+    // 組み立てる
+    std::vector<BarCandidate> BuildLegacyBarItems(
+        const std::wstring& kana, const std::vector<SentenceCandidate>& sentences,
+        const std::vector<PredictionCandidate>& predictions) const;
     // items を caret の行に固定の x 位置 (設定 candidate_position center なら画面中央) で
     // 表示する。ページに区切って出し、すべての候補を選択の対象にする。caret が null ならキャレットの
     // 矩形が取れなかったことを表す (画面中央のときだけ出せる)。1件も出せなければ false (何も変えない)
     bool ShowBarItems(const RECT* caret, std::vector<BarCandidate> items);
+    // item の表示。shrink は採用範囲から外した末尾の文節の数 (0 なら全文節)
+    SuggestPanel::Item BarLabel(const BarCandidate& item, size_t shrink) const;
+    // バーの選択を index (負なら未選択) に変える。採用範囲を縮めていた候補は全文節に戻して出し直す
+    void SelectBarIndex(int index);
+    // バー選択中の Shift+← / → か (採用範囲の伸縮。docs/design/unified-suggest.md の F)。
+    // 選んでいる候補によらず食べる
+    bool BarRangeKey(WPARAM wparam) const;
+    // 選んでいる全体変換の採用範囲を 1 文節縮める (delta < 0) / 伸ばす (delta > 0)。文節が 1 つの候補・
+    // 予測の候補・英字候補と、範囲の端では何もしない
+    HRESULT ResizeBarRange(ITfContext* context, int delta);
     // バーの候補と選択を破棄し、パネルを隠す
     void ClearBar();
     // バーの候補と選択を破棄する (パネルの表示は変えない)
@@ -381,7 +395,11 @@ private:
     // 部分採用の後も run は続く。文書は読み直さず、run を始めたときの左文脈に採用した文字列を足す
     void ExtendLlmContext(const std::wstring& adopted);
     // バーを作り直した後に並べ替えを依頼し、結果の問い合わせ (タイマー) を始める
-    void RequestRerank(const std::wstring& kana);
+    // (keys はかなの打鍵。空なら送らない)
+    void RequestRerank(const std::wstring& kana, const std::wstring& keys);
+    // 表示中のバーの全体変換を、並べ替えの結果の順で全体変換が占めている位置に入れ直した並び
+    // (予測・英字候補の位置は動かさず、バーに無い全体変換は足さない)
+    std::vector<BarCandidate> RerankedBarItems(const std::vector<SentenceCandidate>& result) const;
     // 結果の問い合わせを止める (依頼と受け取った結果は変換キーで使うので覚えておく)
     void StopRerankPolling();
     // 依頼と受け取った結果を捨てる
@@ -534,7 +552,7 @@ private:
     // 範囲から得た context で行う
     HRESULT EndRunComposition(const std::wstring& text);
     // run の composition を commitText で終え、続けて同じ edit session で新しい composition を
-    // 張る (先頭文節の採用・採用に続く打鍵)。新しい composition を張れなければ、その run は
+    // 張る (採用範囲を縮めた採用・採用に続く打鍵)。新しい composition を張れなければ、その run は
     // パネル保持入力として続ける
     HRESULT RestartRunComposition(ITfContext* context, const std::wstring& commitText);
     // run の読みの表示 (composition の文字列) を composer_ に合わせる。パネル保持入力は何もしない
@@ -751,10 +769,11 @@ private:
     // バーの x 座標。run で最初に出した時点 (部分採用の後はその時点) の位置に固定する
     int barX_;
     bool barXFixed_;
-    // 表示中のバーを組み立てた候補 (作業領域で切る前) と予測候補、表示した caret の矩形。
+    // 選んでいる全体変換の採用範囲から外した末尾の文節の数 (0 = 全文節)。選択を動かすと 0 に戻す
+    size_t barShrink_ = 0;
+    // 表示中のバーを組み立てた候補 (作業領域で切る前) と、表示した caret の矩形。
     // 並べ替えの結果でバーを組み直すときに使う (タイマーからは文書の矩形を取らない)
     std::vector<BarCandidate> barBuilt_;
-    std::vector<PredictionCandidate> barPredictions_;
     RECT barCaret_;
     bool barCaretValid_;  // barCaret_ を取れたか (画面中央のときは取れなくても出す)
     // 英字候補・補正候補を作った読みの複製 (採用でこれに置き換える) と、作ったときの composer_ の表示
@@ -794,6 +813,8 @@ private:
         size_t adoptedLength = 0;      // written のうち採用部分の長さ
         std::wstring written;          // 文書に入れる文字列
         bool endRun = false;
+        // 未完成のローマ字を捨てる (予測の採用。予測は未完成のローマ字も含めて照合しているため)
+        bool dropPending = false;
         RomajiComposer before;         // 採用前の読み (確定アンドゥの復元用)
         // 採用部分の文節ごとの (読み, 表記) (記憶に使う)
         std::vector<std::pair<std::wstring, std::wstring>> segments;

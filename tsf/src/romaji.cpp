@@ -824,3 +824,50 @@ std::wstring RomajiComposer::RawRange(size_t pos, size_t len) const
     }
     return raw;
 }
+
+namespace {
+
+constexpr wchar_t kKeyElementSeparator = L'\x1f';
+constexpr wchar_t kKeyPendingSeparator = L'\x1e';
+
+} // namespace
+
+std::wstring RomajiComposer::KeyField(size_t count, bool withPending) const
+{
+    count = (std::min)(count, kana_.size());
+    std::wstring field;
+    for (size_t i = 0; i < count; ++i) {
+        if (i > 0 && IS_LOW_SURROGATE(kana_[i]) && IS_HIGH_SURROGATE(kana_[i - 1])) {
+            field += raw_[i];
+            continue;
+        }
+        if (i > 0) {
+            field += kKeyElementSeparator;
+        }
+        field += raw_[i];
+    }
+    field += kKeyPendingSeparator;
+    if (withPending) {
+        field += pending_;
+    }
+    return field;
+}
+
+std::wstring RomajiComposer::CommitKeyField() const
+{
+    std::wstring field = KeyField(kana_.size(), false);
+    field.pop_back();
+    // Commit() と同じく "n" だけを「ん」1 字にし、残りは 1 字ずつのかなとして 1 かたまりにする
+    // (FlushPending が先頭の字に打鍵列全体を付けるのと同じ)
+    const size_t pendingChars = pending_ == L"n" ? 1 : pending_.size();
+    for (size_t i = 0; i < pendingChars; ++i) {
+        if (!kana_.empty() || i > 0) {
+            field += kKeyElementSeparator;
+        }
+        if (i == 0) {
+            field += pending_;
+        }
+    }
+    field += kKeyPendingSeparator;
+    return field;
+}
