@@ -75,7 +75,6 @@ const ID_CHECK_LLM: i32 = 115;
 const ID_COMBO_LLM_BACKEND: i32 = 116;
 const ID_CHECK_NEXT_WORD: i32 = 117;
 const ID_COMBO_CANDIDATE_POSITION: i32 = 118;
-const ID_CHECK_PANEL_INPUT: i32 = 119;
 const ID_LIST_KEYS: i32 = 120;
 const ID_BUTTON_KEY_EDIT: i32 = 121;
 const ID_BUTTON_KEY_DEFAULT: i32 = 122;
@@ -113,9 +112,14 @@ const TAB_NAMES: [&str; 6] = ["変換", "入力", "表示", "キー割当", "ア
 const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
 /// 候補の表示位置 (candidate_position の値, 表示名)
 const CANDIDATE_POSITIONS: [(&str, &str); 2] = [("caret", "キャレットの下"), ("center", "画面中央")];
-/// 入力中の読みを出す場所 (input_buffer の値, 表示名)。先頭が既定
-const INPUT_BUFFERS: [(&str, &str); 2] =
-    [("composition", "文書に下線付きで出す"), ("panel", "候補パネルだけに出す")];
+/// 入力中の読みを出す場所 (表示名, panel_buffer, panel_input)。先頭が既定。
+/// panel_input の None は読み込んだ値のまま書く (input_buffer panel では panel_input が効かず、
+/// 手で書いた値を保存しただけで変えないため)
+const INPUT_BUFFERS: [(&str, bool, Option<bool>); 3] = [
+    ("文書に下線付きで出す", false, Some(false)),
+    ("文書と入力パネルの両方に出す", false, Some(true)),
+    ("入力パネルだけに出す", true, None),
+];
 /// 組み込みのテーマ (panel_theme の値, 表示名)。TSF 層 (tsf/src/panel_theme.cpp) と合わせる
 const BUILTIN_THEMES: [(&str, &str); 4] = [
     ("capsule", "カプセル (横一列)"),
@@ -452,11 +456,11 @@ struct Config {
     input_scope_passthrough: bool,
     candidate_bar: bool,
     next_word: bool,
-    /// 候補パネルのテーマ名 (組み込みのテーマか、テーマフォルダの <名前>.tsv)
+    /// 入力パネルのテーマ名 (組み込みのテーマか、テーマフォルダの <名前>.tsv)
     panel_theme: String,
     /// 候補の表示位置 ("caret" / "center")
     candidate_position: String,
-    /// 入力中の読みも候補と同じパネルに出す
+    /// 入力中の読みを文書と入力パネルの両方に出す (input_buffer composition のときだけ効く)
     panel_input: bool,
     /// 切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
     mode_popup: bool,
@@ -699,7 +703,7 @@ fn user_theme_names(dir: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// 「候補の見た目」の選択肢 ((panel_theme の値, 表示名))。組み込みのテーマに続けて、ユーザの
+/// 「入力パネルの見た目」の選択肢 ((panel_theme の値, 表示名))。組み込みのテーマに続けて、ユーザの
 /// テーマを名前順に並べる。組み込みと同名のファイル (Windows のファイル名と同じく大文字小文字を
 /// 区別しない) は組み込みの項目だけにする。今の設定値が無ければ (ファイルを消したときなど)
 /// 選び直さずに保存しても変わらないよう末尾に足す
@@ -723,6 +727,26 @@ fn theme_choices(user_names: Vec<String>, current: &str) -> Vec<(String, String)
         choices.push((current.to_string(), current.to_string()));
     }
     choices
+}
+
+/// 設定値に合う「入力中の読み」の選択肢 (INPUT_BUFFERS の添字)
+fn input_buffer_choice(panel_buffer: bool, panel_input: bool) -> usize {
+    INPUT_BUFFERS
+        .iter()
+        .position(|&(_, buffer, input)| {
+            buffer == panel_buffer && input.is_none_or(|input| input == panel_input)
+        })
+        .unwrap_or(0)
+}
+
+/// 「入力中の読み」の選択肢 (INPUT_BUFFERS の添字) を設定値に書く。panel_input を書かない選択肢では
+/// config の値をそのまま残すので、config には読み込んだ panel_input を入れておく
+fn apply_input_buffer_choice(config: &mut Config, index: usize) {
+    let (_, buffer, input) = INPUT_BUFFERS[index];
+    config.panel_buffer = buffer;
+    if let Some(input) = input {
+        config.panel_input = input;
+    }
 }
 
 /// 診断ログの既定の出力先 (%APPDATA%\QuicklIME\debug.log)。QUICKLIME_CONFIG_FILE で
@@ -1003,6 +1027,7 @@ fn main() {
         }
 
         let config = Config::load();
+        LOADED_PANEL_INPUT.set(config.panel_input);
         KEY_ASSIGNS.with(|keys| *keys.borrow_mut() = config.keys.clone());
         APP_SETTINGS.with(|apps| {
             *apps.borrow_mut() = merge_app_settings(
@@ -1067,7 +1092,7 @@ fn main() {
         let page_pad = scale(12);
         let column_w = label_w + row_gap + ctrl_w;
         let key_list_w = scale(440);
-        // 「候補の見た目」の行は、コンボの横に「テーマのフォルダを開く」ボタンを置く
+        // 「入力パネルの見た目」の行は、コンボの横に「テーマのフォルダを開く」ボタンを置く
         let theme_button_w = scale(150);
         // 「アプリ」タブは、4列の一覧と右に縦に並べたボタンが収まる幅にする。
         // 一覧の幅には縦スクロールバーが出ても横スクロールにならない分を足す
@@ -1280,14 +1305,16 @@ fn main() {
         );
         y += row_h + row_gap;
         create_control("STATIC", "入力中の読み:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
-        let buffer_labels: Vec<&str> = INPUT_BUFFERS.iter().map(|(_, label)| *label).collect();
-        add_combo(
+        let buffer_labels: Vec<&str> = INPUT_BUFFERS.iter().map(|(label, _, _)| *label).collect();
+        let buffer_combo = add_combo(
             ctrl_x,
             y,
             ID_COMBO_INPUT_BUFFER,
             &buffer_labels,
-            INPUT_BUFFERS[config.panel_buffer as usize].1,
+            INPUT_BUFFERS[input_buffer_choice(config.panel_buffer, config.panel_input)].0,
         );
+        // 文言が長く ctrl_w に収まらないため、タブの幅いっぱいに置く
+        MoveWindow(buffer_combo, ctrl_x, y, page_x + page_w - ctrl_x, combo_list_h, 0);
         y += row_h + row_gap;
         // 文言が長く column_w に収まらないため、タブの幅いっぱいに置く
         let input_scope_check = create_control(
@@ -1310,7 +1337,7 @@ fn main() {
         y += row_h + row_gap;
         check("確定の後に次の語を予測する", y, ID_CHECK_NEXT_WORD, config.next_word);
         y += row_h + row_gap;
-        create_control("STATIC", "候補の見た目:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
+        create_control("STATIC", "入力パネルの見た目:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let themes = theme_choices(
             theme_dir().map(|dir| user_theme_names(&dir)).unwrap_or_default(),
             &config.panel_theme,
@@ -1341,21 +1368,7 @@ fn main() {
             .map_or(CANDIDATE_POSITIONS[0].1, |(_, label)| *label);
         add_combo(ctrl_x, y, ID_COMBO_CANDIDATE_POSITION, &position_labels, current_position);
         y += row_h + row_gap;
-        check("入力中の読みも候補と同じ場所に表示する", y, ID_CHECK_PANEL_INPUT, config.panel_input);
-        y += row_h + row_gap;
-        // 文言が長く column_w に収まらないため、タブの幅いっぱいに置く
-        let mode_popup_check = create_control(
-            "BUTTON",
-            "切り替えたときに入力モードをキャレットの近くに表示する",
-            check_style,
-            0,
-            page_x,
-            y,
-            page_w,
-            row_h,
-            ID_CHECK_MODE_POPUP,
-        );
-        SendMessageW(mode_popup_check, BM_SETCHECK, config.mode_popup as usize, 0);
+        check("オン/オフの切り替え時に「あ」「A」を表示する", y, ID_CHECK_MODE_POPUP, config.mode_popup);
         y += row_h + row_gap;
         create_control("STATIC", "フォント:", label_style, 0, page_x, y + scale(3), label_w, row_h, 0);
         let fonts = font_families();
@@ -1860,11 +1873,11 @@ fn collect(hwnd: HWND) -> Config {
     }
     config.digits_full = combo_text(ID_COMBO_DIGITS) == "全角";
     config.modeless = checked(ID_CHECK_MODELESS);
+    config.panel_input = LOADED_PANEL_INPUT.get();
     let buffer = combo_text(ID_COMBO_INPUT_BUFFER);
-    config.panel_buffer = INPUT_BUFFERS
-        .iter()
-        .find(|(_, label)| *label == buffer)
-        .is_some_and(|(name, _)| *name == "panel");
+    if let Some(index) = INPUT_BUFFERS.iter().position(|(label, _, _)| *label == buffer) {
+        apply_input_buffer_choice(&mut config, index);
+    }
     config.input_scope_passthrough = checked(ID_CHECK_INPUT_SCOPE);
     config.candidate_bar = checked(ID_CHECK_CANDIDATE_BAR);
     config.next_word = checked(ID_CHECK_NEXT_WORD);
@@ -1878,7 +1891,6 @@ fn collect(hwnd: HWND) -> Config {
     if let Some((name, _)) = CANDIDATE_POSITIONS.iter().find(|(_, label)| *label == position) {
         config.candidate_position = name.to_string();
     }
-    config.panel_input = checked(ID_CHECK_PANEL_INPUT);
     config.mode_popup = checked(ID_CHECK_MODE_POPUP);
     config.segment_ui = checked(ID_CHECK_SEGMENT_UI);
     config.llm = checked(ID_CHECK_LLM);
@@ -2154,8 +2166,11 @@ thread_local! {
     static KEY_ASSIGNS: RefCell<Vec<KeyAssign>> = const { RefCell::new(Vec::new()) };
     /// 画面上のアプリごとの設定 (保存で newline_apps・ime_start_apps に分けて書き出す)
     static APP_SETTINGS: RefCell<Vec<AppSetting>> = const { RefCell::new(Vec::new()) };
-    /// 「候補の見た目」の選択肢 ((panel_theme の値, 表示名)。コンボの項目と同じ並び)
+    /// 「入力パネルの見た目」の選択肢 ((panel_theme の値, 表示名)。コンボの項目と同じ並び)
     static THEME_CHOICES: RefCell<Vec<(String, String)>> = const { RefCell::new(Vec::new()) };
+    /// 読み込んだ panel_input (「入力パネルだけに出す」の保存でそのまま書く)
+    /// 読み込んだ panel_input (「入力パネルだけに出す」で保存するときに書き戻す)
+    static LOADED_PANEL_INPUT: Cell<bool> = const { Cell::new(false) };
     /// タブごとの項目 (TAB_NAMES の並び順)
     static TAB_PAGES: RefCell<Vec<Vec<HWND>>> = const { RefCell::new(Vec::new()) };
     static APP_PICK: RefCell<Option<AppPick>> = const { RefCell::new(None) };
@@ -3008,6 +3023,40 @@ input_buffer	composition
         assert!(config.file_text().contains("
 input_buffer	panel
 "));
+    }
+
+    #[test]
+    fn input_buffer_choices() {
+        let load = |buffer: &str, input: &str| {
+            let mut config = Config::default();
+            config.apply("input_buffer", buffer);
+            config.apply("panel_input", input);
+            config
+        };
+        // 読み込み
+        let config = load("composition", "0");
+        assert_eq!(input_buffer_choice(config.panel_buffer, config.panel_input), 0);
+        let config = load("composition", "1");
+        assert_eq!(input_buffer_choice(config.panel_buffer, config.panel_input), 1);
+        let config = load("panel", "0");
+        assert_eq!(input_buffer_choice(config.panel_buffer, config.panel_input), 2);
+        let config = load("panel", "1");
+        assert_eq!(input_buffer_choice(config.panel_buffer, config.panel_input), 2);
+        // 保存
+        let mut config = load("panel", "1");
+        apply_input_buffer_choice(&mut config, 0);
+        assert!(config.file_text().contains("\ninput_buffer\tcomposition\n"));
+        assert!(config.file_text().contains("\npanel_input\t0\n"));
+        apply_input_buffer_choice(&mut config, 1);
+        assert!(config.file_text().contains("\ninput_buffer\tcomposition\n"));
+        assert!(config.file_text().contains("\npanel_input\t1\n"));
+        // 入力パネルだけに出すときは、読み込んだ panel_input をそのまま書く
+        for input in ["0", "1"] {
+            let mut config = load("composition", input);
+            apply_input_buffer_choice(&mut config, 2);
+            assert!(config.file_text().contains("\ninput_buffer\tpanel\n"));
+            assert!(config.file_text().contains(&format!("\npanel_input\t{input}\n")));
+        }
     }
 
     #[test]

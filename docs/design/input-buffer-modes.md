@@ -21,7 +21,7 @@ maxlength にあった。Chromium では、composition を使わずに挿入し�
 そこで文書書き込み入力を廃止し、入力方式を次の2つから設定で選べるようにする。フォームへの対応は
 InputScope による素通し (docs/design/input-scope.md) で行う。
 
-- パネル保持入力 (`panel`): 入力中の読みを候補パネルの入力行だけに持ち、採用・確定のときに文書へ挿入する
+- パネル保持入力 (`panel`): 入力中の読みをパネルの入力行だけに持ち、採用・確定のときに文書へ挿入する
   (docs/design/panel-buffer.md を引き継ぐ)
 - composition 入力 (`composition`): 入力中の読みを文書の composition (下線付きの未確定文字列) に出す。
   ほかの IME と同じ見た目
@@ -57,7 +57,7 @@ Chrome で使った。
 | | パネル保持入力 | composition 入力 |
 |---|---|---|
 | 入力中の読み | パネルの入力行 (`panel_input` などによらず常に出す) | 文書の composition。打鍵ごとに読みの表示 (`composer_.Display()`、未完成のローマ字を含む) で更新する。表示属性は入力中の下線 |
-| 候補パネルの入力行 | 常に出す | `panel_input` とテーマの設定に従う |
+| パネルの入力行 | 常に出す | `panel_input` とテーマの設定に従う |
 | 未完成のローマ字の小窓 | 出さない | 出さない (composition に含める) |
 | 採用・確定 | キャレット位置へ挿入 (`InsertText`) | composition の文字列を採用した文字列にして終える |
 | 先頭文節の採用 | 先頭文節を挿入し、残りのかなを入力行に残す | 先頭文節で composition を終え、残りのかなで composition を張り直す (`RestartCompositionEditSession` と同じく、終了と開始を1つの edit session で行う) |
@@ -75,7 +75,7 @@ Chrome で使った。
 - composition の開始と文字列の設定は別々の edit session で行う (開始と同じ session で SetText すると CUAS が
   WM_IME_COMPOSITION を生成しない制約。既存の `StartCompositionEditSession` の注記と同じ)
 - composition を張れない (失敗・拒否) ときは、その run をパネル保持入力として続ける
-- 候補パネルの位置は、composition 入力では composition の矩形から取る
+- 入力パネルの位置は、composition 入力では composition の矩形から取る
 - 後続語の予測・学習・前文脈・モードレス入力の判定は両方式で同じ。モードレスの英字切替は、
   composition 入力では composition の文字列を書き換えるだけになる
 - 削除前の composition 方式の実装は `git show ba4b317^:tsf/src/text_service.cpp` にある。候補バー・パネル・

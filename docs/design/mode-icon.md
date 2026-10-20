@@ -54,7 +54,7 @@
   `CreateCustomFontFileReference` → `CreateFontFace` で `IDWriteFontFace` を作り、フォントコレクションは
   作らない (3 字を glyph run で描くだけなので要らない)
 - 描画は D2D の `ID2D1DCRenderTarget` (premultiplied BGRA) を 32bpp の DIB section に bind し、
-  透明でクリアしてから `DrawGlyphRun` で描く。候補パネル・キャレットの印と同じ方式
+  透明でクリアしてから `DrawGlyphRun` で描く。入力パネル・キャレットの印と同じ方式
 - 字形の外接矩形は `IDWriteFontFace::GetDesignGlyphMetrics` (横書きの advance・side bearing と、
   縦の top/bottom side bearing・verticalOriginY) から求める
 - HICON は `CreateIconIndirect` で作る。color は 32bpp DIB で、文字色は単色なので、premultiplied の

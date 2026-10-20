@@ -2800,7 +2800,7 @@ bool TextService::ShowBarItems(const RECT* caret, std::vector<BarCandidate> item
     return true;
 }
 
-// ---- サジェストパネル ----
+// ---- 入力パネル ----
 
 bool TextService::PanelInputActive() const
 {

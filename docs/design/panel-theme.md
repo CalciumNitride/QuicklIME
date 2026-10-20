@@ -1,8 +1,8 @@
-# サジェストパネルのテーマ (見た目のカスタマイズ・縦積み・ゴースト)
+# 入力パネルのテーマ (見た目のカスタマイズ・縦積み・ゴースト)
 
 ## 背景と目的
 
-サジェストパネル (docs/design/suggest-panel.md) はモックの案 A (カプセル) の見た目で作った。
+入力パネル (docs/design/suggest-panel.md) はモックの案 A (カプセル) の見た目で作った。
 色と寸法は `PanelTheme` にまとめてあるが、ユーザは変えられない。本書では次の 3 つを入れる。
 
 - 見た目をユーザが変えられるようにする (色・形・大きさ)
@@ -239,7 +239,7 @@ dark.background	#101014EE
 
 ### 設定ツール
 
-- 「表示」タブで、「候補の表示位置」の直前に「候補の見た目」のコンボボックスを置く。
+- 「表示」タブで、「候補の表示位置」の直前に「入力パネルの見た目」のコンボボックスを置く。
   項目は組み込みのテーマ (上の表記) に続けて、テーマフォルダの `*.tsv` のファイル名 (拡張子なし)。
   組み込みと同名のファイルは組み込みの項目として 1 つだけ出す
 - その横に「テーマのフォルダを開く」ボタンを置く。フォルダが無ければ作ってから開く
@@ -261,7 +261,7 @@ dark.background	#101014EE
 | tsf/src/text_service.h, tsf/src/text_service.cpp, tsf/src/text_service_direct.cpp | テーマの読み直し、候補の種類を渡す、`input_row always`・`blur never` の反映 |
 | tsf/src/config.h, tsf/src/config.cpp | `panel_theme` の読み込み |
 | tsf/CMakeLists.txt | panel_theme.cpp の追加 |
-| engine/src/bin/quicklime-config.rs | 「候補の見た目」コンボ、テーマのフォルダを開くボタン、`panel_theme` の読み書き |
+| engine/src/bin/quicklime-config.rs | 「入力パネルの見た目」コンボ、テーマのフォルダを開くボタン、`panel_theme` の読み書き |
 | docs/theme.md (新規), README.md, .claude/CLAUDE.md, docs/design/suggest-panel.md | 上の「ドキュメント」 |
 
 ## 実装手順
@@ -303,7 +303,7 @@ TSF 層のテスト前に `taskkill /IM Notepad.exe /F` でメモ帳を終了し
 | 17 | メモ帳 | `mine.tsv` に不正な行 (`accent red`、`chip_shape star`、未知のキー) を混ぜる | その行だけ無視され、他の行は効く。診断ログに無視したキーが出る |
 | 18 | メモ帳 | `panel_theme nothing` (存在しない名前) | `capsule` で出る。診断ログに出る |
 | 19 | メモ帳 | テーマフォルダに `capsule.tsv` (`accent #E0457B`) を置き、`panel_theme capsule` | 組み込みの `capsule` の代わりにこのファイルが使われる |
-| 20 | 設定ツール | 「候補の見た目」でテーマを切り替えて保存 | config.tsv に `panel_theme` が書かれ、入力に反映される。フォルダの `mine.tsv` も選べる。「テーマのフォルダを開く」でフォルダが開く |
+| 20 | 設定ツール | 「入力パネルの見た目」でテーマを切り替えて保存 | config.tsv に `panel_theme` が書かれ、入力に反映される。フォルダの `mine.tsv` も選べる。「テーマのフォルダを開く」でフォルダが開く |
 | 21 | WezTerm (追記型入力) | 2・8 と同じ | 2・8 と同じ |
 
 ## 未決事項

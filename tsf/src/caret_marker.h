@@ -9,7 +9,7 @@ struct ID2D1DCRenderTarget;
 struct ID2D1SolidColorBrush;
 
 // キャレットの印の三角 (テーマの caret_marker triangle。docs/design/caret-marker.md)。
-// キャレットの矩形の下端に先端を上に向けた三角を、候補パネルとは別の小さな layered window で出す。
+// キャレットの矩形の下端に先端を上に向けた三角を、入力パネルとは別の小さな layered window で出す。
 // フォーカスを奪わず (WS_EX_NOACTIVATE)、クリックは下のアプリへ通す (WS_EX_TRANSPARENT)
 class CaretMarker {
 public:

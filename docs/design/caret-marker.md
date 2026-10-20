@@ -16,7 +16,7 @@
 
 | キー | 値 | 既定 | 内容 |
 |---|---|---|---|
-| `caret_marker` | `off` / `pointer` / `triangle` | `triangle` | キャレットの印。`pointer` は候補パネルに吹き出しの尻尾を付けてキャレットを指す。`triangle` はキャレットの下端に上向きの三角を出す |
+| `caret_marker` | `off` / `pointer` / `triangle` | `triangle` | キャレットの印。`pointer` は入力パネルに吹き出しの尻尾を付けてキャレットを指す。`triangle` はキャレットの下端に上向きの三角を出す |
 | `pointer_size` | 0〜3 | 0.6 | 尻尾の高さ (f に対する比率)。底辺は高さの 2 倍 |
 | `triangle_size` | 0〜3 | 0.5 | 三角の高さ (f に対する比率)。形は正三角形 |
 | 色 `caret_marker` | 色 | `accent` と同じ値 | 三角の色 (ライト・ダークで別の値を持てる) |
@@ -49,7 +49,7 @@
 
 ### pointer (吹き出し)
 
-- 候補パネル (候補バーと変換の候補一覧の両方) の、キャレット行に向いた辺に二等辺三角形の尻尾を付ける。
+- 入力パネル (候補バーと変換の候補一覧の両方) の、キャレット行に向いた辺に二等辺三角形の尻尾を付ける。
   パネルがキャレット行の下にあれば上辺に上向き、上にあれば下辺に下向き
 - 尻尾の先端の x はキャレットの矩形の左端。底辺の中心をその x に置き、パネルの角丸 (`panel_radius`) に
   かからない範囲に収める。範囲を外れるときは端で止める (先端もその位置にずらす)
@@ -72,7 +72,7 @@
 
 - キャレットの矩形の下端に、先端を上に向けた三角を出す。先端の x はキャレットの矩形の左端、先端の y は
   キャレットの矩形の下端
-- 候補パネルとは別の、小さな layered window (`WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
+- 入力パネルとは別の、小さな layered window (`WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
   WS_EX_LAYERED | WS_EX_TRANSPARENT`) で出す。パネルの有無・表示位置 (`caret` / `center`)・`style`・
   ぼかしによらず出す。`WS_EX_TRANSPARENT` でクリックを下のアプリへ通す
 - `candidate_position caret` でパネルをキャレット行の下に出すときは、パネルを三角の高さの分だけ下げ、

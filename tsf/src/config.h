@@ -103,7 +103,7 @@ struct TsfConfig {
     // 半角英数字を前提にした InputScope の欄 (数字・電話番号・メールアドレス・URL など) では
     // キーを食べない (設定 input_scope_passthrough。docs/design/input-scope.md)
     bool inputScopePassthrough = true;
-    // サジェストパネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
+    // 入力パネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
     std::wstring panelTheme = L"capsule";
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;

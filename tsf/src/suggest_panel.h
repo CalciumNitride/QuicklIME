@@ -144,7 +144,7 @@ public:
     // テーマが候補を横一列に並べるか (変換の候補一覧はこれによらず縦積み)
     bool Horizontal() const { return theme_.layout == PanelLayout::Row; }
 
-    // 縦に並ぶ候補パネルをキャレット行の上に出し、並びを反転している (1 番目の候補がキャレット側の
+    // 縦に並ぶ入力パネルをキャレット行の上に出し、並びを反転している (1 番目の候補がキャレット側の
     // 下にある) か (docs/design/panel-above-caret.md)。表示していなければ false
     bool Reversed() const
     {
@@ -162,7 +162,7 @@ private:
         Bottom,  // パネルがキャレット行の上にあり、下向きの尻尾を付ける
     };
 
-    // 縦に並ぶ候補パネルを Caret で出す側
+    // 縦に並ぶ入力パネルを Caret で出す側
     enum class ColumnSide {
         None,   // 決めていない (横一列・Center・どちら側にも 1 行も入らない)
         Below,  // キャレット行の下
@@ -183,7 +183,7 @@ private:
     float TextWidth(const std::wstring& text, IDWriteTextFormat* format) const;
     // Show で区切った候補の page ページ目を組んで出し、出した候補の数を返す (selection は全体での番号)
     size_t LayoutPage(size_t page, size_t selection, const wchar_t* kind);
-    // placement (Caret) で縦の候補パネルを出す側を *side に決め、1 ページに出す行数を返す。
+    // placement (Caret) で縦の入力パネルを出す側を *side に決め、1 ページに出す行数を返す。
     // どちら側にも 1 行も入らなければ *side を None にして 0 を返す
     size_t FitColumn(const Placement& placement, const RECT& work, bool hasInput, size_t total,
                      ColumnSide* side) const;
@@ -287,7 +287,7 @@ private:
     RECT placementCaret_;
     RECT work_;             // 出すモニタの作業領域
     int pointerHeight_;     // 尻尾の高さ (Show の時点で決めたもの)
-    ColumnSide columnSide_;  // 縦の候補パネルを出す側 (Show・ShowConversion の時点で決めたもの)
+    ColumnSide columnSide_;  // 縦の入力パネルを出す側 (Show・ShowConversion の時点で決めたもの)
     bool hasInput_;
     InputLine input_;
     int bodyX_;       // パネル (影を除く) の左上 (スクリーン座標)

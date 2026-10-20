@@ -53,6 +53,6 @@
     (OnTestKeyDown と OnTestKeyUp の間に起き、IME からは止められない)
   - 試した対策: OnKeyDown が来ないまま OnTestKeyUp が来たら機能を実行する方式。変換の開始はできても、
     候補選択中の候補送りはできなかった
-  - 候補パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
+  - 入力パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))

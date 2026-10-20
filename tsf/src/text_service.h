@@ -42,7 +42,7 @@ bool ContainsAsciiLetter(const std::wstring& text);
 
 // TSF テキストサービス本体。
 // 打鍵した読みを run として IME が持ち、文書の composition (composition 入力) か
-// 候補パネルの入力行 (パネル保持入力) に出す。採用・確定で文書へ入れ、変換キーでは
+// パネルの入力行 (パネル保持入力) に出す。採用・確定で文書へ入れ、変換キーでは
 // composition で候補を選ぶ (docs/design/input-buffer-modes.md)。
 class TextService : public ITfTextInputProcessorEx,
                     public ITfThreadMgrEventSink,
@@ -289,7 +289,7 @@ private:
     // バーの候補を破棄する。入力行を出している run の間は、パネルを入力行だけにして残す
     void ClearBarKeepingInput(ITfContext* context);
 
-    // ---- サジェストパネル (docs/design/suggest-panel.md) ----
+    // ---- 入力パネル (docs/design/suggest-panel.md) ----
     // パネルに入力行を出す設定か (candidate_bar 1 かつ、panel_input 1 かテーマの input_row always。
     // パネル保持入力の run は設定によらず出す)
     bool PanelInputActive() const;
@@ -519,7 +519,7 @@ private:
     // run の読みを出す場所 (設定 input_buffer)
     enum class RunMode {
         Composition,  // 文書の composition (runComposition_)
-        Panel,        // 候補パネルの入力行だけ (文書には採用・確定まで何も入れない)
+        Panel,        // パネルの入力行だけ (文書には採用・確定まで何も入れない)
     };
     // 候補選択中の composition は run に数えない
     bool InRun() const { return !Composing() && !composer_.Empty(); }
@@ -759,7 +759,7 @@ private:
     size_t conversionPageSize_;
     EngineClient engine_;                      // 変換エンジンへの named pipe クライアント
     ConfigLoader config_;                      // ユーザ設定 (config.tsv) のローダ
-    PanelThemeLoader panelTheme_;              // サジェストパネルのテーマ (設定 panel_theme)
+    PanelThemeLoader panelTheme_;              // 入力パネルのテーマ (設定 panel_theme)
 
     // 候補バー
     std::vector<BarCandidate> barItems_;  // 表示中の候補 (空 = 非表示)

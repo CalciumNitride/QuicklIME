@@ -51,7 +51,7 @@
   `QUICKLIME_LEARN_FILE` (学習)、`QUICKLIME_USER_DICT_FILE` (ユーザ辞書)、
   `QUICKLIME_CONFIG_FILE` (設定。エンジンと TSF 層の両方が読む)、
   `QUICKLIME_ROMAJI_FILE` (ローマ字テーブル。TSF 層のみ)、
-  `QUICKLIME_THEME_DIR` (候補パネルのテーマフォルダ。TSF 層と設定ツール)
+  `QUICKLIME_THEME_DIR` (入力パネルのテーマフォルダ。TSF 層と設定ツール)
 - TSF 層の実機確認も隔離できる: 上記の環境変数 (`QUICKLIME_PIPE_NAME` と
   `QUICKLIME_LEARN_FILE` / `QUICKLIME_USER_DICT_FILE` / `QUICKLIME_CONFIG_FILE` など) を設定した
   PowerShell から、`taskkill /IM Notepad.exe /F` で既存のメモ帳を終了してからメモ帳を起動すると、

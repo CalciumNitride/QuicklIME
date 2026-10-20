@@ -27,7 +27,7 @@ Windows 用の日本語 IME です。一般的なローマ字入力をベース�
 - モードレス入力: 英語の入力を自動で判別し、IME をオフに切り替えることなく英字のまま入力できます ([モードレス入力](docs/user/modeless.md))
 - AI による並べ替え: 文脈を考慮した AI（LLM）により、最適な候補を上位に並べ替えます ([AI による候補の並べ替え](docs/user/llm.md))
 - 辞書インポート: 他の IME のユーザー辞書形式のファイルを取り込めます ([辞書とローマ字](docs/user/dictionary.md))
-- テーマ: 候補パネルの配色やレイアウトをカスタマイズできます ([候補パネルのテーマ](docs/user/theme.md))
+- テーマ: 入力パネルの配色やレイアウトをカスタマイズできます ([入力パネルのテーマ](docs/user/theme.md))
 
 ## 動作環境
 
@@ -77,7 +77,7 @@ Windows 11（64bit アプリおよび 32bit アプリの両方に対応）
 | `romaji.tsv` | ローマ字テーブルの追加・上書き設定 | [辞書とローマ字](docs/user/dictionary.md#ローマ字テーブルのカスタマイズ) |
 | `userdict.tsv` | ユーザー辞書（単語登録ツールで登録した単語） | [辞書とローマ字](docs/user/dictionary.md) |
 | `imported\` | インポートした辞書ファイル | [辞書とローマ字](docs/user/dictionary.md#辞書インポート) |
-| `themes\` | カスタムテーマファイル | [候補パネルのテーマ](docs/user/theme.md) |
+| `themes\` | カスタムテーマファイル | [入力パネルのテーマ](docs/user/theme.md) |
 | `learning_stats.tsv`・`learning_boundary.tsv`・`learning_word.tsv` | 学習データ | [学習](docs/user/learning.md) |
 
 ## ドキュメント
@@ -87,7 +87,7 @@ Windows 11（64bit アプリおよび 32bit アプリの両方に対応）
 - [入力と変換](docs/user/input.md)
 - [学習](docs/user/learning.md)
 - [候補バーと表示](docs/user/candidate-bar.md)
-- [候補パネルのテーマ](docs/user/theme.md)
+- [入力パネルのテーマ](docs/user/theme.md)
 - [キー割当](docs/user/keymap.md)
 - [アプリごとの設定](docs/user/app-settings.md)
 - [モードレス入力](docs/user/modeless.md)

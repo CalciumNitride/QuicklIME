@@ -460,7 +460,7 @@
 失敗:   ERR\t<メッセージ>\n   (組が無い、読み・表記の欠落)
 ```
 
-- TSF 層が候補パネルで選んでいる候補の学習を消すとき (ForgetLearning、既定 Ctrl+Delete) に送る
+- TSF 層が入力パネルで選んでいる候補の学習を消すとき (ForgetLearning、既定 Ctrl+Delete) に送る
   (docs/design/forget-learning.md)
 - 組ごとに次を消す ([design/learning-score.md](design/learning-score.md) の F)。辞書・ユーザ辞書
   (手動登録・インポート辞書) の語と境界学習は消さない

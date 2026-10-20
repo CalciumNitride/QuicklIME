@@ -10,7 +10,7 @@ struct ID2D1DCRenderTarget;
 struct ID2D1SolidColorBrush;
 
 // 入力モードの一時表示 (docs/design/mode-popup.md)。キャレット行のすぐ下 (作業領域の下端から
-// はみ出すときは上) に「あ」/「A」を角丸の四角で出し、1 秒で消す。候補パネル・キャレットの印とは
+// はみ出すときは上) に「あ」/「A」を角丸の四角で出し、1 秒で消す。入力パネル・キャレットの印とは
 // 別の小さな layered window で、フォーカスを奪わず (WS_EX_NOACTIVATE)、クリックは下のアプリへ通す
 // (WS_EX_TRANSPARENT)
 class ModePopup {

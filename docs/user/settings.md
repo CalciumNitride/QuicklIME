@@ -23,16 +23,16 @@ QuicklIME の設定は、設定ツール（`Ctrl + F12`、またはタスクバ�
 | `punctuation` | 句読点 (入力) | `、。` / `，．` / `、．` / `，。` | `、。` | この表 |
 | `digits` | 数字 (入力) | `half` (半角) / `full` (全角) | `half` | この表 |
 | `modeless` | モードレス入力 (英語の打鍵を自動で判定する) (入力) | `0` / `1`（`1` にすると IME をオフにせず英単語を入力できます） | `0` | [モードレス入力](modeless.md) |
-| `input_buffer` | 入力中の読み (入力) | `composition` (文書に下線付きで出す) / `panel` (候補パネルだけに出す) | `composition` | [入力と変換 (input_buffer)](input.md#入力中の読みの表示-input_buffer) |
+| `input_buffer` | 入力中の読み (入力) | `composition` (文書に下線付きで出す・文書と入力パネルの両方に出す) / `panel` (入力パネルだけに出す) | `composition` | [入力と変換 (input_buffer)](input.md#入力中の読みの表示-input_buffer) |
 | `input_scope_passthrough` | 数字・電話番号・メールアドレス・URL などの入力欄では日本語入力を使わない (入力) | `0` / `1`（`1` にすると半角専用欄で自動的に直接入力になります） | `1` | [入力と変換 (input_scope_passthrough)](input.md#数字メールアドレスなどの入力欄-input_scope_passthrough) |
 | `candidate_bar` | 候補バーを表示する (表示) | `0` / `1`（`0` にすると候補バーを表示しません） | `1` | [候補バー](candidate-bar.md) |
 | `next_word` | 確定の後に次の語を予測する (表示) | `0` / `1`（`0` にすると確定後の次の語の予測を表示しません） | `1` | [次の語の予測](candidate-bar.md#次の語の予測) |
-| `panel_theme` | 候補の見た目 (表示) | `capsule` / `capsule-column` / `capsule-blur` / `ghost`、またはカスタムテーマ名 | `capsule` | [候補バー](candidate-bar.md)・[候補パネルのテーマ](theme.md) |
+| `panel_theme` | 入力パネルの見た目 (表示) | `capsule` / `capsule-column` / `capsule-blur` / `ghost`、またはカスタムテーマ名 | `capsule` | [候補バー](candidate-bar.md)・[入力パネルのテーマ](theme.md) |
 | `candidate_position` | 候補の表示位置 (表示) | `caret` (キャレットの下) / `center` (画面中央) | `caret` | [候補バー](candidate-bar.md) |
-| `panel_input` | 入力中の読みも候補と同じ場所に表示する (表示) | `0` / `1`（`1` にすると候補パネル上部に入力行を表示します） | `0` | [候補バー](candidate-bar.md) |
-| `mode_popup` | 切り替えたときに入力モードをキャレットの近くに表示する (表示) | `0` / `1`（`1` にすると IME 切り替え時にモードを一時表示します） | `1` | [入力モードの一時表示](candidate-bar.md#入力モードの一時表示-mode_popup) |
-| `candidate_font` | フォント (表示) | 候補パネルのフォント名（31 文字まで） | `Yu Gothic UI` | この表 |
-| `candidate_font_size` | サイズ (表示) | `10`〜`40`（候補パネルのフォントサイズ px） | `18` | この表 |
+| `panel_input` | 入力中の読み (入力) の「文書と入力パネルの両方に出す」 | `0` / `1`（`1` にすると入力パネル上部に入力行を表示します。`input_buffer panel` のときは効きません） | `0` | [候補バー](candidate-bar.md)・[入力と変換 (input_buffer)](input.md#入力中の読みの表示-input_buffer) |
+| `mode_popup` | オン/オフの切り替え時に「あ」「A」を表示する (表示) | `0` / `1`（`1` にすると IME 切り替え時にモードを一時表示します） | `1` | [入力モードの一時表示](candidate-bar.md#入力モードの一時表示-mode_popup) |
+| `candidate_font` | フォント (表示) | 入力パネルのフォント名（31 文字まで） | `Yu Gothic UI` | この表 |
+| `candidate_font_size` | サイズ (表示) | `10`〜`40`（入力パネルのフォントサイズ px） | `18` | この表 |
 | `key.*` | キー割当の一覧 (キー割当) | 各機能に割り当てるキー設定 | 機能別に設定 | [キー割当](keymap.md) |
 | `newline_apps` | 改行キー (Ctrl+J など) で Shift+Enter を送る (アプリ) | 対象アプリの exe 名（カンマ区切り） | `Discord.exe,slack.exe,ms-teams.exe,Teams.exe,LINE.exe` | [アプリごとの設定](app-settings.md)・[入力と変換](input.md) |
 | `ime_start_apps` | 起動時の IME (アプリ) | `exe名:on` / `exe名:off`（カンマ区切り） | 空（自動） | [アプリごとの設定](app-settings.md) |

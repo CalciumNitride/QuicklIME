@@ -78,7 +78,7 @@ bool LangBarButton::EnsureTarget()
         d2dFactory_ = nullptr;
         return false;
     }
-    // 候補パネルと同じく、ホストのプロセスに D3D のデバイスを作らないようソフトウェアで描き、
+    // 入力パネルと同じく、ホストのプロセスに D3D のデバイスを作らないようソフトウェアで描き、
     // DPI は 96 に固定して DIP を px として扱う
     const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_SOFTWARE,

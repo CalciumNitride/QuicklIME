@@ -9,7 +9,7 @@
   ファンクションキー変換・日付時刻の候補・確定アンドゥ・ローマ字テーブル・ユーザ辞書と単語登録・
   設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ・パスワード欄) の仕様と理由
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
-- [docs/user/theme.md](../user/theme.md): 候補パネルのテーマファイルのリファレンス
+- [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
 ## 入力方式
 
@@ -26,7 +26,7 @@
   そちらで置き換え
 - [keymap.md](keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける
 - [panel-buffer.md](panel-buffer.md): パネル保持入力 (設定 `input_buffer panel`)。入力中の読みを文書に
-  書かず候補パネルの入力行だけに持ち、採用・確定で挿入する。設定の値・文書の分類・確定アンドゥは
+  書かずパネルの入力行だけに持ち、採用・確定で挿入する。設定の値・文書の分類・確定アンドゥは
   [input-buffer-modes.md](input-buffer-modes.md) で置き換え
 - [input-buffer-modes.md](input-buffer-modes.md): 入力方式の選択 (設定 `input_buffer` の `composition` /
   `panel`)。文書書き込み入力・擬似 Backspace・`append_only_apps` を廃止し、2方式で run とキー処理を
@@ -37,7 +37,7 @@
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
 - [append-only-apps.md](append-only-apps.md): 指定したアプリ (既定 Discord.exe) では読める文書も追記のみとして扱い、文字の置き換えを擬似 Backspace で行う。
   [input-buffer-modes.md](input-buffer-modes.md) で廃止
-- [forget-learning.md](forget-learning.md): 候補パネルで選んでいる候補の学習を Ctrl+Delete で消す。
+- [forget-learning.md](forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
   消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え
 - [input-scope.md](input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンのままキーを食べない (設定 `input_scope_passthrough`)
 
@@ -47,14 +47,14 @@
   文書を書き換える。バーの全体変換の件数と先頭文節の取り方は [nbest.md](nbest.md) で、見た目・表示位置・
   入力行は [suggest-panel.md](suggest-panel.md) で、バーの並び・先頭文節の候補・エンジンへの問い合わせは
   [unified-suggest.md](unified-suggest.md) で置き換え
-- [suggest-panel.md](suggest-panel.md): サジェストパネル。候補バーの見た目の刷新 (カプセル)、画面中央への
+- [suggest-panel.md](suggest-panel.md): 入力パネル。候補バーの見た目の刷新 (カプセル)、画面中央への
   表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
   [conversion-panel.md](conversion-panel.md)、設定 `panel_blur` は [theme-blur.md](theme-blur.md) で置き換え
-- [panel-theme.md](panel-theme.md): 候補パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
+- [panel-theme.md](panel-theme.md): 入力パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
   テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
   出し、予測候補の順位にも前文脈を使う。予測の材料と並びは [learning-score.md](learning-score.md) で置き換え
-- [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧をサジェストパネルで出す (テーマ・表示位置・
+- [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧を入力パネルで出す (テーマ・表示位置・
   変換中の入力行)
 - [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
   印 (テーマの `caret_marker`。パネルの吹き出しの尻尾か、キャレットの下の三角) で示す
@@ -66,7 +66,7 @@
 - [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
   予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
   Shift+← / → で縮める。予測の学習の点数は [learning-score.md](learning-score.md) で置き換え
-- [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ候補パネルの上下を出しうる最大の高さで決め、
+- [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 
 ## 変換
@@ -116,6 +116,8 @@
   M PLUS Rounded 1c で透明な背景にテーマの色で描く
 - [mode-popup.md](mode-popup.md): オン/オフの切替時と別の入力欄へのフォーカス移動時に、キャレットの近くに
   入力モード (あ / A) を約 1 秒出す (設定 `mode_popup`)
+- [config-input-display.md](config-input-display.md): 設定ツールで入力中の読みの表示先 (`input_buffer`・
+  `panel_input`) を「入力」タブの 1 つのコンボで選び、入力モード表示のチェックボックスの文言を短くする
 
 ## エンジン
 

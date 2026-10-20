@@ -84,7 +84,7 @@
   予測の確定履歴に載せる (英単語の省入力)
 - 日付・時刻の動的候補は学習しない (下記「日付・時刻の候補」)
 - 設定 `learning` が 0 のときは記録しないが、既存の学習データは使い続ける
-- 候補パネルで選んでいる候補の学習は Ctrl+Delete (`key.forget_learning`) で消せる。消すと
+- 入力パネルで選んでいる候補の学習は Ctrl+Delete (`key.forget_learning`) で消せる。消すと
   learning_stats.tsv を書き直す ([forget-learning.md](forget-learning.md))
 
 ## 予測

@@ -118,7 +118,7 @@ value を記録するもの) を Chrome で開いて確かめる。`debug_log` �
 |---|---|---|---|
 | 1 | `inputmode="numeric"` の1文字1枠 | `1a2b3c` | すべて半角のまま素のキーとして入る (keyCode 229 が出ない、composition が出ない) |
 | 2 | `type="tel"` | `090-1234` | 半角で入る |
-| 3 | `type="email"` | `foo@example.com` | 半角で入り、候補パネルが出ない |
+| 3 | `type="email"` | `foo@example.com` | 半角で入り、入力パネルが出ない |
 | 4 | `type="url"` | `https://` | 半角で入る |
 | 5 | `type="number"` | `12` | 半角で入る |
 | 6 | 指定なしの欄 | `kyouha` | 日本語入力が働く |
