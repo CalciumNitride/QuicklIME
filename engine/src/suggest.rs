@@ -142,12 +142,14 @@ pub fn suggest(
         let edits = if cfg.typo_correction { tuning.allowed_edits(keys.len()) } else { 0 };
         let matcher = typo::Matcher::new(keys, edits, tuning);
         let ctx_id = nbest.context_id;
-        let word_score = |left_id: u16, right_id: u16, cost: i16| {
-            convert::word_path_cost(ctx_id, left_id, right_id, cost, matrix, functional) - c0
+        let context = ctx.map(|c| c.surface.as_str());
+        let word_score = |reading: &str, surface: &str, left_id: u16, right_id: u16, cost: i16| {
+            convert::word_path_cost(ctx_id, left_id, right_id, cost, matrix, functional)
+                - convert::learning_discount(learning, reading, surface, left_id, functional)
+                - c0
                 + tuning.predict_bias
         };
-        let context = ctx.map(|c| c.surface.as_str());
-        for p in predict::scored(kana, &matcher, context, dict, user, learning, cfg, &word_score) {
+        for p in predict::scored(kana, &matcher, context, dict, user, learning, cfg, &word_score, c0) {
             let kind = if p.edits > 0 { Kind::PredictTypo } else { Kind::Predict };
             items.push(Item {
                 suggestion: Suggestion { kind, segments: vec![(p.reading, p.surface)] },
@@ -294,7 +296,8 @@ mod tests {
     #[test]
     fn 読み全体の学習表記は先頭に固定する() {
         let mut learning = LearningStore::in_memory();
-        learning.record("きょう", "京");
+        // 辞書に 京 が無いので、分けられない句の学習 (読み全体の学習表記になる)
+        learning.learn_segment("きょう", "京", "", None);
         let mut tuning = typo::TUNING;
         // 予測をどれも全体変換より上にしても、学習表記は先頭
         tuning.predict_bias = -100_000;
@@ -366,16 +369,18 @@ mod tests {
 
     #[test]
     fn かなと同じ表記の保護された最良経路でも補正の候補とずれのある予測を上に置かない() {
-        // 学習でかなのままの表記を選んだ読み (最良経路は保護の対象で、表記が読みのかなと同じなので並びに無い)
+        // ユーザ辞書にかなのままの表記で登録した読み (最良経路は保護の対象で、表記が読みのかなと同じなので
+        // 並びに無い)
         let dict = dict_from(
-            "ありがとう\t1\t1\t3000\t有難う\nありがたい\t1\t1\t3000\t有難い\n",
+            "ありがとう\t1\t1\t3500\t有難う\nありがたい\t1\t1\t3000\t有難い\n",
         );
-        let mut learning = LearningStore::in_memory();
-        learning.record("ありがとう", "ありがとう");
+        let mut user = UserDict::empty();
+        user.load_from("ありがとう\tありがとう\t名詞\n".as_bytes(), &functional());
+        let learning = LearningStore::in_memory();
         let mut tuning = typo::TUNING;
         tuning.predict_bias = -100_000;
         let got = run(
-            "ありがとう", "a\x1fri\x1fga\x1fto\x1fu", &dict, &UserDict::empty(), &learning,
+            "ありがとう", "a\x1fri\x1fga\x1fto\x1fu", &dict, &user, &learning,
             &Config::default(), &tuning,
         );
         let listed = surfaces(&got);
@@ -493,7 +498,8 @@ mod tests {
         assert_eq!(surfaces(&got), vec!["お休みなさい", "御休みなさい", "オヤスミなさい"]);
         // 読み全体の学習表記は書き換えの候補として扱わない
         let mut learning = LearningStore::in_memory();
-        learning.record("おやすみなさい", "オヤスミナサイ");
+        let words = [("おやすみなさい".to_string(), "オヤスミナサイ".to_string())];
+        learning.learn_segment("おやすみなさい", "オヤスミナサイ", "", Some(&words));
         let got = run(
             "おやすみなさい", OYASUMI_KEYS, &oyasumi_dict(true), &UserDict::empty(), &learning, &cfg,
             &typo::TUNING,

@@ -8,9 +8,14 @@
 - 確定済みの任意の選択範囲の再変換 (TSF の ITfFnReconversion)。今の後置再変換の対象は、かなだけの
   選択範囲・キャレット直前のかな・採用した文字列の記憶 ([adopted-reconversion.md](design/adopted-reconversion.md))
   の範囲だけ
-- 学習の改良。今は読みごとに最後に確定した表記を先頭にする単純な方式 (頻度ベースなど)。頻度・新しさ・文脈による
-  学習の点数付けで、SUGGEST の学習と短縮よみの仮の点数 ([unified-suggest.md](design/unified-suggest.md) の E) を
-  置き換える。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶことも含む
+- 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
+  ([unified-suggest.md](design/unified-suggest.md))
+- learning_stats.tsv に貯まった確定の記録での学習の評価のやり直し。今の評価 (`engine/examples/learning_eval.rs`) の
+  データは表記の変わり目に偏っている ([learning-score.md](design/learning-score.md) の G)
+- 同音異義語の学習の割引の上限の例外。学習の度合いが最も大きい語が勝つようにするか
+  ([learning-score.md](design/learning-score.md))
+- 前文脈による変換の使い分け (「服を|着る」「紙を|切る」)。今は前文脈を予測と後続語の予測にだけ使う
+  ([learning-score.md](design/learning-score.md))
 - LLM による候補の生成 (読みに沿うよう制約したデコード) と、補正の候補の LLM での採点
   ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))

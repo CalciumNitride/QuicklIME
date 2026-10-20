@@ -110,12 +110,18 @@ fn main() -> std::io::Result<()> {
     let mut user = UserDict::load_default(&functional, learn::learned_word_path());
     user.set_name_forms(english.forms().clone());
     let config = Config::load_default();
+    let dictionary = load_dictionary();
+    let matrix = load_matrix();
+    // 学習の取り込みと読み込みで、文節を辞書の語に分けるため辞書の後に読む
+    let learning = LearningStore::load_default(&|reading, surface| {
+        convert::split_words(reading, surface, &dictionary, &user, &matrix, &functional)
+    });
     let data = Arc::new(EngineData {
-        dictionary: load_dictionary(),
-        matrix: load_matrix(),
+        dictionary,
+        matrix,
         functional,
         user: Mutex::new(user),
-        learning: Mutex::new(LearningStore::load_default()),
+        learning: Mutex::new(learning),
         config: Mutex::new(config),
         llm: llm::LlmManager::new(Box::new(llm::ProcessLauncher)),
         english,
@@ -381,7 +387,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
             let candidates = {
                 let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
-                convert::convert_nbest_scored(
+                convert::convert_nbest_rerank(
                     kana,
                     ctx.as_ref(),
                     &data.dictionary,
@@ -646,6 +652,37 @@ fn predictions_response(candidates: &[(String, String)]) -> String {
     format!("OK\t{body}\n")
 }
 
+/// LEARN・LEARN2 の組 (読み, 表記, 直前の文節の表記) を学習として数える
+/// (docs/design/learning-score.md の A)。3 組以上で、末尾の組の読みと表記がそれより前の組の連結なら、
+/// TSF 層が 2 文節以上の確定に足した読み全体なので、句の学習だけを数える
+fn learn_entries(entries: &[(&str, &str, &str)], data: &EngineData, now: chrono::NaiveDateTime) {
+    let whole = entries.len() >= 3 && {
+        let (rest, last) = entries.split_at(entries.len() - 1);
+        let reading: String = rest.iter().map(|e| e.0).collect();
+        let surface: String = rest.iter().map(|e| e.1).collect();
+        last[0].0 == reading && last[0].1 == surface
+    };
+    let user = data.user.lock().expect("user lock");
+    let mut learning = data.learning.lock().expect("learning lock");
+    for (i, &(reading, surface, context)) in entries.iter().enumerate() {
+        // 日付・時刻の動的候補は時間が経つと古くなるため学習しない
+        // (学習すると翌日以降も昨日の日付が先頭に来てしまう)
+        if reading.is_empty()
+            || surface.is_empty()
+            || datetime::candidates_at(reading, now).iter().any(|c| c == surface)
+        {
+            continue;
+        }
+        let words =
+            convert::split_words(reading, surface, &data.dictionary, &user, &data.matrix, &data.functional);
+        if whole && i == entries.len() - 1 {
+            learning.learn_phrase(reading, surface, learn::PhraseKind::Whole, words.is_some());
+        } else {
+            learning.learn_segment(reading, surface, context, words.as_deref());
+        }
+    }
+}
+
 /// 1行の要求を解釈して1行の応答を作る
 fn handle_request(line: &str, data: &EngineData) -> String {
     // 日付・時刻の動的候補用の現在日時 (CONVSYM の候補生成と LEARN の除外判定に使う)
@@ -787,23 +824,15 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             if !data.config.lock().expect("config lock").learning {
                 return "OK\n".to_string();
             }
-            let mut learning = data.learning.lock().expect("learning lock");
-            let mut count = 0;
-            for pair in fields {
-                if let Some((reading, surface)) = pair.split_once(FIELD_SEPARATOR) {
-                    // 日付・時刻の動的候補は時間が経つと古くなるため学習しない
-                    // (学習すると翌日以降も昨日の日付が先頭に来てしまう)
-                    if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
-                        learning.record(reading, surface);
-                    }
-                    count += 1;
-                }
+            let entries: Vec<(&str, &str, &str)> = fields
+                .filter_map(|pair| pair.split_once(FIELD_SEPARATOR))
+                .map(|(reading, surface)| (reading, surface, ""))
+                .collect();
+            if entries.is_empty() {
+                return "ERR\t記録する内容がありません\n".to_string();
             }
-            if count > 0 {
-                "OK\n".to_string()
-            } else {
-                "ERR\t記録する内容がありません\n".to_string()
-            }
+            learn_entries(&entries, data, now);
+            "OK\n".to_string()
         }
         Some("LEARN2") => {
             // LEARN2\t読み\x1f表記\x1f文脈\t... : 前文脈付きの確定学習。
@@ -811,8 +840,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             if !data.config.lock().expect("config lock").learning {
                 return "OK\n".to_string();
             }
-            let mut learning = data.learning.lock().expect("learning lock");
-            let mut count = 0;
+            let mut entries: Vec<(&str, &str, &str)> = Vec::new();
             for entry in fields {
                 let mut parts = entry.splitn(3, FIELD_SEPARATOR);
                 let (Some(reading), Some(surface)) = (parts.next(), parts.next()) else {
@@ -821,21 +849,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 if reading.is_empty() || surface.is_empty() {
                     continue;
                 }
-                let context = parts.next().unwrap_or("");
-                // 日付・時刻の動的候補は時間が経つと古くなるため学習しない (LEARN と同様)
-                if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
-                    learning.record(reading, surface);
-                    if !context.is_empty() {
-                        learning.record_ctx(context, reading, surface);
-                    }
-                }
-                count += 1;
+                entries.push((reading, surface, parts.next().unwrap_or("")));
             }
-            if count > 0 {
-                "OK\n".to_string()
-            } else {
-                "ERR\t記録する内容がありません\n".to_string()
+            if entries.is_empty() {
+                return "ERR\t記録する内容がありません\n".to_string();
             }
+            learn_entries(&entries, data, now);
+            "OK\n".to_string()
         }
         Some("LEARNSEG") => {
             // LEARNSEG\t読み\t読み... : 文節境界の学習。人が文節伸縮で分割を直して
@@ -875,9 +895,12 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 // 日付・時刻の動的候補は時間が経つと古くなるため学習しない (LEARN と同様)
                 if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
                     // ラティスへ載せるのは辞書語で経路が作れない読みだけ (コストが高いため)。
-                    // 経路が作れる読みは「読み → 表記」の学習で候補の先頭に来る
+                    // 経路が作れる読みは句の学習で候補の上位に来る
                     user.learn_word(reading, surface, &data.functional);
-                    learning.record(reading, surface);
+                    let words = convert::split_words(
+                        reading, surface, &data.dictionary, &user, &data.matrix, &data.functional,
+                    );
+                    learning.learn_phrase(reading, surface, learn::PhraseKind::Segment, words.is_some());
                 }
                 count += 1;
             }
@@ -906,7 +929,11 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             let mut learning = data.learning.lock().expect("learning lock");
             let mut count = 0;
             for (reading, surface) in pairs {
-                count += learning.forget(reading, surface);
+                // 学習した複合語を消す前に分ける (複合語も語として分けた学習を消すため)
+                let words = convert::split_words(
+                    reading, surface, &data.dictionary, &user, &data.matrix, &data.functional,
+                );
+                count += learning.forget(reading, surface, words.as_deref());
                 count += user.forget_learned(reading, surface);
             }
             format!("OK\t{count}\n")
@@ -1128,29 +1155,78 @@ mod tests {
         assert_eq!(handle_request("CONVCTX\tきょう\x1f今日\tはれは\t2,1", &data), expected);
     }
 
-    #[test]
-    fn learn2の文脈学習がconvctxで最優先になる() {
-        let data = sample_data();
-        // 文脈「晴れ」付きで「京は」を確定 → その後、文脈なしで「キョウハ」を確定
-        // (LEARN2 は文脈なし学習も併せて更新するため、この順で両者が分かれる)
-        assert_eq!(handle_request("LEARN2\tきょうは\x1f京は\x1f晴れ", &data), "OK\n");
-        assert_eq!(handle_request("LEARN\tきょうは\x1fキョウハ", &data), "OK\n");
-
-        // 文脈が一致すれば文脈学習の「京は」が最優先
-        let response = handle_request("CONVCTX\tはれ\x1f晴れ\tきょうは", &data);
-        assert!(response.starts_with("OK\tきょうは\x1f京は\x1fキョウハ\x1f"), "{response}");
-        // 文脈なしなら文脈なし学習の「キョウハ」が先頭
-        let response = handle_request("CONVSEG\tきょうは", &data);
-        assert!(response.starts_with("OK\tきょうは\x1fキョウハ\x1f"), "{response}");
+    /// 学習のテスト用 (sample_data の辞書に、同音の 京 と、きょうか・きょうしつ・いい・てんき を足す)
+    fn learning_data() -> EngineData {
+        let mut data = sample_data();
+        let mut dictionary = Dictionary::empty();
+        dictionary
+            .load_from(
+                "きょう\t1\t1\t2000\t今日\nきょう\t1\t1\t3200\t京\nは\t2\t2\t500\tは\n\
+                 はれ\t1\t1\t3000\t晴れ\nきょうか\t1\t1\t3000\t強化\nきょうしつ\t1\t1\t3000\t教室\n\
+                 いい\t1\t1\t2000\tいい\nてんき\t1\t1\t3000\t天気\n"
+                    .as_bytes(),
+            )
+            .unwrap();
+        dictionary.finalize();
+        data.dictionary = dictionary;
+        data
     }
 
     #[test]
-    fn learn2は文脈なしでも従来の学習になる() {
+    fn learn2の文脈はconvctxの変換に効かずnextwordに効く() {
+        let data = learning_data();
+        // 文脈「晴れ」付きで「京は」を 1 回、文脈なしで「今日は」を 2 回確定する
+        assert_eq!(handle_request("LEARN2\tきょうは\x1f京は\x1f晴れ", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tきょうは\x1f今日は", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tきょうは\x1f今日は", &data), "OK\n");
+
+        // 前文脈は変換に効かない (語の学習の多い「今日は」が先頭)
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1f今日は\x1f京は\x1f"), "{response}");
+        assert_eq!(handle_request("CONVCTX\tはれ\x1f晴れ\tきょうは", &data), response);
+        // 後続語の予測には前文脈に続いた文節が出る
+        assert_eq!(handle_request("NEXTWORD\tはれ\x1f晴れ", &data), "OK\tきょうは\x1f京は\n");
+    }
+
+    #[test]
+    fn learn2の末尾の読み全体は句の学習だけを数える() {
+        let data = learning_data();
+        let request = "LEARN2\tきょうは\x1f京は\x1f\tはれ\x1f晴れ\x1f京は\tきょうははれ\x1f京は晴れ\x1f";
+        assert_eq!(handle_request(request, &data), "OK\n");
+        let learning = data.learning.lock().unwrap();
+        // 確定の通し番号は文節ごとに 1 増える (読み全体では増やさない)。読み全体を語に分けて数え直さない
+        assert_eq!(learning.serial(), 2);
+        assert!(learning.word_degree("きょう", "京").is_some_and(|d| d < 1.5));
+        assert!(learning.phrase_stat("きょうははれ", "京は晴れ").is_some_and(|p| p.1 == learn::PhraseKind::Whole));
+        assert!(learning.ctx_phrase_stat("京は", "はれ", "晴れ").is_some());
+        assert!(learning.ctx_phrase_stat("", "きょうは", "京は").is_none());
+    }
+
+    #[test]
+    fn 学習無効なら数えないが既存の学習の割引は効く() {
+        let data = learning_data();
+        assert_eq!(handle_request("LEARN\tきょうは\x1f京は", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tきょうは\x1f京は", &data), "OK\n");
+        data.config.lock().unwrap().learning = false;
+        for _ in 0..3 {
+            assert_eq!(handle_request("LEARN\tきょうは\x1f今日は", &data), "OK\n");
+        }
+        assert_eq!(data.learning.lock().unwrap().serial(), 2);
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1f京は\x1f"), "{response}");
+    }
+
+    #[test]
+    fn learn2は文脈なしならlearnと同じ学習になる() {
         let data = sample_data();
         // 文脈フィールドが空 (読み\x1f表記\x1f) は LEARN と同じ扱い
         assert_eq!(handle_request("LEARN2\tきょうは\x1fキョウハ\x1f", &data), "OK\n");
+        let plain = sample_data();
+        assert_eq!(handle_request("LEARN\tきょうは\x1fキョウハ", &plain), "OK\n");
         let response = handle_request("CONVSEG\tきょうは", &data);
-        assert!(response.starts_with("OK\tきょうは\x1fキョウハ\x1f"), "{response}");
+        assert_eq!(response, handle_request("CONVSEG\tきょうは", &plain));
+        // 辞書の語に分けられない表記は経路を変えず、経路の表記の次に出る
+        assert!(response.starts_with("OK\tきょうは\x1f今日は\x1fキョウハ\x1f"), "{response}");
         // 内容が無ければエラー
         assert!(handle_request("LEARN2", &data).starts_with("ERR\t"));
         assert!(handle_request("LEARN2\t読みだけ", &data).starts_with("ERR\t"));
@@ -1453,10 +1529,10 @@ mod tests {
         let response = handle_request("CONVSEG\tきょう", &data);
         assert!(response.starts_with("OK\tきょう\x1f今日\x1f"));
 
-        // 通常の表記は今まで通り学習される
+        // 通常の表記は学習される (分けられない表記なので経路の表記の次に出る)
         assert_eq!(handle_request("LEARN\tきょう\x1fキョウ", &data), "OK\n");
         let response = handle_request("CONVSEG\tきょう", &data);
-        assert!(response.starts_with("OK\tきょう\x1fキョウ\x1f今日\x1f"));
+        assert!(response.starts_with("OK\tきょう\x1f今日\x1fキョウ\x1f"), "{response}");
     }
 
     #[test]
@@ -1474,14 +1550,14 @@ mod tests {
     }
 
     #[test]
-    fn learnで記録した表記が次のconvsegで先頭に来る() {
-        let data = sample_data();
-        assert_eq!(handle_request("LEARN\tきょうは\x1fキョウハ", &data), "OK\n");
+    fn learnで記録した表記が次のconvsegで経路の表記の次に出て多く使うと先頭に来る() {
+        let data = learning_data();
+        assert_eq!(handle_request("LEARN\tきょうは\x1f京は", &data), "OK\n");
         let response = handle_request("CONVSEG\tきょうは", &data);
-        assert_eq!(
-            response,
-            "OK\tきょうは\x1fキョウハ\x1f今日は\x1fきょうは\n"
-        );
+        assert!(response.starts_with("OK\tきょうは\x1f今日は\x1f京は\x1f"), "{response}");
+        assert_eq!(handle_request("LEARN\tきょうは\x1f京は", &data), "OK\n");
+        let response = handle_request("CONVSEG\tきょうは", &data);
+        assert!(response.starts_with("OK\tきょうは\x1f京は\x1f今日は\x1f"), "{response}");
     }
 
     #[test]
@@ -1582,31 +1658,38 @@ mod tests {
     }
 
     #[test]
-    fn 前文脈つきのpredictは文脈付きの学習を確定履歴より前に出す() {
-        let data = sample_data();
+    fn 前文脈つきのpredictは文脈の句の学習を確定履歴より前に出す() {
+        let data = learning_data();
         assert_eq!(handle_request("LEARN2\tきょうか\x1f強化\x1f晴れ", &data), "OK\n");
         assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
-        // 前文脈が無ければ確定履歴の新しい順
+        assert_eq!(handle_request("LEARN\tきょうしつ\x1f教室", &data), "OK\n");
+        // 前文脈が無ければ確定履歴 (句の学習) の割引の大きい順
         let without = handle_request("PREDICT\tきょ", &data);
-        assert_eq!(without, "OK\tきょうしつ\x1f教室\tきょうか\x1f強化\tきょう\x1f今日\n");
+        assert_eq!(without, "OK\tきょうしつ\x1f教室\tきょうか\x1f強化\tきょう\x1f今日\tきょう\x1f京\n");
         // 前文脈フィールドが空・欠けた形でも前文脈なしと同じ
         assert_eq!(handle_request("PREDICT\tきょ\t", &data), without);
         assert_eq!(handle_request("PREDICT\tきょ\tはれ\x1f", &data), without);
         // 前文脈に続いて確定した語が確定履歴より前に出る
         assert_eq!(
             handle_request("PREDICT\tきょ\tはれ\x1f晴れ", &data),
-            "OK\tきょうか\x1f強化\tきょうしつ\x1f教室\tきょう\x1f今日\n"
+            "OK\tきょうか\x1f強化\tきょうしつ\x1f教室\tきょう\x1f今日\tきょう\x1f京\n"
         );
     }
 
     #[test]
-    fn nextwordは前文脈の後に確定した語を新しい順に返す() {
-        let data = sample_data();
+    fn nextwordは前文脈の後に確定した文節を割引の大きい順に返す() {
+        let data = learning_data();
         assert_eq!(handle_request("LEARN2\tいいてんき\x1fいい天気\x1f今日は", &data), "OK\n");
         assert_eq!(handle_request("LEARN2\tはれ\x1f晴れ\x1f今日は", &data), "OK\n");
+        // 同じ回数なら新しいほうが先
         assert_eq!(
             handle_request("NEXTWORD\tきょうは\x1f今日は", &data),
             "OK\tはれ\x1f晴れ\tいいてんき\x1fいい天気\n"
+        );
+        assert_eq!(handle_request("LEARN2\tいいてんき\x1fいい天気\x1f今日は", &data), "OK\n");
+        assert_eq!(
+            handle_request("NEXTWORD\tきょうは\x1f今日は", &data),
+            "OK\tいいてんき\x1fいい天気\tはれ\x1f晴れ\n"
         );
         // 該当なしは候補ゼロの OK
         assert_eq!(handle_request("NEXTWORD\tあした\x1f明日", &data), "OK\n");
@@ -1676,20 +1759,22 @@ mod tests {
     #[test]
     fn forgetで学習と複合語を消して件数を返す() {
         let data = sample_data();
+        // 辞書の語に分けられない表記 (句の学習だけ) と、分けられる表記 (語・文脈・句の学習)
         assert_eq!(handle_request("LEARN2\tきょうしつ\x1f教室\x1f晴れ", &data), "OK\n");
+        assert_eq!(handle_request("LEARN2\tはれ\x1f晴れ\x1f今日は", &data), "OK\n");
         let request = format!("LEARNWORD\tけいしょうか{FIELD_SEPARATOR}形象化");
         assert_eq!(handle_request(&request, &data), "OK\n");
         assert_eq!(
             handle_request("PREDICT\tきょ", &data),
             "OK\tきょうしつ\x1f教室\tきょう\x1f今日\n"
         );
-        // 文脈なし + 文脈付き
+        // 句の学習と文脈の句の学習
         assert_eq!(handle_request("FORGET\tきょうしつ\x1f教室", &data), "OK\t2\n");
         assert_eq!(handle_request("PREDICT\tきょ", &data), "OK\tきょう\x1f今日\n");
-        // 複合語は learning.tsv の学習と learning_word.tsv の語の両方が消える
+        // 複合語は句の学習と learning_word.tsv の語の両方 (2)、晴れ は句・文脈の句・語の学習 (3) が消える
         assert_eq!(
             handle_request("FORGET\tけいしょうか\x1f形象化\tはれ\x1f晴れ", &data),
-            "OK\t2\n"
+            "OK\t5\n"
         );
         assert!(data.user.lock().unwrap().lookup_words("けいしょうか").is_empty());
         // 学習でない候補 (辞書の語) は何も消えない

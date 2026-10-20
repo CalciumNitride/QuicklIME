@@ -37,7 +37,8 @@
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
 - [append-only-apps.md](append-only-apps.md): 指定したアプリ (既定 Discord.exe) では読める文書も追記のみとして扱い、文字の置き換えを擬似 Backspace で行う。
   [input-buffer-modes.md](input-buffer-modes.md) で廃止
-- [forget-learning.md](forget-learning.md): 候補パネルで選んでいる候補の学習を Ctrl+Delete で消す
+- [forget-learning.md](forget-learning.md): 候補パネルで選んでいる候補の学習を Ctrl+Delete で消す。
+  消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え
 - [input-scope.md](input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンのままキーを食べない (設定 `input_scope_passthrough`)
 
 ## 候補の表示
@@ -52,7 +53,7 @@
 - [panel-theme.md](panel-theme.md): 候補パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
   テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
-  出し、予測候補の順位にも前文脈を使う
+  出し、予測候補の順位にも前文脈を使う。予測の材料と並びは [learning-score.md](learning-score.md) で置き換え
 - [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧をサジェストパネルで出す (テーマ・表示位置・
   変換中の入力行)
 - [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
@@ -64,7 +65,7 @@
   で置き換え
 - [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
   予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
-  Shift+← / → で縮める
+  Shift+← / → で縮める。予測の学習の点数は [learning-score.md](learning-score.md) で置き換え
 - [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ候補パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 
@@ -78,6 +79,9 @@
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す
 - [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す
+- [learning-score.md](learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
+  語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を
+  前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)
 - [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す。
   補正の元 (打鍵)、補正の語のコストと Viterbi の状態の数、候補バーの先頭文節は
   [unified-suggest.md](unified-suggest.md) で置き換え

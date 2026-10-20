@@ -200,8 +200,9 @@ pub fn convert_segments(
 ) -> Vec<Segment> {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
     let typo_words = typo.then(|| TypoWords::segment(kana));
+    let learned = Learned::full(learning);
     let Some(lattice) = build_lattice(
-        kana, dict, user, matrix, functional, ctx_id, Some(learning), typo_words.as_ref(),
+        kana, dict, user, matrix, functional, ctx_id, Some(learned), typo_words.as_ref(),
     ) else {
         return Vec::new();
     };
@@ -216,14 +217,13 @@ pub fn convert_segments(
         Some((d, route, span))
     }) else {
         let words = lattice.path_words(&indices);
-        return segments_from_path(words, ctx, dict, user, functional, learning);
+        return segments_from_path(words, dict, user, functional, learning);
     };
     let (_, protected) =
-        protected_best(&lattice, &indices, ctx, dict, user, functional, learning);
-    let top = delta >= TYPO_TOP && learning.get(kana).is_none() && !protected;
+        protected_best(kana, &lattice, &indices, ctx_id, learned, dict, user, matrix, functional, true);
+    let top = delta >= TYPO_TOP && learning.best_phrase(kana).is_none() && !protected;
 
     let mut segments: Vec<Segment> = Vec::new();
-    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
     let mut start = 0;
     for group in &group_path(lattice.path_words(&typo_indices), functional) {
         let end = start + group.iter().map(|w| w.reading.chars().count()).sum::<usize>();
@@ -236,12 +236,10 @@ pub fn convert_segments(
                 };
                 resolve_context_id(&prev_ctx, dict, user, matrix, functional)
             });
-            let learn_ctx = prev_surface.as_deref();
-            typo_segment(group, top, left_id, learn_ctx, dict, user, matrix, functional, learning)
+            typo_segment(group, top, left_id, dict, user, matrix, functional, learning)
         } else {
-            segment_from_group(group, dict, user, learning, prev_surface.as_deref())
+            segment_from_group(group, dict, user, learning)
         };
-        prev_surface = Some(segment.candidates[0].clone());
         segments.push(segment);
         start = end;
     }
@@ -256,7 +254,6 @@ fn typo_segment(
     group: &[PathWord],
     top: bool,
     left_id: u16,
-    learn_ctx: Option<&str>,
     dict: &Dictionary,
     user: &UserDict,
     matrix: &ConnectionMatrix,
@@ -265,8 +262,9 @@ fn typo_segment(
 ) -> Segment {
     let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
     let corrected: String = group.iter().map(|w| w.surface.as_str()).collect();
-    let words =
-        viterbi_path(&reading, dict, user, matrix, functional, left_id, None).unwrap_or_else(|| {
+    let learned = Learned::fixed(learning);
+    let words = viterbi_path(&reading, dict, user, matrix, functional, left_id, Some(learned))
+        .unwrap_or_else(|| {
             vec![PathWord {
                 reading: reading.clone(),
                 surface: reading.clone(),
@@ -275,7 +273,7 @@ fn typo_segment(
             }]
         });
     let raw: String = words.iter().map(|w| w.surface.as_str()).collect();
-    let mut segment = segment_from_group(&words, dict, user, learning, learn_ctx);
+    let mut segment = segment_from_group(&words, dict, user, learning);
     if !segment.candidates.contains(&corrected) {
         let position = if top && segment.candidates[0] == raw { 0 } else { 1 };
         segment.candidates.insert(position, corrected.clone());
@@ -284,26 +282,35 @@ fn typo_segment(
     segment
 }
 
-/// 1-best の経路 (ノード index 列 indices) を文節ごとの学習を当てた文節にまとめ、補正の候補に先頭を
-/// 譲らない印 (学習で表記が変わった、ユーザ辞書の語・英字を含む) とともに返す
+/// 1-best の経路 (学習の割引を当てたラティス lattice のノード index 列 indices) を文節にまとめ、
+/// 補正の候補に先頭を譲らない印 (ユーザ辞書の語・英字を含む、check_learned なら学習で表記が変わった)
+/// とともに返す。学習で表記が変わったかは、学習の割引なしのラティスを作り直して最良経路の表記と比べる
 fn protected_best(
+    kana: &str,
     lattice: &Lattice,
     indices: &[usize],
-    ctx: Option<&Context>,
+    ctx_id: u16,
+    learned: Learned,
     dict: &Dictionary,
     user: &UserDict,
+    matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
-    learning: &LearningStore,
+    check_learned: bool,
 ) -> (Vec<Segment>, bool) {
     let words = lattice.path_words(indices);
     let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
-    // 数字列の結合で区切り記号の表記が変わるため、学習の有無は結合後の表記どうしで比べる
-    let raw: String =
-        merge_digit_runs(lattice.path_words(indices)).iter().map(|w| w.surface.as_str()).collect();
-    let segments = segments_from_path(words, ctx, dict, user, functional, learning);
+    let segments = segments_from_path(words, dict, user, functional, learned.store);
     let surface: String = segments.iter().map(|s| s.candidates[0].as_str()).collect();
-    let learned = surface != raw;
-    let protected = learned || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
+    let changed = check_learned && {
+        let plain = Learned { discount: false, ..learned };
+        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(plain), None)
+            .and_then(|plain| best_path(&plain, matrix).map(|i| plain.path_words(&i)))
+            // 数字列の結合で区切り記号の表記が変わるため、結合後の表記どうしで比べる
+            .is_some_and(|words| {
+                merge_digit_runs(words).iter().map(|w| w.surface.as_str()).collect::<String>() != surface
+            })
+    };
+    let protected = changed || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
     (segments, protected)
 }
 
@@ -324,25 +331,18 @@ fn group_path(path: Vec<PathWord>, functional: &FunctionalIds) -> Vec<Vec<PathWo
     groups
 }
 
-/// 1-best 経路から候補リスト付きの文節列を作る (文節ごとの学習を当てる)
+/// 1-best 経路から候補リスト付きの文節列を作る
 fn segments_from_path(
     path: Vec<PathWord>,
-    ctx: Option<&Context>,
     dict: &Dictionary,
     user: &UserDict,
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Vec<Segment> {
-    // 文脈学習は「直前文節の表記」をキーに引く。先頭文節は前文脈の表記、
-    // 2文節目以降は直前文節の先頭候補 (既定のまま確定する流れと自己整合する)
-    let mut segments: Vec<Segment> = Vec::new();
-    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
-    for group in &group_path(path, functional) {
-        let segment = segment_from_group(group, dict, user, learning, prev_surface.as_deref());
-        prev_surface = Some(segment.candidates[0].clone());
-        segments.push(segment);
-    }
-    segments
+    group_path(path, functional)
+        .iter()
+        .map(|group| segment_from_group(group, dict, user, learning))
+        .collect()
 }
 
 /// 数字 (半角・全角) かどうか
@@ -466,7 +466,6 @@ pub fn convert_segments_fixed(
     }
 
     let mut ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
-    let mut prev_surface: Option<String> = ctx.map(|c| c.surface.clone());
     let mut segments = Vec::new();
     let mut begin = 0;
     for &length in lengths {
@@ -474,8 +473,9 @@ pub fn convert_segments_fixed(
         begin += length;
 
         // 文節の範囲内だけで最小コスト経路を求める
-        let group =
-            viterbi_path(&reading, dict, user, matrix, functional, ctx_id, None).unwrap_or_else(|| {
+        let learned = Learned::fixed(learning);
+        let group = viterbi_path(&reading, dict, user, matrix, functional, ctx_id, Some(learned))
+            .unwrap_or_else(|| {
                 vec![PathWord {
                     reading: reading.clone(),
                     surface: reading.clone(),
@@ -483,13 +483,12 @@ pub fn convert_segments_fixed(
                     right_id: DEFAULT_NOUN_ID,
                 }]
             });
-        let segment = segment_from_group(&group, dict, user, learning, prev_surface.as_deref());
+        let segment = segment_from_group(&group, dict, user, learning);
         let next_ctx = Context {
             reading: segment.reading.clone(),
             surface: segment.candidates[0].clone(),
         };
         ctx_id = resolve_context_id(&next_ctx, dict, user, matrix, functional);
-        prev_surface = Some(next_ctx.surface);
         segments.push(segment);
     }
     segments
@@ -514,8 +513,8 @@ fn exact_candidates<'a>(
 }
 
 /// 単語列 (1文節分) から候補リスト付きの Segment を作る。
-/// 候補: 経路上の表記 → 読み全体の辞書候補 → 先頭語を入れ替えた表記
-///       → カタカナ → ひらがな。学習済みの表記があれば先頭へ移動する。
+/// 候補: 経路上の表記 → 文節の読みの句の学習の表記 (割引の大きい順) → 短縮よみ → 読み全体の辞書候補
+///       → 先頭語を入れ替えた表記 → カタカナ → ひらがな。
 /// 読み全体の完全一致 (「した」→ 下) はユーザが求める同音異義語そのものなので、
 /// 先頭語入れ替え (し+た → 死た) より先に積む。逆順だと先頭語が1文字の読みの
 /// とき入れ替え候補だけで MAX_DICT_CANDIDATES を使い切り、完全一致が脱落する
@@ -524,14 +523,18 @@ fn segment_from_group(
     dict: &Dictionary,
     user: &UserDict,
     learning: &LearningStore,
-    learn_ctx: Option<&str>,
 ) -> Segment {
     let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
     let best: String = group.iter().map(|w| w.surface.as_str()).collect();
     let mut result = vec![best];
 
-    // 短縮よみ (ユーザ辞書) は経路表記の直後に置く (記載順)。
-    // 末尾の学習表記の先頭移動が最優先なのは変わらない
+    for learned in learning.phrase_surfaces(&reading) {
+        if !result.iter().any(|s| s == learned) {
+            result.push(learned.to_string());
+        }
+    }
+
+    // 短縮よみ (ユーザ辞書) は経路表記と学習の表記の直後に置く (記載順)
     for shortcut in user.lookup_shortcuts(&reading) {
         if !result.iter().any(|s| s == shortcut) {
             result.push(shortcut.to_string());
@@ -608,20 +611,6 @@ fn segment_from_group(
             result.push(extra);
         }
     }
-
-    // 学習済みの表記を先頭へ (候補に無ければ追加)
-    if let Some(learned) = learning.get(&reading) {
-        result.retain(|s| s != learned);
-        result.insert(0, learned.to_string());
-    }
-    // 前文脈に一致する文脈学習があればさらに先頭へ (最優先)。
-    // 「服を|着る」「紙を|切る」のような同音異義語の使い分けがここで効く
-    if let Some(ctx) = learn_ctx {
-        if let Some(learned) = learning.get_ctx(ctx, &reading) {
-            result.retain(|s| s != learned);
-            result.insert(0, learned.to_string());
-        }
-    }
     Segment { reading, candidates: result, typo: None }
 }
 
@@ -693,7 +682,7 @@ pub fn convert_sentence(
 }
 
 /// かな文字列に対する入力全体の候補 (CONVNBEST) を返す。ctx は直前に確定した文節。
-/// 並び: 読み全体の学習表記 → 文節ごとの学習を当てた 1-best → N-best の残り (コスト順)
+/// 並び: 読み全体の学習表記 → 学習の割引を当てた 1-best → N-best の残り (コスト順)
 ///       → 1-best の数を書き方ごとにそろえた候補 → 短縮よみ・読み全体の辞書完全一致
 ///       → 単漢字・記号・カタカナ・ひらがな。
 /// typo なら、かなを標準のローマ字に戻した近似で補正の候補 (docs/design/typo-conversion.md) を
@@ -720,7 +709,7 @@ pub struct NBest {
     /// 候補ごとの経路のコスト。経路のコストを持たない候補 (読み全体の学習表記・先頭に置いた補正の
     /// 候補・数字の書き方・辞書の完全一致など) は None
     pub costs: Vec<Option<i64>>,
-    /// 通常の最良経路 (文節ごとの学習を当てた 1-best) の候補の位置
+    /// 通常の最良経路 (学習の割引を当てた 1-best) の候補の位置
     pub best: Option<usize>,
     /// 通常の最良経路のコスト
     pub best_cost: Option<i64>,
@@ -743,6 +732,39 @@ pub fn convert_nbest_scored(
     source: TypoSource,
     tuning: &typo::Tuning,
 ) -> NBest {
+    nbest_with(kana, ctx, dict, user, matrix, functional, learning, source, tuning, false)
+}
+
+/// LLM の並べ替え (RERANK) に渡す convert_nbest_scored。補正の候補が無くても、学習で表記が変わった
+/// 1-best を保護する (並べ替えは非同期なので、割引なしの Viterbi をもう 1 回解いてよい)
+pub fn convert_nbest_rerank(
+    kana: &str,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+    source: TypoSource,
+    tuning: &typo::Tuning,
+) -> NBest {
+    nbest_with(kana, ctx, dict, user, matrix, functional, learning, source, tuning, true)
+}
+
+/// convert_nbest_scored の本体。protect_learned なら補正の候補の有無によらず、学習で表記が変わった 1-best を
+/// 保護する
+fn nbest_with(
+    kana: &str,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+    source: TypoSource,
+    tuning: &typo::Tuning,
+    protect_learned: bool,
+) -> NBest {
     let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
     let typo_words = TypoWords::sentence(kana, source, tuning);
     let mut nbest = NBest {
@@ -753,8 +775,9 @@ pub fn convert_nbest_scored(
         learned: false,
         context_id: ctx_id,
     };
+    let learned = Learned::full(learning);
     let Some(lattice) = build_lattice(
-        kana, dict, user, matrix, functional, ctx_id, Some(learning), typo_words.as_ref(),
+        kana, dict, user, matrix, functional, ctx_id, Some(learned), typo_words.as_ref(),
     ) else {
         return nbest;
     };
@@ -782,7 +805,7 @@ pub fn convert_nbest_scored(
     };
     let whole = |surface: &str| vec![(kana.to_string(), surface.to_string())];
 
-    let learned_whole = learning.get(kana);
+    let learned_whole = learning.best_phrase(kana);
     if let Some(learned) = learned_whole {
         add(whole(learned), true, false, None);
         nbest.learned = true;
@@ -798,8 +821,10 @@ pub fn convert_nbest_scored(
         let best_cost = best_end(&lattice, matrix, 0).map(|(cost, _)| cost);
         nbest.best_cost = best_cost;
         // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
-        let (segments, protected) =
-            protected_best(&lattice, &indices, ctx, dict, user, functional, learning);
+        let (segments, protected) = protected_best(
+            kana, &lattice, &indices, ctx_id, learned, dict, user, matrix, functional,
+            protect_learned || corrected.is_some(),
+        );
         let segments: Vec<(String, String)> =
             segments.into_iter().map(|s| (s.reading, s.candidates[0].clone())).collect();
         let top = learned_whole.is_none() && !protected;
@@ -1059,6 +1084,48 @@ struct Node {
     typo_prevs: Vec<usize>,
 }
 
+impl Node {
+    /// まだ前向きの計算をしていないノード
+    fn new(start: usize, reading: String, left_id: u16, right_id: u16, word_cost: i32, surface: String) -> Node {
+        Node {
+            start,
+            reading,
+            left_id,
+            right_id,
+            word_cost,
+            surface,
+            penalty: 0,
+            best_cost: i64::MAX,
+            best_prev: 0,
+            typo: false,
+            typo_costs: Vec::new(),
+            typo_prevs: Vec::new(),
+        }
+    }
+}
+
+/// ラティスに当てる学習 (docs/design/learning-score.md の C)
+#[derive(Clone, Copy)]
+struct Learned<'a> {
+    store: &'a LearningStore,
+    /// 学習した文節境界で文節ペナルティを増減する
+    boundary: bool,
+    /// 語・句の学習の割引を当てる
+    discount: bool,
+}
+
+impl<'a> Learned<'a> {
+    /// 文節の区切りも決める変換 (境界学習と割引)
+    fn full(store: &'a LearningStore) -> Learned<'a> {
+        Learned { store, boundary: true, discount: true }
+    }
+
+    /// 文節長を固定した変換 (割引だけ。指定された区切りを境界学習で動かさない)
+    fn fixed(store: &'a LearningStore) -> Learned<'a> {
+        Learned { store, boundary: false, discount: true }
+    }
+}
+
 /// 前向きの Viterbi まで済ませたラティス
 struct Lattice {
     /// nodes[0] は BOS
@@ -1180,8 +1247,7 @@ fn boundary_adjust(kana: &str, chars: &[char], learning: &LearningStore) -> Vec<
 
 /// ラティスを構築して最小コスト経路の単語列を返す。
 /// left_context_id は文頭の左文脈 (直前に確定した語の right_id)。0 = 前文脈なし (BOS)。
-/// learning を渡すと学習済みの文節境界を文節ペナルティに反映する
-/// (文節長を固定する変換や前文脈の復元では境界を動かしたくないため None を渡す)
+/// learned を渡すと学習を当てる (前文脈の復元では学習で経路を動かしたくないため None を渡す)
 fn viterbi_path(
     kana: &str,
     dict: &Dictionary,
@@ -1189,10 +1255,10 @@ fn viterbi_path(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     left_context_id: u16,
-    learning: Option<&LearningStore>,
+    learned: Option<Learned>,
 ) -> Option<Vec<PathWord>> {
     let mut lattice =
-        build_lattice(kana, dict, user, matrix, functional, left_context_id, learning, None)?;
+        build_lattice(kana, dict, user, matrix, functional, left_context_id, learned, None)?;
     let indices = best_path(&lattice, matrix)?;
     Some(
         indices
@@ -1217,7 +1283,7 @@ fn build_lattice(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     left_context_id: u16,
-    learning: Option<&LearningStore>,
+    learned: Option<Learned>,
     typo: Option<&TypoWords>,
 ) -> Option<Lattice> {
     let chars: Vec<char> = kana.chars().collect();
@@ -1225,24 +1291,23 @@ fn build_lattice(
     if n == 0 {
         return None;
     }
-    let adjust = learning.map_or_else(Vec::new, |l| boundary_adjust(kana, &chars, l));
+    let adjust = learned
+        .filter(|l| l.boundary)
+        .map_or_else(Vec::new, |l| boundary_adjust(kana, &chars, l.store));
+    let discount = learned.filter(|l| l.discount);
+    // 自立語の語の学習の割引を引いた単語コスト
+    let word_cost = |reading: &str, surface: &str, left_id: u16, cost: i16| -> i32 {
+        let bonus = discount
+            .filter(|_| !functional.is_functional(left_id))
+            .map_or(0, |l| l.store.word_bonus(reading, surface));
+        (i64::from(cost) - bonus) as i32
+    };
 
     // nodes[0] は BOS (文頭)。right_id に前文脈の文脈IDを入れると、
     // 先頭語への連接コストが「直前確定語 → 先頭語」の値になる
-    let mut nodes: Vec<Node> = vec![Node {
-        start: 0,
-        reading: String::new(),
-        left_id: 0,
-        right_id: left_context_id,
-        word_cost: 0,
-        surface: String::new(),
-        penalty: 0,
-        best_cost: 0,
-        best_prev: 0,
-        typo: false,
-        typo_costs: Vec::new(),
-        typo_prevs: Vec::new(),
-    }];
+    let mut bos = Node::new(0, String::new(), 0, left_context_id, 0, String::new());
+    bos.best_cost = 0;
+    let mut nodes: Vec<Node> = vec![bos];
 
     // ending_at[p] = 位置 p で終わるノードの index 一覧 (BOS は位置 0 で終わる扱い)
     let mut ending_at: Vec<Vec<usize>> = vec![Vec::new(); n + 1];
@@ -1254,6 +1319,21 @@ fn build_lattice(
     let inside_ascii: Vec<bool> = (0..=n)
         .map(|p| p > 0 && p < n && is_ascii_alpha(chars[p - 1]) && is_ascii_alpha(chars[p]))
         .collect();
+
+    // 辞書の語に分けられなかった句の学習 (読み → 名詞の 1 語)。部分文字列をバイト位置で切り出す
+    let unsplit_max = discount.map_or(0, |l| l.store.max_unsplit_chars());
+    let offsets: Vec<usize> = if unsplit_max > 0 {
+        let mut offsets: Vec<usize> = kana.char_indices().map(|(i, _)| i).collect();
+        offsets.push(kana.len());
+        offsets
+    } else {
+        Vec::new()
+    };
+    let noun_id = if unsplit_max > 0 {
+        functional.find_id("名詞,一般").unwrap_or(DEFAULT_NOUN_ID)
+    } else {
+        DEFAULT_NOUN_ID
+    };
 
     // 辞書語ノードと未知語ノードを生成する
     for start in 0..n {
@@ -1269,20 +1349,10 @@ fn build_lattice(
             }
             let reading: String = chars[start..end].iter().collect();
             for entry in entries {
-                nodes.push(Node {
-                    start,
-                    reading: reading.clone(),
-                    left_id: entry.left_id,
-                    right_id: entry.right_id,
-                    word_cost: i32::from(entry.cost),
-                    surface: entry.surface.clone(),
-                    penalty: 0,
-                    best_cost: i64::MAX,
-                    best_prev: 0,
-                    typo: false,
-                    typo_costs: Vec::new(),
-                    typo_prevs: Vec::new(),
-                });
+                let cost = word_cost(&reading, &entry.surface, entry.left_id, entry.cost);
+                nodes.push(Node::new(
+                    start, reading.clone(), entry.left_id, entry.right_id, cost, entry.surface.clone(),
+                ));
                 ending_at[end].push(nodes.len() - 1);
             }
         }
@@ -1292,20 +1362,10 @@ fn build_lattice(
             if inside_ascii[end] {
                 continue;
             }
-            nodes.push(Node {
-                start,
-                reading: word.reading.clone(),
-                left_id: word.left_id,
-                right_id: word.right_id,
-                word_cost: i32::from(word.cost),
-                surface: word.surface.clone(),
-                penalty: 0,
-                best_cost: i64::MAX,
-                best_prev: 0,
-                typo: false,
-                typo_costs: Vec::new(),
-                typo_prevs: Vec::new(),
-            });
+            let cost = word_cost(&word.reading, &word.surface, word.left_id, word.cost);
+            nodes.push(Node::new(
+                start, word.reading.clone(), word.left_id, word.right_id, cost, word.surface.clone(),
+            ));
             ending_at[end].push(nodes.len() - 1);
         }
         for (len, entries) in user.imported_common_prefix(&chars[start..], MAX_READING_CHARS) {
@@ -1315,21 +1375,24 @@ fn build_lattice(
             }
             let reading: String = chars[start..end].iter().collect();
             for entry in entries {
-                nodes.push(Node {
-                    start,
-                    reading: reading.clone(),
-                    left_id: entry.left_id,
-                    right_id: entry.right_id,
-                    word_cost: i32::from(entry.cost),
-                    surface: entry.surface.clone(),
-                    penalty: 0,
-                    best_cost: i64::MAX,
-                    best_prev: 0,
-                    typo: false,
-                    typo_costs: Vec::new(),
-                    typo_prevs: Vec::new(),
-                });
+                let cost = word_cost(&reading, &entry.surface, entry.left_id, entry.cost);
+                nodes.push(Node::new(
+                    start, reading.clone(), entry.left_id, entry.right_id, cost, entry.surface.clone(),
+                ));
                 ending_at[end].push(nodes.len() - 1);
+            }
+        }
+        if let Some(l) = discount.filter(|_| unsplit_max > 0) {
+            for end in start + 1..=n.min(start + unsplit_max) {
+                if inside_ascii[end] {
+                    continue;
+                }
+                let reading = &kana[offsets[start]..offsets[end]];
+                for (surface, bonus) in l.store.unsplit_phrases(reading) {
+                    let cost = (i64::from(UNKNOWN_WORD_COST) - bonus) as i32;
+                    nodes.push(Node::new(start, reading.to_string(), noun_id, noun_id, cost, surface.to_string()));
+                    ending_at[end].push(nodes.len() - 1);
+                }
             }
         }
         // 英字の連続の先頭では連続全体を1語にする (未知語ノードの代わり)
@@ -1348,36 +1411,14 @@ fn build_lattice(
         } else {
             None
         };
-        nodes.push(Node {
-            start,
-            reading: reading.clone(),
-            left_id: DEFAULT_NOUN_ID,
-            right_id: DEFAULT_NOUN_ID,
-            word_cost,
-            surface: reading.clone(),
-            penalty: 0,
-            best_cost: i64::MAX,
-            best_prev: 0,
-            typo: false,
-            typo_costs: Vec::new(),
-            typo_prevs: Vec::new(),
-        });
+        nodes.push(Node::new(
+            start, reading.clone(), DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, word_cost, reading.clone(),
+        ));
         ending_at[end].push(nodes.len() - 1);
         if let Some(form) = form {
-            nodes.push(Node {
-                start,
-                reading,
-                left_id: DEFAULT_NOUN_ID,
-                right_id: DEFAULT_NOUN_ID,
-                word_cost: ASCII_WORD_COST - ASCII_FORM_BONUS,
-                surface: form,
-                penalty: 0,
-                best_cost: i64::MAX,
-                best_prev: 0,
-                typo: false,
-                typo_costs: Vec::new(),
-                typo_prevs: Vec::new(),
-            });
+            nodes.push(Node::new(
+                start, reading, DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, ASCII_WORD_COST - ASCII_FORM_BONUS, form,
+            ));
             ending_at[end].push(nodes.len() - 1);
         }
     }
@@ -1510,20 +1551,9 @@ fn add_typo_nodes<'a>(
         }
         let reading: String = chars[start..end].iter().collect();
         for (cost, surface, left_id, right_id) in kept {
-            nodes.push(Node {
-                start,
-                reading: reading.clone(),
-                left_id,
-                right_id,
-                word_cost: cost,
-                surface: surface.to_string(),
-                penalty: 0,
-                best_cost: i64::MAX,
-                best_prev: 0,
-                typo: true,
-                typo_costs: Vec::new(),
-                typo_prevs: Vec::new(),
-            });
+            let mut node = Node::new(start, reading.clone(), left_id, right_id, cost, surface.to_string());
+            node.typo = true;
+            nodes.push(node);
             ending_at[end].push(nodes.len() - 1);
         }
     }
@@ -1634,8 +1664,9 @@ pub fn typo_gain(
     learning: &LearningStore,
 ) -> Option<(i64, String)> {
     let typo = TypoWords::segment(kana);
+    let learned = Learned::full(learning);
     let lattice =
-        build_lattice(kana, dict, user, matrix, functional, 0, Some(learning), Some(&typo))?;
+        build_lattice(kana, dict, user, matrix, functional, 0, Some(learned), Some(&typo))?;
     let (gain, segments, _) = typo_best(&lattice, matrix, functional)?;
     let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect();
     Some((gain + i64::from(TYPO_COST), surface))
@@ -1656,6 +1687,121 @@ pub fn word_path_cost(
         + i64::from(cost)
         + penalty
         + i64::from(matrix.get(right_id, 0))
+}
+
+/// 1 語だけの経路の語 (読み, 表記, left_id) に当てる学習の割引 (ラティスと同じく、自立語の語の学習の割引)
+pub fn learning_discount(
+    learning: &LearningStore,
+    reading: &str,
+    surface: &str,
+    left_id: u16,
+    functional: &FunctionalIds,
+) -> i64 {
+    if functional.is_functional(left_id) {
+        return 0;
+    }
+    learning.word_bonus(reading, surface)
+}
+
+/// 確定した文節 (読み, 表記) を辞書 (システム辞書・ユーザ辞書・インポート辞書) の語に分け、経路の
+/// 自立語の (読み, 表記) を順に返す (docs/design/learning-score.md の A の 1)。読みのラティスのうち表記が
+/// 文節の表記の対応する位置と一致する語だけを通る経路を、学習の割引なしの Viterbi と同じコストの最も
+/// 安いもので選ぶ。未知語・英字の連続は辞書の語でないので通らない。経路が無ければ None
+pub fn split_words(
+    reading: &str,
+    surface: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Option<Vec<(String, String)>> {
+    struct Word<'a> {
+        start: usize,
+        end: usize,
+        surface: &'a str,
+        left_id: u16,
+        right_id: u16,
+        cost: i16,
+    }
+    let chars: Vec<char> = reading.chars().collect();
+    let n = chars.len();
+    if n == 0 || surface.is_empty() {
+        return None;
+    }
+    // 開始位置の順に並ぶ (状態はそれより前に終わる語から作られる)
+    let mut words: Vec<Word> = Vec::new();
+    for start in 0..n {
+        let mut hits: Vec<(usize, &str, u16, u16, i16)> = Vec::new();
+        for (len, entries) in dict.common_prefix_search(&chars[start..], MAX_READING_CHARS) {
+            hits.extend(entries.iter().map(|e| (len, e.surface.as_str(), e.left_id, e.right_id, e.cost)));
+        }
+        for (len, w) in user.common_prefix_words(&chars[start..]) {
+            hits.push((len, w.surface.as_str(), w.left_id, w.right_id, w.cost));
+        }
+        for (len, entries) in user.imported_common_prefix(&chars[start..], MAX_READING_CHARS) {
+            hits.extend(entries.iter().map(|e| (len, e.surface.as_str(), e.left_id, e.right_id, e.cost)));
+        }
+        for (len, s, left_id, right_id, cost) in hits {
+            if surface.contains(s) {
+                words.push(Word { start, end: start + len, surface: s, left_id, right_id, cost });
+            }
+        }
+    }
+
+    // 状態 = (語 (None は文頭), 表記のそこまでのバイト数, 文頭からの最小コスト, 直前の状態)
+    let mut states: Vec<(Option<usize>, usize, i64, usize)> = vec![(None, 0, 0, 0)];
+    let mut ending: Vec<Vec<usize>> = vec![Vec::new(); n + 1];
+    ending[0].push(0);
+    let mut index: HashMap<(usize, usize), usize> = HashMap::new();
+    for (w, word) in words.iter().enumerate() {
+        let penalty =
+            if functional.is_functional(word.left_id) { 0 } else { i64::from(SEGMENT_PENALTY) };
+        for k in 0..ending[word.start].len() {
+            let s = ending[word.start][k];
+            let (prev, offset, cost, _) = states[s];
+            if !surface[offset..].starts_with(word.surface) {
+                continue;
+            }
+            let right_id = prev.map_or(0, |p| words[p].right_id);
+            let cost = cost
+                + i64::from(matrix.get(right_id, word.left_id))
+                + i64::from(word.cost)
+                + penalty;
+            let key = (w, offset + word.surface.len());
+            match index.get(&key) {
+                Some(&t) if cost < states[t].2 => {
+                    states[t].2 = cost;
+                    states[t].3 = s;
+                }
+                Some(_) => {}
+                None => {
+                    states.push((Some(w), key.1, cost, s));
+                    index.insert(key, states.len() - 1);
+                    ending[word.end].push(states.len() - 1);
+                }
+            }
+        }
+    }
+    let last = ending[n]
+        .iter()
+        .copied()
+        .filter(|&s| states[s].1 == surface.len())
+        .min_by_key(|&s| {
+            let right_id = states[s].0.map_or(0, |w| words[w].right_id);
+            (states[s].2 + i64::from(matrix.get(right_id, 0)), s)
+        })?;
+    let mut result: Vec<(String, String)> = Vec::new();
+    let mut cursor = last;
+    while let Some(w) = states[cursor].0 {
+        let word = &words[w];
+        if !functional.is_functional(word.left_id) {
+            let r: String = chars[word.start..word.end].iter().collect();
+            result.push((r, word.surface.to_string()));
+        }
+        cursor = states[cursor].3;
+    }
+    result.reverse();
+    Some(result)
 }
 
 // ひらがなをカタカナへ変換する (対象外の文字はそのまま)
@@ -1703,6 +1849,180 @@ mod tests {
     /// ユーザ辞書なし (空) の省略用
     fn no_user() -> UserDict {
         UserDict::empty()
+    }
+
+    /// LEARN・LEARN2 で文節 (読み, 表記) を確定したときと同じに数える (context は直前の文節の表記)
+    fn learn(learning: &mut LearningStore, dict: &Dictionary, reading: &str, surface: &str, context: &str) {
+        let words =
+            split_words(reading, surface, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        learning.learn_segment(reading, surface, context, words.as_deref());
+    }
+
+    /// 2 文節以上の確定の読み全体と同じに数える (句の学習だけ)
+    fn learn_whole(learning: &mut LearningStore, dict: &Dictionary, reading: &str, surface: &str) {
+        let words =
+            split_words(reading, surface, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional());
+        learning.learn_phrase(reading, surface, crate::learn::PhraseKind::Whole, words.is_some());
+    }
+
+    fn dict_from(data: &str) -> Dictionary {
+        let mut dict = Dictionary::empty();
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 文節は表記の一致する辞書の語に分け自立語を返す() {
+        let dict = sample_dict();
+        let split = |reading: &str, surface: &str| {
+            split_words(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional())
+        };
+        // 今日 (自立語) + は (付属語)。付属語は返さない
+        assert_eq!(split("きょうは", "今日は"), Some(vec![("きょう".to_string(), "今日".to_string())]));
+        // 表記が経路と違っても、表記の一致する語を通る
+        assert_eq!(split("きょうは", "京は"), Some(vec![("きょう".to_string(), "京".to_string())]));
+        assert_eq!(
+            split("きょうははれです", "今日は晴れです"),
+            Some(vec![("きょう".to_string(), "今日".to_string()), ("はれ".to_string(), "晴れ".to_string())])
+        );
+        // 辞書に無い表記・未知語を通る読み・ひらがなのままの表記は分けられない
+        assert_eq!(split("きょうは", "教は"), None);
+        assert_eq!(split("きょうはx", "今日はx"), None);
+        assert_eq!(split("きょうは", "きょうは"), None);
+        // 付属語だけの文節は自立語なしで分けられる
+        assert_eq!(split("は", "は"), Some(vec![]));
+    }
+
+    #[test]
+    fn 分ける経路はコストの最も安いもの() {
+        // 今日 (2000) + は と、きょう は で 1 語の 今日は (5000) のどちらも表記が一致する
+        let dict = dict_from(
+            "きょう\t1\t1\t2000\t今日\nは\t2\t2\t500\tは\nきょうは\t1\t1\t5000\t今日は\n",
+        );
+        let split = |reading: &str, surface: &str| {
+            split_words(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional())
+        };
+        assert_eq!(split("きょうは", "今日は"), Some(vec![("きょう".to_string(), "今日".to_string())]));
+    }
+
+    #[test]
+    fn 文節の確定で語の学習は自立語だけを数え辞書に無い表記は句の学習だけ() {
+        let dict = sample_dict();
+        let mut learning = LearningStore::in_memory();
+        learn(&mut learning, &dict, "きょうは", "今日は", "");
+        assert!(learning.word_stat("きょう", "今日").is_some());
+        assert!(learning.word_stat("は", "は").is_none());
+        assert_eq!(learning.serial(), 1);
+        assert!(learning.phrase_stat("きょうは", "今日は").is_some());
+        learn(&mut learning, &dict, "きょうは", "教は", "晴れ");
+        // 確定の通し番号は文節ごとに増える
+        assert_eq!(learning.serial(), 2);
+        assert!(learning.phrase_stat("きょうは", "教は").is_some());
+        assert_eq!(learning.unsplit_phrases("きょうは"), vec![("教は", 1500)]);
+        // 語 今日、句 今日は・教は、文脈の句 (晴れ, きょうは, 教は)
+        assert_eq!(learning.entry_count(), 4);
+    }
+
+    /// 同音の語 (きる → 着る / 切る) と前文脈のテスト用の辞書
+    fn kiru_dict() -> Dictionary {
+        dict_from(
+            "きる\t1\t1\t3000\t切る\n\
+             きる\t1\t1\t3000\t着る\n\
+             ふく\t1\t1\t3000\t服\n\
+             かみ\t1\t1\t3000\t紙\n\
+             を\t2\t2\t500\tを\n\
+             と\t2\t2\t500\tと\n\
+             きょう\t1\t1\t2000\t今日\n\
+             きょう\t1\t1\t2800\t京\n\
+             は\t2\t2\t500\tは\n\
+             も\t2\t2\t500\tも\n",
+        )
+    }
+
+    /// sample_dict の 京 を 3200 にした辞書。語の学習 1 回 (割引 1000) では 今日 (2000) より高く、
+    /// 2 回 (上限 1500) で安くなる
+    fn learn_dict() -> Dictionary {
+        dict_from(
+            "きょう\t1\t1\t2000\t今日\n\
+             きょう\t1\t1\t3200\t京\n\
+             は\t2\t2\t500\tは\n\
+             はれ\t1\t1\t3000\t晴れ\n\
+             です\t3\t3\t1000\tです\n",
+        )
+    }
+
+    fn best_surface(kana: &str, ctx: Option<&Context>, dict: &Dictionary, learning: &LearningStore) -> String {
+        convert_segments(
+            kana, ctx, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), learning, false,
+        )
+        .iter()
+        .map(|s| s.candidates[0].clone())
+        .collect()
+    }
+
+    #[test]
+    fn 同音の語は学習の多いほうが経路に選ばれる() {
+        let dict = kiru_dict();
+        let mut learning = LearningStore::in_memory();
+        learn(&mut learning, &dict, "きる", "着る", "");
+        assert_eq!(best_surface("きる", None, &dict, &learning), "着る");
+        for _ in 0..3 {
+            learn(&mut learning, &dict, "きる", "切る", "");
+        }
+        assert_eq!(best_surface("きる", None, &dict, &learning), "切る");
+        // 1 回だけ別の表記を選んでも、読み全体の学習表記 (句の学習の割引が最大の表記) でよく使う表記が先頭のまま。
+        // 語の学習は 2 回で上限 (WORD_MAX) に届くので、経路だけでは 2 回と 3 回を区別しない
+        learn(&mut learning, &dict, "きる", "着る", "");
+        let got = convert_nbest(
+            "きる", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), &learning, false,
+        );
+        assert_eq!(got[0].surface(), "切る");
+    }
+
+    #[test]
+    fn 語の学習は覚えた文節と違う文節にも効く() {
+        let dict = kiru_dict();
+        let mut learning = LearningStore::in_memory();
+        assert_eq!(best_surface("きょうも", None, &dict, &learning), "今日も");
+        learn(&mut learning, &dict, "きょうは", "京は", "");
+        assert_eq!(best_surface("きょうも", None, &dict, &learning), "京も");
+    }
+
+    #[test]
+    fn 前文脈は変換の経路に効かない() {
+        let dict = kiru_dict();
+        let mut learning = LearningStore::in_memory();
+        // 着る は前文脈「服を」の後で 1 回、切る は文脈なしで 2 回確定した
+        learn(&mut learning, &dict, "ふくを", "服を", "");
+        learn(&mut learning, &dict, "きる", "着る", "服を");
+        learn(&mut learning, &dict, "きる", "切る", "");
+        learn(&mut learning, &dict, "きる", "切る", "");
+        let ctx = Context { reading: "ふくを".to_string(), surface: "服を".to_string() };
+        assert_eq!(best_surface("きる", Some(&ctx), &dict, &learning), "切る");
+        assert_eq!(best_surface("ふくをきる", None, &dict, &learning), "服を切る");
+        // 文脈の句の学習は記録される (予測と後続語の予測に使う)
+        assert!(learning.ctx_phrase_stat("服を", "きる", "着る").is_some());
+    }
+
+    #[test]
+    fn 辞書の語に分けられない句は名詞の1語としてラティスに載る() {
+        let dict = sample_dict();
+        let mut learning = LearningStore::in_memory();
+        learn(&mut learning, &dict, "まいぐらふぃ", "マイグラフィ", "");
+        // 未知語 6 文字 (12000 × 6) より、12000 − 割引の 1 語が安い
+        let got = convert_segments(
+            "まいぐらふぃは", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            &learning, false,
+        );
+        assert_eq!(readings_of(&got), vec!["まいぐらふぃは"]);
+        assert_eq!(got[0].candidates[0], "マイグラフィは");
+        // 割引なしのラティスには載らない
+        let plain = convert_segments(
+            "まいぐらふぃは", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            &LearningStore::in_memory(), false,
+        );
+        assert_ne!(plain[0].candidates[0], "マイグラフィは");
     }
 
     #[test]
@@ -1910,9 +2230,10 @@ mod tests {
     }
 
     #[test]
-    fn 学習表記は短縮よみより前に出る() {
+    fn 学習表記は経路の表記の後_短縮よみより前に出る() {
         let mut learning = LearningStore::in_memory();
-        learning.record("きょう", "京");
+        // 1 回の学習では 京 (4000 − 1000) は 今日 (2000) より高いので、経路は 今日 のまま
+        learn(&mut learning, &sample_dict(), "きょう", "京", "");
         let segments = convert_segments(
             "きょう",
             None,
@@ -1924,8 +2245,8 @@ mod tests {
             false,
         );
         let c = &segments[0].candidates;
-        assert_eq!(c[0], "京");
-        assert_eq!(c[1], "今日");
+        assert_eq!(c[0], "今日");
+        assert_eq!(c[1], "京");
         assert_eq!(c[2], "mail@example.com");
     }
 
@@ -2161,15 +2482,23 @@ mod tests {
     #[test]
     fn 学習で打ったとおりの英字の候補が先頭に来る() {
         let user = user_with_name_forms();
+        let dict = mixed_dict();
         let mut learning = LearningStore::in_memory();
-        // TSF 層は確定した文節ごとに学習を送る
-        learning.record("きょうは", "今日は");
-        learning.record("githubで", "githubで");
-        learning.record("さぎょう", "作業");
+        // TSF 層は確定した文節ごとの学習と、読み全体の学習を送る
+        learn(&mut learning, &dict, "きょうは", "今日は", "");
+        learn(&mut learning, &dict, "githubで", "githubで", "今日は");
+        learn(&mut learning, &dict, "さぎょう", "作業", "githubで");
+        learn_whole(&mut learning, &dict, "きょうはgithubでさぎょう", "今日はgithubで作業");
         let got = convert_nbest(
-            "きょうはgithubでさぎょう", None, &mixed_dict(), &user,
+            "きょうはgithubでさぎょう", None, &dict, &user,
             &ConnectionMatrix::empty(), &sample_functional(), &learning, false);
         assert_eq!(surfaces_of(&got)[0], "今日はgithubで作業");
+        // 英字の連続は辞書の語でないので文節は句の学習だけになり、文節の候補では経路の表記の次に出る
+        let segments = convert_segments(
+            "githubで", None, &dict, &user, &ConnectionMatrix::empty(), &sample_functional(), &learning,
+            false,
+        );
+        assert_eq!(segments[0].candidates[..2], ["GitHubで", "githubで"]);
     }
 
     #[test]
@@ -2337,22 +2666,23 @@ mod tests {
     }
 
     #[test]
-    fn 学習済みの表記が文節候補の先頭に来る() {
+    fn 学習した表記は経路の表記の次に出て多く使うと経路になる() {
+        let dict = learn_dict();
         let mut learning = LearningStore::in_memory();
-        learning.record("きょうは", "京は");
-        let segments = convert_segments(
-            "きょうは",
-            None,
-            &sample_dict(),
-            &no_user(),
-            &ConnectionMatrix::empty(),
-            &sample_functional(),
-            &learning,
-            false,
-        );
-        // 学習した「京は」(辞書候補に無い表記) が先頭に挿入される
-        assert_eq!(segments[0].candidates[0], "京は");
-        assert_eq!(segments[0].candidates[1], "今日は");
+        let convert = |learning: &LearningStore| {
+            convert_segments(
+                "きょうは", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+                learning, false,
+            )
+        };
+        // 1 回: 京 (3200 − 1000) は 今日 (2000) より高いので、経路の 今日は の次に出る
+        learn(&mut learning, &dict, "きょうは", "京は", "");
+        let segments = convert(&learning);
+        assert_eq!(segments[0].candidates[..2], ["今日は", "京は"]);
+        // 2 回: 京 (3200 − 1500) が 今日 より安くなり、経路が変わる
+        learn(&mut learning, &dict, "きょうは", "京は", "");
+        let segments = convert(&learning);
+        assert_eq!(segments[0].candidates[..2], ["京は", "今日は"]);
     }
 
     #[test]
@@ -2654,47 +2984,6 @@ mod tests {
     }
 
     #[test]
-    fn 文脈学習が文脈なし学習より優先される() {
-        let mut learning = LearningStore::in_memory();
-        learning.record("きょう", "今日");
-        learning.record_ctx("晴れ", "きょう", "京");
-        let dict = sample_dict();
-
-        // 前文脈なし: 文脈なし学習の「今日」が先頭
-        let segments = convert_segments(
-            "きょう", None, &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning, false);
-        assert_eq!(segments[0].candidates[0], "今日");
-
-        // 前文脈「晴れ」: 文脈学習の「京」が最優先
-        let ctx = Context { reading: "はれ".to_string(), surface: "晴れ".to_string() };
-        let segments = convert_segments(
-            "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning, false);
-        assert_eq!(segments[0].candidates[0], "京");
-        assert_eq!(segments[0].candidates[1], "今日");
-
-        // 一致しない前文脈では文脈なし学習に戻る
-        let ctx = Context { reading: "です".to_string(), surface: "です".to_string() };
-        let segments = convert_segments(
-            "きょう", Some(&ctx), &dict, &no_user(), &ConnectionMatrix::empty(),
-            &sample_functional(), &learning, false);
-        assert_eq!(segments[0].candidates[0], "今日");
-    }
-
-    #[test]
-    fn 二文節目の文脈学習は直前文節の先頭候補で引く() {
-        // 「きょうは|はれです」の2文節目に、文脈「今日は」付きの学習を仕込む
-        let mut learning = LearningStore::in_memory();
-        learning.record_ctx("今日は", "はれです", "ハレです");
-        let segments = convert_segments(
-            "きょうははれです", None, &sample_dict(), &no_user(),
-            &ConnectionMatrix::empty(), &sample_functional(), &learning, false);
-        assert_eq!(segments[0].candidates[0], "今日は");
-        assert_eq!(segments[1].candidates[0], "ハレです");
-    }
-
-    #[test]
     fn 文節境界固定でも前文脈が効く() {
         let (dict, matrix) = context_dict_and_matrix();
         let ctx = Context { reading: "を".to_string(), surface: "を".to_string() };
@@ -2918,12 +3207,15 @@ mod tests {
     }
 
     #[test]
-    fn 入力全体の候補は読み全体の学習_文節学習の1best_nbestの順() {
+    fn 入力全体の候補は読み全体の学習_学習の割引の1best_nbestの順() {
+        let dict = learn_dict();
         let mut learning = LearningStore::in_memory();
-        learning.record("きょうははれです", "今日は晴れデス");
-        learning.record("きょうは", "京は");
+        learn_whole(&mut learning, &dict, "きょうははれです", "今日は晴れデス");
+        // 2 回で 京 が 今日 より安くなる (learn_dict)
+        learn(&mut learning, &dict, "きょうは", "京は", "");
+        learn(&mut learning, &dict, "きょうは", "京は", "");
         let got = convert_nbest(
-            "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            "きょうははれです", None, &dict, &no_user(), &ConnectionMatrix::empty(),
             &sample_functional(), &learning, false);
         assert_eq!(
             got[0].segments,
@@ -2947,15 +3239,29 @@ mod tests {
     }
 
     #[test]
-    fn 学習で決まった候補に保護の印が付く() {
+    fn 学習で変わった1bestは補正の候補があるときとrerankのときだけ保護の印が付く() {
+        let dict = learn_dict();
         let mut learning = LearningStore::in_memory();
-        learning.record("きょうははれです", "今日は晴れデス");
-        learning.record("きょうは", "京は");
+        learn_whole(&mut learning, &dict, "きょうははれです", "今日は晴れデス");
+        learn(&mut learning, &dict, "きょうは", "京は", "");
+        learn(&mut learning, &dict, "きょうは", "京は", "");
         let got = convert_nbest(
-            "きょうははれです", None, &sample_dict(), &no_user(), &ConnectionMatrix::empty(),
+            "きょうははれです", None, &dict, &no_user(), &ConnectionMatrix::empty(),
             &sample_functional(), &learning, false);
-        // 読み全体の学習表記と、学習で表記が変わった 1-best は保護する
-        assert!(got[0].protected && got[1].protected);
+        // 読み全体の学習表記は保護する。学習で表記が変わった 1-best は、補正の候補があるときだけ保護する
+        // (補正の候補がある場合は 学習で表記が変わった1bestは補正の候補で2番目に下がらない)
+        assert!(got[0].protected);
+        assert_eq!(got[1].surface(), "京は晴れです");
+        assert!(!got[1].protected);
+        // RERANK に渡す候補では、補正の候補が無くても学習で変わった 1-best を保護する
+        let reranked = convert_nbest_rerank(
+            "きょうははれです", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
+            &learning, TypoSource::Off, &typo::TUNING,
+        )
+        .candidates;
+        assert_eq!(reranked[1].surface(), "京は晴れです");
+        assert!(reranked[1].protected);
+        assert!(!reranked[2].protected);
         assert_eq!(got[2].surface(), "今日は晴れです");
         assert!(!got[2].protected);
 
@@ -3022,9 +3328,11 @@ mod tests {
     }
 
     #[test]
-    fn 学習で数字の表記が変わった1bestでも数字の書き方の候補が入る() {
+    fn 学習で数字の表記が変わっても数字の書き方の候補が入る() {
         let mut learning = LearningStore::in_memory();
-        learning.record("1234えん", "1,234円");
+        learn(&mut learning, &number_form_dict(), "1234えん", "1,234円", "");
+        // 数字を含む表記の句はラティスに載せない (読み全体の学習表記で先頭に来る)
+        assert!(learning.unsplit_phrases("1234えん").is_empty());
         let got = convert_nbest(
             "1234えん", None, &number_form_dict(), &no_user(), &ConnectionMatrix::empty(),
             &sample_functional(), &learning, false);
@@ -3070,8 +3378,12 @@ mod tests {
 
     /// 補正の候補のテスト用の辞書 (よろしく|お願い|します。ねぎ は打ち間違いの読みの一部に一致する語)
     fn typo_dict() -> Dictionary {
-        let mut dict = Dictionary::empty();
-        dict.load_from(
+        typo_dict_with("")
+    }
+
+    /// typo_dict に TSV の語 extra を足した辞書
+    fn typo_dict_with(extra: &str) -> Dictionary {
+        dict_from(&format!(
             "よろしく\t1\t1\t3000\tよろしく\n\
              おねがい\t1\t1\t3000\tお願い\n\
              ねぎ\t1\t1\t4000\tネギ\n\
@@ -3079,13 +3391,19 @@ mod tests {
              きょう\t1\t1\t2000\t今日\n\
              は\t2\t2\t500\tは\n\
              はれ\t1\t1\t3000\t晴れ\n\
-             です\t3\t3\t1000\tです\n"
-                .as_bytes(),
-        )
-        .unwrap();
-        dict.finalize();
-        dict
+             です\t3\t3\t1000\tです\n\
+             {extra}"
+        ))
     }
+
+    /// 宜しく (3500) を足した辞書。2 回学習すると 3500 − 2377 で よろしく (3000) より安くなる
+    const YOROSHIKU: &str = "よろしく\t1\t1\t3500\t宜しく\n";
+
+    /// お・あ・葱 を足した辞書。読み全体 よろしくおねぎあします を辞書の語に分けられる表記
+    /// (よろしく尾葱亜します) を学習できるようにする (分けられない表記はラティスに 1 語として載り、
+    /// 読み全体の学習表記と 1-best が同じになるため)
+    const WHOLE_WORDS: &str =
+        "お\t1\t1\t5000\t尾\nあ\t1\t1\t5000\t亜\nねぎ\t1\t1\t6000\t葱\n";
 
     /// 入力全体の候補の補正の語 (かなを戻した近似、既定の調整値)
     fn sentence_typo(kana: &str) -> TypoWords {
@@ -3093,9 +3411,12 @@ mod tests {
     }
 
     fn typo_nbest(kana: &str, learning: &LearningStore, typo: bool) -> Vec<SentenceCandidate> {
+        typo_nbest_in(&typo_dict(), kana, learning, typo)
+    }
+
+    fn typo_nbest_in(dict: &Dictionary, kana: &str, learning: &LearningStore, typo: bool) -> Vec<SentenceCandidate> {
         convert_nbest(
-            kana, None, &typo_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
-            learning, typo)
+            kana, None, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), learning, typo)
     }
 
     #[test]
@@ -3162,10 +3483,12 @@ mod tests {
 
     #[test]
     fn 読み全体の学習表記があれば補正の候補はその後ろの1bestの直後に出る() {
+        let dict = typo_dict_with(WHOLE_WORDS);
         let mut learning = LearningStore::in_memory();
-        learning.record("よろしくおねぎあします", "よろしく御願明日");
-        let got = typo_nbest("よろしくおねぎあします", &learning, true);
-        assert_eq!(got[0].surface(), "よろしく御願明日");
+        learn_whole(&mut learning, &dict, "よろしくおねぎあします", "よろしく尾葱亜します");
+        let got = typo_nbest_in(&dict, "よろしくおねぎあします", &learning, true);
+        assert_eq!(got[0].surface(), "よろしく尾葱亜します");
+        assert_eq!(got[1].surface(), "よろしく尾ネギ亜します");
         assert!(!got[1].typo);
         assert!(got[2].typo);
         assert_eq!(got[2].surface(), "よろしくお願いします");
@@ -3173,9 +3496,11 @@ mod tests {
 
     #[test]
     fn 学習で表記が変わった1bestは補正の候補で2番目に下がらない() {
+        let dict = typo_dict_with(YOROSHIKU);
         let mut learning = LearningStore::in_memory();
-        learning.record("よろしく", "宜しく");
-        let got = typo_nbest("よろしくおねぎあします", &learning, true);
+        learn(&mut learning, &dict, "よろしく", "宜しく", "");
+        learn(&mut learning, &dict, "よろしく", "宜しく", "");
+        let got = typo_nbest_in(&dict, "よろしくおねぎあします", &learning, true);
         assert!(got[0].surface().starts_with("宜しく"), "{:?}", surfaces_of(&got));
         assert!(!got[0].typo && got[0].protected);
         assert!(got[1].typo);
@@ -3211,9 +3536,12 @@ mod tests {
     }
 
     fn typo_segments(kana: &str, learning: &LearningStore, typo: bool) -> Vec<Segment> {
+        typo_segments_in(&typo_dict(), kana, learning, typo)
+    }
+
+    fn typo_segments_in(dict: &Dictionary, kana: &str, learning: &LearningStore, typo: bool) -> Vec<Segment> {
         convert_segments(
-            kana, None, &typo_dict(), &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
-            learning, typo)
+            kana, None, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), learning, typo)
     }
 
     #[test]
@@ -3275,7 +3603,8 @@ mod tests {
     #[test]
     fn 補正の文節の読みに学習があれば補正の表記は2番目に出る() {
         let mut learning = LearningStore::in_memory();
-        learning.record("おねぎあします", "オネギアシマス");
+        // 辞書の語に分けられない表記なので、句の学習の 1 語としてラティスに載り、補正の文節の区間の経路になる
+        learn(&mut learning, &typo_dict(), "おねぎあします", "オネギアシマス", "");
         let got = typo_segments("よろしくおねぎあします", &learning, true);
         assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
         assert_eq!(got[1].candidates[0], "オネギアシマス");
@@ -3285,9 +3614,11 @@ mod tests {
 
     #[test]
     fn 通常の1bestが学習で変わっていれば補正の表記は2番目に出る() {
+        let dict = typo_dict_with(YOROSHIKU);
         let mut learning = LearningStore::in_memory();
-        learning.record("よろしく", "宜しく");
-        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        learn(&mut learning, &dict, "よろしく", "宜しく", "");
+        learn(&mut learning, &dict, "よろしく", "宜しく", "");
+        let got = typo_segments_in(&dict, "よろしくおねぎあします", &learning, true);
         assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
         assert_eq!(got[0].candidates[0], "宜しく");
         assert_eq!(got[1].candidates[0], "おネギあします");
@@ -3296,9 +3627,10 @@ mod tests {
 
     #[test]
     fn 読み全体の学習表記があれば補正の表記は2番目に出る() {
+        let dict = typo_dict_with(WHOLE_WORDS);
         let mut learning = LearningStore::in_memory();
-        learning.record("よろしくおねぎあします", "よろしく御願明日");
-        let got = typo_segments("よろしくおねぎあします", &learning, true);
+        learn_whole(&mut learning, &dict, "よろしくおねぎあします", "よろしく尾葱亜します");
+        let got = typo_segments_in(&dict, "よろしくおねぎあします", &learning, true);
         assert_eq!(readings_of(&got), vec!["よろしく", "おねぎあします"]);
         assert_eq!(got[1].candidates[1], "お願いします");
         assert_eq!(got[1].typo.as_deref(), Some("お願いします"));

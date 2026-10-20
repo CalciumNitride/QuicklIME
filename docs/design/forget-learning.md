@@ -13,6 +13,8 @@
 
 ### 消す対象
 
+消す学習の種類とファイルは [learning-score.md](learning-score.md) の F・E で置き換え。
+
 - 消すのは学習だけ。辞書・ユーザ辞書 (手動登録・インポート辞書) の語は消さない。学習でない候補を
   指定したときは何も消えない
 - (読み, 表記) の組を指定し、次をすべて消す
@@ -49,6 +51,8 @@
 - 旧エンジンは「不明なコマンド」を返す。TSF 層はそのとき何もしない
 
 ### ファイルの書き直し
+
+書き直すファイルは [learning-score.md](learning-score.md) の F・E で置き換え (learning_stats.tsv と learning_word.tsv)。
 
 - 消した項目があったファイルだけを、メモリ上の内容から書き直す。learning.tsv と learning_context.tsv は
   記録順の連番の昇順で書き、読み込み後の新しさの順を保つ。learning_word.tsv は保持している順で書く
