@@ -72,4 +72,4 @@
   再起動も不要で反映できる (InprocServer32 のパス自体は変わらないため)
 - `scripts\dev-deploy.ps1` で上記をまとめて行える: `-Dll` は開発版へ regsvr32 切替、
   `-Dll -Install` は常用インストール版を直接更新、`-Restore` はインストール版へ戻す。
-  詳細は README.md 「開発版 DLL の切替とインストール版の更新」
+  詳細は docs/development.md 「開発版 DLL の切替とインストール版の更新」

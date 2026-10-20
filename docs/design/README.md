@@ -9,7 +9,7 @@
   ファンクションキー変換・日付時刻の候補・確定アンドゥ・ローマ字テーブル・ユーザ辞書と単語登録・
   設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ・パスワード欄) の仕様と理由
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
-- [docs/theme.md](../theme.md): 候補パネルのテーマファイルのリファレンス
+- [docs/user/theme.md](../user/theme.md): 候補パネルのテーマファイルのリファレンス
 
 ## 入力方式
 
@@ -136,6 +136,8 @@
 
 - [docs-reorganization.md](docs-reorganization.md): ドキュメントの構成 (architecture・設計書の索引・
   basics・roadmap の分担)
+- [user-docs.md](user-docs.md): 利用者向けドキュメントの分割 (README・docs/user/・docs/development.md・
+  設計書の分担と、設定一覧 docs/user/settings.md)
 
 ## 採らなかった案・検討段階の草案 (docs/archive/)
 

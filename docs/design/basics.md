@@ -1,7 +1,7 @@
 # 基本機能の仕様
 
 専用の設計書が無い基本機能について、コードから読み取りにくい仕様と、その理由 (WHY) をまとめる。
-利用者向けの操作の説明は [README.md](../../README.md) にあり、ここでは重複させない。
+利用者向けの操作の説明は [docs/user/](../user/) にあり、ここでは重複させない。
 各機能の設計書は [設計書の索引](README.md) から引ける。
 
 ## 辞書
@@ -139,7 +139,7 @@
 - 記号辞書を引くときは、読みの全角英数記号を半角にしてから引き直す。記号キーは全角形で run に入るが、
   symbol.tsv の読みは半角形で載っているため (「（」を変換すると ［ 〔 などが出る)
 - Shift+英字は大文字をそのまま入れて英字モードに入り、以降の英字はローマ字変換せずに続く
-  (モードレス入力での扱いは README の「モードレス入力」と [modeless.md](modeless.md))
+  (モードレス入力での扱いは [モードレス入力](../user/modeless.md) と [modeless.md](modeless.md))
 
 ## 対記号の両側同期
 
@@ -160,7 +160,7 @@
 
 ## ファンクションキー変換
 
-キー割当は README の「キー割当」、run が無いときの対象は README の「後置再変換」にある。
+キー割当は [キー割当](../user/keymap.md)、run が無いときの対象は [入力と変換](../user/input.md) の「後置再変換」にある。
 対象は、run 中なら入力全体、候補選択中なら現在の文節 (`segment_ui` 0 では入力全体)。
 
 - F4 (記号・日付変換): エンジンの CONVSYM で、記号辞書の候補と日付・時刻の候補だけを出す
@@ -184,7 +184,7 @@
 
 ## 確定アンドゥ
 
-操作は README の「入力方式」(Ctrl+Backspace) と「読める文書」にある。
+操作は [入力と変換](../user/input.md) の Ctrl+Backspace と「読める文書」にある。
 
 - 直前の確定の文字列と、確定前の読みの状態 (`RomajiComposer`) を1件だけ覚える
 - 一度きりの操作で、成否によらず押した時点で記憶を消す。確定後に別の編集があって文書と一致しないとき、
@@ -195,11 +195,29 @@
 - 戻した run の方式 (composition 入力・パネル保持入力) は、確定アンドゥの時点の設定 `input_buffer` で決める
 - 確定を取り消すので、その確定を前提にした前文脈と LLM の左文脈も捨てる
 
+## 読める文書の判定
+
+利用者向けの説明は [入力と変換](../user/input.md) の「読める文書」にある。文書の分類は TSF 層が持つ
+(tsf/src/text_service_direct.cpp `ClassifyByLastInsert`)。
+
+- IME が直前に文書へ入れた文字列 (挿入・未確定文字列の確定) をキャレット直前から読み戻し、一致すれば
+  読める文書とする。分類は「読める」と「未判定」の 2 つだけ
+- 確かめる時点は次の 3 つ
+  - run の始め (最初の打鍵。`TypeAppend`)
+  - 入力なしの状態の変換キー・F6〜F10・確定アンドゥのキー (`ClassifyBeforeIdleKey`)。これらはキャレット直前を
+    読めると分かっている文書でしか働かず、キーを食べるかどうかを分類で決めるため、キーの処理の前に確かめる
+  - 確定アンドゥの実行 (`UndoCommit`)
+- 照合に使った直前の挿入は、一致してもしなくても捨てる。一致しなければ未判定のまま残し、次に入れた文字列で
+  また確かめる。挿入の後にアプリへ渡したキーで文書が変わったのか、読めない文書なのかを区別できないため。
+  CUAS 経由のアプリ (WezTerm など) は確定した文字列を後から受け取るので、未判定のまま残る
+- 読めると判定した後は、フォーカスが移るまで確かめ直さない。フォーカス移動 (`OnSetFocus`) で未判定に戻し、
+  直前の挿入も捨てる。読めるかどうかは文書 (アプリ・編集コントロール) の性質で決まるため、文書ごとに判定し直す
+
 ## ローマ字テーブル
 
 - 既定のテーブルは TSF 層に持つ (tsf/src/romaji.cpp `kDefaultTable`)。ユーザのテーブル
   `%APPDATA%\QuicklIME\romaji.tsv` (`QUICKLIME_ROMAJI_FILE` で変更可) を既定のテーブルへ追加・上書きする。
-  書式は README の「ローマ字テーブルのカスタマイズ」
+  書式は [辞書とローマ字](../user/dictionary.md#ローマ字テーブルのカスタマイズ)
 - 3列目が空でない行 (Google 日本語入力の「次の入力」付きの形式) は対応せず読み飛ばす
 - テーブルはプロセスごとに初回の参照で一度だけ作る。IME の DLL はアプリのプロセスごとにロードされる
   ため、ファイルの変更はアプリの再起動後に反映される
@@ -238,21 +256,21 @@
   書き出し、エンジンへ RELOADCONFIG を送る。起動は入力なしの状態の `key.open_config` (既定 Ctrl+F12) か
   言語バーのメニューから。タブの構成は [config-tabs.md](config-tabs.md)。「開発用」タブで診断ログの
   出力先 (`debug_log`。空なら出さない) を設定する
-- README で説明していない基本の設定:
+- 機能ページに説明の無い基本の設定を読む側 (値と既定は [設定一覧](../user/settings.md)):
 
-  | キー | 値 | 既定 | 読む側 |
-  |---|---|---|---|
-  | `learning` | 0 / 1 | 1 | エンジン |
-  | `suggest` | 0 / 1 | 1 | エンジン |
-  | `typo_correction` | 0 / 1 | 1 | エンジン |
-  | `max_predictions` | 候補バーの合計の上限。9 / 18 / 27 / 36 (9 の倍数へ切り上げ、9〜36 に丸める) | 9 | エンジン・TSF 層 |
-  | `space` | `full` / `half` (Space で入れるスペースの幅) | `full` | TSF 層 |
-  | `punctuation` | `、。` / `，．` / `、．` / `，。` | `、。` | TSF 層 |
-  | `digits` | `full` / `half` | `half` | TSF 層 |
-  | `candidate_font` / `candidate_font_size` | 候補パネル (候補バー・候補一覧) のフォント名 / 高さ (10〜40 px) | `Yu Gothic UI` / 18 | TSF 層 |
-  | `debug_log` | 診断ログの出力先のパス | 空 (出さない) | TSF 層 |
+  | キー | 読む側 |
+  |---|---|
+  | `learning` | エンジン |
+  | `suggest` | エンジン |
+  | `typo_correction` | エンジン |
+  | `max_predictions` | エンジン・TSF 層 |
+  | `space` | TSF 層 |
+  | `punctuation` | TSF 層 |
+  | `digits` | TSF 層 |
+  | `candidate_font` / `candidate_font_size` | TSF 層 |
+  | `debug_log` | TSF 層 |
 
-- キー割当 (`key.*`) は README の「キー割当」と [keymap.md](keymap.md)
+- キー割当 (`key.*`) は [キー割当](../user/keymap.md) と [keymap.md](keymap.md)
 
 ## 言語バー
 
@@ -288,7 +306,7 @@
 
 ## インストーラ
 
-利用者向けの説明は README の「インストーラでの導入」にある。Inno Setup (installer/installer.iss) で作り、
+利用者向けの説明は [README.md](../../README.md) の「インストール」、インストーラのビルドの手順は [development.md](../development.md) にある。Inno Setup (installer/installer.iss) で作り、
 installer/build.ps1 がバイナリ・辞書・ライセンスを集めてから ISCC を呼ぶ。
 
 - 64bit DLL を `%ProgramFiles%\QuicklIME\` に、32bit DLL を `x86\` に置き、それぞれ regserver で登録する

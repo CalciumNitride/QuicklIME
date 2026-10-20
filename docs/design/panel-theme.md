@@ -150,7 +150,7 @@ dark.background	#101014EE
 | `tag_partial` | ダーク #C08CF0、ライト #8A4FC8 |
 | `tag_next_word` | ダーク #E3B873、ライト #A8741F |
 
-既定の配色 (色の値は docs/theme.md「色」) はロゴの色 (スレート #2D3437・ミント #7DC7B0・
+既定の配色 (色の値は docs/user/theme.md「色」) はロゴの色 (スレート #2D3437・ミント #7DC7B0・
 オフホワイト #FAFBF7) から取る。
 
 - ダークの `selected_text` はスレートにする。ミントは明るく、白文字ではコントラストが足りない
