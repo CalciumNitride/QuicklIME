@@ -1215,7 +1215,7 @@ fn boundary_adjust(kana: &str, chars: &[char], learning: &LearningStore) -> Vec<
         return Vec::new();
     }
     // 文字位置 → バイト位置。部分文字列を String に組み直さずに引くため
-    // (ライブ変換では毎打鍵で呼ばれる)
+    // (候補バーでは毎打鍵で呼ばれる)
     let mut offsets: Vec<usize> = Vec::with_capacity(n + 1);
     let mut byte = 0;
     for c in chars {
@@ -3032,7 +3032,7 @@ mod tests {
 
     #[test]
     fn 学習した境界は入力途中でも効く() {
-        // ライブ変換は毎打鍵で読み全体を変換し直すため、部分一致でも効く必要がある
+        // 候補バーは毎打鍵で読み全体を変換し直すため、部分一致でも効く必要がある
         let mut learning = LearningStore::in_memory();
         learning.record_boundary("きょうは");
         learning.record_boundary("いい");

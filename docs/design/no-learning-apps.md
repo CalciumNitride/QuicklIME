@@ -88,7 +88,7 @@ docs/design/app-settings.md の一覧と編集欄に1項目ずつ足す。
 
 TSF 層は `QUICKLIME_PIPE_NAME` / `QUICKLIME_LEARN_FILE` / `QUICKLIME_CONFIG_FILE` で隔離した
 PowerShell からメモ帳を起動して確かめる (`taskkill /IM Notepad.exe /F` で既存のメモ帳を終了してから)。
-学習ファイルは `QUICKLIME_LEARN_FILE` の learning.tsv と、同じディレクトリの learning_context.tsv /
+学習ファイルは `QUICKLIME_LEARN_FILE` で指定した learning.tsv と同じディレクトリの learning_stats.tsv /
 learning_boundary.tsv / learning_word.tsv を見る。
 
 ### テストケース

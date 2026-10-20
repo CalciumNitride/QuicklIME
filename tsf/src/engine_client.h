@@ -85,11 +85,6 @@ public:
                               const ConversionContext& context,
                               std::vector<ConversionSegment>* segments);
 
-    // かなを文節列に変換する (CONVSEG / CONVCTX)。毎打鍵のライブ変換用に、接続待ちはせず、
-    // 未接続ならエンジンを起動だけして即 false を返す (Predict と同じ方式)
-    bool ConvertSegmentsLive(const std::wstring& kana, const ConversionContext& context,
-                             std::vector<ConversionSegment>* segments);
-
     // かなに対する入力全体の候補を取得する (CONVNBEST)。keys はかなの打鍵
     // (docs/design/unified-suggest.md の A の書式。空なら送らない)。CONVNBEST を知らない旧エンジンには
     // CONVCTX / CONVSEG を送り、各文節の先頭候補を連結した1件だけを返す
@@ -97,7 +92,7 @@ public:
                       const std::wstring& keys, std::vector<SentenceCandidate>* candidates);
 
     // ConvertNBest の毎打鍵の候補バー用 (SUGGEST を知らない旧エンジンでバーを作る。打鍵は送らない)。
-    // 接続待ちはせず、未接続ならエンジンを起動だけして即 false を返す (ConvertSegmentsLive と同じ方式)
+    // 接続待ちはせず、未接続ならエンジンを起動だけして即 false を返す (Predict と同じ方式)
     bool ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                           std::vector<SentenceCandidate>* candidates);
 

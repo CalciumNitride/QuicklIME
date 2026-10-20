@@ -267,10 +267,10 @@ int CenterBarTop(const PanelTheme& theme, const Metrics& m, const RECT& work, bo
     return static_cast<int>(work.top) + (workHeight - height) / 2;
 }
 
-// パネル (影を除く) の角丸の半径。カプセルは両端を半円にする
-float BodyRadius(bool capsule, const Metrics& m, float height)
+// パネル (影を除く) の角丸の半径
+float BodyRadius(const Metrics& m, float height)
 {
-    return capsule ? height / 2 : (std::min)(m.panelRadius, height / 2);
+    return (std::min)(m.panelRadius, height / 2);
 }
 
 // 尻尾を付けるパネルの左端を Placement::x から左へずらす量。TailTipX は尻尾を角丸の外
@@ -280,7 +280,7 @@ int PointerLeftShift(const Metrics& m, int height, int pointerHeight)
     if (pointerHeight <= 0) {
         return 0;
     }
-    return static_cast<int>(std::ceil(BodyRadius(false, m, static_cast<float>(height)))) +
+    return static_cast<int>(std::ceil(BodyRadius(m, static_cast<float>(height)))) +
            pointerHeight;
 }
 
@@ -452,7 +452,7 @@ SuggestPanel::SuggestPanel()
       dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
-      kind_(Kind::Panel), conversion_(false), inputTop_(0.0f), separator_(false),
+      conversion_(false), inputTop_(0.0f), separator_(false),
       separatorTop_(0.0f), pageTop_(0.0f), pageInline_(false), pageLeft_(0.0f), pageStart_(0),
       selection_(0), page_(0), pageLabelWidth_(0.0f), inputWidth_(0.0f), placementCaret_{},
       work_{}, pointerHeight_(0), columnSide_(ColumnSide::None), hasInput_(false),
@@ -822,7 +822,6 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         }
     }
 
-    kind_ = Kind::Panel;
     conversion_ = false;
     allItems_ = items;
     allTexts_ = std::move(texts);
@@ -840,7 +839,6 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     columnSide_ = side;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
-    capsuleText_.clear();
     size_t page = 0;
     if (selection < total) {
         page = static_cast<size_t>(
@@ -873,11 +871,7 @@ size_t SuggestPanel::FitColumn(const Placement& placement, const RECT& work, boo
     const int fullHeight = heightOf(fullRows, true);
 
     const RECT& caret = *placement.caret;
-    int top = static_cast<int>(caret.bottom);
-    if (placement.belowCapsule) {
-        top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
-    }
-    const int below = static_cast<int>(work.bottom) - (top + belowGap);
+    const int below = static_cast<int>(work.bottom) - (static_cast<int>(caret.bottom) + belowGap);
     const int above = static_cast<int>(caret.top) - aboveGap - static_cast<int>(work.top);
     int space = below;
     if (fullHeight <= below) {
@@ -1002,11 +996,7 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
                 x = (std::max)(static_cast<int>(work.left), static_cast<int>(work.right) - width);
             }
             const RECT& caret = *placement.caret;
-            int top = static_cast<int>(caret.bottom);
-            if (placement.belowCapsule) {
-                top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
-            }
-            y = top + belowGap;
+            y = static_cast<int>(caret.bottom) + belowGap;
             // 上に出すときは下端をキャレット行の上に揃え、候補が増えると上へ伸ばす
             if (columnSide_ == ColumnSide::Above ||
                 (columnSide_ == ColumnSide::None && y + height > work.bottom)) {
@@ -1035,13 +1025,7 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
             // 入力行が長いときは作業領域の右端で切る (候補は上で収まる分だけにしてある)
             width = (std::max)((std::min)(width, static_cast<int>(work.right) - x), rowNeeded);
 
-            // 未完成ローマ字のカプセル (チップと同じ高さ) はキャレットに重ねて出し、打鍵ごとに
-            // 出たり消えたりする。カプセルの有無で上下に動かないよう、常にその下端より下に出す
-            int top = static_cast<int>(caret.bottom);
-            if (placement.belowCapsule) {
-                top = (std::max)(top, static_cast<int>(caret.top) + m.chipHeight);
-            }
-            y = top + belowGap;
+            y = static_cast<int>(caret.bottom) + belowGap;
             if (y + height > work.bottom) {
                 y = static_cast<int>(caret.top) - height - aboveGap;
             }
@@ -1240,7 +1224,6 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         }
     }
 
-    kind_ = Kind::Panel;
     conversion_ = true;
     itemTexts_ = std::move(texts);
     items_.clear();
@@ -1278,7 +1261,6 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     selection_ = current - begin;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
-    capsuleText_.clear();
     bodyX_ = x;
     bodyY_ = y;
     bodyWidth_ = width;
@@ -1289,38 +1271,6 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         return 0;
     }
     return count > 0 ? pageSize : 0;
-}
-
-bool SuggestPanel::ShowCapsule(const RECT& caret, const std::wstring& text)
-{
-    if (text.empty() || textFormat_ == nullptr) {
-        return false;
-    }
-    const Metrics m = ComputeMetrics(theme_, fontSize_);
-    const int width =
-        static_cast<int>(std::ceil(m.chipPadding * 2 + TextWidth(text, textFormat_)));
-    const int height = m.chipHeight;
-    const POINT position = FitToWorkArea(caret, caret.left, caret.top, width, height);
-
-    kind_ = Kind::Capsule;
-    conversion_ = false;
-    pageText_.clear();
-    items_.clear();
-    itemTexts_.clear();
-    itemBoxes_.clear();
-    separator_ = false;
-    columnSide_ = ColumnSide::None;
-    selection_ = 0;
-    hasInput_ = false;
-    input_ = InputLine{};
-    capsuleText_ = text;
-    bodyX_ = position.x;
-    bodyY_ = position.y;
-    bodyWidth_ = width;
-    bodyHeight_ = height;
-    tail_ = TailSide::None;
-    margin_ = LayeredMargin();
-    return Render(L"ShowCapsule", &caret);
 }
 
 bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
@@ -1629,8 +1579,7 @@ float SuggestPanel::TailTipX(float bodyLeft, float bodyRight, float radius) cons
 
 std::wstring SuggestPanel::GhostText() const
 {
-    if (theme_.style != PanelStyle::Ghost || kind_ != Kind::Panel || conversion_ ||
-        itemTexts_.empty()) {
+    if (theme_.style != PanelStyle::Ghost || conversion_ || itemTexts_.empty()) {
         return {};
     }
     const size_t index = selection_ < itemTexts_.size() ? selection_ : 0;
@@ -1666,7 +1615,7 @@ void SuggestPanel::Draw()
     const float width = static_cast<float>(bodyWidth_);
     const float height = static_cast<float>(bodyHeight_);
     const float line = static_cast<float>(m.line);
-    const float radius = BodyRadius(kind_ == Kind::Capsule, m, height);
+    const float radius = BodyRadius(m, height);
     const float bodyTop = margin + static_cast<float>(TopTailPad());
 
     const D2D1_RECT_F body = D2D1::RectF(margin, bodyTop, margin + width, bodyTop + height);
@@ -1715,12 +1664,6 @@ void SuggestPanel::Draw()
         }
     }
 
-    if (kind_ == Kind::Capsule) {
-        DrawLabel(capsuleText_, textFormat_, body.left + m.chipPadding, body.top, body.right,
-                  body.bottom, theme_.text);
-        return;
-    }
-
     const float padding = static_cast<float>(m.padding);
     const float left = body.left + padding;
     const float contentWidth = width - padding * 2;
@@ -1764,7 +1707,7 @@ void SuggestPanel::DrawShadow()
     const float top = margin + static_cast<float>(TopTailPad());
     const float width = static_cast<float>(bodyWidth_);
     const float height = static_cast<float>(bodyHeight_);
-    const float radius = BodyRadius(kind_ == Kind::Capsule, m, height);
+    const float radius = BodyRadius(m, height);
     const float tipX = TailTipX(margin, margin + width, radius);
     // ID2D1DCRenderTarget ではブラーのエフェクトが使えないため、少しずつ広げた角丸矩形を外側から
     // 重ねて近似する。全部が重なるパネルの縁で最大不透明度になるよう、1枚の不透明度を決める
@@ -2207,7 +2150,7 @@ bool SuggestPanel::WindowRect(RECT* rect) const
 
 void SuggestPanel::SetSelection(size_t selection)
 {
-    if (kind_ != Kind::Panel || conversion_ || pageStarts_.empty()) {
+    if (conversion_ || pageStarts_.empty()) {
         selection_ = selection;
         if (hwnd_ != nullptr) {
             Render(L"SetSelection", nullptr);
@@ -2288,7 +2231,6 @@ void SuggestPanel::Hide()
     page_ = 0;
     hasInput_ = false;
     input_ = InputLine{};
-    capsuleText_.clear();
     tail_ = TailSide::None;
 }
 

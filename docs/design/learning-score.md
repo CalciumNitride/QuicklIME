@@ -111,7 +111,8 @@ q\t<文脈>\t<読み>\t<表記>\t<d>\t<t>
   - learning.tsv の各行は 1 回の確定として A の 1・2・4 を行う (句の種類は `seg`)
   - learning_context.tsv の各行は、文脈の句の学習だけを 1 回数える。語の学習と句の学習は数えない
     (今の LEARN2 は同じ確定を両方のファイルに書くので、両方で数えると二重になるため)
-- `QUICKLIME_LEARN_FILE` で learning.tsv を差し替えたときは、同じディレクトリの learning_stats.tsv を使う
+- `QUICKLIME_LEARN_FILE` で learning.tsv を `<名前>.tsv` に差し替えたときは、同じディレクトリの
+  `<名前>_stats.tsv` を使う (古いファイルも `<名前>.tsv`・`<名前>_context.tsv` から取り込む)
 
 ### F. FORGET
 

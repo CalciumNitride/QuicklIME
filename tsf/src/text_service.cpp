@@ -2863,8 +2863,6 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
                                                        : SuggestPanel::Position::Caret;
     placement.caret = caret;
     placement.x = barX_;
-    // 未完成のローマ字は composition か入力行に含めて出すので、キャレットの下に避ける場所は無い
-    placement.belowCapsule = false;
     ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
@@ -3693,7 +3691,6 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
                                                        : SuggestPanel::Position::Caret;
     placement.caret = &anchor;
     placement.x = anchor.left;
-    placement.belowCapsule = false;
     ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = ConversionInputLine(&input);

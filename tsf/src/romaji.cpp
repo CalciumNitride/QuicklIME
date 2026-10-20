@@ -383,7 +383,7 @@ void RomajiComposer::Convert()
         }
 
         // テーブルに無い c + 母音 (既定のテーブル) は、ルール1 で判定する前に、英単語の頭として
-        // 辞書と照合できる長さになるまで小窓に保留する。すぐ判定すると「ca」の2文字では英単語の
+        // 辞書と照合できる長さになるまで未完成のローマ字のまま保留する。すぐ判定すると「ca」の2文字では英単語の
         // 始まりを決められず、run 全体を英字にしてしまうため
         if (modeless_ && !asciiMode_ && pending_.size() >= 2 && pending_[0] == L'c' &&
             IsVowel(pending_[1]) && pending_.size() < kHoldChars) {

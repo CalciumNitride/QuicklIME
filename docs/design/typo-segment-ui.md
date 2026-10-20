@@ -25,6 +25,8 @@
   2 状態の Viterbi。typo-conversion.md の A・B) を作り、通常の最良経路と補正の最良経路を求める
 - Δ・しきい値 (`TYPO_COST`・`TYPO_SHOW`・`TYPO_TOP`) と、補正を作らない条件 (設定 `typo_correction` 0、
   かなが 3 文字未満、先頭のかな) は CONVNBEST と同じ
+- CONVNBEST の補正は後に打鍵と誤りの種類ごとのコストで作る方式 ([unified-suggest.md](unified-suggest.md) の D)
+  に変わったが、文節 UI は上の方式 (かなを戻した近似・補正の語は 1 つ・`TYPO_COST` 4000) のまま
 - 補正の語を足しても通常の最良経路は変わらないので、補正の候補が無いときの結果は今と同じ
 
 ### B. 文節の区切り

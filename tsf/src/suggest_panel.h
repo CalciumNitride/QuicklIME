@@ -70,8 +70,6 @@ public:
         // 位置の基準 (スクリーン座標)。null は取れなかったことを表す (Center のみで許す)
         const RECT* caret = nullptr;
         int x = 0;  // Caret のときのパネルの左端
-        // Caret のとき、未完成ローマ字のカプセル (キャレットに重ねて出す) の下端より下に出す
-        bool belowCapsule = true;
         // キャレットの印 (docs/design/caret-marker.md) の先端の x (文書のキャレットの矩形の左端。
         // スクリーン座標)。pointer のときだけ使う
         int markerX = 0;
@@ -105,9 +103,6 @@ public:
     // 候補一覧を出したときは 1 ページの件数 (数字キーの対応付けに使う) を、出さなかったときは 0 を返す
     size_t ShowConversion(const Placement& placement, const std::vector<std::wstring>& candidates,
                           const std::vector<bool>& typo, size_t selection, const InputLine* input);
-
-    // 未完成ローマ字のカプセル。caret (スクリーン座標) の左上に重ねて出す
-    bool ShowCapsule(const RECT& caret, const std::wstring& text);
 
     // 表示中のパネルの矩形 (影を除く。スクリーン座標)。非表示なら false
     bool WindowRect(RECT* rect) const;
@@ -153,18 +148,13 @@ public:
     // 下にある) か (docs/design/panel-above-caret.md)。表示していなければ false
     bool Reversed() const
     {
-        return hwnd_ != nullptr && kind_ == Kind::Panel && columnSide_ == ColumnSide::Above;
+        return hwnd_ != nullptr && columnSide_ == ColumnSide::Above;
     }
 
     // ウィンドウクラス登録から参照するため public にしている
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam);
 
 private:
-    enum class Kind {
-        Panel,    // Show
-        Capsule,  // ShowCapsule
-    };
-
     // 吹き出しの尻尾を付ける辺
     enum class TailSide {
         None,
@@ -255,7 +245,7 @@ private:
     // target_ と hwndTarget_ は同時には持たず、brush_ は今ある方で作ったもの
     ID2D1SolidColorBrush* brush_;
     ID2D1StrokeStyle* dotStroke_;  // 未完成ローマ字の点線の下線
-    IDWriteTextFormat* textFormat_;    // 候補文字列・カプセル (f。収まらなければ末尾を「…」で切る)
+    IDWriteTextFormat* textFormat_;    // 候補文字列 (f。収まらなければ末尾を「…」で切る)
     IDWriteTextFormat* boldFormat_;    // selection text の選択中の候補文字列
     IDWriteTextFormat* inputFormat_;   // 入力行
     IDWriteTextFormat* badgeFormat_;   // 候補番号 (中央揃え)
@@ -269,7 +259,6 @@ private:
     bool blurActive_;    // 今のウィンドウがぼかしの方式
 
     // 今のレイアウト (座標は影を除いたパネルの左上を原点とする px)
-    Kind kind_;
     bool conversion_;  // 変換の候補一覧 (ShowConversion) を出している
     std::vector<Item> items_;
     std::vector<std::wstring> itemTexts_;  // 表示する候補文字列
@@ -301,7 +290,6 @@ private:
     ColumnSide columnSide_;  // 縦の候補パネルを出す側 (Show・ShowConversion の時点で決めたもの)
     bool hasInput_;
     InputLine input_;
-    std::wstring capsuleText_;
     int bodyX_;       // パネル (影を除く) の左上 (スクリーン座標)
     int bodyY_;
     int bodyWidth_;

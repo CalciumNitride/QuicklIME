@@ -303,7 +303,7 @@ std::string EngineClient::BuildSegmentsRequest(const std::wstring& kana,
 bool EngineClient::TransactWithFallback(const std::string& request, const std::string& fallback,
                                         bool live, std::string* response)
 {
-    // ライブ変換・予測は毎打鍵で呼ばれるため、エンジンの起動を待たない
+    // 候補バー・英字判定は毎打鍵で呼ばれるため、エンジンの起動を待たない
     if (live && !OpenPipeLive()) {
         return false;
     }
@@ -362,17 +362,6 @@ bool EngineClient::ConvertSegmentsFixed(const std::wstring& kana,
     return RequestSegments(BuildSegmentsRequest(kana, context, lengthsField),
                            "CONVSEG\t" + WideToUtf8(kana) + "\t" + lengthsField + "\n", false,
                            segments);
-}
-
-bool EngineClient::ConvertSegmentsLive(const std::wstring& kana,
-                                       const ConversionContext& context,
-                                       std::vector<ConversionSegment>* segments)
-{
-    if (segments == nullptr || kana.empty()) {
-        return false;
-    }
-    return RequestSegments(BuildSegmentsRequest(kana, context, ""),
-                           "CONVSEG\t" + WideToUtf8(kana) + "\n", true, segments);
 }
 
 bool EngineClient::RequestSegments(const std::string& request, const std::string& fallback,

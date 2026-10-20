@@ -6,7 +6,7 @@ Windows 用の自作日本語IME。通常のローマ字入力をベースに、
 
 | ディレクトリ | 内容 |
 |---|---|
-| `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL)。フェーズ1で作成 |
+| `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL) |
 | `engine/` | 変換エンジン (Rust / 常駐別プロセス) |
 | `llm/` | LLM による候補の並べ替えの子プロセス (Rust / llama.cpp。エンジンが起動する) |
 | `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
@@ -196,7 +196,7 @@ copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
 - 変換キー: run 中は変換開始 (run が無いときは下記「後置再変換」)。候補選択中は次候補
   (Shift+変換キー で前候補)。
   候補は入力中のかな全体を1単位にした変換結果 (区切りの違う「今日は医者に行った」
-  「今日歯医者に行った」などが並ぶ) で、縦の候補ウィンドウから1つ選ぶ。英字を含む入力は
+  「今日歯医者に行った」などが並ぶ) で、縦の候補一覧から1つ選ぶ。英字を含む入力は
   全体を1語として変換する (打鍵したローマ字の apple / Apple / APPLE も選べる。固有名詞・
   技術用語は大文字小文字を直した表記が先頭に入り、github / ぎてゅb から GitHub を選べる)。
   数字で打った数は打ったとおりの表記が先頭で、その後ろに漢数字・桁区切り・万の単位まじり・
@@ -460,7 +460,8 @@ copy data\romaji-azik.tsv $env:APPDATA\QuicklIME\romaji.tsv
   読めると判定されていない文書は IME が入れた文字列を覚えて使う。Enter・キャレット移動・フォーカス移動などで
   捨てる)。文脈はメモリ上だけで使い、ログやファイルには書かない
 - 並べ替えるのは変換結果の上位 10 件。読み全体を学習した表記・学習で表記が変わった変換結果・
-  ユーザ辞書の語を含む候補・英字を含む候補は位置を動かさない
+  ユーザ辞書の語を含む候補・英字を含む候補・数字の書き方の候補・打ち間違いを直した補正の候補は
+  位置を動かさない
 - `llm_backend` (設定ツールの「AI の実行環境」) で、`cpu` (既定。zenz-v3.2-xsmall) か
   `vulkan` (GPU。zenz-v3.2-small) を選ぶ。Vulkan 版が動かない環境では CPU 版で動く
 - 推論はエンジンが起動する別プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) で行う。
@@ -730,8 +731,8 @@ Backspace で英字区間を全部消せば解除され、日本語区間の末�
   `github` は `GitHub` が先頭)
 - 記号は半角、Enter はアプリへ渡して run 終了
 
-`modeless` が OFF のときは、Shift+英字で入った英字モードも従来どおり (Space は
-設定 `space` の幅のスペース)。区間分割の扱い (Backspace での解除・候補バー・採用・確定キー) も
+`modeless` が OFF のときは、Shift+英字で入った英字モードの Space は
+設定 `space` の幅のスペースになる。区間分割の扱い (Backspace での解除・候補バー・採用・確定キー) も
 しない。
 
 `modeless` が ON のとき、run が無いときの Space は、直前に確定した
