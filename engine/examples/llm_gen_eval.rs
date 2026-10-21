@@ -21,6 +21,8 @@
 //   --methods a,b  測る方式 (rerank,a-greedy,a-beam,c。既定は全部)。合わせた並びの土台になるので、
 //                  並べ替えは指定によらず常に行う
 //   --no-cases     件ごとの表を出さない
+//   --rerank-eos E 並べ替えの尤度の終わりの項 (2: 語彙の EOS、3: </s> = 製品と同じ、none: 足さない。既定 3)
+//   --rerank-min-chars N  並べ替える読みの最小文字数 (既定は製品の RERANK_MIN_CHARS。0 で全件)
 //
 // 辞書はエンジンと同じ規則で探す (QUICKLIME_DICT_DIR、無ければ開発レイアウトの Mozc 辞書)。
 // 学習・ユーザ辞書は空、前文脈 (統計変換の直前文節) は無し
@@ -114,6 +116,26 @@ enum Backend {
     Vulkan,
 }
 
+/// 並べ替えの尤度で、候補のトークンの後ろに足す終わりの項
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RerankEos {
+    /// 語彙の EOS (zenz では ID 2 の <s>)
+    VocabEos,
+    /// zenz が出力の終わりに出す </s>。製品と同じ
+    CloseTag,
+    None,
+}
+
+impl RerankEos {
+    fn label(self) -> &'static str {
+        match self {
+            RerankEos::VocabEos => "2",
+            RerankEos::CloseTag => "3",
+            RerankEos::None => "none",
+        }
+    }
+}
+
 struct Args {
     model: PathBuf,
     backend: Backend,
@@ -124,6 +146,8 @@ struct Args {
     beam: bool,
     c: bool,
     no_cases: bool,
+    rerank_eos: RerankEos,
+    rerank_min_chars: usize,
 }
 
 fn parse_args() -> BoxResult<Args> {
@@ -134,6 +158,8 @@ fn parse_args() -> BoxResult<Args> {
     let mut limit = 10;
     let mut methods = vec!["rerank".to_string(), "a-greedy".to_string(), "a-beam".to_string(), "c".to_string()];
     let mut no_cases = false;
+    let mut rerank_eos = RerankEos::CloseTag;
+    let mut rerank_min_chars = llm::RERANK_MIN_CHARS;
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{arg} に値がありません"));
@@ -151,6 +177,15 @@ fn parse_args() -> BoxResult<Args> {
             "--limit" => limit = value()?.parse()?,
             "--methods" => methods = value()?.split(',').map(str::to_string).collect(),
             "--no-cases" => no_cases = true,
+            "--rerank-eos" => {
+                rerank_eos = match value()?.as_str() {
+                    "2" => RerankEos::VocabEos,
+                    "3" => RerankEos::CloseTag,
+                    "none" => RerankEos::None,
+                    other => return Err(format!("未対応の --rerank-eos: {other}").into()),
+                }
+            }
+            "--rerank-min-chars" => rerank_min_chars = value()?.parse()?,
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
@@ -173,6 +208,8 @@ fn parse_args() -> BoxResult<Args> {
         beam: has("a-beam"),
         c: has("c"),
         no_cases,
+        rerank_eos,
+        rerank_min_chars,
     })
 }
 
@@ -364,6 +401,8 @@ struct Llm<'a> {
     ctx: LlamaContext<'a>,
     batch: LlamaBatch<'static>,
     n_ctx: u32,
+    /// 並べ替えの尤度の終わりの項に使うトークン (None は足さない)
+    rerank_end: Option<LlamaToken>,
 }
 
 impl<'a> Llm<'a> {
@@ -377,7 +416,7 @@ impl<'a> Llm<'a> {
             .with_n_threads(threads)
             .with_n_threads_batch(threads);
         let ctx = model.new_context(backend, params)?;
-        Ok(Self { model, ctx, batch: LlamaBatch::new(n_ctx as usize, N_SEQ_MAX as i32), n_ctx })
+        Ok(Self { model, ctx, batch: LlamaBatch::new(n_ctx as usize, N_SEQ_MAX as i32), n_ctx, rerank_end: None })
     }
 
     fn tokenize_prompt(&self, prompt: &str) -> Vec<LlamaToken> {
@@ -409,25 +448,43 @@ impl<'a> Llm<'a> {
         Ok(self.ctx.get_logits_ith(last as i32).to_vec())
     }
 
+    /// 並べ替えの尤度の終わりの項のトークン。</s> は語彙の EOS (<s>) とは別の EOG トークンで、
+    /// llama.cpp の API に特殊トークンとして引く手段が無いため、語彙の文字列から引く
+    fn resolve_rerank_end(&self, eos: RerankEos) -> BoxResult<Option<LlamaToken>> {
+        let vocab = self.model.vocab();
+        Ok(match eos {
+            RerankEos::VocabEos => Some(vocab.eos()),
+            RerankEos::CloseTag => Some(
+                vocab
+                    .tokens()
+                    .find(|&t| vocab.text(t).is_some_and(|s| s.to_bytes() == b"</s>"))
+                    .ok_or("語彙に </s> がありません")?,
+            ),
+            RerankEos::None => None,
+        })
+    }
+
     /// 製品の並べ替え (quicklime-llm の Scorer::score) と同じ計算の、各候補の対数尤度。
+    /// 終わりの項は rerank_end (既定は製品と同じ </s>)。
     /// プロンプトと候補がコンテキストに収まらなければ None (製品では ERR になり並べ替えない)
     fn score(&mut self, left_context: &str, reading: &str, candidates: &[String]) -> BoxResult<Option<Vec<f64>>> {
         if candidates.len() + 1 > N_SEQ_MAX as usize {
             return Err("候補が多すぎます".into());
         }
         let prompt = self.tokenize_prompt(&build_prompt(left_context, reading));
-        let eos = self.model.vocab().eos();
+        let end = self.rerank_end;
         let cand_tokens: Vec<Vec<LlamaToken>> = candidates
             .iter()
             .map(|c| {
                 let mut t = self.tokenize_text(c);
-                t.push(eos);
+                t.extend(end);
                 t
             })
             .collect();
         let p = prompt.len();
-        let batch_tokens: usize = cand_tokens.iter().map(|t| t.len() - 1).sum();
-        if p == 0 || p + batch_tokens > self.n_ctx as usize {
+        // 収まるかは終わりの項によらず製品と同じ (候補のトークン数) で判定し、並べ替える件を条件間でそろえる
+        let text_tokens: usize = cand_tokens.iter().map(|t| t.len() - usize::from(end.is_some())).sum();
+        if p == 0 || p + text_tokens > self.n_ctx as usize {
             return Ok(None);
         }
         let prompt_logits = self.decode_prompt(&prompt)?;
@@ -952,6 +1009,7 @@ fn main() -> BoxResult<()> {
     model_params.as_mut().append_kv_override(c"tokenizer.ggml.pre", ParamOverrideValue::Str(pre));
     let model = LlamaModel::load_from_file(&backend, &args.model, &model_params)?;
     let mut rr = Llm::new(&model, &backend, args.threads, RERANK_N_CTX)?;
+    rr.rerank_end = rr.resolve_rerank_end(args.rerank_eos)?;
     let mut gen_llm = Llm::new(&model, &backend, args.threads, GEN_N_CTX)?;
 
     println!("## 条件\n");
@@ -972,6 +1030,12 @@ fn main() -> BoxResult<()> {
         if args.c { "・C" } else { "" },
         args.limit
     );
+    println!(
+        "- 並べ替えの終わりの項 (--rerank-eos): {}{}",
+        args.rerank_eos.label(),
+        rr.rerank_end.map_or(String::new(), |t| format!(" (トークン ID {})", t.0))
+    );
+    println!("- 並べ替える読みの最小文字数 (--rerank-min-chars): {}", args.rerank_min_chars);
 
     // 空の制約つきの Viterbi が統計変換の最良経路と同じか (C の最初のドラフトの前提) を全件で確かめる
     let mismatches: Vec<&str> = cases
@@ -1019,7 +1083,7 @@ fn main() -> BoxResult<()> {
         print_cases(&cases, &rows, &methods);
     }
     print_accuracy(&cases, &rows, &methods);
-    print_speed(&rows, &methods);
+    print_speed(&rows, &methods, args.rerank_min_chars);
     if args.c {
         print_c(&rows);
     }
@@ -1043,7 +1107,7 @@ fn run_case(args: &Args, case: &Case, conv: &Converter, rr: &mut Llm, gen_llm: &
     let before: Vec<String> = candidates.iter().map(SentenceCandidate::surface).collect();
     let mut rerank_ms = None;
     let mut none = false;
-    let reranked = if chars < llm::RERANK_MIN_CHARS {
+    let reranked = if chars < args.rerank_min_chars {
         candidates
     } else {
         let targets = llm::rerank_targets(&candidates);
@@ -1261,11 +1325,11 @@ fn print_accuracy(cases: &[Case], rows: &[Row], methods: &[Method]) {
     }
 }
 
-fn print_speed(rows: &[Row], methods: &[Method]) {
+fn print_speed(rows: &[Row], methods: &[Method], min_chars: usize) {
     println!("\n## 速さ (ms、件ごとに 1 回)\n");
     println!(
         "並べ替えは読みが {} 文字以上の件だけ。合計は並べ替えと生成・照合の和 (並べ替えない件は生成・照合だけ)\n",
-        llm::RERANK_MIN_CHARS
+        min_chars
     );
     println!("| 方式 | 並べ替え 中央値 | p95 | 最大 | 生成・照合 中央値 | p95 | 最大 | 合計 中央値 | p95 | 最大 |");
     println!("|---|---|---|---|---|---|---|---|---|---|");

@@ -137,10 +137,22 @@ fn log_prob(logits: &[f32], token: LlamaToken) -> f64 {
     logits[token.0 as usize] as f64 - max - sum.ln()
 }
 
+/// 候補の尤度の終わりの項に使うトークン。zenz が出力の終わりに出すのは </s> で、語彙の EOS
+/// (zenz では <s>) の確率は文の終わりを表さず、送り仮名を落とした形や語の途中で切れた候補を上げてしまう。
+/// </s> は llama.cpp の API に特殊トークンとして引く手段が無いため、語彙の文字列から引く
+fn end_token(model: &LlamaModel) -> LlamaToken {
+    let vocab = model.vocab();
+    vocab
+        .tokens()
+        .find(|&t| vocab.text(t).is_some_and(|s| s.to_bytes() == b"</s>"))
+        .unwrap_or_else(|| vocab.eos())
+}
+
 struct Scorer<'a> {
     model: &'a LlamaModel,
     ctx: LlamaContext<'a>,
     batch: LlamaBatch<'static>,
+    end: LlamaToken,
 }
 
 impl<'a> Scorer<'a> {
@@ -154,10 +166,10 @@ impl<'a> Scorer<'a> {
             .with_n_threads(threads)
             .with_n_threads_batch(threads);
         let ctx = model.new_context(backend, params)?;
-        Ok(Self { model, ctx, batch: LlamaBatch::new(N_CTX as usize, N_SEQ_MAX as i32) })
+        Ok(Self { model, ctx, batch: LlamaBatch::new(N_CTX as usize, N_SEQ_MAX as i32), end: end_token(model) })
     }
 
-    /// score が KV キャッシュに置くトークン数 (プロンプト + 各候補の EOS を除くトークン)
+    /// score が KV キャッシュに置くトークン数 (プロンプト + 各候補の end を除くトークン)
     fn kv_tokens(&self, left_context: &str, reading: &str, candidates: &[&str]) -> usize {
         let vocab = self.model.vocab();
         let prompt = vocab.tokenize(build_prompt(left_context, reading).as_bytes(), true, false).len();
@@ -184,7 +196,7 @@ impl<'a> Scorer<'a> {
         (reading, best)
     }
 
-    /// 各候補の対数尤度 (候補の全トークン + 出力終端の EOS) を返す。プロンプトを1回だけ評価し、
+    /// 各候補の対数尤度 (候補の全トークン + 出力終端の end) を返す。プロンプトを1回だけ評価し、
     /// そのキャッシュを候補数分のシーケンスへ複製して、全候補を1回の decode で評価する
     fn score(&mut self, left_context: &str, reading: &str, candidates: &[&str]) -> BoxResult<Vec<f64>> {
         if candidates.len() + 1 > N_SEQ_MAX as usize {
@@ -192,17 +204,17 @@ impl<'a> Scorer<'a> {
         }
         // azooKey と同じく BOS を付け、特殊トークンの解釈はしない
         let prompt = self.model.vocab().tokenize(build_prompt(left_context, reading).as_bytes(), true, false);
-        let eos = self.model.vocab().eos();
+        let end = self.end;
         let cand_tokens: Vec<Vec<LlamaToken>> = candidates
             .iter()
             .map(|c| {
                 let mut t = self.model.vocab().tokenize(preprocess(c).as_bytes(), false, false);
-                t.push(eos);
+                t.push(end);
                 t
             })
             .collect();
         let p = prompt.len();
-        // 最後の EOS の次の予測は不要なので、EOS 自体はバッチに入れない
+        // 最後の end の次の予測は不要なので、end 自体はバッチに入れない
         let batch_tokens: usize = cand_tokens.iter().map(|t| t.len() - 1).sum();
         // KV キャッシュはシーケンス間で共有 (kv_unified) するため、プロンプトと全候補が収まる必要がある
         if p == 0 || p + batch_tokens > N_CTX as usize {
