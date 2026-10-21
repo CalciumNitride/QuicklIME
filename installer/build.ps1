@@ -93,6 +93,9 @@ $iscc = @(
 if (-not $iscc) {
     throw 'ISCC.exe が見つかりません。winget install -e --id JRSoftware.InnoSetup で導入してください'
 }
+if (-not (Get-Command cargo-about -ErrorAction SilentlyContinue)) {
+    throw 'cargo-about が見つかりません。cargo install --locked --features cli cargo-about で導入してください'
+}
 
 # ---- 古いプロセスの停止 (release exe のロック対策) ----
 Stop-Process -Name quicklime-engine -Force -ErrorAction SilentlyContinue
@@ -193,6 +196,34 @@ Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-zenz.txt') $staging
 Copy-Item (Join-Path $root 'tsf\src\Font\LICENSE-MPLUSRounded1c.txt') $staging
+# exe に静的リンクしている Rust の crate の表示。engine の workspace と llm は別の Cargo.lock なので
+# 別々に生成して連結する。受け入れる一覧 (about.toml) に無いライセンスの crate や、--fail により
+# ライセンスを決められない crate があれば止める
+$rustNotices = ''
+foreach ($part in @(
+    @{ Dir = 'engine'; Exes = 'quicklime-engine.exe・quicklime-config.exe・quicklime-regword.exe'; Args = @('--workspace') },
+    @{ Dir = 'llm'; Exes = 'quicklime-llm.exe・quicklime-llm-vulkan.exe'; Args = @() }
+)) {
+    $partFile = Join-Path $staging "about-$($part.Dir).txt"
+    Push-Location (Join-Path $root $part.Dir)
+    try {
+        cargo about generate @($part.Args) --locked --fail `
+            -c (Join-Path $PSScriptRoot 'about.toml') -o $partFile (Join-Path $PSScriptRoot 'about.hbs')
+        if ($LASTEXITCODE -ne 0) { throw "cargo about generate に失敗しました ($($part.Dir))" }
+    } finally {
+        Pop-Location
+    }
+    $rule = '=' * 80
+    $rustNotices += "$rule`n$($part.Exes)`n$rule`n`n"
+    $rustNotices += [IO.File]::ReadAllText($partFile)
+    Remove-Item $partFile
+}
+# Slint の全文は about.toml の clarify で入れるが、checksum が合わないなどで使われなくても
+# cargo-about は警告だけで成功するので、全文が入ったことをここで確かめる
+if (-not $rustNotices.Contains('# Slint Royalty-free Desktop, Mobile, and Web Applications License')) {
+    throw 'LICENSE-rust-crates.txt に Slint の royalty-free の全文がありません (installer\about.toml の clarify を確かめてください)'
+}
+[IO.File]::WriteAllText("$staging\LICENSE-rust-crates.txt", $rustNotices, [Text.UTF8Encoding]::new($false))
 
 $size = (Get-ChildItem -Recurse $staging | Measure-Object -Property Length -Sum).Sum / 1MB
 Write-Host ("staging 合計: {0:N1} MB" -f $size)

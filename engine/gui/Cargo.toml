@@ -3,6 +3,7 @@ name = "quicklime-gui"
 version = "1.0.0"
 edition = "2024"
 license = "MIT"
+publish = false
 
 [dependencies]
 # unstable-winit-030: キーの取り込みで HWND をサブクラス化するため、winit のウィンドウから HWND を取る

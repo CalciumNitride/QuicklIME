@@ -3,6 +3,7 @@ name = "quicklime-engine"
 version = "1.0.0"
 edition = "2024"
 license = "MIT"
+publish = false
 
 # 設定ツール・単語登録ツールの画面 (gui) を別 crate にし、エンジン本体の依存に Slint を入れない。
 # target を engine/target/ のまま共有するので、exe の置き場所は変わらない

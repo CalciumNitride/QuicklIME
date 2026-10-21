@@ -134,6 +134,11 @@
 - [candidate-position-fallback.md](candidate-position-fallback.md): 入力位置がウィンドウの外を指すアプリ
   (マビノギなど) で、候補ウィンドウ類をウィンドウ中央に出し、モニタの作業領域に収める
 
+## 配布
+
+- [third-party-notices.md](third-party-notices.md): 配る exe に静的リンクしている Rust の crate の著作権表示と
+  許諾文を、インストーラのビルド時に cargo-about で `LICENSE-rust-crates.txt` に生成して同梱する
+
 ## 実験
 
 - [experiment-0b-llm.md](experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様

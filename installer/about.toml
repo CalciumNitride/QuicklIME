@@ -1,0 +1,159 @@
+# cargo-about の設定。installer\build.ps1 が LICENSE-rust-crates.txt の生成に使う
+#
+# 並びは選ぶ優先順で、複数のライセンスから選べる crate は先にあるものが選ばれる。
+# 一覧に無いライセンスだけの crate が依存に入ったら生成を失敗させる (GPL などに気づくため)。
+# Slint の crate は GPL-3.0-only との選択なので、GPL-3.0 は入れず royalty-free を選ばせる
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+    "BSL-1.0",
+    "ISC",
+    "0BSD",
+    "LicenseRef-Slint-Royalty-free-2.0",
+]
+targets = ["x86_64-pc-windows-msvc"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+private = { ignore = true }
+
+# Slint の crate は royalty-free の全文を LICENSES\ の下に置いていて、cargo-about が自動では見つけられないので
+# clarify で指定する。cargo-about 0.9.2 は LicenseRef-* の全文を拾う条件が逆になっていて、ファイルのライセンスを
+# LicenseRef-Slint-Royalty-free-2.0 にすると拾わず、それ以外にすると拾う。直った版でも全文が入るよう、同じファイルを
+# 両方のライセンスで指定する (どちらの版でも片方だけが拾われ、全文は 1 つだけ出る)。
+# checksum が合わないとき (Slint を更新して文面が変わったとき) は警告が出るだけで clarify が使われず全文が抜けるので、
+# Slint を更新したら文面を確かめて checksum を更新する
+
+[i-slint-backend-selector.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-backend-selector.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-backend-selector.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-backend-winit.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-backend-winit.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-backend-winit.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-common.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-common.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-common.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-compiler.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-compiler.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-compiler.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-core.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-core.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-core.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-core-macros.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-core-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-core-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-renderer-femtovg.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-renderer-femtovg.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-renderer-femtovg.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[i-slint-renderer-software.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[i-slint-renderer-software.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[i-slint-renderer-software.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[slint.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[slint.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[slint.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[slint-macros.clarify]
+license = "GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0"
+
+[[slint-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"
+
+[[slint-macros.clarify.files]]
+path = "LICENSES/LicenseRef-Slint-Royalty-free-2.0.md"
+license = "LicenseRef-Slint-Royalty-free-2.0-text"
+checksum = "5167f5056e850419106ab6265efbdca7cba4d99c849d1445ca0bbf6a1e2315fe"

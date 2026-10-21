@@ -113,6 +113,7 @@ QuicklIME 本体のソースコードは MIT License です (`LICENSE`。イン�
 - LLM 推論プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) およびモデル (`models\` 配下の zenz-v3.2-xsmall / zenz-v3.2-small) を同梱しています。ライセンス文書として `LICENSE-llama.cpp.txt` (MIT) および `LICENSE-zenz.txt` (Apache License 2.0) を同梱しています。
 - タスクバーの入力モードアイコンは、M PLUS Rounded 1c Regular (SIL Open Font License 1.1) をサブセット化して DLL のリソースに埋め込んで描画しています。著作権表示と許諾文 `LICENSE-MPLUSRounded1c.txt` を同梱しています。
 - 設定ツール (quicklime-config.exe) と単語登録ツール (quicklime-regword.exe) の画面は、GUI ツールキット Slint (https://slint.dev/) を royalty-free ライセンスで使用しています。帰属表示は設定ツールの「QuicklIME について」ページに表示しています。
+- エンジン (quicklime-engine.exe)・設定ツール (quicklime-config.exe)・単語登録ツール (quicklime-regword.exe)・LLM 推論プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) は、Rust の crate (MIT・Apache-2.0・BSD・Unicode-3.0 など) を静的リンクしています。それらの著作権表示と許諾文をまとめた `LICENSE-rust-crates.txt` を同梱しています。
 
 同梱データの取得・生成手順については [docs/development.md](docs/development.md) を参照してください。
 

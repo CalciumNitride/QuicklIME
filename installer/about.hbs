@@ -1,0 +1,22 @@
+{{!-- cargo-about のテンプレート。installer\build.ps1 が engine と llm の 2 回生成して
+      LICENSE-rust-crates.txt に連結する。テキストで出すので、HTML エスケープされない {{{ }}} で値を埋める --}}
+QuicklIME の exe に静的リンクしている Rust の crate の著作権表示と許諾文です。
+ライセンスごとに、そのライセンスを使う crate の名前と版の一覧と、許諾文の全文を並べます。
+
+ライセンスの一覧:
+{{#each overview}}
+- {{{name}}}
+{{/each}}
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{{name}}}
+
+使用している crate:
+{{#each used_by}}
+  {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

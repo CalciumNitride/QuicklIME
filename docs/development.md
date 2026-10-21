@@ -90,7 +90,9 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 (前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書と
 単漢字辞書 (`git -C references/mozc sparse-checkout add src/data/single_kanji` で取得)、
 `scripts\fetch-ut-dict.ps1` で生成した UT 辞書 (`references\mozcdic-ut\dictionary_ut.txt`)、
-`scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル)。
+`scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル、
+Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成する cargo-about =
+`cargo install --locked --features cli cargo-about`)。
 
 同梱物とそのライセンスは [README.md](../README.md) の「同梱物とライセンス」にある。
 
