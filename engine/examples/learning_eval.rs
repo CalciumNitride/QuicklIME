@@ -22,6 +22,8 @@
 // 学習表記)・分けられない・自立語が同じ・区切り・同音 (違う語の今の度合いが正解の方が大きい / どちらも学習あり /
 // 正解に学習なし)・その他 (1 位を分けられない)。固定の得失を見るため、1 位が読み全体の学習表記だった行は、
 // その表記と経路の 1-best の表記のどちらが正解かでも数える。
+// 辞書に無い語がどんな語かを見るため、分けられない行は正解の表記の文字の種類 (カタカナだけ・英字を含む・
+// 漢字を含む・その他) でも数え、カタカナだけの行のうち正解が読み全体のカタカナの行は正解の順位の中央値も出す。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -411,6 +413,90 @@ struct ClassTally {
     counts: HashMap<MissClass, [usize; 3]>,
 }
 
+/// 正解の表記の文字の種類 (表の行の順。上から順に最初に当てはまるもの)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum CharClass {
+    Katakana,
+    Latin,
+    Kanji,
+    Other,
+}
+
+impl CharClass {
+    const ALL: [CharClass; 4] = [CharClass::Katakana, CharClass::Latin, CharClass::Kanji, CharClass::Other];
+
+    fn label(self) -> &'static str {
+        match self {
+            CharClass::Katakana => "カタカナだけ",
+            CharClass::Latin => "英字を含む",
+            CharClass::Kanji => "漢字を含む",
+            CharClass::Other => "その他",
+        }
+    }
+}
+
+fn char_class(surface: &str) -> CharClass {
+    if !surface.is_empty() && surface.chars().all(|c| ('\u{30A0}'..='\u{30FF}').contains(&c)) {
+        return CharClass::Katakana;
+    }
+    if surface.chars().any(|c| c.is_ascii_alphabetic() || ('Ａ'..='Ｚ').contains(&c) || ('ａ'..='ｚ').contains(&c)) {
+        return CharClass::Latin;
+    }
+    if surface.chars().any(|c| c == '々' || ('\u{3400}'..='\u{4DBF}').contains(&c) || ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
+        return CharClass::Kanji;
+    }
+    CharClass::Other
+}
+
+/// 「分けられない」の行の文字の種類ごとの [行, 3 位以内, 候補にある]
+#[derive(Default)]
+struct UnsplitTally {
+    counts: [[usize; 3]; 4],
+    /// カタカナだけで、正解が読み全体のカタカナの行の正解の順位 (1 始まり。候補に無い行は除く)
+    whole_ranks: Vec<usize>,
+    whole_rows: usize,
+}
+
+impl UnsplitTally {
+    fn add(&mut self, reading: &str, surface: &str, rank: Option<usize>) {
+        let class = char_class(surface);
+        let slot = &mut self.counts[CharClass::ALL.iter().position(|&c| c == class).expect("区分")];
+        slot[0] += 1;
+        slot[1] += usize::from(rank.is_some_and(|r| r < 3));
+        slot[2] += usize::from(rank.is_some());
+        if class == CharClass::Katakana && convert::to_katakana(reading) == surface {
+            self.whole_rows += 1;
+            self.whole_ranks.extend(rank.map(|r| r + 1));
+        }
+    }
+
+    /// 分類の表の後に足す内訳。unsplit は「分けられない」の行の数
+    fn render(&mut self, unsplit: usize) -> String {
+        let sum = |i: usize| self.counts.iter().map(|c| c[i]).sum::<usize>();
+        assert_eq!(sum(0), unsplit, "文字の種類の合計が「分けられない」の行の数と一致しない");
+        let mut out = String::from(
+            "\n「分けられない」の内訳 (正解の表記の文字の種類)。\n\n| 区分 | 行 | 3 位以内 | 候補にある |\n|---|---|---|---|\n",
+        );
+        for (class, [n, top3, any]) in CharClass::ALL.iter().zip(self.counts) {
+            out.push_str(&format!("| {} | {n} | {top3} | {any} |\n", class.label()));
+        }
+        out.push_str(&format!("| 合計 | {} | {} | {} |\n", sum(0), sum(1), sum(2)));
+        self.whole_ranks.sort_unstable();
+        let ranks = &self.whole_ranks;
+        let median = match ranks.len() {
+            0 => "-".to_string(),
+            n if n % 2 == 1 => ranks[n / 2].to_string(),
+            n => format!("{}", (ranks[n / 2 - 1] + ranks[n / 2]) as f64 / 2.0),
+        };
+        out.push_str(&format!(
+            "\n- カタカナだけのうち正解が読み全体のカタカナ: {} 行 (正解の順位の中央値 {median}。候補にある {} 行の中央値)",
+            self.whole_rows,
+            ranks.len(),
+        ));
+        out
+    }
+}
+
 fn percent(n: usize, total: usize) -> String {
     format!("{:.1}%", 100.0 * n as f64 / total.max(1) as f64)
 }
@@ -489,6 +575,7 @@ fn main() -> BoxResult<()> {
     let mut empty_times: Vec<f64> = Vec::new();
     let mut empty_top: HashMap<(&str, &str), bool> = HashMap::new();
     let mut empty_classes = ClassTally::default();
+    let mut empty_unsplit = UnsplitTally::default();
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase) {
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
@@ -511,6 +598,9 @@ fn main() -> BoxResult<()> {
             let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
                 empty.word_degree(r, s).unwrap_or(0.0)
             });
+            if class == MissClass::Unsplit {
+                empty_unsplit.add(&e.reading, &e.surface, rank);
+            }
             let slot = empty_classes.counts.entry(class).or_default();
             slot[0] += 1;
             slot[1] += usize::from(rank.is_some_and(|r| r < 3));
@@ -580,6 +670,8 @@ fn main() -> BoxResult<()> {
     }
     let empty_sum = |i: usize| empty_classes.counts.values().map(|c| c[i]).sum::<usize>();
     println!("| 合計 | {} | {} |", empty_sum(0), empty_sum(1));
+    let empty_unsplit_rows = empty_classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
+    println!("{}", empty_unsplit.render(empty_unsplit_rows));
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
     println!("変換 1/3 = p の行の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
@@ -619,6 +711,7 @@ fn main() -> BoxResult<()> {
         let mut misses = Misses::default();
         let mut classes = ClassTally::default();
         let mut pins = PinTally::default();
+        let mut unsplit = UnsplitTally::default();
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
@@ -666,6 +759,9 @@ fn main() -> BoxResult<()> {
                     let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
                         store.word_degree(r, s).unwrap_or(0.0)
                     });
+                    if class == MissClass::Unsplit {
+                        unsplit.add(&row.reading, &row.surface, rank);
+                    }
                     let ctx_learned = contexts_of
                         .get(&(row.reading.as_str(), row.surface.as_str()))
                         .is_some_and(|cs| {
@@ -751,7 +847,9 @@ fn main() -> BoxResult<()> {
             table.push_str(&format!("| {} | {n} | {top3} | {ctx} |\n", class.label()));
         }
         let sum = |i: usize| classes.counts.values().map(|c| c[i]).sum::<usize>();
-        table.push_str(&format!("| 合計 | {} | {} | {} |", sum(0), sum(1), sum(2)));
+        table.push_str(&format!("| 合計 | {} | {} | {} |\n", sum(0), sum(1), sum(2)));
+        let unsplit_rows = classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
+        table.push_str(&unsplit.render(unsplit_rows));
         assert_eq!(
             pins.hit + pins.lost + pins.same[0] + pins.same[1] + pins.both_miss,
             pins.total,
@@ -854,5 +952,39 @@ mod tests {
         assert_eq!(classify(Some(&[("b", "B1")]), Some(&[("b", "B2")])), MissClass::HomophoneBoth);
         assert_eq!(classify(Some(&[("a", "A3")]), Some(&[("a", "A1")])), MissClass::HomophoneUnlearned);
         assert_eq!(classify(Some(&[("c", "C1")]), Some(&[("c", "C2")])), MissClass::HomophoneUnlearned);
+    }
+
+    #[test]
+    fn char_class_by_first_match() {
+        assert_eq!(char_class("テスト"), CharClass::Katakana);
+        assert_eq!(char_class("コーヒー・ブレイク"), CharClass::Katakana);
+        assert_eq!(char_class("テストA"), CharClass::Latin);
+        assert_eq!(char_class("ａｂｃ"), CharClass::Latin);
+        assert_eq!(char_class("Ｚ形"), CharClass::Latin);
+        assert_eq!(char_class("日本"), CharClass::Kanji);
+        assert_eq!(char_class("人々"), CharClass::Kanji);
+        assert_eq!(char_class("カタカナ漢字"), CharClass::Kanji);
+        assert_eq!(char_class("ひらがな"), CharClass::Other);
+        assert_eq!(char_class("テストです"), CharClass::Other);
+        assert_eq!(char_class("123"), CharClass::Other);
+        assert_eq!(char_class("！？"), CharClass::Other);
+    }
+
+    #[test]
+    fn unsplit_tally_counts_and_whole_katakana_median() {
+        let mut tally = UnsplitTally::default();
+        tally.add("てすと", "テスト", Some(4));
+        tally.add("こーひー", "コーヒー", Some(1));
+        tally.add("あいう", "アイウ", None);
+        tally.add("あ", "カ", Some(0));
+        tally.add("に", "日", Some(2));
+        tally.add("え", "A", None);
+        assert_eq!(tally.counts, [[4, 2, 3], [1, 0, 0], [1, 1, 1], [0, 0, 0]]);
+        assert_eq!(tally.whole_rows, 3);
+        let out = tally.render(6);
+        assert!(out.contains("| カタカナだけ | 4 | 2 | 3 |"));
+        assert!(out.contains("| 合計 | 6 | 3 | 4 |"));
+        // 候補にある 2 行の順位 2 と 5 の中央値
+        assert!(out.contains("3 行 (正解の順位の中央値 3.5。候補にある 2 行の中央値)"));
     }
 }
