@@ -7,6 +7,7 @@
 //   - A 貪欲法・A beam: zenz に読みから表記を生成させ、後処理で検査する
 //   - C: 統計変換をドラフトにして LLM の予測と照合し、ずれたら表記の接頭辞の制約を付けた Viterbi で
 //     ドラフトを作り直す (azooKey の Zenzai 方式)
+//   - A+C: A 貪欲法の出力を使い、後処理で捨てたときと読みから外れたときは C の結果に代える
 // 生成の方式の結果は、並べ替えの結果の前に置いた並び (合わせた並び) でも数える。
 //
 // 使い方:
@@ -18,8 +19,8 @@
 // オプション:
 //   --threads N    llama.cpp のスレッド数 (既定 4。製品の子プロセスと同じ上限)
 //   --limit N      C の評価の回数の上限 (既定 10)
-//   --methods a,b  測る方式 (rerank,a-greedy,a-beam,c。既定は全部)。合わせた並びの土台になるので、
-//                  並べ替えは指定によらず常に行う
+//   --methods a,b  測る方式 (rerank,a-greedy,a-beam,c,a+c。既定は全部)。合わせた並びの土台になるので、
+//                  並べ替えは指定によらず常に行う。a+c は代えるかによらず A 貪欲法と C を全件で求める
 //   --no-cases     件ごとの表を出さない
 //   --rerank-eos E 並べ替えの尤度の終わりの項 (2: 語彙の EOS、3: </s> = 製品と同じ、none: 足さない。既定 3)
 //   --rerank-min-chars N  並べ替える読みの最小文字数 (既定は製品の RERANK_MIN_CHARS。0 で全件)
@@ -145,6 +146,7 @@ struct Args {
     greedy: bool,
     beam: bool,
     c: bool,
+    ac: bool,
     no_cases: bool,
     rerank_eos: RerankEos,
     rerank_min_chars: usize,
@@ -156,7 +158,8 @@ fn parse_args() -> BoxResult<Args> {
     let mut threads = 4;
     let mut cases = None;
     let mut limit = 10;
-    let mut methods = vec!["rerank".to_string(), "a-greedy".to_string(), "a-beam".to_string(), "c".to_string()];
+    let mut methods =
+        vec!["rerank".to_string(), "a-greedy".to_string(), "a-beam".to_string(), "c".to_string(), "a+c".to_string()];
     let mut no_cases = false;
     let mut rerank_eos = RerankEos::CloseTag;
     let mut rerank_min_chars = llm::RERANK_MIN_CHARS;
@@ -190,7 +193,7 @@ fn parse_args() -> BoxResult<Args> {
         }
     }
     for m in &methods {
-        if !["rerank", "a-greedy", "a-beam", "c"].contains(&m.as_str()) {
+        if !["rerank", "a-greedy", "a-beam", "c", "a+c"].contains(&m.as_str()) {
             return Err(format!("不明な方式: {m}").into());
         }
     }
@@ -207,6 +210,7 @@ fn parse_args() -> BoxResult<Args> {
         greedy: has("a-greedy"),
         beam: has("a-beam"),
         c: has("c"),
+        ac: has("a+c"),
         no_cases,
         rerank_eos,
         rerank_min_chars,
@@ -800,6 +804,11 @@ fn postprocess(generated: &Generated, case: &Case, conv: &Converter) -> Output {
     Output { text, ruby, discard, off_reading, literal_lost, echo }
 }
 
+/// A+C で、A 貪欲法の出力を C の結果に代えるか
+fn replace_with_c(greedy: &Output) -> bool {
+    greedy.discard.is_some() || greedy.off_reading
+}
+
 // ---------------------------------------------------------------------------
 // C
 
@@ -897,6 +906,7 @@ enum Method {
     Greedy,
     Beam,
     C,
+    GreedyC,
 }
 
 impl Method {
@@ -906,6 +916,7 @@ impl Method {
             Method::Greedy => "A 貪欲法",
             Method::Beam => "A beam",
             Method::C => "C",
+            Method::GreedyC => "A+C",
         }
     }
 }
@@ -919,6 +930,7 @@ impl Row {
             Method::Greedy => self.greedy.as_ref().map(|(o, _)| kept(o).into_iter().collect()),
             Method::Beam => self.beam.as_ref().map(|(os, _)| os.iter().filter_map(kept).take(BEAM_WIDTH).collect()),
             Method::C => self.c.as_ref().map(|(c, _)| vec![c.text.clone()]),
+            Method::GreedyC => self.greedy_c().map(|(text, _, _)| vec![text]),
         }
     }
 
@@ -940,7 +952,16 @@ impl Row {
             Method::Greedy => self.greedy.as_ref().map(|g| g.1),
             Method::Beam => self.beam.as_ref().map(|b| b.1),
             Method::C => self.c.as_ref().map(|c| c.1),
+            Method::GreedyC => self.greedy_c().map(|(_, _, ms)| ms),
         }
+    }
+
+    /// A+C の (出力, C に代えたか, 生成・照合の時間)。計測では A と C を全件で求めているので、
+    /// 時間は代えた件だけ C を足す
+    fn greedy_c(&self) -> Option<(String, bool, f64)> {
+        let (g, g_ms) = self.greedy.as_ref()?;
+        let (c, c_ms) = self.c.as_ref()?;
+        Some(if replace_with_c(g) { (c.text.clone(), true, g_ms + c_ms) } else { (g.text.clone(), false, *g_ms) })
     }
 }
 
@@ -1024,10 +1045,11 @@ fn main() -> BoxResult<()> {
     }
     println!("- テストセット: {} ({} 件、左文脈あり、前文脈なし、学習・ユーザ辞書は空)", args.cases.display(), cases.len());
     println!(
-        "- 方式: 並べ替え{}{}{}。C の評価の上限 {} 回",
+        "- 方式: 並べ替え{}{}{}{}。C の評価の上限 {} 回",
         if args.greedy { "・A 貪欲法" } else { "" },
         if args.beam { "・A beam" } else { "" },
         if args.c { "・C" } else { "" },
+        if args.ac { "・A+C" } else { "" },
         args.limit
     );
     println!(
@@ -1079,16 +1101,22 @@ fn main() -> BoxResult<()> {
     if args.c {
         methods.push(Method::C);
     }
+    if args.ac {
+        methods.push(Method::GreedyC);
+    }
     if !args.no_cases {
         print_cases(&cases, &rows, &methods);
     }
     print_accuracy(&cases, &rows, &methods);
     print_speed(&rows, &methods, args.rerank_min_chars);
-    if args.c {
+    if args.c || args.ac {
         print_c(&rows);
     }
-    if args.greedy || args.beam {
+    if args.greedy || args.beam || args.ac {
         print_side_effects(&cases, &rows);
+    }
+    if args.ac {
+        print_greedy_c(&cases, &rows);
     }
     Ok(())
 }
@@ -1131,7 +1159,7 @@ fn run_case(args: &Args, case: &Case, conv: &Converter, rr: &mut Llm, gen_llm: &
     };
     let reranked: Vec<String> = reranked.iter().map(SentenceCandidate::surface).collect();
 
-    let greedy = if args.greedy {
+    let greedy = if args.greedy || args.ac {
         let started = Instant::now();
         let generated = gen_llm.greedy(&context, &case.reading)?;
         let ms = started.elapsed().as_secs_f64() * 1000.0;
@@ -1147,7 +1175,7 @@ fn run_case(args: &Args, case: &Case, conv: &Converter, rr: &mut Llm, gen_llm: &
     } else {
         None
     };
-    let c = if args.c {
+    let c = if args.c || args.ac {
         let started = Instant::now();
         let result = run_c(gen_llm, conv, case, &context, &nbest, args.limit)?;
         Some((result, started.elapsed().as_secs_f64() * 1000.0))
@@ -1184,11 +1212,11 @@ fn print_cases(cases: &[Case], rows: &[Row], methods: &[Method]) {
     println!("\n## 件ごとの結果\n");
     println!(
         "(o) は正解。[捨: …] は後処理で捨てた出力、[読み外] は同じ表記の経路が辞書のラティスに無い出力。\
-         順位は合わせた並びでの正解の順位 ({})\n",
+         A+C の [C] は A 貪欲法の出力を C の結果に代えた件。順位は合わせた並びでの正解の順位 ({})\n",
         methods.iter().map(|m| m.label()).collect::<Vec<_>>().join(" / ")
     );
-    println!("| # | 左文脈 | 読み | 正解 | 並べ替えの1位 | A 貪欲法 | A beam | C | C の評価 | 順位 |");
-    println!("|---|---|---|---|---|---|---|---|---|---|");
+    println!("| # | 左文脈 | 読み | 正解 | 並べ替えの1位 | A 貪欲法 | A beam | C | C の評価 | A+C | 順位 |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|");
     for (i, (case, row)) in cases.iter().zip(rows).enumerate() {
         let top = row.reranked.first().map_or("-".to_string(), |s| {
             let mut c = cell(s);
@@ -1208,6 +1236,16 @@ fn print_cases(cases: &[Case], rows: &[Row], methods: &[Method]) {
             }
             (s, format!("{} 回 / {}", c.evals, c.end.label()))
         });
+        let ac = row.greedy_c().map_or("-".to_string(), |(text, replaced, _)| {
+            let mut s = cell(&text);
+            if case.is_answer(&text) {
+                s.push_str(" (o)");
+            }
+            if replaced {
+                s.push_str(" [C]");
+            }
+            s
+        });
         let ranks: Vec<String> = methods
             .iter()
             .map(|&m| {
@@ -1217,7 +1255,7 @@ fn print_cases(cases: &[Case], rows: &[Row], methods: &[Method]) {
             })
             .collect();
         println!(
-            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             i + 1,
             cell(&case.left_context),
             case.reading,
@@ -1227,6 +1265,7 @@ fn print_cases(cases: &[Case], rows: &[Row], methods: &[Method]) {
             beam,
             c,
             c_eval,
+            ac,
             ranks.join(" / ")
         );
     }
@@ -1269,6 +1308,7 @@ fn print_accuracy(cases: &[Case], rows: &[Row], methods: &[Method]) {
     });
     single("A beam (3件のどれか)", &|c, r| r.outputs(Method::Beam).map(|os| os.iter().any(|s| c.is_answer(s))));
     single("C", &|c, r| r.c.as_ref().map(|(x, _)| c.is_answer(&x.text)));
+    single("A+C", &|c, r| r.greedy_c().map(|(text, _, _)| c.is_answer(&text)));
 
     let short = rows.iter().filter(|r| r.chars < llm::RERANK_MIN_CHARS).count();
     println!("\n### 合わせた並び (方式の出力を先頭に置き、並べ替えの結果を続ける)\n");
@@ -1430,6 +1470,40 @@ fn print_side_effects(cases: &[Case], rows: &[Row]) {
     line("左文脈のエコー", &|_, o| o.echo);
 }
 
+fn print_greedy_c(cases: &[Case], rows: &[Row]) {
+    let reasons: [(&str, &dyn Fn(&Output) -> bool); 4] = [
+        ("上限で捨てた", &|o| o.discard == Some(Discard::Limit)),
+        ("長さで捨てた", &|o| o.discard == Some(Discard::Length)),
+        ("繰り返しで捨てた", &|o| o.discard == Some(Discard::Repeat)),
+        ("読みから外れた", &|o| o.off_reading),
+    ];
+    println!("\n## A+C で C に代えた件\n");
+    println!("「A が正解」は A 貪欲法の出力 (後処理で捨てた出力を含む) が正解だった件\n");
+    println!("| 理由 | 件数 | C が正解 | A が正解 | どちらも外れ |");
+    println!("|---|---|---|---|---|");
+    let mut total = [0usize; 4];
+    for (name, matches) in reasons {
+        let mut n = [0usize; 4];
+        for (case, row) in cases.iter().zip(rows) {
+            let (Some((g, _)), Some((c, _))) = (row.greedy.as_ref(), row.c.as_ref()) else { continue };
+            if !replace_with_c(g) || !matches(g) {
+                continue;
+            }
+            let c_hit = case.is_answer(&c.text);
+            let a_hit = case.is_answer(&g.text);
+            n[0] += 1;
+            n[1] += usize::from(c_hit);
+            n[2] += usize::from(a_hit);
+            n[3] += usize::from(!c_hit && !a_hit);
+        }
+        for k in 0..4 {
+            total[k] += n[k];
+        }
+        println!("| {name} | {} | {} | {} | {} |", n[0], n[1], n[2], n[3]);
+    }
+    println!("| 計 | {} | {} | {} | {} |", total[0], total[1], total[2], total[3]);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1457,6 +1531,23 @@ mod tests {
         assert!(is_echo("きのうはあめ", "きのうはあめでした", "きのうはあめ"));
         assert!(!is_echo("昨日は雨", "きのうはあめでした", "きのうはあめ"));
         assert!(!is_echo("きのうは", "今日は", "きのうは"));
+    }
+
+    #[test]
+    fn 捨てた出力と読みから外れた出力だけをcに代える() {
+        let output = |discard: Option<Discard>, off_reading: bool| Output {
+            text: "昨日は雨".to_string(),
+            ruby: false,
+            discard,
+            off_reading,
+            literal_lost: false,
+            echo: false,
+        };
+        assert!(!replace_with_c(&output(None, false)));
+        assert!(replace_with_c(&output(None, true)));
+        assert!(replace_with_c(&output(Some(Discard::Limit), false)));
+        assert!(replace_with_c(&output(Some(Discard::Length), false)));
+        assert!(replace_with_c(&output(Some(Discard::Repeat), false)));
     }
 
     #[test]

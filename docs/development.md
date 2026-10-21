@@ -89,7 +89,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   target\release\examples\llm_gen_eval --model ..\models\zenz-v3.2-xsmall-Q5_K_M.gguf --backend cpu --threads 4 --cases ..\references\AJIMEE-Bench\ajimee_cases.tsv
   ```
   `--features llm-bench-vulkan` でビルドしたものは `--backend vulkan` で測る。`--methods` で方式を絞り
-  (rerank,a-greedy,a-beam,c)、`--limit` で照合の評価の回数の上限 (既定 10) を変え、`--no-cases` で件ごとの表を
+  (rerank,a-greedy,a-beam,c,a+c)、`--limit` で照合の評価の回数の上限 (既定 10) を変え、`--no-cases` で件ごとの表を
   出さない
 - 学習の再生評価: 実ユーザの learning_stats.tsv を `t` (最後に使った通し番号) の順に分け、学習が空のときの
   変換と、前の件を取り込んだ学習での後ろの件の変換・予測を測る。件の数の 8 割の位置にある件の `t` 以下を前、
