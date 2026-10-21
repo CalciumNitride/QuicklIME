@@ -2,7 +2,8 @@
 //
 // 実ユーザの learning_stats.tsv を入力に、2 つのモードを測る。
 // - 学習が空: すべての p の行 (句の学習) の読みを入力全体の候補 (CONVNBEST。補正なし) にし、行の表記が
-//   1 位・3 位以内に入る割合
+//   1 位・3 位以内に入る割合。1 位を外した行は学習ありと同じ分類でも数え、学習によらない変換の弱さの割合を
+//   学習ありより多い行で見る
 // - 学習あり: w・p・q の件を最後に使った通し番号 t の順 (確定の順の近似) に並べ、件の数の 8 割の位置にある件の
 //   t を分け目の t とする。t が分け目の t 以下の件を前、大きい件を後ろとし、前の件を d と t のまま取り込み、
 //   後ろの p と q の件を測る
@@ -487,6 +488,7 @@ fn main() -> BoxResult<()> {
     let mut empty_tally = Tally::default();
     let mut empty_times: Vec<f64> = Vec::new();
     let mut empty_top: HashMap<(&str, &str), bool> = HashMap::new();
+    let mut empty_classes = ClassTally::default();
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase) {
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
@@ -499,6 +501,20 @@ fn main() -> BoxResult<()> {
         empty_tally.conv1 += usize::from(rank == Some(0));
         empty_tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
         empty_top.insert((&e.reading, &e.surface), rank == Some(0));
+        if rank != Some(0) {
+            let (right, top) = if nbest.learned {
+                (None, None)
+            } else {
+                let top = nbest.candidates.first().and_then(|c| split(&e.reading, &c.surface()));
+                (split(&e.reading, &e.surface), top)
+            };
+            let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
+                empty.word_degree(r, s).unwrap_or(0.0)
+            });
+            let slot = empty_classes.counts.entry(class).or_default();
+            slot[0] += 1;
+            slot[1] += usize::from(rank.is_some_and(|r| r < 3));
+        }
     }
 
     let rows: Vec<Row> = (front..entries.len())
@@ -549,6 +565,21 @@ fn main() -> BoxResult<()> {
         percent(empty_tally.conv3, empty_tally.conv_total),
         time_stat(&mut empty_times),
     );
+    let empty_class_total: usize = empty_classes.counts.values().map(|c| c[0]).sum();
+    assert_eq!(
+        empty_class_total,
+        empty_tally.conv_total - empty_tally.conv1,
+        "分類の合計が外れの数と一致しない"
+    );
+    println!("\n変換の 1 位を外した行の分類 (学習が空なので、同音の行はすべて「正解に学習なし」に入る)。\n");
+    println!("| 分類 | 行 | 3 位以内 |");
+    println!("|---|---|---|");
+    for class in MissClass::ALL {
+        let [n, top3, _] = empty_classes.counts.get(&class).copied().unwrap_or_default();
+        println!("| {} | {n} | {top3} |", class.label());
+    }
+    let empty_sum = |i: usize| empty_classes.counts.values().map(|c| c[i]).sum::<usize>();
+    println!("| 合計 | {} | {} |", empty_sum(0), empty_sum(1));
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
     println!("変換 1/3 = p の行の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
