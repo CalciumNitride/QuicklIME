@@ -87,6 +87,8 @@
   [unified-suggest.md](unified-suggest.md) で置き換え
 - [typo-segment-ui.md](typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
   区切り、打ち間違えた語を含む文節の候補に補正の表記を足す
+- [eval-sets.md](eval-sets.md): 変換精度の評価セット。評価専用の AJIMEE-Bench (`scripts/fetch-ajimee.ps1` で取得し、
+  `nbest_eval` で測る) と、実ユーザの learning_stats.tsv を t の順に分けて学習を測る再生評価 (`learning_eval`)
 
 ## モードレス入力
 

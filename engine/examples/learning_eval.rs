@@ -1,27 +1,29 @@
-// 学習の点数付けの評価 (docs/design/learning-score.md の G)
+// 学習の再生評価 (docs/design/eval-sets.md の B)
 //
-// 実ユーザの learning.tsv (読み\t表記) と learning_context.tsv (文脈\t読み\t表記) を、ファイルごとに記録順の
-// 前の 8 割と後ろの 2 割に分け、前の 8 割を取り込んだ学習で後ろの 2 割の各行を測る。
-// - 変換: 入力全体の候補 (CONVNBEST。補正なし) で行の表記が 1 位・3 位以内に入る割合。
-//   learning_context.tsv の行は文脈表記を前文脈にする (文脈の読みはファイルに無いので空。文頭の文脈 ID は使わない)
-// - 予測: 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、行の表記が 9 位以内に入る割合
-// - 「既出」は、(読み, 表記) が前の 8 割のどちらかのファイルにもある行だけの割合
-// 取り込みはエンジンの learning_stats.tsv が無いときの取り込みと同じ (learning.tsv の行を文節の確定として数え、
-// learning_context.tsv の行は文脈の句の学習だけを数える)。ファイルは読むだけで、学習はメモリ上にだけ作る。
+// 実ユーザの learning_stats.tsv を入力に、2 つのモードを測る。
+// - 学習が空: すべての p の行 (句の学習) の読みを入力全体の候補 (CONVNBEST。補正なし) にし、行の表記が
+//   1 位・3 位以内に入る割合
+// - 学習あり: w・p・q の行を最後に使った通し番号 t の順 (確定の順の近似) に並べ、前の 8 割を d と t のまま
+//   取り込み、後ろの 2 割の p と q の行を測る
+//   - 変換 (p の行): CONVNBEST と同じ関数で 1 位・3 位以内に入る割合
+//   - 予測 (p と q の行): 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、行の表記が
+//     9 位以内に入る割合。q の行は文脈の表記を前文脈にする (文脈の読みはファイルに無いので空)
+//   - 「既出」は、(読み, 表記) が前の 8 割の p か q の行にもある行だけの割合
+// learning_stats.tsv は追記ログなので、同じ件の行は後の行だけを使う (エンジンの読み込みと同じ)。
+// ファイルは読むだけで、学習はメモリ上にだけ作る。
 // 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
-//   cargo run --release --example learning_eval -- --learn <learning.tsv> --context <learning_context.tsv>
+//   cargo run --release --example learning_eval -- --stats <learning_stats.tsv>
 //       [--weights "half=5000,ww=1500"]... [--empty]
 //
 // オプション:
-//   --learn <tsv>      learning.tsv
-//   --context <tsv>    learning_context.tsv
+//   --stats <tsv>      learning_stats.tsv
 //   --weights <設定>   定数の組 (カンマ区切りの key=value)。複数指定でき、指定ごとに 1 行の結果を出す。
 //                      無ければ既定値 (learn::WEIGHTS) だけ。key は half (HALF_LIFE)・ww・wm (WORD_WEIGHT・
 //                      WORD_MAX)・cw・cm (CONTEXT_*)・pw・pm・pb (PHRASE_WEIGHT・PHRASE_MAX・PHRASE_BASE)
-//   --empty            学習が空のときの行も出す
+//   --empty            学習ありのモードの表に、学習が空のときの行も出す
 //   --dict <dir>       Mozc 辞書のディレクトリ (既定は references/mozc/src/data/dictionary_oss)
 //   --ut <file>        UT 辞書 (既定は references/mozcdic-ut/dictionary_ut.txt。無ければ使わない)
 
@@ -62,7 +64,7 @@ mod typo;
 #[path = "../src/userdict.rs"]
 mod userdict;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -78,8 +80,7 @@ use userdict::UserDict;
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
 struct Args {
-    learn: PathBuf,
-    context: PathBuf,
+    stats: PathBuf,
     weights: Vec<String>,
     empty: bool,
     dict: PathBuf,
@@ -88,11 +89,9 @@ struct Args {
 
 fn parse_args() -> BoxResult<Args> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
-    let mut learn = None;
-    let mut context = None;
+    let mut stats = None;
     let mut args = Args {
-        learn: PathBuf::new(),
-        context: PathBuf::new(),
+        stats: PathBuf::new(),
         weights: Vec::new(),
         empty: false,
         dict: root.join("references/mozc/src/data/dictionary_oss"),
@@ -102,8 +101,7 @@ fn parse_args() -> BoxResult<Args> {
     while let Some(arg) = it.next() {
         let mut value = || it.next().ok_or_else(|| format!("{arg} に値がありません"));
         match arg.as_str() {
-            "--learn" => learn = Some(PathBuf::from(value()?)),
-            "--context" => context = Some(PathBuf::from(value()?)),
+            "--stats" => stats = Some(PathBuf::from(value()?)),
             "--weights" => args.weights.push(value()?),
             "--empty" => args.empty = true,
             "--dict" => args.dict = PathBuf::from(value()?),
@@ -111,8 +109,7 @@ fn parse_args() -> BoxResult<Args> {
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
-    args.learn = learn.ok_or("--learn が必要です")?;
-    args.context = context.ok_or("--context が必要です")?;
+    args.stats = stats.ok_or("--stats が必要です")?;
     if args.weights.is_empty() {
         args.weights.push(String::new());
     }
@@ -139,27 +136,89 @@ fn parse_weights(spec: &str) -> BoxResult<Weights> {
     Ok(w)
 }
 
-/// 測る 1 行
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Kind {
+    Word,
+    Phrase,
+    CtxPhrase,
+}
+
+/// learning_stats.tsv の 1 件
+struct Entry {
+    kind: Kind,
+    /// 文脈の句の学習 (q) の文脈の表記。ほかは空
+    context: String,
+    reading: String,
+    surface: String,
+    t: u64,
+    /// 取り込みに渡す元の行
+    line: String,
+}
+
+/// learning_stats.tsv の w・p・q の行を読む。同じ件は後の行が勝ち、件の位置も後の行のものにする。
+/// 戻り値は (件, 読んだ w・p・q の有効な行の数)
+fn load_entries(text: &str) -> (Vec<Entry>, usize) {
+    let mut slots: Vec<Option<Entry>> = Vec::new();
+    let mut index: HashMap<(Kind, String, String, String), usize> = HashMap::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        let filled = |fields: &[&str]| fields.iter().all(|f| !f.is_empty());
+        let (kind, context, reading, surface, d, t) = match f.as_slice() {
+            ["w", r, s, d, t] if filled(&[r, s]) => (Kind::Word, "", *r, *s, *d, *t),
+            ["p", r, s, d, t, "seg" | "whole"] if filled(&[r, s]) => (Kind::Phrase, "", *r, *s, *d, *t),
+            ["q", c, r, s, d, t] if filled(&[c, r, s]) => (Kind::CtxPhrase, *c, *r, *s, *d, *t),
+            _ => continue,
+        };
+        let (Ok(_), Ok(t)) = (d.parse::<f64>(), t.parse::<u64>()) else {
+            continue;
+        };
+        let entry = Entry {
+            kind,
+            context: context.to_string(),
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            t,
+            line: line.to_string(),
+        };
+        let key = (kind, entry.context.clone(), entry.reading.clone(), entry.surface.clone());
+        if let Some(old) = index.insert(key, slots.len()) {
+            slots[old] = None;
+        }
+        slots.push(Some(entry));
+    }
+    let lines = slots.len();
+    (slots.into_iter().flatten().collect(), lines)
+}
+
+/// 前の 8 割 (t の順)
+fn head_count(n: usize) -> usize {
+    n * 8 / 10
+}
+
+/// 測る 1 行 (後ろの 2 割の p と q の行)
 struct Row {
-    /// 直前の文節の表記 (learning_context.tsv の行)
+    /// q の行の文脈の表記。p の行は None (変換も測る)
     context: Option<String>,
     reading: String,
     surface: String,
-    /// (読み, 表記) が前の 8 割にもある
+    /// (読み, 表記) が前の 8 割の p か q の行にもある
     seen: bool,
+    /// 学習が空のときの変換の 1 位が行の表記 (p の行だけ)
+    empty_top: bool,
 }
 
-/// 割合を数える (行の種類 [文脈なし, 文脈付き] ごと)
+/// 割合を数える。予測は行の種類 [p, q] ごと
 #[derive(Default, Clone, Copy)]
 struct Tally {
-    total: [usize; 2],
-    conv1: [usize; 2],
-    conv3: [usize; 2],
+    /// 変換を測った行 (p の行)
+    conv_total: usize,
+    conv1: usize,
+    conv3: usize,
+    /// 変換で 1 位に入らなかった行のうち、1 位が読み全体の学習表記だった行
+    miss_pinned: usize,
     /// 予測を測れた行 (読みを打鍵にできた行)
     pred_total: [usize; 2],
     pred9: [usize; 2],
-    /// 変換で 1 位に入らなかった行のうち、1 位が読み全体の学習表記だった行
-    miss_pinned: [usize; 2],
 }
 
 /// 変換の 1 位を外した行の内訳 (学習が空のときとの比較)
@@ -173,52 +232,27 @@ struct Misses {
     pinned: usize,
     /// そのうち行の表記が、その読みの学習にある (前にも選んだことがある)
     pinned_known: usize,
-    /// そのうち固定した表記が、前の 8 割の learning.tsv でその読みの最後の表記と同じ (今の方式でも同じ表記を固定する)
-    pinned_last: usize,
-    /// 経路で外れた行 (学習が空なら 1 位) [文脈なし, 文脈付き]
-    lost_path_kind: [usize; 2],
 }
 
-/// (読み, 表記) を学習で覚えているか
-fn knows(store: &LearningStore, reading: &str, surface: &str) -> bool {
-    store.has_phrase(reading, surface)
+fn percent(n: usize, total: usize) -> String {
+    format!("{:.1}%", 100.0 * n as f64 / total.max(1) as f64)
 }
 
-/// 前の 8 割 (記録順)
-fn head_count(n: usize) -> usize {
-    n * 8 / 10
-}
-
-/// 学習を取り込む (エンジンの learning_stats.tsv が無いときの取り込みと同じ)
-fn train(
-    store: &mut LearningStore,
-    plain: &[(String, String)],
-    context: &[(String, String, String)],
-    split: &learn::Splitter,
-) {
-    let text: String = plain.iter().map(|(r, s)| format!("{r}\t{s}\n")).collect();
-    store.import_plain(text.as_bytes(), split);
-    let text: String = context.iter().map(|(c, r, s)| format!("{c}\t{r}\t{s}\n")).collect();
-    store.import_context(text.as_bytes());
+/// 中央値 / p95 (ms)
+fn time_stat(times: &mut [f64]) -> String {
+    if times.is_empty() {
+        return "-".to_string();
+    }
+    times.sort_by(|a, b| a.total_cmp(b));
+    let at = |q: f64| times[((times.len() as f64 - 1.0) * q).round() as usize];
+    format!("{:.2} / {:.2}", at(0.5), at(0.95))
 }
 
 fn main() -> BoxResult<()> {
     let args = parse_args()?;
-    let plain: Vec<(String, String)> = std::fs::read_to_string(&args.learn)?
-        .lines()
-        .filter_map(|line| {
-            let (r, s) = line.split_once('\t')?;
-            (!r.is_empty() && !s.is_empty() && !s.contains('\t')).then(|| (r.to_string(), s.to_string()))
-        })
-        .collect();
-    let context: Vec<(String, String, String)> = std::fs::read_to_string(&args.context)?
-        .lines()
-        .filter_map(|line| {
-            let mut f = line.splitn(3, '\t');
-            let (c, r, s) = (f.next()?, f.next()?, f.next()?);
-            (!c.is_empty() && !r.is_empty() && !s.is_empty()).then(|| (c.to_string(), r.to_string(), s.to_string()))
-        })
-        .collect();
+    let (mut entries, lines) = load_entries(&std::fs::read_to_string(&args.stats)?);
+    // 同じ t の件は記録の位置の順にする (sort_by_key は安定)
+    entries.sort_by_key(|e| e.t);
 
     let extra: Vec<PathBuf> = args.ut.is_file().then(|| args.ut.clone()).into_iter().collect();
     let started = Instant::now();
@@ -234,66 +268,105 @@ fn main() -> BoxResult<()> {
     eprintln!("辞書の読み込み: {:.1} 秒", started.elapsed().as_secs_f64());
     let split = |r: &str, s: &str| convert::split_words(r, s, &dictionary, &user, &matrix, &functional);
 
-    let (plain_train, plain_test) = plain.split_at(head_count(plain.len()));
-    let (ctx_train, ctx_test) = context.split_at(head_count(context.len()));
-    let known: HashSet<(&str, &str)> = plain_train
+    let count = |list: &[Entry], kind: Kind| list.iter().filter(|e| e.kind == kind).count();
+    let (train, test) = entries.split_at(head_count(entries.len()));
+    // 古さは n と t の差で決まるため、分け目の時点の通し番号を後ろの 2 割の最小の t にする
+    let split_t = test.first().map_or(0, |e| e.t);
+    let train_text: String =
+        train.iter().map(|e| format!("{}\n", e.line)).chain([format!("n\t{split_t}\n")]).collect();
+    let known: HashSet<(&str, &str)> = train
         .iter()
-        .map(|(r, s)| (r.as_str(), s.as_str()))
-        .chain(ctx_train.iter().map(|(_, r, s)| (r.as_str(), s.as_str())))
+        .filter(|e| e.kind != Kind::Word)
+        .map(|e| (e.reading.as_str(), e.surface.as_str()))
         .collect();
-    let mut rows: Vec<Row> = Vec::new();
-    for (r, s) in plain_test {
-        let seen = known.contains(&(r.as_str(), s.as_str()));
-        rows.push(Row { context: None, reading: r.clone(), surface: s.clone(), seen });
-    }
-    for (c, r, s) in ctx_test {
-        let seen = known.contains(&(r.as_str(), s.as_str()));
-        rows.push(Row { context: Some(c.clone()), reading: r.clone(), surface: s.clone(), seen });
-    }
 
     println!("## データ\n");
-    println!("- learning.tsv: {} 行 (取り込み {} 行、測る {} 行)", plain.len(), plain_train.len(), plain_test.len());
     println!(
-        "- learning_context.tsv: {} 行 (取り込み {} 行、測る {} 行)",
-        context.len(),
-        ctx_train.len(),
-        ctx_test.len()
+        "- learning_stats.tsv: w {} 件・p {} 件・q {} 件 (w・p・q の有効な行 {} 行のうち、同じ件の前の行 {} 行を除く)",
+        count(&entries, Kind::Word),
+        count(&entries, Kind::Phrase),
+        count(&entries, Kind::CtxPhrase),
+        lines,
+        lines - entries.len(),
     );
-    println!("- 測る行のうち既出: {} 行", rows.iter().filter(|r| r.seen).count());
+    println!(
+        "- 学習ありの分け方 (t の順): 前の 8 割 {} 件 (w {} / p {} / q {})、後ろの 2 割 {} 件 (w {} / p {} / q {})",
+        train.len(),
+        count(train, Kind::Word),
+        count(train, Kind::Phrase),
+        count(train, Kind::CtxPhrase),
+        test.len(),
+        count(test, Kind::Word),
+        count(test, Kind::Phrase),
+        count(test, Kind::CtxPhrase),
+    );
+
+    // 学習が空のモード。後ろの 2 割の p の行の 1 位は、学習ありの内訳の比較にも使う
+    let empty = LearningStore::in_memory();
+    let mut empty_tally = Tally::default();
+    let mut empty_times: Vec<f64> = Vec::new();
+    let mut empty_top: HashMap<(&str, &str), bool> = HashMap::new();
+    for e in entries.iter().filter(|e| e.kind == Kind::Phrase) {
+        let t = Instant::now();
+        let nbest = convert::convert_nbest_scored(
+            &e.reading, None, &dictionary, &user, &matrix, &functional, &empty,
+            convert::TypoSource::Off, &typo::TUNING,
+        );
+        empty_times.push(t.elapsed().as_secs_f64() * 1000.0);
+        let rank = nbest.candidates.iter().position(|c| c.surface() == e.surface);
+        empty_tally.conv_total += 1;
+        empty_tally.conv1 += usize::from(rank == Some(0));
+        empty_tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
+        empty_top.insert((&e.reading, &e.surface), rank == Some(0));
+    }
+
+    let rows: Vec<Row> = test
+        .iter()
+        .filter(|e| e.kind != Kind::Word)
+        .map(|e| Row {
+            context: (e.kind == Kind::CtxPhrase).then(|| e.context.clone()),
+            reading: e.reading.clone(),
+            surface: e.surface.clone(),
+            seen: known.contains(&(e.reading.as_str(), e.surface.as_str())),
+            empty_top: e.kind == Kind::Phrase && empty_top[&(e.reading.as_str(), e.surface.as_str())],
+        })
+        .collect();
+    println!(
+        "- 学習ありで測る行: {} 行 (p {} / q {})、うち既出 {} 行",
+        rows.len(),
+        rows.iter().filter(|r| r.context.is_none()).count(),
+        rows.iter().filter(|r| r.context.is_some()).count(),
+        rows.iter().filter(|r| r.seen).count(),
+    );
     {
         let mut store = LearningStore::in_memory();
-        train(&mut store, plain_train, ctx_train, &split);
+        store.load_stats_from(train_text.as_bytes());
+        store.refresh_phrases(&split);
         let unsplit = rows.iter().filter(|r| split(&r.reading, &r.surface).is_none()).count();
         println!("- 取り込んだ学習: {} 件 (確定の通し番号 {})", store.entry_count(), store.serial());
         println!("- 測る行のうち辞書の語に分けられない (読み, 表記): {unsplit} 行");
     }
 
-    println!("\n## 結果\n");
-    println!("変換 1/3 = CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合。");
-    println!("全体 (文脈なし / 文脈付き) の順。既出は (読み, 表記) が前の 8 割にもある行だけ。");
+    println!("\n## 学習が空 (すべての p の行)\n");
+    println!("変換 1/3 = CONVNBEST で 1 位・3 位以内の割合。時間は CONVNBEST 1 回の中央値 / p95 (ms)。\n");
+    println!("| 行 | 変換 1 | 変換 3 | CONVNBEST |");
+    println!("|---|---|---|---|");
+    println!(
+        "| {} | {} | {} | {} |",
+        empty_tally.conv_total,
+        percent(empty_tally.conv1, empty_tally.conv_total),
+        percent(empty_tally.conv3, empty_tally.conv_total),
+        time_stat(&mut empty_times),
+    );
+
+    println!("\n## 学習あり (後ろの 2 割の p と q の行)\n");
+    println!("変換 1/3 = p の行の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
+    println!("(全体 (p / q) の順)。既出は (読み, 表記) が前の 8 割の p か q の行にもある行だけ。");
     println!("変換 1 位外 (固定) = 変換で 1 位に入らなかった行の数 (うち 1 位が読み全体の学習表記の行の数)。時間は CONVNBEST・SUGGEST 1 回の中央値 / p95 (ms)。\n");
     println!("| 方式 | 変換 1 | 変換 3 | 予測 9 | 既出 変換 1 | 既出 変換 3 | 既出 予測 9 | 変換 1 位外 (固定) | CONVNBEST | SUGGEST |");
     println!("|---|---|---|---|---|---|---|---|---|---|");
 
-    // 学習が空のときの変換の 1 位
-    let empty = LearningStore::in_memory();
-    let empty_top: Vec<bool> = rows
-        .iter()
-        .map(|row| {
-            let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
-            let nbest = convert::convert_nbest_scored(
-                &row.reading, ctx.as_ref(), &dictionary, &user, &matrix, &functional, &empty,
-                convert::TypoSource::Off, &typo::TUNING,
-            );
-            nbest.candidates.first().is_some_and(|c| c.surface() == row.surface)
-        })
-        .collect();
-    let mut last_plain: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
-    for (r, s) in plain_train {
-        last_plain.insert(r, s);
-    }
     let mut details: Vec<String> = Vec::new();
-
     let mut configs: Vec<(String, Option<Weights>)> = Vec::new();
     if args.empty {
         configs.push(("学習なし".to_string(), None));
@@ -306,43 +379,39 @@ fn main() -> BoxResult<()> {
         let mut store = LearningStore::in_memory();
         if let Some(w) = weights {
             store.set_weights(w);
-            train(&mut store, plain_train, ctx_train, &split);
+            store.load_stats_from(train_text.as_bytes());
+            store.refresh_phrases(&split);
         }
         let mut all = Tally::default();
         let mut seen = Tally::default();
         let mut nbest_times: Vec<f64> = Vec::new();
         let mut suggest_times: Vec<f64> = Vec::new();
         let mut misses = Misses::default();
-        for (index, row) in rows.iter().enumerate() {
+        for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
-            let t = Instant::now();
-            let nbest = convert::convert_nbest_scored(
-                &row.reading, ctx.as_ref(), &dictionary, &user, &matrix, &functional, &store,
-                convert::TypoSource::Off, &typo::TUNING,
-            );
-            nbest_times.push(t.elapsed().as_secs_f64() * 1000.0);
-            let rank = nbest.candidates.iter().position(|c| c.surface() == row.surface);
-            if rank == Some(0) {
-                misses.gained += usize::from(!empty_top[index]);
-            } else {
-                if empty_top[index] {
-                    misses.lost[usize::from(!nbest.learned)] += 1;
-                    if !nbest.learned {
-                        misses.lost_path_kind[kind] += 1;
+            // 前文脈は変換の経路に効かないので、q の行は予測だけを測る
+            let conversion = row.context.is_none().then(|| {
+                let t = Instant::now();
+                let nbest = convert::convert_nbest_scored(
+                    &row.reading, None, &dictionary, &user, &matrix, &functional, &store,
+                    convert::TypoSource::Off, &typo::TUNING,
+                );
+                nbest_times.push(t.elapsed().as_secs_f64() * 1000.0);
+                let rank = nbest.candidates.iter().position(|c| c.surface() == row.surface);
+                if rank == Some(0) {
+                    misses.gained += usize::from(!row.empty_top);
+                } else {
+                    if row.empty_top {
+                        misses.lost[usize::from(!nbest.learned)] += 1;
+                    }
+                    if nbest.learned {
+                        misses.pinned += 1;
+                        misses.pinned_known += usize::from(store.has_phrase(&row.reading, &row.surface));
                     }
                 }
-                if nbest.learned {
-                    misses.pinned += 1;
-                    misses.pinned_known += usize::from(knows(&store, &row.reading, &row.surface));
-                    let pinned = nbest.candidates[0].surface();
-                    misses.pinned_last += usize::from(last_plain.get(row.reading.as_str()) == Some(&pinned.as_str()));
-                }
-            }
-            let mut tallies = vec![&mut all];
-            if row.seen {
-                tallies.push(&mut seen);
-            }
+                (rank, nbest.learned)
+            });
             let prediction = typo::to_romaji(&row.reading, false).and_then(|romaji| {
                 let n = romaji.len().div_ceil(2);
                 typo::compose(&romaji[..n])
@@ -357,57 +426,54 @@ fn main() -> BoxResult<()> {
                 suggest_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 list.iter().take(9).any(|s| s.surface() == row.surface)
             });
+            let mut tallies = vec![&mut all];
+            if row.seen {
+                tallies.push(&mut seen);
+            }
             for tally in tallies {
-                tally.total[kind] += 1;
-                tally.conv1[kind] += usize::from(rank == Some(0));
-                tally.conv3[kind] += usize::from(rank.is_some_and(|r| r < 3));
-                tally.miss_pinned[kind] += usize::from(rank != Some(0) && nbest.learned);
+                if let Some((rank, learned)) = conversion {
+                    tally.conv_total += 1;
+                    tally.conv1 += usize::from(rank == Some(0));
+                    tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
+                    tally.miss_pinned += usize::from(rank != Some(0) && learned);
+                }
                 if let Some(hit) = predicted {
                     tally.pred_total[kind] += 1;
                     tally.pred9[kind] += usize::from(hit);
                 }
             }
         }
-        let pct = |n: [usize; 2], total: [usize; 2]| {
+        let pred = |t: &Tally| {
             let p = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
             format!(
                 "{:.1}% ({:.1} / {:.1})",
-                p(n[0] + n[1], total[0] + total[1]),
-                p(n[0], total[0]),
-                p(n[1], total[1])
+                p(t.pred9[0] + t.pred9[1], t.pred_total[0] + t.pred_total[1]),
+                p(t.pred9[0], t.pred_total[0]),
+                p(t.pred9[1], t.pred_total[1])
             )
-        };
-        let stat = |times: &mut Vec<f64>| -> String {
-            times.sort_by(|a, b| a.total_cmp(b));
-            let at = |q: f64| times[((times.len() as f64 - 1.0) * q).round() as usize];
-            format!("{:.2} / {:.2}", at(0.5), at(0.95))
         };
         println!(
             "| {name} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} |",
-            pct(all.conv1, all.total),
-            pct(all.conv3, all.total),
-            pct(all.pred9, all.pred_total),
-            pct(seen.conv1, seen.total),
-            pct(seen.conv3, seen.total),
-            pct(seen.pred9, seen.pred_total),
-            all.total[0] + all.total[1] - all.conv1[0] - all.conv1[1],
-            all.miss_pinned[0] + all.miss_pinned[1],
-            stat(&mut nbest_times),
-            stat(&mut suggest_times),
+            percent(all.conv1, all.conv_total),
+            percent(all.conv3, all.conv_total),
+            pred(&all),
+            percent(seen.conv1, seen.conv_total),
+            percent(seen.conv3, seen.conv_total),
+            pred(&seen),
+            all.conv_total - all.conv1,
+            all.miss_pinned,
+            time_stat(&mut nbest_times),
+            time_stat(&mut suggest_times),
         );
         details.push(format!(
-            "- {name}: 学習で外れた {} 行 (1 位が読み全体の学習表記 {}・経路 {} [文脈なし {} / 文脈付き {}])、学習で当たった {} 行。\
-             1 位が読み全体の学習表記で外れた {} 行のうち、行の表記を学習で覚えている {} 行、固定した表記が learning.tsv の\
-             その読みの最後の表記 {} 行",
+            "- {name}: 学習で外れた {} 行 (1 位が読み全体の学習表記 {}・経路 {})、学習で当たった {} 行。\
+             1 位が読み全体の学習表記で外れた {} 行のうち、行の表記を学習で覚えている {} 行",
             misses.lost[0] + misses.lost[1],
             misses.lost[0],
             misses.lost[1],
-            misses.lost_path_kind[0],
-            misses.lost_path_kind[1],
             misses.gained,
             misses.pinned,
             misses.pinned_known,
-            misses.pinned_last,
         ));
     }
     println!("\n## 1 位を外した行の内訳\n");

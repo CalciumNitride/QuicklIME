@@ -13,7 +13,8 @@
 //   cargo run --release --example nbest_eval -- --cases examples/data/llm_cases.tsv --llm cpu
 //
 // オプション:
-//   --cases <tsv>  テストセット (llm_bench と同じ形式: 左文脈<TAB>読み<TAB>候補<TAB>正解)
+//   --cases <tsv>  テストセット (llm_bench と同じ形式: 左文脈<TAB>読み<TAB>候補<TAB>正解)。正解は | 区切りで
+//                  複数書け、どれかが入れば当たりとする
 //   --iters N      1つの読みあたりの計測回数 (既定 5)
 //   --llm <cpu|vulkan>  LLM による並べ替えを測る (設定 llm_backend。llm の exe とモデルは
 //                       エンジンと同じ規則で探す)
@@ -67,7 +68,16 @@ fn parse_args() -> BoxResult<Args> {
 struct Case {
     left_context: String,
     reading: String,
+    /// 正解の列そのまま (表示用)
     answer: String,
+    answers: Vec<String>,
+}
+
+impl Case {
+    /// 候補の表記の列で、最初に正解のどれかに当たった順位
+    fn rank(&self, surfaces: &[String]) -> Option<usize> {
+        surfaces.iter().position(|s| self.answers.contains(s))
+    }
 }
 
 fn load_cases(path: &PathBuf) -> BoxResult<Vec<Case>> {
@@ -85,6 +95,7 @@ fn load_cases(path: &PathBuf) -> BoxResult<Vec<Case>> {
             left_context: f[0].to_string(),
             reading: f[1].to_string(),
             answer: f[3].to_string(),
+            answers: f[3].split('|').map(str::to_string).collect(),
         });
     }
     Ok(cases)
@@ -274,7 +285,7 @@ fn main() -> BoxResult<()> {
             }
         }
         times.extend(samples);
-        let rank = surfaces.iter().position(|s| *s == case.answer);
+        let rank = case.rank(&surfaces);
         count_hits(&mut hits, rank);
         println!(
             "| {} | {} | {} | {} | {} | {} |",
@@ -336,7 +347,7 @@ fn measure_llm(engine: &mut Engine, cases: &[Case], iters: usize) -> BoxResult<(
     let mut times: Vec<f64> = Vec::new();
     for (i, case) in cases.iter().enumerate() {
         let (surfaces, _) = engine.nbest(&case.reading)?;
-        let rank_before = surfaces.iter().position(|s| *s == case.answer);
+        let rank_before = case.rank(&surfaces);
         count_hits(&mut before, rank_before);
         let Some((reranked, _)) = engine.rerank_result(&case.left_context, &case.reading)? else {
             none += 1;
@@ -348,7 +359,7 @@ fn measure_llm(engine: &mut Engine, cases: &[Case], iters: usize) -> BoxResult<(
                 times.push(ms);
             }
         }
-        let rank_after = reranked.iter().position(|s| *s == case.answer);
+        let rank_after = case.rank(&reranked);
         count_hits(&mut after, rank_after);
         let rank = |r: Option<usize>| r.map_or("-".to_string(), |r| (r + 1).to_string());
         println!(

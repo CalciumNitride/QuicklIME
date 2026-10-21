@@ -1,0 +1,104 @@
+# 変換精度の評価セット
+
+## 背景と目的
+
+- 変換精度の評価に使っている `engine/examples/data/llm_cases.tsv` は手作りの 50 件で、N-best と LLM の並べ替えの
+  定数を決めるのにも使った。調整に使っていない評価専用のセットが無く、変更の良し悪しを判断しにくい
+- 学習の評価 (`learning_eval`) の入力は learning.tsv と learning_context.tsv で、これらは読みで初めて確定したときと
+  表記が変わったときにしか書かれない。データが表記の変わり目に偏り、今のエンジンはもうこの 2 つを書かない
+- 次の 2 つを足し、変換関係・LLM 関係の以後の変更をこれで測れるようにする
+  - 公開の評価セット AJIMEE-Bench (評価だけに使う)
+  - 実ユーザの learning_stats.tsv を使う再生評価 (学習の評価もこれで行う)
+
+## 決定事項
+
+### A. AJIMEE-Bench の取り込み
+
+- 出典: https://github.com/azooKey/AJIMEE-Bench の `JWTD_v2/v1/evaluation_items.json`。コミット
+  `401666cd56d1a570c2021798b64b6da4396bfd45` に固定する (132231 バイト、SHA-256
+  `e9eb668fd6aa14b1e26436f429b5550108af0a1dfd443b8cea0bcb3ab3028fca`)
+- データのライセンスは CC BY-SA 3.0 (元データの日本語 Wikipedia 入力誤りデータセットに従う)。リポジトリにも
+  インストーラにも入れない。`scripts/fetch-ajimee.ps1` で `references/AJIMEE-Bench/` (git 管理外) に取得し、
+  サイズと SHA-256 を確かめてから TSV に変換する (`fetch-ut-dict.ps1` と同じ扱い)
+- JSON の変換は PowerShell の `ConvertFrom-Json` で行い、エンジンに JSON の依存を足さない
+- 変換後は `references/AJIMEE-Bench/ajimee_cases.tsv`。形式は llm_cases.tsv と同じ
+  `左文脈<TAB>読み<TAB>候補<TAB>正解` で、候補は空にする
+  - 左文脈: `context_text` (200 件中 100 件にある)
+  - 読み: `input` のカタカナをひらがなにしたもの (ヴ は ゔ、ー はそのまま)。全角の 、。「」（）・ は残す
+    (記号キーで run に入る文字のため)
+  - 正解: `expected_output` を `|` で区切って並べる (200 件中 83 件は正解が複数)
+- 除外: 読みに 『』… を含む問題 (3 件)。JIS 配列のキーで直接打てないため。ほかの文字はすべてローマ字と記号キーで
+  打てる
+- `nbest_eval` の正解の列は `|` 区切りで複数の正解を受け、どれかが入れば当たりとする。llm_cases.tsv は
+  正解が 1 つなので結果は変わらない
+- AJIMEE-Bench は評価専用で、定数の調整には llm_cases.tsv を使う (調整に使ったセットで結果を報告しない)
+
+### B. 再生評価 (`learning_eval` の作り直し)
+
+- 入力を learning_stats.tsv (`--stats`) に替え、learning.tsv と learning_context.tsv を入力にする方式は消す。
+  モジュールを直接組み込み、学習はメモリ上にだけ作る作りは今のまま
+- learning_stats.tsv は起動時に 1 件 1 行へ書き直されるので、確定の並びは残らず、各件には使った度合い `d` と
+  最後に使った通し番号 `t` だけが残る。そこで `t` の順を確定の順の近似として使う
+- 書き直しの後に追記された行があるので、エンジンの読み込みと同じく同じ件は後の行を使う (件のキーは `w`・`p` が
+  (読み, 表記)、`q` が (文脈, 読み, 表記))。同じ件が前の 8 割と後ろの 2 割の両方に入らないようにするため
+- 測る 2 つのモード
+  1. 学習が空: すべての `p` の行 (句の学習。`seg` と `whole`) の読みを変換し、行の表記が 1 位・3 位以内に入る
+     割合を出す。実際に打った文での基本の変換精度
+  2. 学習あり: `w`・`p`・`q` の行を `t` の順に並べ、前の 8 割を `d` と `t` のまま取り込み、後ろの 2 割の
+     `p` と `q` の行を測る
+     - 変換 (`p` の行): CONVNBEST と同じ関数で、1 位・3 位以内に入る割合
+     - 予測 (`p` と `q` の行): 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、
+       9 位以内に入る割合。`q` の行は文脈の表記を前文脈にする (前文脈は変換の経路には効かないので、`q` は
+       予測だけを測る)
+     - 前の 8 割の件の `d` と `t` は、分け目より前の使用だけで決まっているので、分け目の時点の学習の状態として
+       そのまま使える。取り込みは、前の 8 割の行と `n\t<後ろの 2 割の最小の t>` の行を `LearningStore::load_stats_from`
+       に渡して行う (古さは `n` と `t` の差で決まるため。learn.rs は変えない)
+- 今の `learning_eval` の `--weights` (定数の組ごとに 1 行) と、1 位を外した行の内訳 (学習が空のときとの比較) は残す。
+  内訳のうち learning.tsv の最後の表記と比べる項目 (`pinned_last`) は、比べる元が無くなるので消す
+- 結果は件数と割合だけを Markdown で標準出力に書き、読み・表記は書かない。入力も結果も git に入れない
+- LLM の並べ替えは再生評価では測らない (測るのは `nbest_eval --llm` と AJIMEE-Bench)
+
+### 採らなかった案
+
+- AJIMEE-Bench の TSV をリポジトリに入れる: リポジトリにライセンスの表示 (LICENSE ファイル) が無いまま
+  CC BY-SA のデータを混ぜることになる。取得スクリプトなら再配布しない
+- 評価用に確定の記録を別ファイルに貯める: 打った文がそのまま残る。`t` の順の近似で足りなければ改めて検討する
+- `nbest_eval` に JSON を直接読ませる: エンジンの crate に JSON の依存が増える
+
+## 変更対象ファイル
+
+| ファイル | 変更 |
+|---|---|
+| scripts/fetch-ajimee.ps1 (新規) | AJIMEE-Bench の取得・検証・TSV への変換 |
+| engine/examples/nbest_eval.rs | 正解の列の `|` 区切り (複数の正解) |
+| engine/examples/learning_eval.rs | 入力を learning_stats.tsv に替え、学習が空のモードと学習ありのモード |
+| docs/development.md | 評価の手順 (AJIMEE-Bench の取得と `nbest_eval`、再生評価の `learning_eval`)、scripts の一覧 |
+| docs/design/learning-score.md | G の評価の記述を本書への参照にする |
+| docs/design/README.md | 本書の 1 行 |
+| docs/roadmap.md | 「学習の評価のやり直し」と「評価セットの拡充」を消す |
+
+## 実装手順
+
+1. `scripts/fetch-ajimee.ps1`: 取得・サイズと SHA-256 の確認・変換・除外の件数の表示
+2. `nbest_eval`: 複数の正解。llm_cases.tsv で今と同じ結果になることを確かめる
+3. `learning_eval`: learning_stats.tsv の読み込み、`t` の順の分割、2 つのモード
+4. ドキュメント
+
+## 検証方法
+
+- `fetch-ajimee.ps1`: 197 件の TSV ができる (200 件から 3 件を除外)。もう一度実行しても同じ内容になる。
+  SHA-256 が違うファイルでは止まる
+- `nbest_eval --cases examples/data/llm_cases.tsv`: 変更前と同じ数値になる
+- `nbest_eval --cases ../references/AJIMEE-Bench/ajimee_cases.tsv`: 197 件すべてが変換でき、エラーにならない。
+  読みの 、。「」（） が CONVNBEST で扱えることも確かめる (扱えない場合は実装を止めて設計に戻す)。
+  `--llm cpu` も通る
+- `learning_eval --stats <learning_stats.tsv>`: 学習が空のモードの件数が `p` の行の件数と一致する。
+  学習ありのモードの、前の 8 割と後ろの 2 割の件数の合計が `w`・`p`・`q` の行の件数と一致する。
+  `--weights` を 2 つ指定すると 2 行出る
+- 実ユーザのファイルは読むだけで変わらない (実行前後でサイズと更新時刻が同じ)
+- `cargo test` が通る
+
+## 未決事項
+
+- 後ろの 2 割で `d` が 1 より大きい件 (分け目より前にも使ったかもしれない件) の扱い。今回は学習に入れず、初めての
+  件として測る。繰り返し使った語の効き目を測りたくなったら検討する

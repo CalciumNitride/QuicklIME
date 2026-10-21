@@ -15,7 +15,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。全体の構成は [docs/architecture.md](architecture.md)、機能ごとの設計書は [設計書の索引](design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](protocol.md) |
 | `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
-| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド) |
+| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド、`fetch-ajimee.ps1`: 評価セット AJIMEE-Bench の取得) |
 
 ## 開発環境
 
@@ -56,6 +56,31 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 - LLM の並べ替えの計測 (エンジンを隔離して起動し、llm_cases.tsv の左文脈で RERANK を送る):
   `cargo run --release --example nbest_eval -- --cases examples/data/llm_cases.tsv --llm cpu`
   (`--llm vulkan` で Vulkan 版)
+
+## 変換精度と学習の評価
+
+評価セットの分担と測る項目は [eval-sets.md](design/eval-sets.md) にある。どちらの結果も git に入れない。
+
+- `engine/examples/data/llm_cases.tsv`: N-best と LLM の並べ替えの定数の調整に使う手作りのセット
+- AJIMEE-Bench: 評価だけに使うセット (定数の調整には使わない)。データは CC BY-SA 3.0 のため
+  リポジトリに入れず、`scripts\fetch-ajimee.ps1` でコミット固定の JSON を `references\AJIMEE-Bench\` に
+  取得し (サイズと SHA-256 を確かめる)、`ajimee_cases.tsv` (llm_cases.tsv と同じ形式。正解は `|` 区切りで
+  複数) に変換する。読みに 『』… を含む問題は除く。`nbest_eval` は隔離したエンジンを起動するので、先に
+  `cargo build --release` でエンジンの exe を最新にしておく
+  ```
+  scripts\fetch-ajimee.ps1
+  cd engine
+  cargo build --release
+  cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv
+  cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv --llm cpu
+  ```
+- 学習の再生評価: 実ユーザの learning_stats.tsv を `t` (最後に使った通し番号) の順に分け、学習が空のときの
+  変換と、前の 8 割を取り込んだ学習での後ろの 2 割の変換・予測を測る。ファイルは読むだけで、学習は
+  メモリ上にだけ作る。結果は件数と割合だけを出す
+  ```
+  cd engine
+  cargo run --release --example learning_eval -- --stats <learning_stats.tsv> [--weights "half=5000"]...
+  ```
 
 ## インストーラのビルド
 

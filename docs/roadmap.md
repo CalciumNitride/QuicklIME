@@ -10,8 +10,6 @@
   の範囲だけ
 - 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
   ([unified-suggest.md](design/unified-suggest.md))
-- learning_stats.tsv に貯まった確定の記録での学習の評価のやり直し。今の評価 (`engine/examples/learning_eval.rs`) の
-  データは表記の変わり目に偏っている ([learning-score.md](design/learning-score.md) の G)
 - 同音異義語の学習の割引の上限の例外。学習の度合いが最も大きい語が勝つようにするか
   ([learning-score.md](design/learning-score.md))
 - 前文脈による変換の使い分け (「服を|着る」「紙を|切る」)。今は前文脈を予測と後続語の予測にだけ使う
@@ -36,15 +34,12 @@
   しきい値を超えるときは RERANK を送らず、LLM の呼び出しと遅延を減らす。しきい値は `nbest_eval --llm` で
   正解率を落とさない値を測って決める。shunti IME (Japanese-IME-for-HarmonyOS-next) は同じ方式で、
   正解率をほぼ保ったまま普段の入力でのモデルの呼び出しを約 4 割に減らしている
-- (保留・後で検討) 変換精度の評価セットの拡充。今の `engine/examples/data/llm_cases.tsv` は手作りの
-  小さなセットのため、AJIMEE-Bench (CC BY-SA 3.0。ローマ字で打てない字を含む問題は除く) と、
-  学習データの確定を今のエンジンで変換し直して確定した表記の順位を採点する再生評価を足す。
-  再生評価の入力と結果は実ユーザの文を含むので git に入れない。しきい値などの調整に使ったセットと
-  評価だけに使うセットは分ける
 - 設定ツールと単語登録ツールのハイコントラスト対応。Slint の fluent スタイルにハイコントラストの配色が無い
   ([slint-gui.md](design/slint-gui.md))
 - 設定ツールと単語登録ツールの背景の Mica。winit の unstable な API と透明ウィンドウの組み合わせが要り
   壊れやすいため、今は Fluent の単色 ([slint-gui.md](design/slint-gui.md))
+- リポジトリのライセンスを決め、ルートに LICENSE ファイルを置く。今は README の「同梱物とライセンス」に
+  同梱物のライセンスがあるだけで、QuicklIME 自体のライセンスの表示が無い
 
 ## 見送り・既知の問題
 
