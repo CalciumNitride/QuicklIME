@@ -27,6 +27,9 @@
 // その表記と経路の 1-best の表記のどちらが正解かでも数える。
 // 辞書に無い語がどんな語かを見るため、分けられない行は正解の表記の文字の種類 (カタカナだけ・英字を含む・
 // 漢字を含む・その他) でも数え、カタカナだけの行のうち正解が読み全体のカタカナの行は正解の順位の中央値も出す。
+// 区切りの外れが辞書や連接のコストのどこで起きているかを見るため、区切りの行は向き・差の読みの長さ・正解の順位でも
+// 数え、向きごとに差の語の区間がすべてもう片方の経路にもある行と、差に Mozc 辞書 (UT 辞書を積まない) に無い語が
+// ある行も出す。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -84,7 +87,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use config::Config;
-use convert::Context;
+use convert::{Context, SplitWord};
 use dict::Dictionary;
 use learn::{LearningStore, MIN_KEEP, Weights};
 use matrix::ConnectionMatrix;
@@ -348,6 +351,36 @@ fn word_diff(right: &[(String, String)], top: &[(String, String)]) -> (Vec<(Stri
     (only(right, top), only(top, right))
 }
 
+/// split_path の経路の自立語の (読み, 表記)
+fn independent(path: &[SplitWord]) -> Vec<(String, String)> {
+    path.iter().filter(|w| !w.functional).map(|w| (w.reading.clone(), w.surface.clone())).collect()
+}
+
+/// 経路の自立語の多重集合の差 [正解にだけある語, 1 位にだけある語]。word_diff と同じく先に出た語から相殺し、
+/// 残った語は経路の中の区間を持ったまま返す
+fn path_diff<'a>(right: &'a [SplitWord], top: &'a [SplitWord]) -> (Vec<&'a SplitWord>, Vec<&'a SplitWord>) {
+    fn only<'a>(a: &'a [SplitWord], b: &'a [SplitWord]) -> Vec<&'a SplitWord> {
+        let mut rest: HashMap<(&str, &str), usize> = HashMap::new();
+        for w in b.iter().filter(|w| !w.functional) {
+            *rest.entry((w.reading.as_str(), w.surface.as_str())).or_default() += 1;
+        }
+        let mut out: Vec<&SplitWord> = Vec::new();
+        for w in a.iter().filter(|w| !w.functional) {
+            match rest.get_mut(&(w.reading.as_str(), w.surface.as_str())) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => out.push(w),
+            }
+        }
+        out
+    }
+    (only(right, top), only(top, right))
+}
+
+/// 差の語のすべてについて、もう片方の経路 other に読みの開始と終了の位置が同じ語 (付属語を含む) がある
+fn same_span(diff: &[&SplitWord], other: &[SplitWord]) -> bool {
+    diff.iter().all(|d| other.iter().any(|w| w.start == d.start && w.end == d.end))
+}
+
 /// 外した行を分類する。right・top は正解と 1 位を split_words で分けた自立語 (分けられなければ None)、
 /// degree は語の学習の今の度合い (無ければ 0)
 fn classify_miss(
@@ -548,16 +581,28 @@ fn boundary_dir(d_right: &[(String, String)], d_top: &[(String, String)]) -> Bou
     }
 }
 
-/// 「区切り」の行の向きごとの [行, 長さ 1–2, 3–4, 5 以上, 2 位, 3 位, 4–10 位, 11 位以下, 候補に無い]
+/// 「区切り」の行の向きごとの [行, 長さ 1–2, 3–4, 5 以上, 2 位, 3 位, 4–10 位, 11 位以下, 候補に無い,
+/// 同じ区間, 1 位の差に Mozc 辞書に無い語, 正解の差に Mozc 辞書に無い語]
 #[derive(Default)]
 struct BoundaryTally {
-    counts: [[usize; 9]; 5],
+    counts: [[usize; 12]; 5],
 }
 
 impl BoundaryTally {
-    /// right・top は正解と 1 位を split_words で分けた自立語。rank は正解の順位 (0 始まり)
-    fn add(&mut self, right: &[(String, String)], top: &[(String, String)], rank: Option<usize>) {
-        let (d_right, d_top) = word_diff(right, top);
+    /// right・top は正解と 1 位を split_path で分けた経路。rank は正解の順位 (0 始まり)。in_mozc は
+    /// (読み, 表記) が Mozc 辞書にあるか (UT 辞書が無いときは None で、Mozc 辞書に無い語の列は数えない)
+    fn add(
+        &mut self,
+        right: &[SplitWord],
+        top: &[SplitWord],
+        rank: Option<usize>,
+        in_mozc: Option<&dyn Fn(&str, &str) -> bool>,
+    ) {
+        let (p_right, p_top) = path_diff(right, top);
+        let pairs = |list: &[&SplitWord]| -> Vec<(String, String)> {
+            list.iter().map(|w| (w.reading.clone(), w.surface.clone())).collect()
+        };
+        let (d_right, d_top) = (pairs(&p_right), pairs(&p_top));
         let dir = boundary_dir(&d_right, &d_top);
         let slot = &mut self.counts[BoundaryDir::ALL.iter().position(|&d| d == dir).expect("向き")];
         let chars = |list: &[(String, String)]| list.iter().map(|(r, _)| r.chars().count()).sum::<usize>();
@@ -576,24 +621,33 @@ impl BoundaryTally {
             Some(_) => 7,
             None => 8,
         }] += 1;
+        slot[9] += usize::from(same_span(&p_right, top) && same_span(&p_top, right));
+        if let Some(in_mozc) = in_mozc {
+            let missing = |list: &[&SplitWord]| list.iter().any(|w| !in_mozc(&w.reading, &w.surface));
+            slot[10] += usize::from(missing(&p_top));
+            slot[11] += usize::from(missing(&p_right));
+        }
     }
 
-    /// 分類の表の後に足す内訳。boundary は「区切り」の行の数
-    fn render(&self, boundary: usize) -> String {
+    /// 分類の表の後に足す内訳。boundary は「区切り」の行の数、mozc は Mozc 辞書に無い語の列を数えたか
+    /// (false のときは `-` を出す)
+    fn render(&self, boundary: usize, mozc: bool) -> String {
         let sum = |i: usize| self.counts.iter().map(|c| c[i]).sum::<usize>();
         assert_eq!(sum(0), boundary, "向きの合計が「区切り」の行の数と一致しない");
+        let cell = |i: usize, n: usize| if i >= 10 && !mozc { "-".to_string() } else { n.to_string() };
         let mut out = String::from(
             "\n\n「区切り」の内訳 (向き・差の読みの長さ・正解の順位)。\n\n\
-             | 向き | 行 | 長さ 1–2 | 3–4 | 5 以上 | 2 位 | 3 位 | 4–10 位 | 11 位以下 | 候補に無い |\n\
-             |---|---|---|---|---|---|---|---|---|---|\n",
+             | 向き | 行 | 長さ 1–2 | 3–4 | 5 以上 | 2 位 | 3 位 | 4–10 位 | 11 位以下 | 候補に無い | 同じ区間 | 1 位の差に Mozc 辞書に無い語 | 正解の差に Mozc 辞書に無い語 |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for (dir, c) in BoundaryDir::ALL.iter().zip(self.counts) {
             assert_eq!(c[1..4].iter().sum::<usize>(), c[0], "長さの区分の合計が向きの行の数と一致しない");
             assert_eq!(c[4..9].iter().sum::<usize>(), c[0], "順位の区分の合計が向きの行の数と一致しない");
-            let cells: Vec<String> = c.iter().map(|n| n.to_string()).collect();
+            assert!(c[9..12].iter().all(|&n| n <= c[0]), "同じ区間・Mozc 辞書に無い語の行が向きの行の数を超える");
+            let cells: Vec<String> = c.iter().enumerate().map(|(i, &n)| cell(i, n)).collect();
             out.push_str(&format!("| {} | {} |\n", dir.label(), cells.join(" | ")));
         }
-        let totals: Vec<String> = (0..9).map(|i| sum(i).to_string()).collect();
+        let totals: Vec<String> = (0..12).map(|i| cell(i, sum(i))).collect();
         out.push_str(&format!("| 合計 | {} |", totals.join(" | ")));
         out
     }
@@ -638,6 +692,11 @@ fn main() -> BoxResult<()> {
     let cfg = Config::default();
     eprintln!("辞書の読み込み: {:.1} 秒", started.elapsed().as_secs_f64());
     let split = |r: &str, s: &str| convert::split_words(r, s, &dictionary, &user, &matrix, &functional);
+    let path = |r: &str, s: &str| convert::split_path(r, s, &dictionary, &user, &matrix, &functional);
+    // 区切りの差の語が UT 辞書由来かの目安にするので、UT 辞書を読み込んだときだけ別に持つ
+    let mozc = if extra.is_empty() { None } else { Some(Dictionary::load(&args.dict, &[])?) };
+    let in_mozc = |r: &str, s: &str| mozc.as_ref().is_some_and(|d| d.lookup(r).iter().any(|e| e.surface == s));
+    let in_mozc: Option<&dyn Fn(&str, &str) -> bool> = if mozc.is_some() { Some(&in_mozc) } else { None };
 
     let count = |list: &[Entry], kind: Kind| list.iter().filter(|e| e.kind == kind).count();
     let Split { front, split_t, carried, train_text } = split_entries(&entries);
@@ -701,17 +760,19 @@ fn main() -> BoxResult<()> {
             let (right, top) = if nbest.learned {
                 (None, None)
             } else {
-                let top = nbest.candidates.first().and_then(|c| split(&e.reading, &c.surface()));
-                (split(&e.reading, &e.surface), top)
+                let top = nbest.candidates.first().and_then(|c| path(&e.reading, &c.surface()));
+                (path(&e.reading, &e.surface), top)
             };
-            let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
+            let right_words = right.as_deref().map(independent);
+            let top_words = top.as_deref().map(independent);
+            let class = classify_miss(nbest.learned, right_words.as_deref(), top_words.as_deref(), |r, s| {
                 empty.word_degree(r, s).unwrap_or(0.0)
             });
             if class == MissClass::Unsplit {
                 empty_unsplit.add(&e.reading, &e.surface, rank);
             }
             if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
-                empty_boundary.add(right, top, rank);
+                empty_boundary.add(right, top, rank, in_mozc);
             }
             let slot = empty_classes.counts.entry(class).or_default();
             slot[0] += 1;
@@ -798,7 +859,7 @@ fn main() -> BoxResult<()> {
     println!(
         "{}{}",
         empty_unsplit.render(empty_unsplit_rows),
-        empty_boundary.render(empty_boundary_rows)
+        empty_boundary.render(empty_boundary_rows, mozc.is_some())
     );
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
@@ -882,17 +943,19 @@ fn main() -> BoxResult<()> {
                     let (right, top) = if nbest.learned {
                         (None, None)
                     } else {
-                        let top = nbest.candidates.first().and_then(|c| split(&row.reading, &c.surface()));
-                        (split(&row.reading, &row.surface), top)
+                        let top = nbest.candidates.first().and_then(|c| path(&row.reading, &c.surface()));
+                        (path(&row.reading, &row.surface), top)
                     };
-                    let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
+                    let right_words = right.as_deref().map(independent);
+                    let top_words = top.as_deref().map(independent);
+                    let class = classify_miss(nbest.learned, right_words.as_deref(), top_words.as_deref(), |r, s| {
                         store.word_degree(r, s).unwrap_or(0.0)
                     });
                     if class == MissClass::Unsplit {
                         unsplit.add(&row.reading, &row.surface, rank);
                     }
                     if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
-                        boundary.add(right, top, rank);
+                        boundary.add(right, top, rank, in_mozc);
                     }
                     let ctx_learned = contexts_of
                         .get(&(row.reading.as_str(), row.surface.as_str()))
@@ -983,7 +1046,7 @@ fn main() -> BoxResult<()> {
         let unsplit_rows = classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
         table.push_str(&unsplit.render(unsplit_rows));
         let boundary_rows = classes.counts.get(&MissClass::Boundary).map_or(0, |c| c[0]);
-        table.push_str(&boundary.render(boundary_rows));
+        table.push_str(&boundary.render(boundary_rows, mozc.is_some()));
         assert_eq!(
             pins.hit + pins.lost + pins.same[0] + pins.same[1] + pins.both_miss,
             pins.total,
@@ -1106,28 +1169,81 @@ mod tests {
         assert_eq!(dir(&[("a", "A"), ("xy", "XY")], &[("a", "A"), ("x", "X"), ("y", "Y")]), BoundaryDir::Finer);
     }
 
+    /// (読み, 表記, 付属語か) を先頭から並べた経路 (区間は読みの文字数を順に足して付ける)
+    fn path_of(list: &[(&str, &str, bool)]) -> Vec<SplitWord> {
+        let mut start = 0;
+        list.iter()
+            .map(|&(r, s, functional)| {
+                let end = start + r.chars().count();
+                let w = SplitWord { start, end, reading: r.to_string(), surface: s.to_string(), functional };
+                start = end;
+                w
+            })
+            .collect()
+    }
+
     #[test]
-    fn boundary_tally_counts_length_and_rank() {
-        let words = |list: &[(&str, &str)]| -> Vec<(String, String)> {
-            list.iter().map(|(r, s)| (r.to_string(), s.to_string())).collect()
+    fn path_diff_keeps_spans_and_matches_word_diff() {
+        let right = path_of(&[("x", "X", false), ("y", "Y", false), ("は", "は", true), ("x", "X", false)]);
+        let top = path_of(&[("x", "X", false), ("yは", "YH", false), ("x", "Z", false)]);
+        let (d_right, d_top) = path_diff(&right, &top);
+        // 先に出た x から相殺するので、正解の差には後ろの x (3–4) が残る
+        let spans = |list: &[&SplitWord]| list.iter().map(|w| (w.start, w.end)).collect::<Vec<_>>();
+        assert_eq!(spans(&d_right), [(1, 2), (3, 4)]);
+        assert_eq!(spans(&d_top), [(1, 3), (3, 4)]);
+        let pairs = |list: &[&SplitWord]| {
+            list.iter().map(|w| (w.reading.clone(), w.surface.clone())).collect::<Vec<_>>()
         };
+        assert_eq!((pairs(&d_right), pairs(&d_top)), word_diff(&independent(&right), &independent(&top)));
+    }
+
+    #[test]
+    fn same_span_needs_every_diff_word_in_other_path() {
+        let right = path_of(&[("あ", "A", false), ("い", "い", true), ("う", "U", false)]);
+        let top = path_of(&[("あ", "B", false), ("い", "I", false), ("う", "U", false)]);
+        let (d_right, d_top) = path_diff(&right, &top);
+        // 正解の差 A (0–1) と 1 位の差 B (0–1)・I (1–2) は、もう片方に同じ区間の語 (付属語を含む) がある
+        assert!(same_span(&d_right, &top));
+        assert!(same_span(&d_top, &right));
+        // 正解の差 A (0–1) と 1 位の差 AI (0–2) は、もう片方の経路に同じ区間の語が無い
+        let coarse = path_of(&[("あい", "AI", false), ("う", "U", false)]);
+        let (d_right, d_top) = path_diff(&right, &coarse);
+        assert!(!same_span(&d_right, &coarse));
+        assert!(!same_span(&d_top, &right));
+        assert!(same_span(&[], &coarse));
+    }
+
+    #[test]
+    fn boundary_tally_counts_length_rank_span_and_mozc() {
+        let in_mozc = |_: &str, s: &str| !matches!(s, "AI" | "S" | "MI");
         let mut tally = BoundaryTally::default();
-        // 差の読みの長さ: 2 (1 + 1 と 2 の大きい方)
-        tally.add(&words(&[("あ", "A"), ("い", "I")]), &words(&[("あい", "AI")]), Some(1));
-        // 3 (差は 1 位の「かきく」だけ)
-        tally.add(&words(&[("う", "U")]), &words(&[("う", "U"), ("かきく", "KKK")]), Some(2));
-        // 5 (「さしす」+「せそ」)
-        tally.add(&words(&[("さしす", "S"), ("せそ", "T")]), &words(&[("さしすせそ", "ST")]), Some(3));
-        tally.add(&words(&[("たち", "T"), ("つ", "U")]), &words(&[("た", "T"), ("ちつ", "C")]), Some(9));
-        tally.add(&words(&[("な", "N"), ("に", "M")]), &words(&[("なに", "NM")]), Some(10));
-        tally.add(&words(&[("は", "H"), ("ひ", "I")]), &words(&[("はひ", "HI")]), None);
-        assert_eq!(tally.counts[0], [1, 0, 1, 0, 0, 1, 0, 0, 0]);
-        assert_eq!(tally.counts[1], [0; 9]);
-        assert_eq!(tally.counts[3], [4, 3, 0, 1, 1, 0, 1, 1, 1]);
-        assert_eq!(tally.counts[4], [1, 0, 1, 0, 0, 0, 1, 0, 0]);
-        let out = tally.render(6);
-        assert!(out.contains("| 正解の方が語が多い (1 位がまとめた) | 4 | 3 | 0 | 1 | 1 | 0 | 1 | 1 | 1 |"));
-        assert!(out.ends_with("| 合計 | 6 | 3 | 2 | 1 | 1 | 1 | 2 | 1 | 1 |"));
+        let mut add = |right: &[(&str, &str, bool)], top: &[(&str, &str, bool)], rank: Option<usize>| {
+            tally.add(&path_of(right), &path_of(top), rank, Some(&in_mozc));
+        };
+        // 差の読みの長さ: 2 (1 + 1 と 2 の大きい方)。1 位の差 AI が Mozc 辞書に無い
+        add(&[("あ", "A", false), ("い", "I", false)], &[("あい", "AI", false)], Some(1));
+        // 3 (差は 1 位の「かきく」だけ)。正解の経路では同じ区間が付属語
+        add(&[("う", "U", false), ("かきく", "かきく", true)], &[("う", "U", false), ("かきく", "KKK", false)], Some(2));
+        // 5 (「さしす」+「せそ」)。正解の差 S が Mozc 辞書に無い
+        add(&[("さしす", "S", false), ("せそ", "T", false)], &[("さしすせそ", "ST", false)], Some(3));
+        add(&[("たち", "T", false), ("つ", "U", false)], &[("た", "T", false), ("ちつ", "C", false)], Some(9));
+        add(&[("な", "N", false), ("に", "M", false)], &[("なに", "NM", false)], Some(10));
+        add(&[("は", "H", false), ("ひ", "I", false)], &[("はひ", "HI", false)], None);
+        // 正解の差 M・MI と 1 位の差 M2 の区間は、どれももう片方の経路にある。正解の差 MI が Mozc 辞書に無い
+        add(&[("ま", "M", false), ("み", "MI", false)], &[("ま", "M2", false), ("み", "み", true)], Some(1));
+        assert_eq!(tally.counts[0], [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0]);
+        assert_eq!(tally.counts[1], [0; 12]);
+        assert_eq!(tally.counts[3], [5, 4, 0, 1, 2, 0, 1, 1, 1, 1, 1, 2]);
+        assert_eq!(tally.counts[4], [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        let out = tally.render(7, true);
+        assert!(out.contains("| 正解の方が語が多い (1 位がまとめた) | 5 | 4 | 0 | 1 | 2 | 0 | 1 | 1 | 1 | 1 | 1 | 2 |"));
+        assert!(out.ends_with("| 合計 | 7 | 4 | 2 | 1 | 2 | 1 | 2 | 1 | 1 | 2 | 1 | 2 |"));
+
+        // UT 辞書が無いときは Mozc 辞書に無い語の列を数えず `-` を出す
+        let mut tally = BoundaryTally::default();
+        tally.add(&path_of(&[("あ", "A", false), ("い", "I", false)]), &path_of(&[("あい", "AI", false)]), Some(1), None);
+        assert_eq!(tally.counts[3], [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
+        assert!(tally.render(1, false).ends_with("| 合計 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | - | - |"));
     }
 
     #[test]

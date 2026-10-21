@@ -1703,10 +1703,19 @@ pub fn learning_discount(
     learning.word_bonus(reading, surface)
 }
 
+/// `split_path` の経路の 1 語。start・end は読みの文字位置 (chars の index)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SplitWord {
+    pub start: usize,
+    pub end: usize,
+    pub reading: String,
+    pub surface: String,
+    pub functional: bool,
+}
+
 /// 確定した文節 (読み, 表記) を辞書 (システム辞書・ユーザ辞書・インポート辞書) の語に分け、経路の
-/// 自立語の (読み, 表記) を順に返す (docs/design/learning-score.md の A の 1)。読みのラティスのうち表記が
-/// 文節の表記の対応する位置と一致する語だけを通る経路を、学習の割引なしの Viterbi と同じコストの最も
-/// 安いもので選ぶ。未知語・英字の連続は辞書の語でないので通らない。経路が無ければ None
+/// 自立語の (読み, 表記) を順に返す (docs/design/learning-score.md の A の 1)。経路は `split_path`。
+/// 経路が無ければ None
 pub fn split_words(
     reading: &str,
     surface: &str,
@@ -1715,6 +1724,21 @@ pub fn split_words(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
 ) -> Option<Vec<(String, String)>> {
+    let path = split_path(reading, surface, dict, user, matrix, functional)?;
+    Some(path.into_iter().filter(|w| !w.functional).map(|w| (w.reading, w.surface)).collect())
+}
+
+/// 文節 (読み, 表記) を辞書の語に分けた経路のすべての語 (付属語を含む) を順に返す。読みのラティスのうち
+/// 表記が文節の表記の対応する位置と一致する語だけを通る経路を、学習の割引なしの Viterbi と同じコストの
+/// 最も安いもので選ぶ。未知語・英字の連続は辞書の語でないので通らない。経路が無ければ None
+pub fn split_path(
+    reading: &str,
+    surface: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Option<Vec<SplitWord>> {
     struct Word<'a> {
         start: usize,
         end: usize,
@@ -1790,14 +1814,17 @@ pub fn split_words(
             let right_id = states[s].0.map_or(0, |w| words[w].right_id);
             (states[s].2 + i64::from(matrix.get(right_id, 0)), s)
         })?;
-    let mut result: Vec<(String, String)> = Vec::new();
+    let mut result: Vec<SplitWord> = Vec::new();
     let mut cursor = last;
     while let Some(w) = states[cursor].0 {
         let word = &words[w];
-        if !functional.is_functional(word.left_id) {
-            let r: String = chars[word.start..word.end].iter().collect();
-            result.push((r, word.surface.to_string()));
-        }
+        result.push(SplitWord {
+            start: word.start,
+            end: word.end,
+            reading: chars[word.start..word.end].iter().collect(),
+            surface: word.surface.to_string(),
+            functional: functional.is_functional(word.left_id),
+        });
         cursor = states[cursor].3;
     }
     result.reverse();
@@ -1892,6 +1919,32 @@ mod tests {
         assert_eq!(split("きょうは", "きょうは"), None);
         // 付属語だけの文節は自立語なしで分けられる
         assert_eq!(split("は", "は"), Some(vec![]));
+    }
+
+    #[test]
+    fn 経路は付属語を含むすべての語を区間とともに返す() {
+        let dict = sample_dict();
+        let path = |reading: &str, surface: &str| {
+            split_path(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional())
+        };
+        let word = |start: usize, end: usize, reading: &str, surface: &str, functional: bool| SplitWord {
+            start,
+            end,
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            functional,
+        };
+        assert_eq!(
+            path("きょうははれです", "今日は晴れです"),
+            Some(vec![
+                word(0, 3, "きょう", "今日", false),
+                word(3, 4, "は", "は", true),
+                word(4, 6, "はれ", "晴れ", false),
+                word(6, 8, "です", "です", true),
+            ])
+        );
+        assert_eq!(path("は", "は"), Some(vec![word(0, 1, "は", "は", true)]));
+        assert_eq!(path("きょうは", "教は"), None);
     }
 
     #[test]
