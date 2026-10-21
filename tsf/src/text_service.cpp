@@ -1086,8 +1086,13 @@ STDMETHODIMP TextService::OnTestKeyDown(ITfContext* context, WPARAM wparam, LPAR
         DismissNextWordForKey(wparam);
         ClassifyBeforeIdleKey(context, wparam);
         EndRunIfPassthroughKey(context, wparam);
+        // 前の打鍵の逆変換の結果は使わない (食べたら続く OnKeyDown で同じ結果を使う)
+        ClearReverseQuery();
         *eaten = IsKeyEaten(context, wparam) ? TRUE : FALSE;
         NoteKeyForAppend(wparam, *eaten != FALSE);
+        if (*eaten == FALSE) {
+            ClearReverseQuery();
+        }
     }
     HideCaretMarkerOutsidePeriod();
     if (logging) {
@@ -1126,6 +1131,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
         LogKeyDown(L"OnKeyDown", wparam, state, match, *eaten, false);
     }
     if (*eaten == FALSE) {
+        ClearReverseQuery();
         HideCaretMarkerOutsidePeriod();
         return S_OK;
     }
@@ -1138,6 +1144,7 @@ STDMETHODIMP TextService::OnKeyDown(ITfContext* context, WPARAM wparam, LPARAM l
     // (失敗 HRESULT を返すと「未処理」とみなして打鍵文字をそのまま挿入する
     //  ホストがあるため。内部の失敗はその打鍵が効かないだけに留める)
     HandleKey(context, wparam);
+    ClearReverseQuery();
     HideCaretMarkerOutsidePeriod();
     return S_OK;
 }
@@ -1236,12 +1243,15 @@ STDMETHODIMP TextService::OnPreservedKey(ITfContext* context, REFGUID rguid, BOO
             (context != nullptr && IsKeyboardOpen() && !IsInputScopePassthrough(context))
                 ? MatchKeyFunc(VK_F10).func
                 : KeyFunc::None;
+        ClearReverseQuery();
         if (func != KeyFunc::None && CanRunKeyFunc(context, func)) {
             *eaten = TRUE;
             const HRESULT hr = HandleKey(context, VK_F10);
+            ClearReverseQuery();
             HideCaretMarkerOutsidePeriod();
             return hr;
         }
+        ClearReverseQuery();
         HideCaretMarkerOutsidePeriod();
         // IME が使わないときは eaten=FALSE だけではアプリに F10 が届かないため、
         // Mozc と同様に WM_SYSKEYDOWN を合成してアプリ本来の F10 動作を再現する
@@ -3353,20 +3363,26 @@ std::wstring TextService::PrepareConversionCommit()
     }
     const bool typoSegment =
         std::find(typoSegments.begin(), typoSegments.end(), true) != typoSegments.end();
+    // 逆変換から始めた変換は、読みが推測のままの文節を学習しないよう、表記が変わった文節だけを
+    // 学習し、読み全体・文節境界・複合語の学習は送らない (docs/design/selection-reconversion.md の E)
+    const bool reversed = rangeTracked_ && rangeFromReverse_;
     if (!IsNoLearningApp() && !typo) {
         std::vector<LearnEntry> entries = SentenceLearnEntries(committed);
-        if (typoSegment) {
-            // 末尾の読み全体の学習を落とし、補正の文節の学習を除く (文脈は除く前の並びで決まっている)
+        if (typoSegment || reversed) {
+            // 末尾の読み全体の学習を落とし、補正の文節・変わっていない文節の学習を除く
+            // (文脈は除く前の並びで決まっている)
+            const std::vector<bool> changed = reversed ? ReverseChangedSegments(committed)
+                                                       : std::vector<bool>(committed.size(), true);
             entries.resize(committed.size());
             for (size_t i = committed.size(); i-- > 0;) {
-                if (typoSegments[i]) {
+                if ((i < typoSegments.size() && typoSegments[i]) || !changed[i]) {
                     entries.erase(entries.begin() + i);
                 }
             }
         }
         engine_.Learn(entries);
         // 人が文節を伸縮して分割を直したときだけ、その直し方を学習させる
-        if (segmentsResized_ && !typoSegment) {
+        if (segmentsResized_ && !typoSegment && !reversed) {
             LearnResizedSegments();
         }
     }
@@ -3398,6 +3414,42 @@ std::vector<LearnEntry> TextService::SentenceLearnEntries(
         entries.push_back({reading, surface, L""});
     }
     return entries;
+}
+
+std::vector<bool> TextService::ReverseChangedSegments(
+    const std::vector<std::pair<std::wstring, std::wstring>>& committed) const
+{
+    std::vector<bool> changed(committed.size(), true);
+    std::wstring surface;
+    for (const auto& segment : committed) {
+        surface += segment.second;
+    }
+    // 元の表記のまま確定した。文節の区切りが逆変換の語の境界とずれていても学習しない
+    if (rangeShift_ == 0 && surface == rangeOrigin_.surface) {
+        changed.assign(committed.size(), false);
+        return changed;
+    }
+    // 逆変換の語の境界 (読みの先頭からの位置) と、そこまでの表記の長さ
+    std::vector<size_t> bounds{0};
+    std::vector<size_t> surfaceEnds{0};
+    for (const auto& [reading, word] : rangeOrigin_.segments) {
+        bounds.push_back(bounds.back() + reading.size());
+        surfaceEnds.push_back(surfaceEnds.back() + word.size());
+    }
+    // 縮めて外したかなの分だけ、確定した読みは逆変換の読みの途中から始まる
+    size_t position = static_cast<size_t>((std::max)(rangeShift_, 0));
+    for (size_t i = 0; i < committed.size(); ++i) {
+        const size_t end = position + committed[i].first.size();
+        const auto from = std::find(bounds.begin(), bounds.end(), position);
+        const auto to = std::find(bounds.begin(), bounds.end(), end);
+        if (from != bounds.end() && to != bounds.end()) {
+            const size_t begin = surfaceEnds[static_cast<size_t>(from - bounds.begin())];
+            const size_t finish = surfaceEnds[static_cast<size_t>(to - bounds.begin())];
+            changed[i] = rangeOrigin_.surface.compare(begin, finish - begin, committed[i].second) != 0;
+        }
+        position = end;
+    }
+    return changed;
 }
 
 void TextService::LearnResizedSegments()

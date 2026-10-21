@@ -187,6 +187,13 @@ public:
     // 接続待ちはしない。未接続・エラー・FORGET を知らない旧エンジンのときは false
     bool Forget(const std::vector<std::pair<std::wstring, std::wstring>>& pairs, size_t* count);
 
+    // 表記 text から読みを推測し、語ごとの (読み, 表記) を表記の順に words に入れる (REVERSE。
+    // docs/design/selection-reconversion.md)。変換キーを食べるかの判定で呼ぶため、エンジンの
+    // 自動起動・接続待ちはしない。未接続・ERR (読めない文字・逆引きの索引を作っている途中)・
+    // REVERSE を知らない旧エンジン・表記の連結が text と食い違う応答のときは false
+    bool Reverse(const std::wstring& text,
+                 std::vector<std::pair<std::wstring, std::wstring>>* words);
+
     // パイプに接続してみて、開けなければエンジンを起動する。起動の完了は待たない
     // (最初の変換より前にエンジンを立ち上げておくため、アクティブ化のときに呼ぶ)
     void StartEngine();

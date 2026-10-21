@@ -5,9 +5,9 @@
 
 ## 未着手
 
-- 確定済みの任意の選択範囲の再変換 (TSF の ITfFnReconversion)。今の後置再変換の対象は、かなだけの
-  選択範囲・キャレット直前のかな・採用した文字列の記憶 ([adopted-reconversion.md](design/adopted-reconversion.md))
-  の範囲だけ
+- アプリ・システムからの再変換の依頼の入口 (TSF の ITfFnReconversion)。Word の再変換や CUAS 経由の
+  IMM32 アプリの再変換の依頼を受ける。今の後置再変換は、自分で変換キー・F6〜F10 を押したときだけ働く
+  ([selection-reconversion.md](design/selection-reconversion.md))
 - 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
   ([unified-suggest.md](design/unified-suggest.md))
 - 同音異義語の学習の割引の上限の例外。学習の度合いが最も大きい語が勝つようにするか
@@ -47,6 +47,8 @@
   - 試した対策: OnKeyDown が来ないまま OnTestKeyUp が来たら機能を実行する方式。変換の開始はできても、
     候補選択中の候補送りはできなかった
   - 入力パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
+- 逆変換で数字の後の 日 が ひ と読まれる (3日 → 3ひ)。数字の後の助数詞の読みを優先する仕組みが無い
+  ([selection-reconversion.md](design/selection-reconversion.md))
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))
 - 変換の区切りの誤り。再生評価 ([eval-sets.md](design/eval-sets.md)) の学習が空のモード (8320 行) で、1 位を外した

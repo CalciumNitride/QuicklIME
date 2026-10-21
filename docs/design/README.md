@@ -80,6 +80,8 @@
   ←→ による変換の範囲の伸縮
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す
+- [selection-reconversion.md](selection-reconversion.md): 漢字を含む選択範囲を、エンジンの逆変換 (REVERSE) で
+  推測した読みから変換キー・F6〜F10 で変換し直す。学習は表記が変わった文節だけ
 - [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す
 - [learning-score.md](learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
   語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を

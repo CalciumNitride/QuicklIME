@@ -197,6 +197,28 @@ bool IsKanaOnly(const std::wstring& text)
     return true;
 }
 
+// 逆変換で読みを推測する選択の文字だけで構成された空でない文字列: ひらがな・カタカナ・ー・漢字・
+// 々・〇・〆・数字 (docs/design/selection-reconversion.md の A)。サロゲートペアは CJK 拡張漢字の
+// ことがあるので通し、漢字かどうかはエンジンが判定する
+bool IsReversibleText(const std::wstring& text)
+{
+    if (text.empty()) {
+        return false;
+    }
+    for (wchar_t c : text) {
+        const bool kana = (c >= 0x3041 && c <= 0x3096) || (c >= 0x30A1 && c <= 0x30F6) ||
+                          c == 0x30FC;
+        const bool kanji = (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF) ||
+                           (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xD800 && c <= 0xDFFF);
+        const bool mark = c == 0x3005 || c == 0x3006 || c == 0x3007;  // 々 〆 〇
+        const bool digit = (c >= L'0' && c <= L'9') || (c >= 0xFF10 && c <= 0xFF19);
+        if (!kana && !kanji && !mark && !digit) {
+            return false;
+        }
+    }
+    return true;
+}
+
 // カタカナ1文字をひらがなにする (対応するひらがなが無い ヷ〜ヺ とそれ以外はそのまま)
 wchar_t KatakanaToHiragana(wchar_t c)
 {
@@ -780,7 +802,8 @@ bool TextService::ReadIdleTarget(ITfContext* context, IdleTarget* target) const
     RequestSync(context, new (std::nothrow) GetSelectionTextEditSession(context, &selection),
                 TF_ES_SYNC | TF_ES_READ);
     if (!selection.empty()) {
-        if (selection.size() > kMaxReconvertLength || !IsKanaOnly(selection)) {
+        const bool kanaOnly = IsKanaOnly(selection);
+        if (selection.size() > kMaxReconvertLength || (!kanaOnly && !IsReversibleText(selection))) {
             return false;
         }
         // 選択開始から読み戻して照合できない文書では、選択を消して composition に昇格できない
@@ -792,6 +815,14 @@ bool TextService::ReadIdleTarget(ITfContext* context, IdleTarget* target) const
             DebugLog(std::wstring(L"選択の読み戻しが一致しないため変換しない (") +
                      MatchReason(match) + L")");
             return false;
+        }
+        // 漢字などを含む選択は、読みをエンジンの逆変換で推測する。読めなければ変換キーをアプリへ渡す
+        if (!kanaOnly) {
+            if (!ReverseSelection(selection, &target->words)) {
+                DebugLog(L"選択を逆変換できないため変換しない");
+                return false;
+            }
+            target->reversed = true;
         }
         target->text = selection;
         target->selection = true;
@@ -850,6 +881,14 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     }
     if (target.adopted) {
         composer_ = adopted_.back().composer;
+    } else if (target.reversed) {
+        // 逆変換の読みを run にする。打鍵列は読みの文字そのもの (かなの選択と同じ)
+        composer_.Clear();
+        for (const auto& word : target.words) {
+            for (wchar_t c : word.first) {
+                composer_.PushKana(std::wstring(1, c), std::wstring(1, c));
+            }
+        }
     } else {
         // 対象を読みとして run を作る。エンジンに渡す読みはひらがなに正規化し、
         // 打鍵列は元の文字 (F7-F10 の文字種変換で元の形へ戻せるように) にする
@@ -890,6 +929,12 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
     BeginRangeTracking();
     if (!target.selection) {
         BeginRangeAdopted(chainFrom, chainTo, target.adopted);
+    } else if (target.reversed) {
+        // 候補の先頭に選択の表記を置く処理 (PlaceAdoptedCandidate) と文字種変換の循環の始まりは、
+        // 記憶から始めた変換と同じにする。記憶の置き換え (rangeAdopted_) は空のまま使わない
+        rangeFromAdopted_ = true;
+        rangeFromReverse_ = true;
+        rangeOrigin_ = AdoptedText{target.text, target.words, composer_};
     }
     return func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
 }
@@ -926,7 +971,36 @@ void TextService::BeginRangeTracking()
     rangeAdopted_.clear();
     rangeAdoptedFrom_ = adopted_.size();
     rangeFromAdopted_ = false;
+    rangeFromReverse_ = false;
     rangeOrigin_ = AdoptedText{};
+}
+
+bool TextService::ReverseSelection(const std::wstring& text,
+                                   std::vector<std::pair<std::wstring, std::wstring>>* words) const
+{
+    if (!reverseQuery_.valid || reverseQuery_.text != text) {
+        reverseQuery_.valid = true;
+        reverseQuery_.text = text;
+        // 食べるかの判定 (const) から呼ぶが、変えるのはエンジンとの接続だけで IME の状態は変えない
+        reverseQuery_.ok = const_cast<EngineClient&>(engine_).Reverse(text, &reverseQuery_.words);
+        size_t reading = 0;
+        for (const auto& word : reverseQuery_.words) {
+            reading += word.first.size();
+        }
+        if (reading > kMaxReconvertLength) {
+            reverseQuery_.ok = false;
+        }
+    }
+    if (!reverseQuery_.ok) {
+        return false;
+    }
+    *words = reverseQuery_.words;
+    return true;
+}
+
+void TextService::ClearReverseQuery() const
+{
+    reverseQuery_ = ReverseQuery{};
 }
 
 bool TextService::RangeResizable() const

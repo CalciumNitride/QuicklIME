@@ -854,6 +854,45 @@ bool EngineClient::Forget(const std::vector<std::pair<std::wstring, std::wstring
     return true;
 }
 
+bool EngineClient::Reverse(const std::wstring& text,
+                           std::vector<std::pair<std::wstring, std::wstring>>* words)
+{
+    if (words == nullptr || text.empty()) {
+        return false;
+    }
+    words->clear();
+    if (pipe_ == INVALID_HANDLE_VALUE && !TryOpenPipe()) {
+        return false;
+    }
+    std::string response;
+    if (!SendReceive("REVERSE\t" + WideToUtf8(text) + "\n", &response)) {
+        return false;
+    }
+    // 応答: "OK\t読み\x1F表記\t読み\x1F表記...\n"。旧エンジンの「不明なコマンド」は ERR
+    const size_t newline = response.find('\n');
+    if (newline != std::string::npos) {
+        response.resize(newline);
+    }
+    if (response.rfind("OK\t", 0) != 0) {
+        return false;
+    }
+    std::wstring joined;
+    for (const std::string& field : SplitFields(response.substr(3), '\t')) {
+        const std::vector<std::string> parts = SplitFields(field, '\x1f');
+        if (parts.size() != 2 || parts[0].empty() || parts[1].empty()) {
+            words->clear();
+            return false;
+        }
+        words->push_back({Utf8ToWide(parts[0]), Utf8ToWide(parts[1])});
+        joined += words->back().second;
+    }
+    if (joined != text) {
+        words->clear();
+        return false;
+    }
+    return true;
+}
+
 bool EngineClient::RequestPredictions(const std::string& request,
                                       std::vector<PredictionCandidate>* candidates)
 {

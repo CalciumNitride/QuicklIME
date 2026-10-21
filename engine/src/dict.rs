@@ -162,6 +162,117 @@ impl FuzzyWalk<'_, '_> {
 /// 打鍵のファジィ照合でたどる fst のノードの数の上限。長い打鍵や大きい辞書で打鍵を止めないための安全弁
 const MAX_FUZZY_VISITS: usize = 200_000;
 
+/// 逆引きの索引に入れる文字 (漢字と 々)
+pub fn is_kanji(c: char) -> bool {
+    matches!(c,
+        '々'
+        | '\u{3400}'..='\u{4DBF}'   // CJK 統合漢字拡張 A
+        | '\u{4E00}'..='\u{9FFF}'   // CJK 統合漢字
+        | '\u{F900}'..='\u{FAFF}'   // CJK 互換漢字
+        | '\u{20000}'..='\u{3134F}' // CJK 統合漢字拡張 B〜G・互換漢字補助
+    )
+}
+
+/// 表記で引いた語 (SurfaceIndex::common_prefix_search の1件)
+pub struct SurfaceMatch<'a> {
+    /// 一致した表記の文字数
+    pub len: usize,
+    pub reading: String,
+    /// その読みと表記のエントリ (品詞違いで複数あり得る)
+    pub entries: Vec<&'a Entry>,
+}
+
+/// 辞書の逆引きの索引 (表記 → 読みとエントリ)。表記に漢字・々 を含むエントリだけを入れる。
+/// かなだけ・英字だけの表記は読みが表記から決まるので入れない (docs/design/selection-reconversion.md の B)。
+/// 辞書と別の構造にしているのは、エンジンの待ち受けを始めてから別スレッドで構築するため。
+/// エントリは位置で持ち表記の文字列を複製しないので、引くときは構築に使った辞書を渡す
+pub struct SurfaceIndex {
+    /// エントリの entries 内の位置を、表記の順に並べたもの。同じ表記の中は entries の順
+    /// (読みの順 → 記載順) なので、同じ (読み, 表記) のエントリが連続する
+    by_surface: Vec<u32>,
+    /// 辞書の全ての読みの run の、entries 内の開始位置 (昇順)。エントリの位置から run を二分探索で
+    /// 引き、run の (開始, 件数) を値として読みの fst を逆に引いて読みを得る (fst の値は読みの順に
+    /// 増えるので値から読みが引ける)。読みの文字列を索引に複製しないため
+    run_starts: Vec<u32>,
+}
+
+impl SurfaceIndex {
+    /// finalize() 済みの辞書から索引を構築する
+    pub fn build(dict: &Dictionary) -> Self {
+        let mut by_surface: Vec<u32> = Vec::new();
+        let mut run_starts: Vec<u32> = Vec::with_capacity(dict.fst.len());
+        let mut stream = dict.fst.stream();
+        while let Some((_, packed)) = stream.next() {
+            let (start, len) = unpack(packed);
+            run_starts.push(start as u32);
+            for i in start..start + len {
+                if dict.entries[i].surface.chars().any(is_kanji) {
+                    by_surface.push(i as u32);
+                }
+            }
+        }
+        by_surface.shrink_to_fit();
+        // 位置の昇順に積んであるので、安定ソートで同じ表記の中を entries の順に保つ
+        by_surface.sort_by(|&a, &b| dict.entries[a as usize].surface.cmp(&dict.entries[b as usize].surface));
+        SurfaceIndex { by_surface, run_starts }
+    }
+
+    /// 索引に入れたエントリの数
+    pub fn len(&self) -> usize {
+        self.by_surface.len()
+    }
+
+    /// エントリの位置が属する run の番号 (run_starts の添字)
+    fn run_of(&self, entry: u32) -> usize {
+        self.run_starts.partition_point(|&s| s <= entry) - 1
+    }
+
+    fn reading(&self, dict: &Dictionary, run: usize) -> String {
+        let start = self.run_starts[run] as usize;
+        let end = self.run_starts.get(run + 1).map_or(dict.entries.len(), |&e| e as usize);
+        let key = dict.fst.as_fst().get_key(pack(start, end - start)).expect("run は辞書の読みの値");
+        String::from_utf8(key).expect("キーは読み文字列 (UTF-8)")
+    }
+
+    /// 表記の並び suffix の先頭から始まる、索引にある表記の語を短い順 (同じ長さは読みの辞書順) に返す。
+    /// Dictionary::common_prefix_search の表記版で、逆変換のラティス構築用。max_chars 文字まで走査する。
+    /// dict は索引を構築した辞書
+    pub fn common_prefix_search<'d>(
+        &self,
+        dict: &'d Dictionary,
+        suffix: &[char],
+        max_chars: usize,
+    ) -> Vec<SurfaceMatch<'d>> {
+        let surface = |k: u32| dict.entries[k as usize].surface.as_str();
+        let mut results = Vec::new();
+        let mut prefix = String::new();
+        // 表記が prefix で始まるエントリの範囲。prefix を1文字ずつ伸ばして狭める
+        let (mut lo, mut hi) = (0, self.by_surface.len());
+        for (i, &ch) in suffix.iter().take(max_chars).enumerate() {
+            prefix.push(ch);
+            let p = prefix.as_str();
+            lo += self.by_surface[lo..hi].partition_point(|&k| surface(k) < p);
+            hi = lo + self.by_surface[lo..hi].partition_point(|&k| surface(k).starts_with(p));
+            if lo == hi {
+                break;
+            }
+            // 表記が prefix と一致するエントリは範囲の先頭にまとまっている
+            let exact = lo + self.by_surface[lo..hi].partition_point(|&k| surface(k) == p);
+            let mut j = lo;
+            while j < exact {
+                let run = self.run_of(self.by_surface[j]);
+                let mut entries = Vec::new();
+                while j < exact && self.run_of(self.by_surface[j]) == run {
+                    entries.push(&dict.entries[self.by_surface[j] as usize]);
+                    j += 1;
+                }
+                results.push(SurfaceMatch { len: i + 1, reading: self.reading(dict, run), entries });
+            }
+        }
+        results
+    }
+}
+
 pub struct Dictionary {
     /// 読み → entries 内の位置 (pack/unpack 参照)。finalize() で構築する
     fst: fst::Map<Vec<u8>>,
@@ -180,6 +291,8 @@ pub struct Dictionary {
     /// 記号と同じく候補リストへの追記だけに使う
     single_kanji: HashMap<String, Vec<String>>,
     single_kanji_count: usize,
+    /// 単漢字辞書の逆引き (漢字 → 読みのリスト、single_kanji.tsv の記載順)
+    single_kanji_readings: HashMap<char, Vec<String>>,
 }
 
 impl Dictionary {
@@ -194,6 +307,7 @@ impl Dictionary {
             symbol_count: 0,
             single_kanji: HashMap::new(),
             single_kanji_count: 0,
+            single_kanji_readings: HashMap::new(),
         }
     }
 
@@ -351,10 +465,11 @@ impl Dictionary {
             }
             let list = self.single_kanji.entry(reading.to_string()).or_default();
             for c in kanji.chars() {
-                let c = c.to_string();
-                if !list.contains(&c) {
-                    list.push(c);
+                let s = c.to_string();
+                if !list.contains(&s) {
+                    list.push(s);
                     self.single_kanji_count += 1;
+                    self.single_kanji_readings.entry(c).or_default().push(reading.to_string());
                 }
             }
         }
@@ -364,6 +479,11 @@ impl Dictionary {
     /// 読みに対応する単漢字の一覧を返す (single_kanji.tsv の記載順)
     pub fn lookup_single_kanji(&self, reading: &str) -> &[String] {
         self.single_kanji.get(reading).map_or(&[], |list| list.as_slice())
+    }
+
+    /// 単漢字の読みの一覧を返す (single_kanji.tsv の記載順)
+    pub fn lookup_single_kanji_readings(&self, kanji: char) -> &[String] {
+        self.single_kanji_readings.get(&kanji).map_or(&[], |list| list.as_slice())
     }
 
     /// 読みに完全一致するエントリ一覧を返す (finalize が未実行なら空)
@@ -744,6 +864,110 @@ mod tests {
         assert!(dict.lookup_single_kanji("ない").is_empty());
         assert!(dict.lookup_single_kanji("# コメント行").is_empty());
         assert_eq!(dict.single_kanji_count(), 5);
+    }
+
+    #[test]
+    fn 単漢字の読みを漢字で記載順に引ける() {
+        let mut dict = Dictionary::empty();
+        let data = "ひょう\t氷表雹\n\
+                    こおり\t氷\n\
+                    ひょう\t雹豹\n";
+        dict.load_single_kanji_from(data.as_bytes()).unwrap();
+        assert_eq!(dict.lookup_single_kanji_readings('氷'), ["ひょう", "こおり"]);
+        // 同じ読みと字の重複は重ねない
+        assert_eq!(dict.lookup_single_kanji_readings('雹'), ["ひょう"]);
+        assert!(dict.lookup_single_kanji_readings('無').is_empty());
+    }
+
+    fn sample_for_surface() -> (Dictionary, SurfaceIndex) {
+        let mut dict = Dictionary::empty();
+        let data = "きょう\t100\t100\t3000\t今日\n\
+                    こんにち\t100\t100\t5000\t今日\n\
+                    きょう\t200\t200\t6000\t今日\n\
+                    きょう\t100\t100\t4000\t京\n\
+                    きょうは\t100\t100\t7000\t今日は\n\
+                    いま\t100\t100\t2000\t今\n\
+                    ひとびと\t100\t100\t3000\t人々\n\
+                    とうきょう\t100\t100\t3000\t東京\n\
+                    かな\t100\t100\t3000\tかな\n\
+                    かたかな\t100\t100\t3000\tカタカナ\n\
+                    えーびーしー\t100\t100\t3000\tABC\n";
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        let index = SurfaceIndex::build(&dict);
+        (dict, index)
+    }
+
+    /// (一致した文字数, 読み, エントリの (左文脈ID, コスト)) の並び
+    fn surface_search(
+        (dict, index): &(Dictionary, SurfaceIndex),
+        text: &str,
+    ) -> Vec<(usize, String, Vec<(u16, i16)>)> {
+        let chars: Vec<char> = text.chars().collect();
+        index
+            .common_prefix_search(dict, &chars, chars.len())
+            .into_iter()
+            .map(|m| (m.len, m.reading, m.entries.iter().map(|e| (e.left_id, e.cost)).collect()))
+            .collect()
+    }
+
+    #[test]
+    fn 表記の前方一致で読みとエントリを短い順に引ける() {
+        let sample = sample_for_surface();
+        assert_eq!(
+            surface_search(&sample, "今日は良い"),
+            vec![
+                (1, "いま".to_string(), vec![(100, 2000)]),
+                // 同じ読みと表記の品詞違いは1件にまとめ、エントリを記載順に持つ
+                (2, "きょう".to_string(), vec![(100, 3000), (200, 6000)]),
+                (2, "こんにち".to_string(), vec![(100, 5000)]),
+                (3, "きょうは".to_string(), vec![(100, 7000)]),
+            ]
+        );
+        // 同じ読みの別の表記 (京) は混ざらない
+        assert_eq!(surface_search(&sample, "京"), vec![(1, "きょう".to_string(), vec![(100, 4000)])]);
+        assert_eq!(surface_search(&sample, "人々"), vec![(2, "ひとびと".to_string(), vec![(100, 3000)])]);
+        // 途中の長さ (東) に語が無くても、その先 (東京) は引ける
+        assert_eq!(surface_search(&sample, "東京都"), vec![(2, "とうきょう".to_string(), vec![(100, 3000)])]);
+        assert_eq!(sample.1.len(), 8);
+    }
+
+    #[test]
+    fn かなと英字だけの表記は索引に入れない() {
+        let sample = sample_for_surface();
+        assert!(surface_search(&sample, "かな").is_empty());
+        assert!(surface_search(&sample, "カタカナ").is_empty());
+        assert!(surface_search(&sample, "ABC").is_empty());
+        // 先頭の文字が表記の途中でも一致しない
+        assert!(surface_search(&sample, "日").is_empty());
+    }
+
+    #[test]
+    fn 表記の前方一致は走査の上限で打ち切る() {
+        let (dict, index) = sample_for_surface();
+        let chars: Vec<char> = "今日は".chars().collect();
+        let got: Vec<usize> = index.common_prefix_search(&dict, &chars, 1).iter().map(|m| m.len).collect();
+        assert_eq!(got, vec![1]);
+    }
+
+    #[test]
+    fn 空の辞書の索引は何も引けない() {
+        let dict = Dictionary::empty();
+        let index = SurfaceIndex::build(&dict);
+        let chars: Vec<char> = "今日".chars().collect();
+        assert!(index.common_prefix_search(&dict, &chars, 2).is_empty());
+        assert_eq!(index.len(), 0);
+    }
+
+    #[test]
+    fn 漢字と踊り字を判定する() {
+        assert!(is_kanji('漢'));
+        assert!(is_kanji('々'));
+        assert!(is_kanji('𠮷'));
+        assert!(!is_kanji('か'));
+        assert!(!is_kanji('カ'));
+        assert!(!is_kanji('A'));
+        assert!(!is_kanji('３'));
     }
 
     #[test]

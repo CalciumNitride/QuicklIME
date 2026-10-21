@@ -458,6 +458,10 @@ private:
         const std::vector<std::pair<std::wstring, std::wstring>>& segments) const;
     // 文節伸縮で分割を直したまま確定したときの学習をエンジンへ送る
     void LearnResizedSegments();
+    // 逆変換から始めた変換で確定した文節 committed の、表記が変わったかを文節ごとに返す
+    // (docs/design/selection-reconversion.md の E)
+    std::vector<bool> ReverseChangedSegments(
+        const std::vector<std::pair<std::wstring, std::wstring>>& committed) const;
     // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
     // 確定アンドゥ情報を記憶し、変換・予測状態と composer_ を破棄する
     void FinishConversionState(const std::wstring& commitText);
@@ -599,12 +603,22 @@ private:
         std::wstring before;
         bool selection = false;  // 選択範囲 (後置再変換) か、キャレット直前の文字列か
         bool adopted = false;    // 最新の記憶1件が対象か (読みの状態は記憶したものを使う)
+        // 漢字などを含む選択を逆変換したか。words は語ごとの (読み, 表記)
+        bool reversed = false;
+        std::vector<std::pair<std::wstring, std::wstring>> words;
     };
     // 選択があれば、選択開始から読み戻して照合できる、ひらがな・カタカナ・ー だけの選択
-    // (後置再変換)。選択が空なら、読める文書でキャレット直前が有効な記憶で終わり、最新の記憶の
+    // (後置再変換)、または漢字などを含み逆変換で読める選択 (docs/design/selection-reconversion.md)。
+    // 選択が空なら、読める文書でキャレット直前が有効な記憶で終わり、最新の記憶の
     // 表記がひらがな・ー だけでなければその1件、それ以外はキャレット直前のひらがな・ー の連続。
     // どちらも kMaxReconvertLength 文字まで。対象が無ければ false
     bool ReadIdleTarget(ITfContext* context, IdleTarget* target) const;
+    // 選択 text を逆変換する。同じ打鍵の中では食べるかの判定と処理で同じ結果を使い、
+    // REVERSE を一度だけ送る (reverseQuery_)
+    bool ReverseSelection(const std::wstring& text,
+                          std::vector<std::pair<std::wstring, std::wstring>>* words) const;
+    // 逆変換の結果の一時保持を捨てる (打鍵の処理の終わりと、次の打鍵の判定の始め)
+    void ClearReverseQuery() const;
     // 入力なしの対象を読みとして run を作り、昇格して func (Convert か F6〜F10) の変換に入る
     HRESULT ConvertIdleTarget(ITfContext* context, KeyFunc func);
     // キャレット (選択の開始) より前の文書の文字列を読み、直前の inRange を除いた残りを before に
@@ -849,6 +863,19 @@ private:
     size_t rangeAdoptedFrom_;
     bool rangeFromAdopted_;   // 最新の記憶から始めた変換か
     AdoptedText rangeOrigin_;       // 変換を始めた記憶 (rangeFromAdopted_ のとき)
+    // 逆変換した選択から始めた変換か。rangeFromAdopted_ も立て、rangeOrigin_ に選択の表記と
+    // 逆変換の語の列を入れて記憶から始めた変換と同じ経路を通す (記憶 adopted_ には入れない)
+    bool rangeFromReverse_ = false;
+
+    // 逆変換の結果の一時保持。選択の文字列が同じでも文書が変わっている可能性があるので、
+    // 1 回の打鍵の中 (食べるかの判定 → 処理) でだけ使う
+    struct ReverseQuery {
+        bool valid = false;
+        std::wstring text;
+        bool ok = false;
+        std::vector<std::pair<std::wstring, std::wstring>> words;
+    };
+    mutable ReverseQuery reverseQuery_;
 
     // 採用した文字列の記憶 (文書に入れた順。末尾が最新)。メモリ上だけに置き、
     // フォーカス移動・IME オフで捨てる

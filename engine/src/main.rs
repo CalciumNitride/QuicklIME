@@ -18,6 +18,7 @@ mod matrix;
 mod number;
 mod pos;
 mod predict;
+mod reverse;
 mod suggest;
 mod typo;
 mod userdict;
@@ -25,7 +26,7 @@ mod userdict;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
@@ -34,7 +35,7 @@ use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToN
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
 
 use config::Config;
-use dict::Dictionary;
+use dict::{Dictionary, SurfaceIndex};
 use english::EnglishDict;
 use learn::LearningStore;
 use matrix::ConnectionMatrix;
@@ -52,6 +53,9 @@ fn pipe_name() -> String {
 /// 変換に必要なデータ一式 (全接続スレッドで共有する)
 struct EngineData {
     dictionary: Dictionary,
+    /// dictionary の逆引きの索引。起動を待たせないよう待ち受けを始めてから別スレッドで作るので、
+    /// できるまでは空 (spawn_surface_index_build)
+    surface_index: OnceLock<SurfaceIndex>,
     matrix: ConnectionMatrix,
     functional: FunctionalIds,
     /// ユーザ辞書 (ADDWORD で書き込むため Mutex で保護)
@@ -175,6 +179,7 @@ fn main() -> std::io::Result<()> {
     });
     let data = Arc::new(EngineData {
         dictionary,
+        surface_index: OnceLock::new(),
         matrix,
         functional,
         user: Mutex::new(user),
@@ -195,6 +200,7 @@ fn main() -> std::io::Result<()> {
     }
     let listener = options.create_sync()?;
     eprintln!("quicklime-engine: \\\\.\\pipe\\{pipe} で待機中");
+    spawn_surface_index_build(&data);
 
     // クライアント (アプリごとの TSF DLL) を1接続=1スレッドで処理する
     for conn in listener.incoming() {
@@ -207,6 +213,21 @@ fn main() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 辞書の逆引きの索引を別スレッドで作り、data.surface_index に入れる
+fn spawn_surface_index_build(data: &Arc<EngineData>) -> thread::JoinHandle<()> {
+    let data = Arc::clone(data);
+    thread::spawn(move || {
+        let started = Instant::now();
+        let index = SurfaceIndex::build(&data.dictionary);
+        eprintln!(
+            "逆引きの索引を作りました: {} エントリ ({:.1}秒)",
+            index.len(),
+            started.elapsed().as_secs_f64()
+        );
+        let _ = data.surface_index.set(index);
+    })
 }
 
 /// 辞書ディレクトリの決定。優先順:
@@ -846,6 +867,29 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("REVERSE") => {
+            // REVERSE\t<表記> : 表記を語の (読み, 表記) の列にする (逆変換。応答は PREDICT と同じ形)
+            let Some(text) = fields.next().filter(|t| !t.is_empty()) else {
+                return "ERR\t表記が空です\n".to_string();
+            };
+            let Some(index) = data.surface_index.get() else {
+                return "ERR\t逆引きの索引を作っています\n".to_string();
+            };
+            let user = data.user.lock().expect("user lock");
+            let learning = data.learning.lock().expect("learning lock");
+            match reverse::reverse(
+                text,
+                &data.dictionary,
+                index,
+                &user,
+                &data.matrix,
+                &data.functional,
+                &learning,
+            ) {
+                Some(words) => predictions_response(&words),
+                None => "ERR\t読めない文字があります\n".to_string(),
+            }
+        }
         Some("CONVUSER") => match fields.next() {
             // ユーザ辞書変換 (F5 用): 読みに完全一致するユーザ登録語
             // (短縮よみ → 名詞系 → インポート辞書の名詞系) のみを返す。該当なしは候補ゼロの OK
@@ -1127,6 +1171,7 @@ mod tests {
     fn empty_data() -> EngineData {
         EngineData {
             dictionary: Dictionary::empty(),
+            surface_index: OnceLock::new(),
             matrix: ConnectionMatrix::empty(),
             functional: FunctionalIds::empty(),
             user: Mutex::new(UserDict::empty()),
@@ -1136,6 +1181,35 @@ mod tests {
             english: EnglishDict::empty(),
             rerank_min_chars: llm::RERANK_MIN_CHARS,
         }
+    }
+
+    #[test]
+    fn 逆引きの索引は別スレッドで作り終えてから引ける() {
+        let data = Arc::new(sample_data());
+        assert!(data.surface_index.get().is_none());
+        spawn_surface_index_build(&data).join().unwrap();
+        let index = data.surface_index.get().expect("索引ができている");
+        let chars: Vec<char> = "今日は晴れ".chars().collect();
+        let got: Vec<(usize, String)> = index
+            .common_prefix_search(&data.dictionary, &chars, chars.len())
+            .into_iter()
+            .map(|m| (m.len, m.reading))
+            .collect();
+        assert_eq!(got, vec![(2, "きょう".to_string())]);
+    }
+
+    #[test]
+    fn reverseは索引ができてから表記を語の読みと表記の列にする() {
+        let data = Arc::new(sample_data());
+        assert!(handle_request("REVERSE\t今日は晴れ", &data).starts_with("ERR\t"));
+        spawn_surface_index_build(&data).join().unwrap();
+        assert_eq!(
+            handle_request("REVERSE\t今日は晴れ", &data),
+            "OK\tきょう\x1f今日\tは\x1fは\tはれ\x1f晴れ\n"
+        );
+        assert!(handle_request("REVERSE\t今日はabc", &data).starts_with("ERR\t"));
+        assert!(handle_request("REVERSE\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("REVERSE", &data).starts_with("ERR\t"));
     }
 
     #[test]
@@ -1195,6 +1269,7 @@ mod tests {
         let functional = FunctionalIds::load_from("1 名詞,一般\n2 助詞,係助詞\n".as_bytes()).unwrap();
         EngineData {
             dictionary,
+            surface_index: OnceLock::new(),
             matrix: ConnectionMatrix::empty(),
             functional,
             user: Mutex::new(UserDict::empty()),

@@ -22,11 +22,11 @@ use crate::userdict::UserDict;
 const MAX_DICT_CANDIDATES: usize = 24;
 
 /// 辞書引きする読みの最大文字数 (ラティス構築時)
-const MAX_READING_CHARS: usize = 16;
+pub(crate) const MAX_READING_CHARS: usize = 16;
 
 /// 未知語 (辞書に無い1文字) ノードの単語コスト。
 /// 辞書語の経路が常に優先されるよう十分大きくする
-const UNKNOWN_WORD_COST: i32 = 12000;
+pub(crate) const UNKNOWN_WORD_COST: i32 = 12000;
 
 /// 読みの中の ASCII 英字の連続 (英単語) を1語にしたノードの単語コスト。
 /// 英字混じりの読みで英単語が日本語の部分の変換を邪魔しないよう、一般的な名詞程度にする
@@ -40,7 +40,7 @@ const ASCII_FORM_BONUS: i32 = 100;
 /// 辞書にはコスト0の短いかな語が多く、素のコストでは「き+き+無+れ」のような
 /// 細切れ経路が複合語 (聞き慣れ) より安くなるため、文節数が少ない経路を優先させる。
 /// 値は実辞書の回帰コーパスで調整した (「ききなれない」は自立語1語差で約800必要)
-const SEGMENT_PENALTY: i32 = 1000;
+pub(crate) const SEGMENT_PENALTY: i32 = 1000;
 
 /// 学習済み文節境界による文節ペナルティの増減。
 /// 境界の開始位置では減らして切りやすく、境界の内部では増やして切りにくくする。

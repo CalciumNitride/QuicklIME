@@ -27,7 +27,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 
-use crate::dict::{Dictionary, Entry, FuzzyPrefix};
+use crate::dict::{self, Dictionary, Entry, FuzzyPrefix, SurfaceIndex, SurfaceMatch};
 use crate::english;
 use crate::learn;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
@@ -98,6 +98,8 @@ pub struct UserDict {
     learned_path: Option<PathBuf>,
     /// インポート辞書の名詞系単語
     imported: Dictionary,
+    /// imported の逆引きの索引。imported を読み込むたびに作り直す
+    imported_index: SurfaceIndex,
     /// インポート辞書の短縮よみ (読み, 表記)。ファイル名順 → 記載順
     imported_shortcuts: Vec<(String, String)>,
     /// インポート辞書のディレクトリ。None なら読み込まない (テスト時)
@@ -123,6 +125,7 @@ impl UserDict {
             path: None,
             learned_path: None,
             imported: Dictionary::empty(),
+            imported_index: SurfaceIndex::build(&Dictionary::empty()),
             imported_shortcuts: Vec::new(),
             import_dir: None,
             english: Vec::new(),
@@ -279,6 +282,7 @@ impl UserDict {
             }
         }
         imported.finalize();
+        self.imported_index = SurfaceIndex::build(&imported);
         self.imported = imported;
         self.imported_shortcuts = shortcuts;
     }
@@ -591,6 +595,23 @@ impl UserDict {
                 (len > 0).then_some((len, w))
             })
             .collect()
+    }
+
+    /// 表記の並び suffix の先頭から始まる、表記に漢字・々 を含む名詞系単語を返す (逆変換のラティス構築用)。
+    /// 戻り値は (一致した文字数, 単語)。件数は高々数千なので線形走査で足りる
+    pub fn surface_prefix_words(&self, suffix: &[char]) -> Vec<(usize, &UserWord)> {
+        self.all_words()
+            .filter(|w| w.surface.chars().any(dict::is_kanji))
+            .filter_map(|w| {
+                let len = w.surface.chars().count();
+                (len <= suffix.len() && w.surface.chars().zip(suffix).all(|(a, &b)| a == b)).then_some((len, w))
+            })
+            .collect()
+    }
+
+    /// インポート辞書の SurfaceIndex::common_prefix_search
+    pub fn imported_surface_prefix(&self, suffix: &[char], max_chars: usize) -> Vec<SurfaceMatch<'_>> {
+        self.imported_index.common_prefix_search(&self.imported, suffix, max_chars)
     }
 
     /// 読みが prefix で始まる名詞系単語を記載順に limit 件まで返す (予測入力用)
