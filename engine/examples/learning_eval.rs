@@ -16,7 +16,10 @@
 //   - 「既出」は前の学習に入れた件か (読み, 表記) が前の p か q の件にもある行、「初出」はそれ以外の行
 // learning_stats.tsv は追記ログなので、同じ件の行は後の行だけを使う (エンジンの読み込みと同じ)。
 // ファイルは読むだけで、学習はメモリ上にだけ作る。
-// 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。
+// 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。あわせて、外れが語の学習の割引の
+// 上限の例外と前文脈のどちらで直りうるかを見るため、正解と 1 位の自立語の違いで分類する: 固定 (1 位が読み全体の
+// 学習表記)・分けられない・自立語が同じ・区切り・同音 (違う語の今の度合いが正解の方が大きい / どちらも学習あり /
+// 正解に学習なし)・その他 (1 位を分けられない)。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -280,6 +283,118 @@ struct Misses {
     pinned_known: usize,
 }
 
+/// 変換の 1 位を外した行の分類 (表の行の順)
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum MissClass {
+    Pinned,
+    Unsplit,
+    SameWords,
+    Boundary,
+    HomophoneMore,
+    HomophoneBoth,
+    HomophoneUnlearned,
+    Other,
+}
+
+impl MissClass {
+    const ALL: [MissClass; 8] = [
+        MissClass::Pinned,
+        MissClass::Unsplit,
+        MissClass::SameWords,
+        MissClass::Boundary,
+        MissClass::HomophoneMore,
+        MissClass::HomophoneBoth,
+        MissClass::HomophoneUnlearned,
+        MissClass::Other,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            MissClass::Pinned => "固定 (1 位が読み全体の学習表記)",
+            MissClass::Unsplit => "分けられない (正解を辞書の語に分けられない)",
+            MissClass::SameWords => "自立語が同じ",
+            MissClass::Boundary => "区切り",
+            MissClass::HomophoneMore => "同音・正解の方が多く使われている",
+            MissClass::HomophoneBoth => "同音・どちらも学習あり",
+            MissClass::HomophoneUnlearned => "同音・正解に学習なし",
+            MissClass::Other => "その他 (1 位を辞書の語に分けられない)",
+        }
+    }
+}
+
+/// 外した行を分類する。right・top は正解と 1 位を split_words で分けた自立語 (分けられなければ None)、
+/// degree は語の学習の今の度合い (無ければ 0)
+fn classify_miss(
+    pinned: bool,
+    right: Option<&[(String, String)]>,
+    top: Option<&[(String, String)]>,
+    degree: impl Fn(&str, &str) -> f64,
+) -> MissClass {
+    if pinned {
+        return MissClass::Pinned;
+    }
+    let Some(right) = right else {
+        return MissClass::Unsplit;
+    };
+    let Some(top) = top else {
+        return MissClass::Other;
+    };
+    // 多重集合の差 (語の順を保つ)
+    let only = |a: &[(String, String)], b: &[(String, String)]| {
+        let mut rest: HashMap<&(String, String), usize> = HashMap::new();
+        for w in b {
+            *rest.entry(w).or_default() += 1;
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for w in a {
+            match rest.get_mut(w) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => out.push(w.clone()),
+            }
+        }
+        out
+    };
+    let d_right = only(right, top);
+    let d_top = only(top, right);
+    if d_right.is_empty() && d_top.is_empty() {
+        return MissClass::SameWords;
+    }
+    fn readings(list: &[(String, String)]) -> Vec<&str> {
+        let mut r: Vec<&str> = list.iter().map(|(r, _)| r.as_str()).collect();
+        r.sort_unstable();
+        r
+    }
+    if readings(&d_right) != readings(&d_top) {
+        return MissClass::Boundary;
+    }
+    let mut used = vec![false; d_top.len()];
+    let mut best: Option<(f64, f64)> = None;
+    for (reading, surface) in &d_right {
+        let Some(j) = (0..d_top.len()).find(|&j| !used[j] && d_top[j].0 == *reading) else {
+            continue;
+        };
+        used[j] = true;
+        let pair = (degree(reading, surface), degree(&d_top[j].0, &d_top[j].1));
+        if best.is_none_or(|(r, t)| pair.0 - pair.1 > r - t) {
+            best = Some(pair);
+        }
+    }
+    let (r, t) = best.expect("読みが一致する差の語は 1 組以上ある");
+    if r > t {
+        MissClass::HomophoneMore
+    } else if r > 0.0 {
+        MissClass::HomophoneBoth
+    } else {
+        MissClass::HomophoneUnlearned
+    }
+}
+
+/// 分類ごとの [行, 3 位以内, 前文脈の学習あり]
+#[derive(Default)]
+struct ClassTally {
+    counts: HashMap<MissClass, [usize; 3]>,
+}
+
 fn percent(n: usize, total: usize) -> String {
     format!("{:.1}%", 100.0 * n as f64 / total.max(1) as f64)
 }
@@ -428,6 +543,13 @@ fn main() -> BoxResult<()> {
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
 
     let mut details: Vec<String> = Vec::new();
+    let mut class_tables: Vec<String> = Vec::new();
+    let mut contexts_of: HashMap<(&str, &str), Vec<&str>> = HashMap::new();
+    for r in &rows {
+        if let Some(c) = &r.context {
+            contexts_of.entry((r.reading.as_str(), r.surface.as_str())).or_default().push(c.as_str());
+        }
+    }
     let mut configs: Vec<(String, Option<Weights>)> = Vec::new();
     if args.empty {
         configs.push(("学習なし".to_string(), None));
@@ -449,6 +571,7 @@ fn main() -> BoxResult<()> {
         let mut nbest_times: Vec<f64> = Vec::new();
         let mut suggest_times: Vec<f64> = Vec::new();
         let mut misses = Misses::default();
+        let mut classes = ClassTally::default();
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
@@ -471,6 +594,24 @@ fn main() -> BoxResult<()> {
                         misses.pinned += 1;
                         misses.pinned_known += usize::from(store.has_phrase(&row.reading, &row.surface));
                     }
+                    let (right, top) = if nbest.learned {
+                        (None, None)
+                    } else {
+                        let top = nbest.candidates.first().and_then(|c| split(&row.reading, &c.surface()));
+                        (split(&row.reading, &row.surface), top)
+                    };
+                    let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
+                        store.word_degree(r, s).unwrap_or(0.0)
+                    });
+                    let ctx_learned = contexts_of
+                        .get(&(row.reading.as_str(), row.surface.as_str()))
+                        .is_some_and(|cs| {
+                            cs.iter().any(|c| store.ctx_phrase_stat(c, &row.reading, &row.surface).is_some())
+                        });
+                    let slot = classes.counts.entry(class).or_default();
+                    slot[0] += 1;
+                    slot[1] += usize::from(rank.is_some_and(|r| r < 3));
+                    slot[2] += usize::from(ctx_learned);
                 }
                 (rank, nbest.learned)
             });
@@ -537,10 +678,29 @@ fn main() -> BoxResult<()> {
             misses.pinned,
             misses.pinned_known,
         ));
+        let class_total: usize = classes.counts.values().map(|c| c[0]).sum();
+        assert_eq!(class_total, all.conv_total - all.conv1, "分類の合計が外れの数と一致しない");
+        let mut table = format!(
+            "\n### {name}\n\n| 分類 | 行 | 3 位以内 | 前文脈の学習あり |\n|---|---|---|---|\n"
+        );
+        for class in MissClass::ALL {
+            let [n, top3, ctx] = classes.counts.get(&class).copied().unwrap_or_default();
+            table.push_str(&format!("| {} | {n} | {top3} | {ctx} |\n", class.label()));
+        }
+        let sum = |i: usize| classes.counts.values().map(|c| c[i]).sum::<usize>();
+        table.push_str(&format!("| 合計 | {} | {} | {} |", sum(0), sum(1), sum(2)));
+        class_tables.push(table);
     }
     println!("\n## 1 位を外した行の内訳\n");
     for line in details {
         println!("{line}");
+    }
+    println!(
+        "\n分類: 1 位を正解と同じく辞書の自立語に分け、片方にだけある語を比べる。3 位以内 = 正解が 3 位以内、\
+         前文脈の学習あり = 同じ (読み, 表記) の後ろの q の行の文脈の学習が、評価に使う学習に入っている行。"
+    );
+    for table in class_tables {
+        println!("{table}");
     }
     Ok(())
 }
@@ -579,5 +739,42 @@ mod tests {
 
         let mut store = LearningStore::in_memory();
         assert_eq!(store.load_stats_from(split.train_text.as_bytes()), 20);
+    }
+
+    #[test]
+    fn classify_miss_by_independent_words() {
+        let words = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|(r, s)| (r.to_string(), s.to_string())).collect()
+        };
+        let degrees = |r: &str, s: &str| match (r, s) {
+            ("a", "A1") => 3.0,
+            ("a", "A2") => 1.0,
+            ("b", "B1") => 1.0,
+            ("b", "B2") => 2.0,
+            _ => 0.0,
+        };
+        let classify = |right: Option<&[(&str, &str)]>, top: Option<&[(&str, &str)]>| {
+            let right = right.map(words);
+            let top = top.map(words);
+            classify_miss(false, right.as_deref(), top.as_deref(), degrees)
+        };
+        let x: &[(&str, &str)] = &[("x", "X")];
+
+        assert_eq!(classify_miss(true, None, None, degrees), MissClass::Pinned);
+        assert_eq!(classify(None, Some(x)), MissClass::Unsplit);
+        assert_eq!(classify(Some(x), None), MissClass::Other);
+        assert_eq!(classify(Some(x), Some(x)), MissClass::SameWords);
+        assert_eq!(classify(Some(&[("x", "X"), ("y", "Y")]), Some(&[("xy", "XY")])), MissClass::Boundary);
+        // 同じ語が 2 つと 1 つ: 多重集合の差で読みが合わない
+        assert_eq!(classify(Some(&[("x", "X"), ("x", "X")]), Some(x)), MissClass::Boundary);
+        assert_eq!(classify(Some(&[("x", "X"), ("a", "A1")]), Some(&[("x", "X"), ("a", "A2")])), MissClass::HomophoneMore);
+        // (正解 - 1 位) が最大の組で決める: a は 3 - 1、b は 1 - 2
+        assert_eq!(
+            classify(Some(&[("b", "B1"), ("a", "A1")]), Some(&[("a", "A2"), ("b", "B2")])),
+            MissClass::HomophoneMore
+        );
+        assert_eq!(classify(Some(&[("b", "B1")]), Some(&[("b", "B2")])), MissClass::HomophoneBoth);
+        assert_eq!(classify(Some(&[("a", "A3")]), Some(&[("a", "A1")])), MissClass::HomophoneUnlearned);
+        assert_eq!(classify(Some(&[("c", "C1")]), Some(&[("c", "C2")])), MissClass::HomophoneUnlearned);
     }
 }
