@@ -42,6 +42,7 @@
 // 使い方:
 //   cargo run --release --example learning_eval -- --stats <learning_stats.tsv>
 //       [--weights "half=5000,ww=1500"]... [--empty] [--dump-same-span <file>]
+//       [--dump-boundary <file>]
 //
 // オプション:
 //   --stats <tsv>      learning_stats.tsv
@@ -54,6 +55,10 @@
 //   --dump-same-span <file>
 //                      同じ区間の行を 1 行ずつ TSV で file に書く (両方のモード)。列はモード・向き・学習の区分・
 //                      正解の順位・正解の経路・1 位の経路。実際の入力の読み・表記が入るので、リポジトリの外に置く
+//   --dump-boundary <file>
+//                      区切りの行を 1 行ずつ TSV で file に書く (両方のモード)。列はモード・向き・差の読みの長さ・
+//                      正解の順位・1 位の差に Mozc 辞書に無い語・正解の差に Mozc 辞書に無い語・正解の経路・1 位の経路。
+//                      実際の入力の読み・表記が入るので、リポジトリの外に置く
 
 #[allow(dead_code)]
 #[path = "../src/config.rs"]
@@ -114,6 +119,7 @@ struct Args {
     dict: PathBuf,
     ut: PathBuf,
     dump_same_span: Option<PathBuf>,
+    dump_boundary: Option<PathBuf>,
 }
 
 fn parse_args() -> BoxResult<Args> {
@@ -126,6 +132,7 @@ fn parse_args() -> BoxResult<Args> {
         dict: root.join("references/mozc/src/data/dictionary_oss"),
         ut: root.join("references/mozcdic-ut/dictionary_ut.txt"),
         dump_same_span: None,
+        dump_boundary: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -137,6 +144,7 @@ fn parse_args() -> BoxResult<Args> {
             "--dict" => args.dict = PathBuf::from(value()?),
             "--ut" => args.ut = PathBuf::from(value()?),
             "--dump-same-span" => args.dump_same_span = Some(PathBuf::from(value()?)),
+            "--dump-boundary" => args.dump_boundary = Some(PathBuf::from(value()?)),
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
@@ -608,6 +616,49 @@ fn boundary_dir(d_right: &[(String, String)], d_top: &[(String, String)]) -> Bou
     }
 }
 
+/// 「区切り」の行の向き・差の読みの長さ (正解の差と 1 位の差の、読みの文字数の合計の大きい方)・
+/// [1 位の差, 正解の差] に Mozc 辞書に無い語があるか (in_mozc が None なら None)。p_right・p_top は path_diff の差
+fn boundary_class(
+    p_right: &[&SplitWord],
+    p_top: &[&SplitWord],
+    in_mozc: Option<&dyn Fn(&str, &str) -> bool>,
+) -> (BoundaryDir, usize, Option<[bool; 2]>) {
+    let pairs = |list: &[&SplitWord]| -> Vec<(String, String)> {
+        list.iter().map(|w| (w.reading.clone(), w.surface.clone())).collect()
+    };
+    let (d_right, d_top) = (pairs(p_right), pairs(p_top));
+    let dir = boundary_dir(&d_right, &d_top);
+    let chars = |list: &[(String, String)]| list.iter().map(|(r, _)| r.chars().count()).sum::<usize>();
+    let len = chars(&d_right).max(chars(&d_top));
+    let missing = in_mozc.map(|in_mozc| {
+        let missing = |list: &[&SplitWord]| list.iter().any(|w| !in_mozc(&w.reading, &w.surface));
+        [missing(p_top), missing(p_right)]
+    });
+    (dir, len, missing)
+}
+
+/// --dump-boundary の 1 行 (改行を含む)。mode はモードの名前、rank は正解の順位 (0 始まり)
+fn boundary_dump_line(
+    mode: &str,
+    right: &[SplitWord],
+    top: &[SplitWord],
+    rank: Option<usize>,
+    in_mozc: Option<&dyn Fn(&str, &str) -> bool>,
+) -> String {
+    let (p_right, p_top) = path_diff(right, top);
+    let (dir, len, missing) = boundary_class(&p_right, &p_top, in_mozc);
+    let mozc = |i: usize| missing.map_or("-", |m| if m[i] { "あり" } else { "なし" });
+    format!(
+        "{mode}\t{}\t{len}\t{}\t{}\t{}\t{}\t{}\n",
+        dir.label(),
+        rank.map_or("-".to_string(), |r| (r + 1).to_string()),
+        mozc(0),
+        mozc(1),
+        path_text(right, &p_right),
+        path_text(top, &p_top),
+    )
+}
+
 /// 「区切り」の行の向きごとの [行, 長さ 1–2, 3–4, 5 以上, 2 位, 3 位, 4–10 位, 11 位以下, 候補に無い,
 /// 1 位の差に Mozc 辞書に無い語, 正解の差に Mozc 辞書に無い語]
 #[derive(Default)]
@@ -626,14 +677,8 @@ impl BoundaryTally {
         in_mozc: Option<&dyn Fn(&str, &str) -> bool>,
     ) {
         let (p_right, p_top) = path_diff(right, top);
-        let pairs = |list: &[&SplitWord]| -> Vec<(String, String)> {
-            list.iter().map(|w| (w.reading.clone(), w.surface.clone())).collect()
-        };
-        let (d_right, d_top) = (pairs(&p_right), pairs(&p_top));
-        let dir = boundary_dir(&d_right, &d_top);
+        let (dir, len, missing) = boundary_class(&p_right, &p_top, in_mozc);
         let slot = &mut self.counts[BoundaryDir::ALL.iter().position(|&d| d == dir).expect("向き")];
-        let chars = |list: &[(String, String)]| list.iter().map(|(r, _)| r.chars().count()).sum::<usize>();
-        let len = chars(&d_right).max(chars(&d_top));
         slot[0] += 1;
         slot[match len {
             0..=2 => 1,
@@ -648,10 +693,9 @@ impl BoundaryTally {
             Some(_) => 7,
             None => 8,
         }] += 1;
-        if let Some(in_mozc) = in_mozc {
-            let missing = |list: &[&SplitWord]| list.iter().any(|w| !in_mozc(&w.reading, &w.surface));
-            slot[9] += usize::from(missing(&p_top));
-            slot[10] += usize::from(missing(&p_right));
+        if let Some([top_missing, right_missing]) = missing {
+            slot[9] += usize::from(top_missing);
+            slot[10] += usize::from(right_missing);
         }
     }
 
@@ -979,11 +1023,16 @@ fn main() -> BoxResult<()> {
     let mut empty_boundary = BoundaryTally::default();
     let mut empty_same_span = SameSpanTally::default();
     let dump = args.dump_same_span.is_some();
+    let dump_boundary = args.dump_boundary.is_some();
     let contexts = segment_contexts(&entries);
     // 位置の区分ごとの [行, 変換 1, 変換 3]
     let mut empty_pos = [[0usize; 3]; PhrasePos::ALL.len()];
     let mut dump_text = String::from("モード	向き	学習の区分	正解の順位	正解の経路	1 位の経路
 ");
+    let mut boundary_text = String::from(
+        "モード	向き	差の読みの長さ	正解の順位	1 位の差に Mozc 辞書に無い語	正解の差に Mozc 辞書に無い語	正解の経路	1 位の経路
+",
+    );
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
         let ctx = segment_ctx(&contexts, e.whole, &e.reading, &e.surface);
         let t = Instant::now();
@@ -1016,6 +1065,9 @@ fn main() -> BoxResult<()> {
             }
             if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
                 empty_boundary.add(right, top, rank, in_mozc);
+                if dump_boundary {
+                    boundary_text.push_str(&boundary_dump_line("学習が空", right, top, rank, in_mozc));
+                }
             }
             if let (MissClass::SameSpan, Some(right), Some(top)) = (class, &right, &top) {
                 empty_same_span.add(right, top, |r, s| empty.word_degree(r, s).unwrap_or(0.0));
@@ -1259,6 +1311,9 @@ fn main() -> BoxResult<()> {
                     }
                     if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
                         boundary.add(right, top, rank, in_mozc);
+                        if dump_boundary {
+                            boundary_text.push_str(&boundary_dump_line(&format!("学習あり ({name})"), right, top, rank, in_mozc));
+                        }
                     }
                     if let (MissClass::SameSpan, Some(right), Some(top)) = (class, &right, &top) {
                         same_span.add(right, top, |r, s| store.word_degree(r, s).unwrap_or(0.0));
@@ -1391,6 +1446,10 @@ fn main() -> BoxResult<()> {
     if let Some(file) = &args.dump_same_span {
         std::fs::write(file, &dump_text)?;
         eprintln!("同じ区間の行を {} 行書き出した: {}", dump_text.lines().count() - 1, file.display());
+    }
+    if let Some(file) = &args.dump_boundary {
+        std::fs::write(file, &boundary_text)?;
+        eprintln!("区切りの行を {} 行書き出した: {}", boundary_text.lines().count() - 1, file.display());
     }
     Ok(())
 }
@@ -1611,6 +1670,21 @@ mod tests {
         tally.add(&path_of(&[("あ", "A", false), ("い", "I", false)]), &path_of(&[("あい", "AI", false)]), Some(1), None);
         assert_eq!(tally.counts[3], [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert!(tally.render(1, false).ends_with("| 合計 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | - | - |"));
+    }
+
+    #[test]
+    fn boundary_dump_line_has_dir_length_rank_and_mozc() {
+        let in_mozc = |_: &str, s: &str| s != "AI";
+        let right = path_of(&[("あ", "A", false), ("い", "I", false), ("は", "は", true)]);
+        let top = path_of(&[("あい", "AI", false), ("は", "は", true)]);
+        assert_eq!(
+            boundary_dump_line("学習が空", &right, &top, Some(1), Some(&in_mozc)),
+            "学習が空\t正解の方が語が多い (1 位がまとめた)\t2\t2\tあり\tなし\t*A/あ | *I/い | [は/は]\t*AI/あい | [は/は]\n"
+        );
+        // UT 辞書が無いときは Mozc 辞書に無い語の列を `-` にし、候補に無い順位も `-` にする
+        let line = boundary_dump_line("学習あり", &right, &top, None, None);
+        assert_eq!(line.matches('\t').count(), 7);
+        assert!(line.starts_with("学習あり\t正解の方が語が多い (1 位がまとめた)\t2\t-\t-\t-\t"));
     }
 
     #[test]
