@@ -31,6 +31,7 @@ use std::time::Instant;
 
 use interprocess::local_socket::traits::{ListenerExt, Stream as _};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
 
 use config::Config;
 use dict::Dictionary;
@@ -91,6 +92,60 @@ fn acquire_engine_mutex(pipe: &str) -> bool {
     }
 }
 
+/// パイプのセキュリティ記述子の SDDL。管理者で起動されたエンジンのパイプにも通常権限のアプリが
+/// 接続できるよう、DACL を SYSTEM・Administrators・現在のユーザに限り、整合性ラベルを Medium にする。
+/// 現在のユーザを表す SDDL の別名は無いので SID を埋め込む
+fn pipe_sddl(user_sid: &str) -> String {
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user_sid})S:(ML;;NW;;;ME)")
+}
+
+/// 現在のプロセスの token のユーザの SID を文字列 (`S-1-...`) で返す。
+/// 昇格した token でもユーザの SID は通常権限のときと同じ
+fn current_user_sid() -> std::io::Result<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TOKEN_USER, TokenUser};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+    unsafe {
+        let mut token: HANDLE = std::ptr::null_mut();
+        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        let result = (|| {
+            let mut size = 0u32;
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut size);
+            if size == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // TOKEN_USER はポインタを含むので、u8 ではなく u64 の配列で確保して整列を保つ
+            let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+            if GetTokenInformation(token, TokenUser, buf.as_mut_ptr().cast(), size, &mut size) == 0
+            {
+                return Err(std::io::Error::last_os_error());
+            }
+            let user = &*buf.as_ptr().cast::<TOKEN_USER>();
+            let mut wide: *mut u16 = std::ptr::null_mut();
+            if ConvertSidToStringSidW(user.User.Sid, &mut wide) == 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let sid = widestring::U16CStr::from_ptr_str(wide).to_string();
+            LocalFree(wide.cast());
+            sid.map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        })();
+        CloseHandle(token);
+        result
+    }
+}
+
+/// パイプに付けるセキュリティ記述子 (pipe_sddl) を作る
+fn pipe_security_descriptor()
+-> std::io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
+    use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+    let sddl = widestring::U16CString::from_str(pipe_sddl(&current_user_sid()?))
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+    SecurityDescriptor::deserialize(&sddl)
+}
+
 fn main() -> std::io::Result<()> {
     let pipe = pipe_name();
 
@@ -132,7 +187,13 @@ fn main() -> std::io::Result<()> {
     data.llm.configure(config.llm, config.llm_backend);
 
     let name = pipe.clone().to_ns_name::<GenericNamespaced>()?;
-    let listener = ListenerOptions::new().name(name).create_sync()?;
+    let mut options = ListenerOptions::new().name(name);
+    // 記述子を作れなくても、エンジンが起動しないよりは既定の記述子でパイプを作るほうがよい
+    match pipe_security_descriptor() {
+        Ok(sd) => options = options.security_descriptor(sd),
+        Err(e) => eprintln!("パイプのアクセス権を作れなかったため既定の記述子で作ります: {e}"),
+    }
+    let listener = options.create_sync()?;
     eprintln!("quicklime-engine: \\\\.\\pipe\\{pipe} で待機中");
 
     // クライアント (アプリごとの TSF DLL) を1接続=1スレッドで処理する
@@ -1092,6 +1153,29 @@ mod tests {
         assert!(acquire_engine_mutex(&pipe));
         assert!(!acquire_engine_mutex(&pipe));
         assert!(acquire_engine_mutex(&format!("{pipe}-other")));
+    }
+
+    #[test]
+    fn pipe_sddl_contains_user_sid_and_medium_label() {
+        let sddl = pipe_sddl("S-1-5-21-1-2-3-1001");
+        assert!(sddl.contains("(A;;GA;;;S-1-5-21-1-2-3-1001)"));
+        assert!(sddl.ends_with("S:(ML;;NW;;;ME)"));
+    }
+
+    #[test]
+    fn current_user_sid_is_string_sid() {
+        assert!(current_user_sid().unwrap().starts_with("S-1-"));
+    }
+
+    #[test]
+    fn listener_with_pipe_security_descriptor_accepts_connection() {
+        let pipe = format!("quicklime-test-sd-{}", std::process::id());
+        let _listener = ListenerOptions::new()
+            .name(pipe.clone().to_ns_name::<GenericNamespaced>().unwrap())
+            .security_descriptor(pipe_security_descriptor().unwrap())
+            .create_sync()
+            .unwrap();
+        assert!(Stream::connect(pipe.to_ns_name::<GenericNamespaced>().unwrap()).is_ok());
     }
 
     /// テスト用の LLM ワーカー (偽の子プロセス。設定で有効にするまで起動しない)

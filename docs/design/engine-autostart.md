@@ -53,6 +53,38 @@ TSF 層がエンジン (quicklime-engine.exe) を、最初の変換より前に�
   ログオン時のように多くのプロセスから同時に起動されると、それだけでは複数のエンジンが辞書を読んでしまう
 - パイプ名ごとに mutex を分けるので、`QUICKLIME_PIPE_NAME` で隔離したエンジンは常用のエンジンと
   並んで動ける
+- 管理者のエンジンが作った mutex は、通常権限のプロセスからは開けず `CreateMutexW` が NULL を返す。
+  その場合は起動を続け、次のパイプへの接続のチェックで終了する (パイプのアクセス権を付けているため接続できる)
+
+### パイプのアクセス権
+
+管理者として動くアプリ (管理者で起動したターミナルなど) の TSF 層がエンジンを起動すると、エンジンも
+管理者権限で動く。パイプにセキュリティ記述子を指定しないと、昇格した token の既定 DACL と High の
+整合性レベルでパイプができ、通常権限のアプリが `GENERIC_READ | GENERIC_WRITE` で開けない (`Access denied`)。
+そのため、エンジンはどの権限で起動されても、次の記述子を付けてパイプを作る。
+
+```
+D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<現在のユーザの SID>)S:(ML;;NW;;;ME)
+```
+
+- DACL は SYSTEM・Administrators・現在のユーザだけに許す。パイプ名はセッションをまたいで共通なので、
+  ほかのユーザには開かない。昇格した token もユーザの SID は同じなので、管理者のアプリと通常権限の
+  アプリの両方から接続できる
+- 現在のユーザを表す SDDL の別名は無いので、プロセスの token から `GetTokenInformation(TokenUser)` で SID を取り、
+  `ConvertSidToStringSidW` で文字列にする
+- 整合性ラベルは Medium にする。ラベルの無いオブジェクトは Medium として扱われるので、通常権限で
+  起動したときの挙動は変わらない。自分の整合性レベル以下へ下げるのに特権は要らない
+- SID や記述子を作れなかったときは、ログを出して既定の記述子でパイプを作る (エンジンが起動しないよりよい)
+- 記述子は `interprocess` の `ListenerOptionsExt::security_descriptor` と `SecurityDescriptor::deserialize` で付ける
+- 通常権限のプロセスが管理者のエンジンに命令を送れるようになるが、命令が触るのはユーザのプロファイルの
+  辞書・学習・設定 (通常権限で直接書き換えられるもの) だけで、LLM の exe はエンジンの exe の場所から引く。
+  利用者が指定できる実行パスは無いので、権限の昇格にはならない
+
+採らない案:
+
+- ラベルを Low にする。Low の整合性レベルのプロセスや AppContainer のアプリにまで開くことになり、
+  管理者のエンジンの問題を直すという目的を超える
+- DACL に `IU` (対話ユーザ) や `AU` (認証済みユーザ) を使う。同じ PC のほかのユーザにも開く
 
 ## 変更対象ファイル
 
@@ -60,8 +92,8 @@ TSF 層がエンジン (quicklime-engine.exe) を、最初の変換より前に�
 |---|---|
 | tsf/src/engine_client.h, tsf/src/engine_client.cpp | 起動だけする入口 (接続を試み、開けなければ起動する。待たない)。打鍵ごとの問い合わせで開けなかったときの起動。`EnsureConnected` の「起動中なら待つ」と待ち時間 5 秒 |
 | tsf/src/text_service.cpp | `ActivateEx` から起動だけする入口を呼ぶ |
-| engine/src/main.rs | named mutex による二重起動の防止 |
-| engine/Cargo.toml | windows-sys の feature が足りなければ足す (`Win32_System_Threading`・`Win32_Foundation`) |
+| engine/src/main.rs | named mutex による二重起動の防止。パイプのアクセス権 (SDDL の組み立てと記述子の指定。失敗時は既定の記述子) |
+| engine/Cargo.toml | windows-sys の feature が足りなければ足す (`Win32_System_Threading`・`Win32_Foundation`・`Win32_Security`・`Win32_Security_Authorization`)。`widestring` を直接の依存に足す |
 | docs/design/basics.md | 「エンジンの自動起動」を新しい仕様に書き換え、本書へリンクする |
 
 ## 実装手順
@@ -73,6 +105,7 @@ TSF 層がエンジン (quicklime-engine.exe) を、最初の変換より前に�
 3. TSF 層: `EnsureConnected` の「起動中なら待つ」と待ち時間 5 秒
 4. TSF 層: `ActivateEx` からの呼び出し
 5. ドキュメント: basics.md
+6. エンジン: パイプのアクセス権
 
 ## 検証方法
 
@@ -92,6 +125,10 @@ TSF 層がエンジン (quicklime-engine.exe) を、最初の変換より前に�
 | 6 | 隔離したエンジンを動かしたまま、常用の (隔離していない) メモ帳で入力する | 常用のエンジンにつながり、隔離したエンジンとは別に動く |
 | 7 | エンジンの exe を見つけられない配置 (exe をリネームして退避) でメモ帳に入力し、変換キーを押す | 入力は止まらず、変換は待たずに失敗として戻る (かなのまま)。続けて変換キーを押しても待たない |
 | 8 | エンジンを単体で2回続けて起動する | 2つ目は辞書を読まずにすぐ終了する |
+| 9 | 管理者の PowerShell (隔離のパイプ名) でエンジンを起動し、通常権限の PowerShell (同じパイプ名) からメモ帳を起動して `kyouha` → 変換キー | 候補バーと変換候補が出る (`Access denied` にならない) |
+| 10 | 通常権限でエンジンを起動し、管理者の PowerShell (同じパイプ名) からメモ帳を起動して変換する | 変換できる |
+| 11 | 9 の管理者のエンジンが動いたまま、通常権限の PowerShell からエンジンを単体で起動する | 2つ目は辞書を読まずにすぐ終了する |
+| 12 | 通常権限で起動したエンジンのパイプのセキュリティを確かめる (PowerShell の `[System.IO.Directory]::GetAccessControl("\\.\pipe\<パイプ名>")` など) | SYSTEM・Administrators・現在のユーザだけに許可がある |
 
 ## 未決事項
 

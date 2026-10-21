@@ -3709,6 +3709,7 @@ dependencies = [
  "interprocess",
  "llama-cpp-2",
  "unicode-normalization",
+ "widestring",
  "windows-sys 0.61.2",
  "winresource",
 ]

@@ -18,14 +18,17 @@ interprocess = "2"
 chrono = "0.4"
 # 辞書の検索構造 (有限状態トランスデューサ)。完全一致・前方一致・共通接頭辞検索に使う
 fst = "0.4"
-# 二重起動の防止 (src/main.rs の名前付き mutex) と、LLM の子プロセスをジョブオブジェクトに入れて
-# エンジンの終了に巻き込む処理 (src/llm.rs)
+# 二重起動の防止 (src/main.rs の名前付き mutex)、パイプのアクセス権に使うユーザの SID の取得
+# (src/main.rs)、LLM の子プロセスをジョブオブジェクトに入れてエンジンの終了に巻き込む処理 (src/llm.rs)
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_Security",
+    "Win32_Security_Authorization",
 ] }
+# パイプのアクセス権の SDDL を interprocess の SecurityDescriptor::deserialize に渡すため
+widestring = "1"
 # LLM 計測用の example (examples/llm_bench.rs) 専用。feature llm-bench を指定したときだけビルドする
 # openmp は llama.cpp 単体ビルドの既定 (GGML_OPENMP=ON) に揃えるため。common は使わないので外す
 llama-cpp-2 = { version = "=0.1.158", optional = true, default-features = false, features = ["openmp"] }
