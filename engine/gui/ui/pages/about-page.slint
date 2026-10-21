@@ -50,6 +50,10 @@ export component AboutPage inherits SettingsPage {
     // README の「同梱物とライセンス」と同じ内容
     property <[License]> licenses: [
         {
+            title: "QuicklIME",
+            text: "QuicklIME 本体のソースコードは MIT License です (LICENSE。インストール先には LICENSE.txt として同梱しています)。同梱している辞書・モデル・フォントなどは、以下のそれぞれのライセンスに従います。",
+        },
+        {
             title: "同梱辞書・単漢字辞書",
             text: "同梱辞書 (dict\\) および単漢字辞書 (dict\\single_kanji.tsv) は Mozc (BSD ライセンス) のデータを使用しています。ライセンス文書 LICENSE-mozc.txt を同梱しています。",
         },

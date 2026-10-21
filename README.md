@@ -105,6 +105,8 @@ Windows 11（64bit アプリおよび 32bit アプリの両方に対応）
 
 ## 同梱物とライセンス
 
+QuicklIME 本体のソースコードは MIT License です (`LICENSE`。インストール先には `LICENSE.txt` として同梱しています)。同梱している辞書・モデル・フォントなどは、以下のそれぞれのライセンスに従います。
+
 - 同梱辞書 (`dict\`) および単漢字辞書 (`dict\single_kanji.tsv`) は Mozc (BSD ライセンス) のデータを使用しています。ライセンス文書 `LICENSE-mozc.txt` を同梱しています。
 - UT 辞書 (`dict\dictionary_ut.txt`) は、Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) のうち SudachiDict (一般語。Apache License 2.0、一部 UniDic 由来で BSD ライセンス)、日本郵便の郵便番号データ (地名)、人名データ (Apache License 2.0) から生成したものです。元データの説明および SudachiDict の LEGAL・LICENSE-2.0.txt の全文をまとめた `LICENSE-mozcdic-ut.txt` を同梱しています。
 - モードレス入力用の英単語辞書 (`dict\english-words.txt`) は SCOWL (English Speller Database, https://github.com/en-wl/wordlist ) から生成したものです。著作権表示と許諾文 `LICENSE-SCOWL.txt` を同梱しています。固有名詞・技術用語を収録した `dict\english-names.txt` は独自に作成したものです。

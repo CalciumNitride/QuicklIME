@@ -188,6 +188,7 @@ foreach ($license in $sudachiLicenses) {
     $utLicense += [IO.File]::ReadAllText((Join-Path $utDir $license))
 }
 [IO.File]::WriteAllText("$staging\LICENSE-mozcdic-ut.txt", $utLicense, [Text.UTF8Encoding]::new($false))
+Copy-Item (Join-Path $root 'LICENSE') "$staging\LICENSE.txt"
 Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-zenz.txt') $staging

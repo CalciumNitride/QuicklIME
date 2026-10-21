@@ -61,6 +61,7 @@ Source: "{#Staging}\vcomp140.dll"; DestDir: "{app}"; Flags: {#CommonFileFlags}
 Source: "{#Staging}\dict\*"; DestDir: "{app}\dict"; Flags: ignoreversion
 Source: "{#Staging}\presets\*"; DestDir: "{app}\presets"; Flags: ignoreversion
 Source: "{#Staging}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion
+Source: "{#Staging}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozc.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozcdic-ut.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-SCOWL.txt"; DestDir: "{app}"; Flags: ignoreversion

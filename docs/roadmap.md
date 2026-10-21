@@ -38,8 +38,6 @@
   ([slint-gui.md](design/slint-gui.md))
 - 設定ツールと単語登録ツールの背景の Mica。winit の unstable な API と透明ウィンドウの組み合わせが要り
   壊れやすいため、今は Fluent の単色 ([slint-gui.md](design/slint-gui.md))
-- リポジトリのライセンスを決め、ルートに LICENSE ファイルを置く。今は README の「同梱物とライセンス」に
-  同梱物のライセンスがあるだけで、QuicklIME 自体のライセンスの表示が無い
 
 ## 見送り・既知の問題
 

@@ -2,6 +2,7 @@
 name = "quicklime-llm"
 version = "1.0.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 # openmp は計測 (engine/examples/llm_bench.rs) と同じ構成に揃えるため。common は使わないので外す
