@@ -29,11 +29,13 @@
 // 漢字を含む・その他) でも数え、カタカナだけの行のうち正解が読み全体のカタカナの行は正解の順位の中央値も出す。
 // 区切りの外れが辞書や連接のコストのどこで起きているかを見るため、区切りの行は向き・差の読みの長さ・正解の順位でも
 // 数え、向きごとに差に Mozc 辞書 (UT 辞書を積まない) に無い語がある行も出す。
+// 区切りの位置が合っているのに学習で直らない理由を見るため、同じ区間の行は向きで分け、正解の差の語が語の学習に
+// 数えない語・学習あり・学習なしの行を数える。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
 //   cargo run --release --example learning_eval -- --stats <learning_stats.tsv>
-//       [--weights "half=5000,ww=1500"]... [--empty]
+//       [--weights "half=5000,ww=1500"]... [--empty] [--dump-same-span <file>]
 //
 // オプション:
 //   --stats <tsv>      learning_stats.tsv
@@ -43,6 +45,9 @@
 //   --empty            学習ありのモードの表に、学習が空のときの行も出す
 //   --dict <dir>       Mozc 辞書のディレクトリ (既定は references/mozc/src/data/dictionary_oss)
 //   --ut <file>        UT 辞書 (既定は references/mozcdic-ut/dictionary_ut.txt。無ければ使わない)
+//   --dump-same-span <file>
+//                      同じ区間の行を 1 行ずつ TSV で file に書く (両方のモード)。列はモード・向き・学習の区分・
+//                      正解の順位・正解の経路・1 位の経路。実際の入力の読み・表記が入るので、リポジトリの外に置く
 
 #[allow(dead_code)]
 #[path = "../src/config.rs"]
@@ -102,6 +107,7 @@ struct Args {
     empty: bool,
     dict: PathBuf,
     ut: PathBuf,
+    dump_same_span: Option<PathBuf>,
 }
 
 fn parse_args() -> BoxResult<Args> {
@@ -113,6 +119,7 @@ fn parse_args() -> BoxResult<Args> {
         empty: false,
         dict: root.join("references/mozc/src/data/dictionary_oss"),
         ut: root.join("references/mozcdic-ut/dictionary_ut.txt"),
+        dump_same_span: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -123,6 +130,7 @@ fn parse_args() -> BoxResult<Args> {
             "--empty" => args.empty = true,
             "--dict" => args.dict = PathBuf::from(value()?),
             "--ut" => args.ut = PathBuf::from(value()?),
+            "--dump-same-span" => args.dump_same_span = Some(PathBuf::from(value()?)),
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
@@ -658,6 +666,132 @@ impl BoundaryTally {
     }
 }
 
+/// 「同じ区間」の行の向き (表の行の順。上から順に最初に当てはまるもの)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum SameSpanDir {
+    TopEmpty,
+    RightEmpty,
+    Other,
+}
+
+impl SameSpanDir {
+    const ALL: [SameSpanDir; 3] = [SameSpanDir::TopEmpty, SameSpanDir::RightEmpty, SameSpanDir::Other];
+
+    fn label(self) -> &'static str {
+        match self {
+            SameSpanDir::TopEmpty => "1 位の差が空 (正解の側が自立語)",
+            SameSpanDir::RightEmpty => "正解の差が空 (1 位の側が自立語)",
+            SameSpanDir::Other => "その他",
+        }
+    }
+}
+
+/// 「同じ区間」の行の正解の差の語の学習の区分 (表の列の順)
+const SAME_SPAN_LEARNING: [&str; 3] = ["数えない語", "学習あり", "学習なし"];
+
+/// 「同じ区間」の行の向きと、正解の差の語の学習の区分 (SAME_SPAN_LEARNING の位置。正解の差が空なら None)。
+/// p_right・p_top は path_diff の差、degree は語の学習の今の度合い (無ければ 0)
+fn same_span_class(
+    p_right: &[&SplitWord],
+    p_top: &[&SplitWord],
+    degree: impl Fn(&str, &str) -> f64,
+) -> (SameSpanDir, Option<usize>) {
+    let dir = if p_top.is_empty() {
+        SameSpanDir::TopEmpty
+    } else if p_right.is_empty() {
+        SameSpanDir::RightEmpty
+    } else {
+        SameSpanDir::Other
+    };
+    let learning = (!p_right.is_empty()).then(|| {
+        if p_right.iter().any(|w| !learn::counts_as_word(&w.reading, &w.surface)) {
+            0
+        } else if p_right.iter().any(|w| degree(&w.reading, &w.surface) > 0.0) {
+            1
+        } else {
+            2
+        }
+    });
+    (dir, learning)
+}
+
+/// 経路を `表記/読み` の ` | ` 区切りで書く。付属語は `[` `]` で囲み、diff (path の中の語への参照) の語は頭に `*` を付ける。
+/// TSV の 1 フィールドにするので、タブと改行は空白にする
+fn path_text(path: &[SplitWord], diff: &[&SplitWord]) -> String {
+    let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+    path.iter()
+        .map(|w| {
+            let mark = if diff.iter().any(|d| std::ptr::eq(*d, w)) { "*" } else { "" };
+            let word = format!("{}/{}", clean(&w.surface), clean(&w.reading));
+            if w.functional { format!("{mark}[{word}]") } else { format!("{mark}{word}") }
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
+}
+
+/// --dump-same-span の 1 行 (改行を含む)。mode はモードの名前、rank は正解の順位 (0 始まり)
+fn same_span_dump_line(
+    mode: &str,
+    right: &[SplitWord],
+    top: &[SplitWord],
+    rank: Option<usize>,
+    degree: impl Fn(&str, &str) -> f64,
+) -> String {
+    let (p_right, p_top) = path_diff(right, top);
+    let (dir, learning) = same_span_class(&p_right, &p_top, degree);
+    format!(
+        "{mode}\t{}\t{}\t{}\t{}\t{}\n",
+        dir.label(),
+        learning.map_or("-", |i| SAME_SPAN_LEARNING[i]),
+        rank.map_or("-".to_string(), |r| (r + 1).to_string()),
+        path_text(right, &p_right),
+        path_text(top, &p_top),
+    )
+}
+
+/// 「同じ区間」の行の向きごとの [行, 数えない語, 学習あり, 学習なし]
+#[derive(Default)]
+struct SameSpanTally {
+    counts: [[usize; 4]; 3],
+}
+
+impl SameSpanTally {
+    /// right・top は正解と 1 位を split_path で分けた経路。degree は語の学習の今の度合い (無ければ 0)
+    fn add(&mut self, right: &[SplitWord], top: &[SplitWord], degree: impl Fn(&str, &str) -> f64) {
+        let (p_right, p_top) = path_diff(right, top);
+        let (dir, learning) = same_span_class(&p_right, &p_top, degree);
+        let slot = &mut self.counts[SameSpanDir::ALL.iter().position(|&d| d == dir).expect("向き")];
+        slot[0] += 1;
+        if let Some(i) = learning {
+            slot[1 + i] += 1;
+        }
+    }
+
+    /// 分類の表の後に足す内訳。same_span は「同じ区間」の行の数
+    fn render(&self, same_span: usize) -> String {
+        let sum = |i: usize| self.counts.iter().map(|c| c[i]).sum::<usize>();
+        assert_eq!(sum(0), same_span, "向きの合計が「同じ区間」の行の数と一致しない");
+        let mut out = String::from(
+            "\n\n「同じ区間」の内訳 (向き・正解の差の語の学習)。\n\n\
+             | 向き | 行 | 数えない語 | 学習あり | 学習なし |\n\
+             |---|---|---|---|---|\n",
+        );
+        for (dir, c) in SameSpanDir::ALL.iter().zip(self.counts) {
+            let learned: usize = c[1..4].iter().sum();
+            if *dir == SameSpanDir::RightEmpty {
+                assert_eq!(learned, 0, "正解の差が空の行を正解の差の語の学習で数えた");
+            } else {
+                assert_eq!(learned, c[0], "正解の差の語の学習の区分の合計が向きの行の数と一致しない");
+            }
+            let cells: Vec<String> = c.iter().map(usize::to_string).collect();
+            out.push_str(&format!("| {} | {} |\n", dir.label(), cells.join(" | ")));
+        }
+        let totals: Vec<String> = (0..4).map(|i| sum(i).to_string()).collect();
+        out.push_str(&format!("| 合計 | {} |", totals.join(" | ")));
+        out
+    }
+}
+
 /// 変換の測定から除く読み。モードレス入力の英字区間は (読み = 表記) の句として学習に入るが、実際の入力では
 /// 変換せずに続くので、読みに ASCII 英字を含む句が CONVNBEST に渡ることはない
 fn latin_reading(reading: &str) -> bool {
@@ -749,6 +883,10 @@ fn main() -> BoxResult<()> {
     let mut empty_classes = ClassTally::default();
     let mut empty_unsplit = UnsplitTally::default();
     let mut empty_boundary = BoundaryTally::default();
+    let mut empty_same_span = SameSpanTally::default();
+    let dump = args.dump_same_span.is_some();
+    let mut dump_text = String::from("モード	向き	学習の区分	正解の順位	正解の経路	1 位の経路
+");
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
@@ -776,6 +914,14 @@ fn main() -> BoxResult<()> {
             }
             if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
                 empty_boundary.add(right, top, rank, in_mozc);
+            }
+            if let (MissClass::SameSpan, Some(right), Some(top)) = (class, &right, &top) {
+                empty_same_span.add(right, top, |r, s| empty.word_degree(r, s).unwrap_or(0.0));
+                if dump {
+                    dump_text.push_str(&same_span_dump_line("学習が空", right, top, rank, |r, s| {
+                        empty.word_degree(r, s).unwrap_or(0.0)
+                    }));
+                }
             }
             let slot = empty_classes.counts.entry(class).or_default();
             slot[0] += 1;
@@ -859,10 +1005,12 @@ fn main() -> BoxResult<()> {
     println!("| 合計 | {} | {} |", empty_sum(0), empty_sum(1));
     let empty_unsplit_rows = empty_classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
     let empty_boundary_rows = empty_classes.counts.get(&MissClass::Boundary).map_or(0, |c| c[0]);
+    let empty_same_span_rows = empty_classes.counts.get(&MissClass::SameSpan).map_or(0, |c| c[0]);
     println!(
-        "{}{}",
+        "{}{}{}",
         empty_unsplit.render(empty_unsplit_rows),
-        empty_boundary.render(empty_boundary_rows, mozc.is_some())
+        empty_boundary.render(empty_boundary_rows, mozc.is_some()),
+        empty_same_span.render(empty_same_span_rows)
     );
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
@@ -905,6 +1053,7 @@ fn main() -> BoxResult<()> {
         let mut pins = PinTally::default();
         let mut unsplit = UnsplitTally::default();
         let mut boundary = BoundaryTally::default();
+        let mut same_span = SameSpanTally::default();
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
@@ -957,6 +1106,14 @@ fn main() -> BoxResult<()> {
                     }
                     if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
                         boundary.add(right, top, rank, in_mozc);
+                    }
+                    if let (MissClass::SameSpan, Some(right), Some(top)) = (class, &right, &top) {
+                        same_span.add(right, top, |r, s| store.word_degree(r, s).unwrap_or(0.0));
+                        if dump {
+                            dump_text.push_str(&same_span_dump_line(&format!("学習あり ({name})"), right, top, rank, |r, s| {
+                                store.word_degree(r, s).unwrap_or(0.0)
+                            }));
+                        }
                     }
                     let ctx_learned = contexts_of
                         .get(&(row.reading.as_str(), row.surface.as_str()))
@@ -1048,6 +1205,8 @@ fn main() -> BoxResult<()> {
         table.push_str(&unsplit.render(unsplit_rows));
         let boundary_rows = classes.counts.get(&MissClass::Boundary).map_or(0, |c| c[0]);
         table.push_str(&boundary.render(boundary_rows, mozc.is_some()));
+        let same_span_rows = classes.counts.get(&MissClass::SameSpan).map_or(0, |c| c[0]);
+        table.push_str(&same_span.render(same_span_rows));
         assert_eq!(
             pins.hit + pins.lost + pins.same[0] + pins.same[1] + pins.both_miss,
             pins.total,
@@ -1075,6 +1234,10 @@ fn main() -> BoxResult<()> {
     );
     for table in class_tables {
         println!("{table}");
+    }
+    if let Some(file) = &args.dump_same_span {
+        std::fs::write(file, &dump_text)?;
+        eprintln!("同じ区間の行を {} 行書き出した: {}", dump_text.lines().count() - 1, file.display());
     }
     Ok(())
 }
@@ -1257,6 +1420,62 @@ mod tests {
         tally.add(&path_of(&[("あ", "A", false), ("い", "I", false)]), &path_of(&[("あい", "AI", false)]), Some(1), None);
         assert_eq!(tally.counts[3], [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
         assert!(tally.render(1, false).ends_with("| 合計 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | - | - |"));
+    }
+
+    #[test]
+    fn same_span_tally_counts_dir_and_learning() {
+        let degree = |r: &str, s: &str| if (r, s) == ("いう", "IU") { 2.0 } else { 0.0 };
+        let mut tally = SameSpanTally::default();
+        let mut add = |right: &[(&str, &str, bool)], top: &[(&str, &str, bool)]| {
+            tally.add(&path_of(right), &path_of(top), degree);
+        };
+        // 1 位の差が空。正解の差 い (1 文字) は数えない語
+        add(&[("あ", "A", false), ("い", "い", false)], &[("あ", "A", false), ("い", "い", true)]);
+        // 1 位の差が空。正解の差 IU に学習あり
+        add(&[("あ", "A", false), ("いう", "IU", false)], &[("あ", "A", false), ("いう", "いう", true)]);
+        // 正解の差が空。学習の列には数えない
+        add(&[("か", "K", false), ("きく", "きく", true)], &[("か", "K", false), ("きく", "KK", false)]);
+        // その他: 正解の差 SK・SS は学習なし
+        add(
+            &[("さく", "SK", false), ("しす", "SS", false), ("せ", "せ", true)],
+            &[("さく", "SK2", false), ("しす", "しす", true), ("せ", "せ", true)],
+        );
+        assert_eq!(tally.counts[0], [2, 1, 1, 0]);
+        assert_eq!(tally.counts[1], [1, 0, 0, 0]);
+        assert_eq!(tally.counts[2], [1, 0, 0, 1]);
+        let out = tally.render(4);
+        assert!(out.contains("| 1 位の差が空 (正解の側が自立語) | 2 | 1 | 1 | 0 |"));
+        assert!(out.ends_with("| 合計 | 4 | 1 | 1 | 1 |"));
+    }
+
+    #[test]
+    fn path_text_marks_functional_and_diff_words() {
+        let right = path_of(&[("あ", "A", false), ("い", "I", false), ("は", "は", true)]);
+        let top = path_of(&[("あ", "A", false), ("い", "い", true), ("は", "は", true)]);
+        let (p_right, p_top) = path_diff(&right, &top);
+        assert_eq!(path_text(&right, &p_right), "A/あ | *I/い | [は/は]");
+        assert_eq!(path_text(&top, &p_top), "A/あ | [い/い] | [は/は]");
+        // 付属語が差に入ることは無いが、印は括弧の外に付ける
+        let all: Vec<&SplitWord> = top.iter().collect();
+        assert_eq!(path_text(&top, &all), "*A/あ | *[い/い] | *[は/は]");
+        // 同じ語が 2 つあっても、差に残った方 (後ろ) だけに印を付ける
+        let right = path_of(&[("x", "X", false), ("y", "Y", false), ("x", "X", false)]);
+        let top = path_of(&[("x", "X", false), ("yx", "YX", false)]);
+        let (p_right, _) = path_diff(&right, &top);
+        assert_eq!(path_text(&right, &p_right), "X/x | *Y/y | *X/x");
+        // タブと改行は空白にする
+        let odd = path_of(&[("a\tb", "S\nT", false)]);
+        assert_eq!(path_text(&odd, &[]), "S T/a b");
+
+        let line = same_span_dump_line("学習あり", &right, &top, None, |_, _| 0.0);
+        assert_eq!(line.matches('\t').count(), 5);
+        assert!(line.ends_with('\n'));
+        let right = path_of(&[("あ", "A", false), ("いう", "IU", false)]);
+        let top = path_of(&[("あ", "A", false), ("いう", "いう", true)]);
+        assert_eq!(
+            same_span_dump_line("学習が空", &right, &top, Some(1), |_, _| 1.0),
+            "学習が空\t1 位の差が空 (正解の側が自立語)\t学習あり\t2\tA/あ | *IU/いう\tA/あ | [いう/いう]\n"
+        );
     }
 
     #[test]

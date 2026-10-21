@@ -770,7 +770,7 @@ pub struct PhraseMatch<'a> {
 /// 語の学習に数える語か。読みが 1 文字の語・表記が読みと同じひらがなの語・表記に数字を含む語に割引が付くと、
 /// ほかの文で 1 文字のひらがなの語に細かく割れたり (「て|い|…」)、数字に置き換わったり (いち → 1) するため
 /// 数えない
-fn counts_as_word(reading: &str, surface: &str) -> bool {
+pub(crate) fn counts_as_word(reading: &str, surface: &str) -> bool {
     let hiragana = surface == reading && surface.chars().all(|c| ('ぁ'..='ゖ').contains(&c) || c == 'ー');
     let digit = surface.chars().any(|c| c.is_ascii_digit() || ('０'..='９').contains(&c));
     reading.chars().count() > 1 && !hiragana && !digit
