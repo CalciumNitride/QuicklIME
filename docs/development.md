@@ -55,7 +55,9 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   長いパスを避ける `subst` はスクリプトの中で設定する。エンジンの通常のビルドには要らない
 - LLM の並べ替えの計測 (エンジンを隔離して起動し、llm_cases.tsv の左文脈で RERANK を送る):
   `cargo run --release --example nbest_eval -- --cases examples/data/llm_cases.tsv --llm cpu`
-  (`--llm vulkan` で Vulkan 版)
+  (`--llm vulkan` で Vulkan 版)。`--grid` を足すと、読みの文字数の下限と統計変換の 1 位と 2 位の
+  コスト差 (読み 1 文字あたり) の上限の格子で、条件を満たす件だけ並べ替えたときの正解率を表で出す。
+  `--no-cases` は読み・正解・候補を含む件ごとの表を出さない (実ユーザのデータを測るとき用)
 
 ## 変換精度と学習の評価
 
