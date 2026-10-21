@@ -22,14 +22,13 @@
 // ファイルは読むだけで、学習はメモリ上にだけ作る。
 // 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。あわせて、外れが語の学習の割引の
 // 上限の例外と前文脈のどちらで直りうるかを見るため、正解と 1 位の自立語の違いで分類する: 固定 (1 位が読み全体の
-// 学習表記)・分けられない・自立語が同じ・区切り・同音 (違う語の今の度合いが正解の方が大きい / どちらも学習あり /
+// 学習表記)・分けられない・自立語が同じ・同じ区間・区切り・同音 (違う語の今の度合いが正解の方が大きい / どちらも学習あり /
 // 正解に学習なし)・その他 (1 位を分けられない)。固定の得失を見るため、1 位が読み全体の学習表記だった行は、
 // その表記と経路の 1-best の表記のどちらが正解かでも数える。
 // 辞書に無い語がどんな語かを見るため、分けられない行は正解の表記の文字の種類 (カタカナだけ・英字を含む・
 // 漢字を含む・その他) でも数え、カタカナだけの行のうち正解が読み全体のカタカナの行は正解の順位の中央値も出す。
 // 区切りの外れが辞書や連接のコストのどこで起きているかを見るため、区切りの行は向き・差の読みの長さ・正解の順位でも
-// 数え、向きごとに差の語の区間がすべてもう片方の経路にもある行と、差に Mozc 辞書 (UT 辞書を積まない) に無い語が
-// ある行も出す。
+// 数え、向きごとに差に Mozc 辞書 (UT 辞書を積まない) に無い語がある行も出す。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -299,6 +298,7 @@ enum MissClass {
     Pinned,
     Unsplit,
     SameWords,
+    SameSpan,
     Boundary,
     HomophoneMore,
     HomophoneBoth,
@@ -307,10 +307,11 @@ enum MissClass {
 }
 
 impl MissClass {
-    const ALL: [MissClass; 8] = [
+    const ALL: [MissClass; 9] = [
         MissClass::Pinned,
         MissClass::Unsplit,
         MissClass::SameWords,
+        MissClass::SameSpan,
         MissClass::Boundary,
         MissClass::HomophoneMore,
         MissClass::HomophoneBoth,
@@ -323,6 +324,7 @@ impl MissClass {
             MissClass::Pinned => "固定 (1 位が読み全体の学習表記)",
             MissClass::Unsplit => "分けられない (正解を辞書の語に分けられない)",
             MissClass::SameWords => "自立語が同じ",
+            MissClass::SameSpan => "同じ区間 (区切りは同じで、自立語と付属語の別が違う)",
             MissClass::Boundary => "区切り",
             MissClass::HomophoneMore => "同音・正解の方が多く使われている",
             MissClass::HomophoneBoth => "同音・どちらも学習あり",
@@ -381,12 +383,12 @@ fn same_span(diff: &[&SplitWord], other: &[SplitWord]) -> bool {
     diff.iter().all(|d| other.iter().any(|w| w.start == d.start && w.end == d.end))
 }
 
-/// 外した行を分類する。right・top は正解と 1 位を split_words で分けた自立語 (分けられなければ None)、
+/// 外した行を分類する。right・top は正解と 1 位を split_path で分けた経路 (分けられなければ None)、
 /// degree は語の学習の今の度合い (無ければ 0)
 fn classify_miss(
     pinned: bool,
-    right: Option<&[(String, String)]>,
-    top: Option<&[(String, String)]>,
+    right: Option<&[SplitWord]>,
+    top: Option<&[SplitWord]>,
     degree: impl Fn(&str, &str) -> f64,
 ) -> MissClass {
     if pinned {
@@ -398,7 +400,7 @@ fn classify_miss(
     let Some(top) = top else {
         return MissClass::Other;
     };
-    let (d_right, d_top) = word_diff(right, top);
+    let (d_right, d_top) = word_diff(&independent(right), &independent(top));
     if d_right.is_empty() && d_top.is_empty() {
         return MissClass::SameWords;
     }
@@ -408,6 +410,10 @@ fn classify_miss(
         r
     }
     if readings(&d_right) != readings(&d_top) {
+        let (p_right, p_top) = path_diff(right, top);
+        if same_span(&p_right, top) && same_span(&p_top, right) {
+            return MissClass::SameSpan;
+        }
         return MissClass::Boundary;
     }
     let mut used = vec![false; d_top.len()];
@@ -582,10 +588,10 @@ fn boundary_dir(d_right: &[(String, String)], d_top: &[(String, String)]) -> Bou
 }
 
 /// 「区切り」の行の向きごとの [行, 長さ 1–2, 3–4, 5 以上, 2 位, 3 位, 4–10 位, 11 位以下, 候補に無い,
-/// 同じ区間, 1 位の差に Mozc 辞書に無い語, 正解の差に Mozc 辞書に無い語]
+/// 1 位の差に Mozc 辞書に無い語, 正解の差に Mozc 辞書に無い語]
 #[derive(Default)]
 struct BoundaryTally {
-    counts: [[usize; 12]; 5],
+    counts: [[usize; 11]; 5],
 }
 
 impl BoundaryTally {
@@ -621,11 +627,10 @@ impl BoundaryTally {
             Some(_) => 7,
             None => 8,
         }] += 1;
-        slot[9] += usize::from(same_span(&p_right, top) && same_span(&p_top, right));
         if let Some(in_mozc) = in_mozc {
             let missing = |list: &[&SplitWord]| list.iter().any(|w| !in_mozc(&w.reading, &w.surface));
-            slot[10] += usize::from(missing(&p_top));
-            slot[11] += usize::from(missing(&p_right));
+            slot[9] += usize::from(missing(&p_top));
+            slot[10] += usize::from(missing(&p_right));
         }
     }
 
@@ -634,20 +639,20 @@ impl BoundaryTally {
     fn render(&self, boundary: usize, mozc: bool) -> String {
         let sum = |i: usize| self.counts.iter().map(|c| c[i]).sum::<usize>();
         assert_eq!(sum(0), boundary, "向きの合計が「区切り」の行の数と一致しない");
-        let cell = |i: usize, n: usize| if i >= 10 && !mozc { "-".to_string() } else { n.to_string() };
+        let cell = |i: usize, n: usize| if i >= 9 && !mozc { "-".to_string() } else { n.to_string() };
         let mut out = String::from(
             "\n\n「区切り」の内訳 (向き・差の読みの長さ・正解の順位)。\n\n\
-             | 向き | 行 | 長さ 1–2 | 3–4 | 5 以上 | 2 位 | 3 位 | 4–10 位 | 11 位以下 | 候補に無い | 同じ区間 | 1 位の差に Mozc 辞書に無い語 | 正解の差に Mozc 辞書に無い語 |\n\
-             |---|---|---|---|---|---|---|---|---|---|---|---|---|\n",
+             | 向き | 行 | 長さ 1–2 | 3–4 | 5 以上 | 2 位 | 3 位 | 4–10 位 | 11 位以下 | 候補に無い | 1 位の差に Mozc 辞書に無い語 | 正解の差に Mozc 辞書に無い語 |\n\
+             |---|---|---|---|---|---|---|---|---|---|---|---|\n",
         );
         for (dir, c) in BoundaryDir::ALL.iter().zip(self.counts) {
             assert_eq!(c[1..4].iter().sum::<usize>(), c[0], "長さの区分の合計が向きの行の数と一致しない");
             assert_eq!(c[4..9].iter().sum::<usize>(), c[0], "順位の区分の合計が向きの行の数と一致しない");
-            assert!(c[9..12].iter().all(|&n| n <= c[0]), "同じ区間・Mozc 辞書に無い語の行が向きの行の数を超える");
+            assert!(c[9..11].iter().all(|&n| n <= c[0]), "Mozc 辞書に無い語の行が向きの行の数を超える");
             let cells: Vec<String> = c.iter().enumerate().map(|(i, &n)| cell(i, n)).collect();
             out.push_str(&format!("| {} | {} |\n", dir.label(), cells.join(" | ")));
         }
-        let totals: Vec<String> = (0..12).map(|i| cell(i, sum(i))).collect();
+        let totals: Vec<String> = (0..11).map(|i| cell(i, sum(i))).collect();
         out.push_str(&format!("| 合計 | {} |", totals.join(" | ")));
         out
     }
@@ -763,9 +768,7 @@ fn main() -> BoxResult<()> {
                 let top = nbest.candidates.first().and_then(|c| path(&e.reading, &c.surface()));
                 (path(&e.reading, &e.surface), top)
             };
-            let right_words = right.as_deref().map(independent);
-            let top_words = top.as_deref().map(independent);
-            let class = classify_miss(nbest.learned, right_words.as_deref(), top_words.as_deref(), |r, s| {
+            let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
                 empty.word_degree(r, s).unwrap_or(0.0)
             });
             if class == MissClass::Unsplit {
@@ -946,9 +949,7 @@ fn main() -> BoxResult<()> {
                         let top = nbest.candidates.first().and_then(|c| path(&row.reading, &c.surface()));
                         (path(&row.reading, &row.surface), top)
                     };
-                    let right_words = right.as_deref().map(independent);
-                    let top_words = top.as_deref().map(independent);
-                    let class = classify_miss(nbest.learned, right_words.as_deref(), top_words.as_deref(), |r, s| {
+                    let class = classify_miss(nbest.learned, right.as_deref(), top.as_deref(), |r, s| {
                         store.word_degree(r, s).unwrap_or(0.0)
                     });
                     if class == MissClass::Unsplit {
@@ -1116,8 +1117,9 @@ mod tests {
 
     #[test]
     fn classify_miss_by_independent_words() {
-        let words = |list: &[(&str, &str)]| -> Vec<(String, String)> {
-            list.iter().map(|(r, s)| (r.to_string(), s.to_string())).collect()
+        // 付属語の無い経路 (区間は読みの文字数を順に足して付ける)
+        let words = |list: &[(&str, &str)]| -> Vec<SplitWord> {
+            path_of(&list.iter().map(|&(r, s)| (r, s, false)).collect::<Vec<_>>())
         };
         let degrees = |r: &str, s: &str| match (r, s) {
             ("a", "A1") => 3.0,
@@ -1149,6 +1151,17 @@ mod tests {
         assert_eq!(classify(Some(&[("b", "B1")]), Some(&[("b", "B2")])), MissClass::HomophoneBoth);
         assert_eq!(classify(Some(&[("a", "A3")]), Some(&[("a", "A1")])), MissClass::HomophoneUnlearned);
         assert_eq!(classify(Some(&[("c", "C1")]), Some(&[("c", "C2")])), MissClass::HomophoneUnlearned);
+
+        // 正解の自立語 I (1–2) を 1 位は付属語にした: 読みの組は違うが、区間はどれももう片方の経路にある
+        let right = path_of(&[("あ", "A", false), ("い", "I", false)]);
+        let top = path_of(&[("あ", "B", false), ("い", "い", true)]);
+        assert_eq!(classify_miss(false, Some(&right), Some(&top), degrees), MissClass::SameSpan);
+        assert_eq!(classify_miss(false, Some(&top), Some(&right), degrees), MissClass::SameSpan);
+        // 片方向だけ同じ区間: 1 位の差 AI (0–2) は正解の経路に無い
+        let coarse = path_of(&[("あい", "AI", false)]);
+        let fine = path_of(&[("あ", "A", false), ("い", "い", true)]);
+        assert_eq!(classify_miss(false, Some(&fine), Some(&coarse), degrees), MissClass::Boundary);
+        assert_eq!(classify_miss(false, Some(&coarse), Some(&fine), degrees), MissClass::Boundary);
     }
 
     #[test]
@@ -1214,7 +1227,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_tally_counts_length_rank_span_and_mozc() {
+    fn boundary_tally_counts_length_rank_and_mozc() {
         let in_mozc = |_: &str, s: &str| !matches!(s, "AI" | "S" | "MI");
         let mut tally = BoundaryTally::default();
         let mut add = |right: &[(&str, &str, bool)], top: &[(&str, &str, bool)], rank: Option<usize>| {
@@ -1222,28 +1235,28 @@ mod tests {
         };
         // 差の読みの長さ: 2 (1 + 1 と 2 の大きい方)。1 位の差 AI が Mozc 辞書に無い
         add(&[("あ", "A", false), ("い", "I", false)], &[("あい", "AI", false)], Some(1));
-        // 3 (差は 1 位の「かきく」だけ)。正解の経路では同じ区間が付属語
+        // 3 (差は 1 位の「かきく」だけ)
         add(&[("う", "U", false), ("かきく", "かきく", true)], &[("う", "U", false), ("かきく", "KKK", false)], Some(2));
         // 5 (「さしす」+「せそ」)。正解の差 S が Mozc 辞書に無い
         add(&[("さしす", "S", false), ("せそ", "T", false)], &[("さしすせそ", "ST", false)], Some(3));
         add(&[("たち", "T", false), ("つ", "U", false)], &[("た", "T", false), ("ちつ", "C", false)], Some(9));
         add(&[("な", "N", false), ("に", "M", false)], &[("なに", "NM", false)], Some(10));
         add(&[("は", "H", false), ("ひ", "I", false)], &[("はひ", "HI", false)], None);
-        // 正解の差 M・MI と 1 位の差 M2 の区間は、どれももう片方の経路にある。正解の差 MI が Mozc 辞書に無い
+        // 正解の差 MI が Mozc 辞書に無い
         add(&[("ま", "M", false), ("み", "MI", false)], &[("ま", "M2", false), ("み", "み", true)], Some(1));
-        assert_eq!(tally.counts[0], [1, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 0]);
-        assert_eq!(tally.counts[1], [0; 12]);
-        assert_eq!(tally.counts[3], [5, 4, 0, 1, 2, 0, 1, 1, 1, 1, 1, 2]);
-        assert_eq!(tally.counts[4], [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(tally.counts[0], [1, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0]);
+        assert_eq!(tally.counts[1], [0; 11]);
+        assert_eq!(tally.counts[3], [5, 4, 0, 1, 2, 0, 1, 1, 1, 1, 2]);
+        assert_eq!(tally.counts[4], [1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0]);
         let out = tally.render(7, true);
-        assert!(out.contains("| 正解の方が語が多い (1 位がまとめた) | 5 | 4 | 0 | 1 | 2 | 0 | 1 | 1 | 1 | 1 | 1 | 2 |"));
-        assert!(out.ends_with("| 合計 | 7 | 4 | 2 | 1 | 2 | 1 | 2 | 1 | 1 | 2 | 1 | 2 |"));
+        assert!(out.contains("| 正解の方が語が多い (1 位がまとめた) | 5 | 4 | 0 | 1 | 2 | 0 | 1 | 1 | 1 | 1 | 2 |"));
+        assert!(out.ends_with("| 合計 | 7 | 4 | 2 | 1 | 2 | 1 | 2 | 1 | 1 | 1 | 2 |"));
 
         // UT 辞書が無いときは Mozc 辞書に無い語の列を数えず `-` を出す
         let mut tally = BoundaryTally::default();
         tally.add(&path_of(&[("あ", "A", false), ("い", "I", false)]), &path_of(&[("あい", "AI", false)]), Some(1), None);
-        assert_eq!(tally.counts[3], [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]);
-        assert!(tally.render(1, false).ends_with("| 合計 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | - | - |"));
+        assert_eq!(tally.counts[3], [1, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
+        assert!(tally.render(1, false).ends_with("| 合計 | 1 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | - | - |"));
     }
 
     #[test]
