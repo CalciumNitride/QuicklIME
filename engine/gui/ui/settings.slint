@@ -1,0 +1,286 @@
+// 設定ツールのウィンドウ。左にナビ、右にページ
+
+import { Theme, Icons } from "theme.slint";
+import { NavigationPane, NavItem } from "components/navigation.slint";
+import { InfoBar, InfoBarSeverity } from "components/info-bar.slint";
+import { ConversionPage } from "pages/conversion-page.slint";
+import { CandidateBarPage } from "pages/candidate-bar-page.slint";
+import { InputPage } from "pages/input-page.slint";
+import { AppearancePage } from "pages/appearance-page.slint";
+import { AdvancedPage } from "pages/advanced-page.slint";
+import { AboutPage } from "pages/about-page.slint";
+import { KeysPage, KeyFunction, KeyStateRow } from "pages/keys-page.slint";
+import { AppsPage, AppEntry, RunningApp } from "pages/apps-page.slint";
+
+export { KeyFunction, KeyStateRow, AppEntry, RunningApp }
+
+export component SettingsWindow inherits Window {
+    // ナビの並び。ページの出し分け (下の if) と合わせる
+    out property <[NavItem]> pages: [
+        { icon: Icons.conversion, label: "変換" },
+        { icon: Icons.candidate-bar, label: "候補バー" },
+        { icon: Icons.input, label: "入力" },
+        { icon: Icons.appearance, label: "見た目" },
+        { icon: Icons.keys, label: "キー割当" },
+        { icon: Icons.apps, label: "アプリ" },
+        { icon: Icons.advanced, label: "詳細" },
+        { icon: Icons.about, label: "QuicklIME について" },
+    ];
+    in-out property <int> current-page: 0;
+
+    // 設定ファイルに書けなかったときの説明。空ならエラーを出さない
+    in-out property <string> save-error;
+    // テーマのフォルダを作れない・開けないときの説明。空ならエラーを出さない
+    in-out property <string> theme-dir-error;
+
+    // 変換
+    in-out property <bool> learning;
+    in-out property <bool> typo-correction;
+    in-out property <bool> segment-ui;
+    in-out property <bool> llm;
+    in property <[string]> llm-backend-choices;
+    in-out property <int> llm-backend-index;
+
+    // 候補バー
+    in-out property <bool> candidate-bar;
+    in-out property <bool> suggest;
+    in-out property <bool> next-word;
+    in property <[string]> max-predictions-choices;
+    in-out property <int> max-predictions-index;
+    in property <[string]> min-suggest-chars-choices;
+    in-out property <int> min-suggest-chars-index;
+    in property <[string]> candidate-position-choices;
+    in-out property <int> candidate-position-index;
+
+    // 入力
+    in property <[string]> input-buffer-choices;
+    in-out property <int> input-buffer-index;
+    in property <[string]> space-choices;
+    in-out property <int> space-index;
+    in property <[string]> punctuation-choices;
+    in-out property <int> punctuation-index;
+    in property <[string]> digits-choices;
+    in-out property <int> digits-index;
+    in-out property <bool> modeless;
+    in-out property <bool> input-scope-passthrough;
+
+    // 見た目
+    in property <[string]> theme-choices;
+    in-out property <int> theme-index;
+    in property <[string]> font-choices;
+    in-out property <int> font-index;
+    in property <[string]> font-size-choices;
+    in-out property <int> font-size-index;
+    in-out property <bool> mode-popup;
+
+    // 詳細
+    in-out property <bool> debug-log;
+    in-out property <string> debug-log-path;
+
+    in property <string> version;
+
+    in-out property <[KeyFunction]> key-functions;
+    in-out property <string> key-conflict-warning;
+    in-out property <int> capture-function: -1;
+    in-out property <int> capture-row: -1;
+
+    in-out property <[AppEntry]> apps;
+    in-out property <[RunningApp]> running-apps;
+
+    callback settings-changed();
+    callback page-changed();
+    callback open-theme-dir();
+    callback debug-log-path-committed();
+
+    callback add-key(int, int);
+    callback remove-key(int, int, int);
+    callback cancel-capture();
+    callback per-state-changed(int, bool);
+    callback reset-keys(int);
+    callback reset-all-keys();
+
+    callback refresh-running-apps();
+    callback running-app-picked(int);
+    callback pick-exe();
+    callback app-newline-changed(int, bool);
+    callback app-ime-start-changed(int, int);
+    callback app-no-learning-changed(int, bool);
+    callback remove-app(int);
+
+    title: "QuicklIME の設定";
+    default-font-family: Theme.text-font;
+    background: Theme.window-background;
+    min-width: 720px;
+    min-height: 480px;
+    preferred-width: 1000px;
+    preferred-height: 720px;
+
+    changed current-page => {
+        root.page-changed();
+    }
+
+    HorizontalLayout {
+        NavigationPane {
+            width: 280px;
+            items: root.pages;
+            current-index <=> root.current-page;
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+
+            if root.save-error != "": HorizontalLayout {
+                padding-left: Theme.page-padding-x;
+                padding-right: Theme.page-padding-x;
+                padding-top: 12px;
+
+                InfoBar {
+                    severity: InfoBarSeverity.error;
+                    title: "設定を保存できませんでした";
+                    message: root.save-error;
+                }
+            }
+
+            if root.theme-dir-error != "": HorizontalLayout {
+                padding-left: Theme.page-padding-x;
+                padding-right: Theme.page-padding-x;
+                padding-top: 12px;
+
+                InfoBar {
+                    severity: InfoBarSeverity.error;
+                    title: "テーマのフォルダを開けませんでした";
+                    message: root.theme-dir-error;
+                    closable: true;
+                    closed => {
+                        root.theme-dir-error = "";
+                    }
+                }
+            }
+
+            if root.current-page == 0: ConversionPage {
+                learning <=> root.learning;
+                typo-correction <=> root.typo-correction;
+                segment-ui <=> root.segment-ui;
+                llm <=> root.llm;
+                llm-backend-choices: root.llm-backend-choices;
+                llm-backend-index <=> root.llm-backend-index;
+                changed => {
+                    root.settings-changed();
+                }
+            }
+
+            if root.current-page == 1: CandidateBarPage {
+                candidate-bar <=> root.candidate-bar;
+                suggest <=> root.suggest;
+                next-word <=> root.next-word;
+                max-predictions-choices: root.max-predictions-choices;
+                max-predictions-index <=> root.max-predictions-index;
+                min-suggest-chars-choices: root.min-suggest-chars-choices;
+                min-suggest-chars-index <=> root.min-suggest-chars-index;
+                candidate-position-choices: root.candidate-position-choices;
+                candidate-position-index <=> root.candidate-position-index;
+                changed => {
+                    root.settings-changed();
+                }
+            }
+
+            if root.current-page == 2: InputPage {
+                input-buffer-choices: root.input-buffer-choices;
+                input-buffer-index <=> root.input-buffer-index;
+                space-choices: root.space-choices;
+                space-index <=> root.space-index;
+                punctuation-choices: root.punctuation-choices;
+                punctuation-index <=> root.punctuation-index;
+                digits-choices: root.digits-choices;
+                digits-index <=> root.digits-index;
+                modeless <=> root.modeless;
+                input-scope-passthrough <=> root.input-scope-passthrough;
+                changed => {
+                    root.settings-changed();
+                }
+            }
+
+            if root.current-page == 3: AppearancePage {
+                theme-choices: root.theme-choices;
+                theme-index <=> root.theme-index;
+                font-choices: root.font-choices;
+                font-index <=> root.font-index;
+                font-size-choices: root.font-size-choices;
+                font-size-index <=> root.font-size-index;
+                mode-popup <=> root.mode-popup;
+                changed => {
+                    root.settings-changed();
+                }
+                open-theme-dir => {
+                    root.open-theme-dir();
+                }
+            }
+
+            if root.current-page == 4: KeysPage {
+                functions: root.key-functions;
+                conflict-warning: root.key-conflict-warning;
+                capture-function: root.capture-function;
+                capture-row: root.capture-row;
+                add-key(function, row) => {
+                    root.add-key(function, row);
+                }
+                remove-key(function, row, key) => {
+                    root.remove-key(function, row, key);
+                }
+                cancel-capture => {
+                    root.cancel-capture();
+                }
+                per-state-changed(function, on) => {
+                    root.per-state-changed(function, on);
+                }
+                reset(function) => {
+                    root.reset-keys(function);
+                }
+                reset-all => {
+                    root.reset-all-keys();
+                }
+            }
+
+            if root.current-page == 5: AppsPage {
+                apps: root.apps;
+                running-apps: root.running-apps;
+                refresh-running-apps => {
+                    root.refresh-running-apps();
+                }
+                running-app-picked(index) => {
+                    root.running-app-picked(index);
+                }
+                pick-exe => {
+                    root.pick-exe();
+                }
+                newline-changed(index, on) => {
+                    root.app-newline-changed(index, on);
+                }
+                ime-start-changed(index, value) => {
+                    root.app-ime-start-changed(index, value);
+                }
+                no-learning-changed(index, on) => {
+                    root.app-no-learning-changed(index, on);
+                }
+                remove(index) => {
+                    root.remove-app(index);
+                }
+            }
+
+            if root.current-page == 6: AdvancedPage {
+                debug-log <=> root.debug-log;
+                debug-log-path <=> root.debug-log-path;
+                changed => {
+                    root.settings-changed();
+                }
+                debug-log-path-committed => {
+                    root.debug-log-path-committed();
+                }
+            }
+
+            if root.current-page == 7: AboutPage {
+                version: root.version;
+            }
+        }
+    }
+}

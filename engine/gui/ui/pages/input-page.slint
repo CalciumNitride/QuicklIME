@@ -1,0 +1,102 @@
+// 入力のページ
+
+import { ComboBox, Switch } from "std-widgets.slint";
+import { Card } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export component InputPage inherits SettingsPage {
+    in property <[string]> input-buffer-choices;
+    in-out property <int> input-buffer-index;
+    in property <[string]> space-choices;
+    in-out property <int> space-index;
+    in property <[string]> punctuation-choices;
+    in-out property <int> punctuation-index;
+    in property <[string]> digits-choices;
+    in-out property <int> digits-index;
+    in-out property <bool> modeless;
+    in-out property <bool> input-scope-passthrough;
+
+    callback changed();
+
+    title: "入力";
+
+    Card {
+        title: "入力中の読み";
+
+        ComboBox {
+            // 選択肢の文言が長いので、既定の幅より広げる
+            min-width: 260px;
+            model: root.input-buffer-choices;
+            current-index <=> root.input-buffer-index;
+            accessible-label: "入力中の読み";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "スペース";
+
+        ComboBox {
+            model: root.space-choices;
+            current-index <=> root.space-index;
+            accessible-label: "スペース";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "句読点";
+
+        ComboBox {
+            model: root.punctuation-choices;
+            current-index <=> root.punctuation-index;
+            accessible-label: "句読点";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "数字";
+
+        ComboBox {
+            model: root.digits-choices;
+            current-index <=> root.digits-index;
+            accessible-label: "数字";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "モードレス入力";
+        description: "英語の打鍵を自動で判定する";
+
+        Switch {
+            checked <=> root.modeless;
+            accessible-label: "モードレス入力";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "数字やメールアドレスの欄では日本語入力を使わない";
+        description: "数字・電話番号・メールアドレス・URL などの入力欄";
+
+        Switch {
+            checked <=> root.input-scope-passthrough;
+            accessible-label: "数字やメールアドレスの欄では日本語入力を使わない";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+}

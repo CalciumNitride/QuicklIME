@@ -1,0 +1,53 @@
+// 右側のページの枠。見出しの下に、縦に積んだ中身 (@children) をスクロールして出す
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+export component SettingsPage {
+    in property <string> title;
+
+    VerticalLayout {
+        // 見出しは設定アプリと同じく、スクロールしても動かない
+        HorizontalLayout {
+            padding-left: Theme.page-padding-x;
+            padding-right: Theme.page-padding-x;
+            padding-top: 28px;
+            padding-bottom: 12px;
+            vertical-stretch: 0;
+
+            Text {
+                text: root.title;
+                font-size: Theme.title-size;
+                font-weight: 600;
+                color: Theme.text-primary;
+                overflow: elide;
+            }
+        }
+
+        scroll := ScrollView {
+            viewport-width: self.visible-width;
+            viewport-height: content.preferred-height;
+
+            content := VerticalLayout {
+                width: scroll.visible-width;
+                padding-left: Theme.page-padding-x;
+                padding-right: Theme.page-padding-x;
+                padding-top: 12px;
+                padding-bottom: 24px;
+                spacing: Theme.card-spacing;
+                alignment: start;
+
+                @children
+            }
+        }
+    }
+}
+
+// ページの中で項目のまとまりを分ける小見出し
+export component SectionHeader inherits Text {
+    font-size: Theme.body-size;
+    font-weight: 600;
+    color: Theme.text-primary;
+    height: self.preferred-height + 20px;
+    vertical-alignment: bottom;
+}

@@ -1,0 +1,98 @@
+// 候補バーのページ
+
+import { ComboBox, Switch } from "std-widgets.slint";
+import { Card } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export component CandidateBarPage inherits SettingsPage {
+    in-out property <bool> candidate-bar;
+    in-out property <bool> suggest;
+    in-out property <bool> next-word;
+    in property <[string]> max-predictions-choices;
+    in-out property <int> max-predictions-index;
+    in property <[string]> min-suggest-chars-choices;
+    in-out property <int> min-suggest-chars-index;
+    in property <[string]> candidate-position-choices;
+    in-out property <int> candidate-position-index;
+
+    callback changed();
+
+    title: "候補バー";
+
+    Card {
+        title: "候補バーを表示する";
+
+        Switch {
+            checked <=> root.candidate-bar;
+            accessible-label: "候補バーを表示する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "入力中に予測を表示する";
+
+        Switch {
+            checked <=> root.suggest;
+            accessible-label: "入力中に予測を表示する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "確定の後に次の語を予測する";
+
+        Switch {
+            checked <=> root.next-word;
+            accessible-label: "確定の後に次の語を予測する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "件数";
+        description: "候補バーに表示する候補の最大件数";
+
+        ComboBox {
+            model: root.max-predictions-choices;
+            current-index <=> root.max-predictions-index;
+            accessible-label: "件数";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "表示を始める文字数";
+        description: "候補バーを表示する最小のかな文字数";
+
+        ComboBox {
+            model: root.min-suggest-chars-choices;
+            current-index <=> root.min-suggest-chars-index;
+            accessible-label: "表示を始める文字数";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "表示位置";
+
+        ComboBox {
+            model: root.candidate-position-choices;
+            current-index <=> root.candidate-position-index;
+            accessible-label: "表示位置";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+}

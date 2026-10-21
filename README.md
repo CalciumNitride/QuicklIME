@@ -110,6 +110,7 @@ Windows 11（64bit アプリおよび 32bit アプリの両方に対応）
 - モードレス入力用の英単語辞書 (`dict\english-words.txt`) は SCOWL (English Speller Database, https://github.com/en-wl/wordlist ) から生成したものです。著作権表示と許諾文 `LICENSE-SCOWL.txt` を同梱しています。固有名詞・技術用語を収録した `dict\english-names.txt` は独自に作成したものです。
 - LLM 推論プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) およびモデル (`models\` 配下の zenz-v3.2-xsmall / zenz-v3.2-small) を同梱しています。ライセンス文書として `LICENSE-llama.cpp.txt` (MIT) および `LICENSE-zenz.txt` (Apache License 2.0) を同梱しています。
 - タスクバーの入力モードアイコンは、M PLUS Rounded 1c Regular (SIL Open Font License 1.1) をサブセット化して DLL のリソースに埋め込んで描画しています。著作権表示と許諾文 `LICENSE-MPLUSRounded1c.txt` を同梱しています。
+- 設定ツール (quicklime-config.exe) と単語登録ツール (quicklime-regword.exe) の画面は、GUI ツールキット Slint (https://slint.dev/) を royalty-free ライセンスで使用しています。帰属表示は設定ツールの「QuicklIME について」ページに表示しています。
 
 同梱データの取得・生成手順については [docs/development.md](docs/development.md) を参照してください。
 

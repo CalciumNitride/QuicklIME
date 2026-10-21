@@ -1,0 +1,80 @@
+// 見た目のページ
+
+import { Button, ComboBox, Switch } from "std-widgets.slint";
+import { Card } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export component AppearancePage inherits SettingsPage {
+    in property <[string]> theme-choices;
+    in-out property <int> theme-index;
+    in property <[string]> font-choices;
+    in-out property <int> font-index;
+    in property <[string]> font-size-choices;
+    in-out property <int> font-size-index;
+    in-out property <bool> mode-popup;
+
+    callback changed();
+    callback open-theme-dir();
+
+    title: "見た目";
+
+    Card {
+        title: "入力パネルのテーマ";
+
+        ComboBox {
+            min-width: 200px;
+            model: root.theme-choices;
+            current-index <=> root.theme-index;
+            accessible-label: "入力パネルのテーマ";
+            selected => {
+                root.changed();
+            }
+        }
+
+        Button {
+            text: "テーマのフォルダを開く";
+            clicked => {
+                root.open-theme-dir();
+            }
+        }
+    }
+
+    Card {
+        title: "フォント";
+
+        ComboBox {
+            min-width: 200px;
+            model: root.font-choices;
+            current-index <=> root.font-index;
+            accessible-label: "フォント";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "サイズ";
+
+        ComboBox {
+            model: root.font-size-choices;
+            current-index <=> root.font-size-index;
+            accessible-label: "サイズ";
+            selected => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "オン/オフの切り替え時に「あ」「A」を表示する";
+
+        Switch {
+            checked <=> root.mode-popup;
+            accessible-label: "オン/オフの切り替え時に「あ」「A」を表示する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+}

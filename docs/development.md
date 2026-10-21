@@ -8,7 +8,8 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 | ディレクトリ | 内容 |
 |---|---|
 | `tsf/` | TSF テキストサービス (C++ / in-proc COM DLL) |
-| `engine/` | 変換エンジン (Rust / 常駐別プロセス) |
+| `engine/` | 変換エンジン (Rust / 常駐別プロセス)。Cargo workspace のルート |
+| `engine/gui/` | 設定ツール・単語登録ツール (Rust / Slint。workspace の crate `quicklime-gui`) |
 | `llm/` | LLM による候補の並べ替えの子プロセス (Rust / llama.cpp。エンジンが起動する) |
 | `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
@@ -26,10 +27,19 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 
 ## ビルド
 
-- エンジン: `cd engine && cargo build`
-  (quicklime-engine.exe 本体に加え、`src/bin/` の quicklime-config.exe /
-  quicklime-regword.exe も一緒にビルドされる)
-- エンジンのテスト: `cd engine && cargo test`
+- エンジンと設定ツール・単語登録ツール: `cd engine && cargo build`
+  (`engine/` は Cargo workspace で、エンジン本体 (package `quicklime-engine`) と `engine/gui/`
+  (package `quicklime-gui`) の両方を既定のビルド対象にしている。quicklime-engine.exe・
+  quicklime-config.exe・quicklime-regword.exe はどれも `engine/target/` に出る)
+  - 両ツールの画面は `engine/gui/ui/*.slint` に Slint (fluent スタイル) で書き、`engine/gui/build.rs` の
+    `slint-build` で exe に組み込む。設定ファイルの読み書き・キー割当・アプリ設定・単語登録と辞書の
+    インポートの処理は `engine/gui/src/` の lib にあり、エンジンと共有する `engine/src/import.rs` は
+    `#[path]` で参照する。エンジン本体の依存に Slint は入らない
+  - workspace では `windows-sys` などの feature がエンジン本体と gui でまとめられるため、gui の依存を
+    変えたときやエンジン単体 (`-p quicklime-engine`) のビルドと行き来したときも、`engine/` での release
+    ビルドで `quicklime-engine.exe` がリンクし直される。常用中のエンジンが `engine/target/release/`
+    から動いているとロックされて失敗するので、先にエンジンを止めるか、exe をリネームして退避しておく
+- エンジンと両ツールのテスト: `cd engine && cargo test` (workspace の全 crate)
 - エンジン単体の動作確認 (起動中のエンジンに接続して CONVERT/CONVSEG を試す):
   `cargo run --example query -- <読み> [<読み>...]`
 - TSF層 (VS付属のCMakeを使用、64bit):

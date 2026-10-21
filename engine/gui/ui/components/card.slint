@@ -1,0 +1,240 @@
+// 設定アプリのカード。左に見出しと説明、右端にコントロールを置く
+
+import { Switch } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import { KeyChip } from "key-chip.slint";
+
+// カードの中身の 1 行。カードの枠を持たないので、展開カードの中の行にも使う
+export component SettingRow {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> enabled: true;
+
+    min-height: Theme.card-min-height;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    accessible-description: root.description;
+
+    HorizontalLayout {
+        padding-left: Theme.card-padding-x;
+        padding-right: Theme.card-padding-x;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 16px;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.title;
+                font-size: Theme.body-size;
+                color: root.enabled ? Theme.text-primary : Theme.text-disabled;
+                wrap: word-wrap;
+            }
+
+            if root.description != "": Text {
+                text: root.description;
+                font-size: Theme.caption-size;
+                color: root.enabled ? Theme.text-secondary : Theme.text-disabled;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+
+            HorizontalLayout {
+                spacing: 8px;
+                @children
+            }
+        }
+    }
+}
+
+export component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> enabled: true;
+
+    background: Theme.card-background;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+
+    VerticalLayout {
+        SettingRow {
+            title: root.title;
+            description: root.description;
+            enabled: root.enabled;
+            @children
+        }
+    }
+}
+
+// 展開カード。見出しの行を押すと開閉し、開いた中身 (@children) を見出しの下に出す。
+// 閉じた状態の右端には要約の文字とチップを出す (開くと中身に同じものが出るので隠す)。
+// has-switch なら見出しの行の右端に Switch を置き、開閉によらず出す
+export component ExpanderCard {
+    in property <string> title;
+    in property <string> description;
+    in property <string> summary;
+    in property <[string]> chips;
+    in property <bool> has-switch;
+    in-out property <bool> switch-checked;
+    in-out property <bool> expanded;
+    property <bool> focus-visible;
+
+    callback switch-toggled();
+
+    VerticalLayout {
+        header := Rectangle {
+            background: header-touch.has-hover ? Theme.card-background-hover : Theme.card-background;
+            border-top-left-radius: Theme.radius;
+            border-top-right-radius: Theme.radius;
+            border-bottom-left-radius: root.expanded ? 0 : Theme.radius;
+            border-bottom-right-radius: root.expanded ? 0 : Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            min-height: Theme.card-min-height;
+            // accessible-expandable を付けると AccessKit が Invoke を出さず、UIA に ExpandCollapse も
+            // 出ない (開閉の操作も状態の読み上げもできなくなる) ため、Invoke のボタンにして状態は説明に入れる
+            accessible-role: button;
+            accessible-label: root.title;
+            accessible-description: (root.expanded ? "展開" : "折りたたみ") + (root.description != "" ? "。" + root.description : "");
+            accessible-action-default => {
+                root.expanded = !root.expanded;
+            }
+
+            header-touch := TouchArea {
+                clicked => {
+                    header-focus.focus();
+                    root.expanded = !root.expanded;
+                }
+            }
+
+            // 幅 0 にしてクリックは TouchArea に任せ、キーボードの操作だけを受ける (fluent の Button と同じ作り)
+            header-focus := FocusScope {
+                x: 0;
+                width: 0;
+                focus-gained(reason) => {
+                    root.focus-visible = reason == FocusReason.tab-navigation;
+                }
+                focus-lost => {
+                    root.focus-visible = false;
+                }
+                key-pressed(event) => {
+                    if event.text == " " || event.text == "\n" {
+                        root.expanded = !root.expanded;
+                        return accept;
+                    }
+                    reject
+                }
+            }
+
+            // 設定アプリと同じく、フォーカス枠は Tab で移ってきたときだけ出す
+            if root.focus-visible: Rectangle {
+                border-radius: Theme.radius;
+                border-width: 2px;
+                border-color: Theme.text-primary;
+            }
+
+            HorizontalLayout {
+                padding-left: Theme.card-padding-x;
+                padding-right: Theme.card-padding-x;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 16px;
+
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: root.title;
+                        font-size: Theme.body-size;
+                        color: Theme.text-primary;
+                        wrap: word-wrap;
+                    }
+
+                    if root.description != "": Text {
+                        text: root.description;
+                        font-size: Theme.caption-size;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+                }
+
+                if !root.expanded && root.summary != "": Text {
+                    text: root.summary;
+                    font-size: Theme.caption-size;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 0;
+                }
+
+                if !root.expanded && root.chips.length > 0: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+
+                    HorizontalLayout {
+                        spacing: 4px;
+
+                        for chip in root.chips: KeyChip {
+                            text: chip;
+                        }
+                    }
+                }
+
+                if root.has-switch: VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 0;
+
+                    Switch {
+                        checked <=> root.switch-checked;
+                        accessible-label: root.title;
+                        toggled => {
+                            root.switch-toggled();
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.expanded ? Icons.chevron-up : Icons.chevron-down;
+                    font-family: Theme.icon-font;
+                    font-size: 12px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    width: 32px;
+                    accessible-role: none;
+                }
+            }
+        }
+
+        // @children は if の中に置けないので、閉じている間は高さ 0 にして隠す
+        Rectangle {
+            visible: root.expanded;
+            height: root.expanded ? body.preferred-height : 0px;
+            clip: true;
+            background: Theme.card-background;
+            border-bottom-left-radius: Theme.radius;
+            border-bottom-right-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+
+            body := VerticalLayout {
+                @children
+            }
+        }
+    }
+}
+
+// 展開カードの中で行を区切る線
+export component CardDivider inherits Rectangle {
+    height: 1px;
+    background: Theme.divider;
+}

@@ -1,0 +1,203 @@
+// アプリのページ。アプリごとに 1 枚の展開カードを並べる
+
+import { Button, ComboBox, Switch, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ExpanderCard, SettingRow, CardDivider } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export struct AppEntry {
+    exe: string,
+    // 既定から変えた設定の要約 (閉じたカードに出す)
+    summary: string,
+    newline: bool,
+    // 起動時の IME (0 = 自動、1 = オン、2 = オフ。IME_START の並び)
+    ime-start: int,
+    no-learning: bool,
+}
+
+export struct RunningApp {
+    exe: string,
+    title: string,
+}
+
+component RunningAppItem inherits Rectangle {
+    in property <RunningApp> app;
+
+    callback clicked();
+
+    height: 48px;
+    border-radius: Theme.radius;
+    background: touch.pressed ? Theme.subtle-pressed : touch.has-hover ? Theme.subtle-hover : transparent;
+    accessible-role: list-item;
+    accessible-label: root.app.exe;
+    accessible-description: root.app.title;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.clicked();
+        }
+    }
+
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+
+        Text {
+            text: root.app.exe;
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.app.title;
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+            overflow: elide;
+        }
+    }
+}
+
+export component AppsPage inherits SettingsPage {
+    in property <[AppEntry]> apps;
+    // [実行中のアプリから追加] で出す一覧。refresh-running-apps で詰め直してもらってから開く
+    in property <[RunningApp]> running-apps;
+
+    callback refresh-running-apps();
+    callback running-app-picked(int);
+    callback pick-exe();
+    callback newline-changed(int, bool);
+    callback ime-start-changed(int, int);
+    callback no-learning-changed(int, bool);
+    callback remove(int);
+
+    title: "アプリ";
+
+    HorizontalLayout {
+        padding-bottom: 8px;
+        spacing: 8px;
+        alignment: end;
+
+        running-button := Button {
+            text: "実行中のアプリから追加";
+            clicked => {
+                root.refresh-running-apps();
+                running-popup.show();
+            }
+        }
+
+        Button {
+            text: "exe を選ぶ";
+            clicked => {
+                root.pick-exe();
+            }
+        }
+
+        running-popup := PopupWindow {
+            x: running-button.x + running-button.width - self.width;
+            y: running-button.y + running-button.height + 4px;
+            width: 360px;
+            height: min(list.preferred-height, 360px) + 2px;
+
+            Rectangle {
+                background: Theme.card-background;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.card-stroke;
+                drop-shadow-blur: 16px;
+                drop-shadow-offset-y: 8px;
+                drop-shadow-color: #00000040;
+
+                ScrollView {
+                    viewport-width: self.visible-width;
+                    viewport-height: list.preferred-height;
+
+                    list := VerticalLayout {
+                        width: parent.width;
+                        padding: 4px;
+                        spacing: 2px;
+
+                        if root.running-apps.length == 0: Text {
+                            text: "表示中のウィンドウを持つアプリがありません";
+                            font-size: Theme.body-size;
+                            color: Theme.text-secondary;
+                            height: 48px;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+
+                        for app[index] in root.running-apps: RunningAppItem {
+                            app: app;
+                            // 閉じると項目が破棄されるので、先に選んだ項目を渡す
+                            clicked => {
+                                root.running-app-picked(index);
+                                running-popup.close();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    for app[index] in root.apps: ExpanderCard {
+        title: app.exe;
+        summary: app.summary;
+
+        SettingRow {
+            title: "改行キーで Shift+Enter を送る";
+
+            Switch {
+                checked: app.newline;
+                accessible-label: "改行キーで Shift+Enter を送る";
+                toggled => {
+                    root.newline-changed(index, self.checked);
+                }
+            }
+        }
+
+        CardDivider { }
+
+        SettingRow {
+            title: "起動時の IME";
+
+            ComboBox {
+                model: ["自動", "オン", "オフ"];
+                current-index: app.ime-start;
+                accessible-label: "起動時の IME";
+                selected => {
+                    root.ime-start-changed(index, self.current-index);
+                }
+            }
+        }
+
+        CardDivider { }
+
+        SettingRow {
+            title: "このアプリでは学習しない";
+
+            Switch {
+                checked: app.no-learning;
+                accessible-label: "このアプリでは学習しない";
+                toggled => {
+                    root.no-learning-changed(index, self.checked);
+                }
+            }
+        }
+
+        CardDivider { }
+
+        SettingRow {
+            Button {
+                text: "一覧から外す";
+                clicked => {
+                    root.remove(index);
+                }
+            }
+        }
+    }
+}

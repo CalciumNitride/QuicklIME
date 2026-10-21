@@ -3,6 +3,12 @@ name = "quicklime-engine"
 version = "1.0.0"
 edition = "2024"
 
+# 設定ツール・単語登録ツールの画面 (gui) を別 crate にし、エンジン本体の依存に Slint を入れない。
+# target を engine/target/ のまま共有するので、exe の置き場所は変わらない
+[workspace]
+members = [".", "gui"]
+default-members = [".", "gui"]
+
 [dependencies]
 # named pipe サーバ用 (Windows では \\.\pipe\ にマップされる)
 interprocess = "2"
@@ -10,18 +16,10 @@ interprocess = "2"
 chrono = "0.4"
 # 辞書の検索構造 (有限状態トランスデューサ)。完全一致・前方一致・共通接頭辞検索に使う
 fst = "0.4"
-# 単語登録ツール (src/bin/quicklime-regword.rs) の Win32 ダイアログ用
+# 二重起動の防止 (src/main.rs の名前付き mutex) と、LLM の子プロセスをジョブオブジェクトに入れて
+# エンジンの終了に巻き込む処理 (src/llm.rs)
 windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_Graphics_Gdi",
-    "Win32_UI_Input_KeyboardAndMouse",
-    "Win32_System_LibraryLoader",
-    "Win32_UI_HiDpi",
-    "Win32_UI_Controls",
-    "Win32_UI_Controls_Dialogs",
-    "Win32_Globalization",
-    # LLM の子プロセスをジョブオブジェクトに入れてエンジンの終了に巻き込む (src/llm.rs)
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_Security",
@@ -50,3 +48,9 @@ required-features = ["llm-bench"]
 [[example]]
 name = "build_ut_dict"
 test = true
+
+# 設定ツール・単語登録ツールの exe を小さくする (画面の処理は速さより大きさが効く)。
+# package 単位の override なので、エンジン本体と依存 crate には効かない
+[profile.release.package.quicklime-gui]
+opt-level = "z"
+codegen-units = 1

@@ -1,0 +1,285 @@
+// キー割当のページ。機能ごとに 1 枚の展開カードを並べる
+
+import { Button, CheckBox } from "std-widgets.slint";
+import { Theme, Icons } from "../theme.slint";
+import { ExpanderCard, CardDivider } from "../components/card.slint";
+import { KeyChip } from "../components/key-chip.slint";
+import { InfoBar, InfoBarSeverity } from "../components/info-bar.slint";
+import { SettingsPage } from "../components/page.slint";
+
+// 状態ごとに変えるときの 1 状態分のキー
+export struct KeyStateRow {
+    label: string,
+    keys: [string],
+}
+
+export struct KeyFunction {
+    name: string,
+    // 働く状態の表記
+    states: string,
+    // 状態ごとに変えないときのキー。閉じたカードのチップにも出す
+    keys: [string],
+    per-state: bool,
+    // per-state のときに出す、その機能が働く状態ごとの行
+    state-rows: [KeyStateRow],
+    // キーを足せなかった理由 (割り当てられないキー・衝突)。空なら出さない
+    message: string,
+    is-default: bool,
+}
+
+// キーのチップの並びと [+ キーを追加]。取り込み中は追加ボタンの代わりに案内と [キャンセル] を出す
+component KeyRow {
+    in property <string> label;
+    in property <[string]> keys;
+    in property <bool> capturing;
+
+    callback add-key();
+    callback remove-key(int);
+    callback cancel-capture();
+
+    HorizontalLayout {
+        padding-left: Theme.card-padding-x;
+        padding-right: Theme.card-padding-x;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 8px;
+
+        if root.label != "": Text {
+            text: root.label;
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            width: 140px;
+        }
+
+        if root.keys.length == 0 && !root.capturing: Text {
+            text: "(なし)";
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+        }
+
+        for key[index] in root.keys: VerticalLayout {
+            alignment: center;
+
+            KeyChip {
+                text: key;
+                removable: true;
+                remove => {
+                    root.remove-key(index);
+                }
+            }
+        }
+
+        if root.capturing: Rectangle {
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.accent;
+            background: Theme.chip-background;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 4px;
+                padding-top: 2px;
+                padding-bottom: 2px;
+                spacing: 12px;
+
+                Text {
+                    text: "キーを押してください";
+                    font-size: Theme.body-size;
+                    color: Theme.accent;
+                    vertical-alignment: center;
+                }
+
+                Button {
+                    text: "キャンセル";
+                    clicked => {
+                        root.cancel-capture();
+                    }
+                }
+            }
+        }
+
+        if !root.capturing: Button {
+            text: "+ キーを追加";
+            clicked => {
+                root.add-key();
+            }
+        }
+
+        // チップと追加ボタンを左に寄せる
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+    }
+}
+
+component KeyCard inherits ExpanderCard {
+    in property <KeyFunction> function;
+    // 取り込み中の行 (0 = 状態ごとに変えないときの行、1 以降 = state-rows の添字 + 1)。-1 なら取り込んでいない
+    in property <int> capture-row: -1;
+
+    callback add-key(int);
+    callback remove-key(int, int);
+    callback cancel-capture();
+    callback per-state-changed(bool);
+    callback reset();
+
+    // チェックボックスを押すと checked の束縛が外れるので、既定に戻したときなどに合わせ直す
+    changed function => {
+        per-state-check.checked = root.function.per-state;
+    }
+
+    title: root.function.name;
+    description: root.function.states;
+    // 状態ごとに変えている機能は、閉じた状態でチップの代わりに要約を出す
+    summary: root.function.per-state ? "状態ごとに設定" : "";
+    chips: root.function.per-state ? [] : root.function.keys;
+
+    VerticalLayout {
+        padding-top: 4px;
+        padding-bottom: 4px;
+
+        if !root.function.per-state: KeyRow {
+            keys: root.function.keys;
+            capturing: root.capture-row == 0;
+            add-key => {
+                root.add-key(0);
+            }
+            remove-key(index) => {
+                root.remove-key(0, index);
+            }
+            cancel-capture => {
+                root.cancel-capture();
+            }
+        }
+
+        if root.function.per-state: VerticalLayout {
+            for state-row[row] in root.function.state-rows: KeyRow {
+                label: state-row.label;
+                keys: state-row.keys;
+                capturing: root.capture-row == row + 1;
+                add-key => {
+                    root.add-key(row + 1);
+                }
+                remove-key(index) => {
+                    root.remove-key(row + 1, index);
+                }
+                cancel-capture => {
+                    root.cancel-capture();
+                }
+            }
+        }
+
+        if root.function.message != "": HorizontalLayout {
+            padding-left: Theme.card-padding-x;
+            padding-right: Theme.card-padding-x;
+            padding-bottom: 8px;
+            spacing: 8px;
+
+            Text {
+                text: Icons.error;
+                font-family: Theme.icon-font;
+                font-size: Theme.icon-size;
+                color: Theme.error-text;
+                vertical-alignment: center;
+                accessible-role: none;
+            }
+
+            Text {
+                text: root.function.message;
+                font-size: Theme.caption-size;
+                color: Theme.error-text;
+                wrap: word-wrap;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+        }
+
+        CardDivider { }
+
+        HorizontalLayout {
+            padding-left: Theme.card-padding-x;
+            padding-right: Theme.card-padding-x;
+            padding-top: 8px;
+            padding-bottom: 4px;
+            spacing: 8px;
+
+            per-state-check := CheckBox {
+                text: "状態ごとに変える";
+                checked: root.function.per-state;
+                toggled => {
+                    root.per-state-changed(self.checked);
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+            }
+
+            Button {
+                text: "既定に戻す";
+                enabled: !root.function.is-default;
+                clicked => {
+                    root.reset();
+                }
+            }
+        }
+    }
+}
+
+export component KeysPage inherits SettingsPage {
+    in property <[KeyFunction]> functions;
+    // 読み込んだ設定に元からある衝突の説明。空なら警告を出さない
+    in property <string> conflict-warning;
+    // 取り込み中の機能 (functions の添字) と行 (KeyCard の capture-row)。-1 なら取り込んでいない
+    in property <int> capture-function: -1;
+    in property <int> capture-row: -1;
+
+    callback add-key(int, int);
+    callback remove-key(int, int, int);
+    callback cancel-capture();
+    callback per-state-changed(int, bool);
+    callback reset(int);
+    callback reset-all();
+
+    title: "キー割当";
+
+    if root.conflict-warning != "": InfoBar {
+        severity: InfoBarSeverity.warning;
+        title: "同じ状態で同じキーを使っている機能があります";
+        message: root.conflict-warning;
+    }
+
+    HorizontalLayout {
+        padding-bottom: 8px;
+        alignment: end;
+
+        Button {
+            text: "すべて既定に戻す";
+            clicked => {
+                root.reset-all();
+            }
+        }
+    }
+
+    for function[index] in root.functions: KeyCard {
+        function: function;
+        capture-row: root.capture-function == index ? root.capture-row : -1;
+        add-key(row) => {
+            root.add-key(index, row);
+        }
+        remove-key(row, key) => {
+            root.remove-key(index, row, key);
+        }
+        cancel-capture => {
+            root.cancel-capture();
+        }
+        per-state-changed(on) => {
+            root.per-state-changed(index, on);
+        }
+        reset => {
+            root.reset(index);
+        }
+    }
+}

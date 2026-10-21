@@ -1,0 +1,123 @@
+// 左のナビ (設定アプリの NavigationView の左ペインに倣う)
+
+import { Theme } from "../theme.slint";
+
+export struct NavItem {
+    icon: string,
+    label: string,
+}
+
+component NavButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> selected;
+    property <bool> focus-visible;
+
+    callback clicked();
+
+    height: 36px;
+    border-radius: Theme.radius;
+    background: touch.pressed ? Theme.subtle-pressed
+        : root.selected || touch.has-hover ? Theme.nav-selected
+        : transparent;
+
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => {
+        root.clicked();
+    }
+
+    touch := TouchArea {
+        clicked => {
+            focus.focus();
+            root.clicked();
+        }
+    }
+
+    // 幅 0 にしてクリックは TouchArea に任せ、キーボードの操作だけを受ける (fluent の Button と同じ作り)
+    focus := FocusScope {
+        x: 0;
+        width: 0;
+        focus-gained(reason) => {
+            root.focus-visible = reason == FocusReason.tab-navigation;
+        }
+        focus-lost => {
+            root.focus-visible = false;
+        }
+        key-pressed(event) => {
+            if event.text == " " || event.text == "\n" {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    // 設定アプリと同じく、フォーカス枠は Tab で移ってきたときだけ出す
+    if root.focus-visible: Rectangle {
+        border-radius: Theme.radius;
+        border-width: 2px;
+        border-color: Theme.text-primary;
+    }
+
+    // 選択中の項目の左端に出すアクセント色の縦棒
+    if root.selected: Rectangle {
+        x: 0;
+        y: (parent.height - self.height) / 2;
+        width: 3px;
+        height: 16px;
+        border-radius: 1.5px;
+        background: Theme.accent;
+    }
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 12px;
+        spacing: 16px;
+
+        Text {
+            text: root.icon;
+            font-family: Theme.icon-font;
+            font-size: Theme.icon-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            width: Theme.icon-size;
+            accessible-role: none;
+        }
+
+        Text {
+            text: root.label;
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}
+
+export component NavigationPane {
+    in property <[NavItem]> items;
+    in-out property <int> current-index;
+
+    accessible-role: list;
+
+    VerticalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 4px;
+        alignment: start;
+
+        for item[index] in root.items: NavButton {
+            icon: item.icon;
+            label: item.label;
+            selected: index == root.current-index;
+            clicked => {
+                root.current-index = index;
+            }
+        }
+    }
+}

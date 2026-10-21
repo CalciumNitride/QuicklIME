@@ -1,0 +1,147 @@
+// 単語登録ツールのウィンドウ。単語・よみ・品詞を入れて [登録] し、結果は上部の InfoBar に出す
+
+import { Button, ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { InfoBar, InfoBarSeverity } from "components/info-bar.slint";
+
+component FieldLabel inherits Text {
+    font-size: Theme.body-size;
+    color: Theme.text-primary;
+}
+
+export component RegwordWindow inherits Window {
+    in-out property <string> word;
+    in-out property <string> reading;
+    in property <[string]> pos-choices;
+    in-out property <int> pos-index;
+
+    // 結果・エラーの InfoBar。info-title が空なら出さない
+    in property <InfoBarSeverity> info-severity;
+    in property <string> info-title;
+    in property <string> info-message;
+    // 登録できて閉じるのを待っている間は、続けて登録させない
+    in property <bool> closing;
+
+    callback register();
+    callback import();
+    callback cancel();
+
+    public function focus-word() {
+        word-edit.focus();
+    }
+
+    public function focus-reading() {
+        reading-edit.focus();
+    }
+
+    title: "QuicklIME 単語登録";
+    default-font-family: Theme.text-font;
+    background: Theme.window-background;
+    width: 420px;
+    // InfoBar の有無で高さが変わる。大きさは利用者には変えさせない
+    height: layout.preferred-height;
+
+    // Enter で登録・Esc で閉じるのは、フォーカスのある部品によらない。IME で変換中の Enter・Esc は
+    // Process キーとして届くので、ここでは拾わない
+    FocusScope {
+        capture-key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.shift || event.modifiers.meta {
+                return reject;
+            }
+            if event.text == Key.Return {
+                if !root.closing {
+                    root.register();
+                }
+                return accept;
+            }
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+
+        layout := VerticalLayout {
+            padding: 20px;
+            spacing: 12px;
+
+            if root.info-title != "": InfoBar {
+                severity: root.info-severity;
+                title: root.info-title;
+                message: root.info-message;
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                FieldLabel {
+                    text: "単語";
+                }
+
+                word-edit := LineEdit {
+                    text <=> root.word;
+                    accessible-label: "単語";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                FieldLabel {
+                    text: "よみ";
+                }
+
+                reading-edit := LineEdit {
+                    text <=> root.reading;
+                    accessible-label: "よみ";
+                }
+            }
+
+            VerticalLayout {
+                spacing: 4px;
+
+                FieldLabel {
+                    text: "品詞";
+                }
+
+                ComboBox {
+                    model: root.pos-choices;
+                    current-index <=> root.pos-index;
+                    accessible-label: "品詞";
+                }
+            }
+
+            HorizontalLayout {
+                padding-top: 8px;
+                spacing: 8px;
+
+                Button {
+                    text: "インポート...";
+                    clicked => {
+                        root.import();
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                }
+
+                Button {
+                    text: "登録";
+                    primary: true;
+                    enabled: !root.closing;
+                    clicked => {
+                        root.register();
+                    }
+                }
+
+                Button {
+                    text: "キャンセル";
+                    clicked => {
+                        root.cancel();
+                    }
+                }
+            }
+        }
+    }
+}

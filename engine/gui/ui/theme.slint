@@ -1,0 +1,72 @@
+// 設定ツールと単語登録ツールで共通の配色・寸法・アイコンの字形。
+// 色は Windows 11 の設定アプリ (WinUI 3 の SettingsCard・NavigationView・InfoBar) の既定値に合わせ、
+// fluent スタイルの Palette が OS のダークモードに追従するのに連動させる
+
+import { Palette } from "std-widgets.slint";
+
+export global Theme {
+    out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    // Mica を使わないので、Mica の下地に近い単色をウィンドウの背景にする
+    out property <brush> window-background: dark ? #202020 : #F3F3F3;
+    out property <brush> card-background: dark ? #2B2B2B : #FBFBFB;
+    out property <brush> card-background-hover: dark ? #323232 : #F6F6F6;
+    out property <brush> card-stroke: dark ? #1D1D1D : #E5E5E5;
+    out property <brush> divider: dark ? #FFFFFF14 : #00000014;
+
+    out property <brush> text-primary: Palette.foreground;
+    out property <brush> text-secondary: dark ? #FFFFFFC9 : #00000099;
+    out property <brush> text-disabled: dark ? #FFFFFF5E : #0000005E;
+    out property <brush> accent: Palette.accent-background;
+
+    out property <brush> subtle-hover: dark ? #FFFFFF0F : #0000000A;
+    out property <brush> subtle-pressed: dark ? #FFFFFF0A : #00000006;
+    out property <brush> nav-selected: dark ? #FFFFFF0F : #0000000A;
+
+    out property <brush> chip-background: dark ? #FFFFFF0F : #FFFFFFB3;
+    out property <brush> chip-stroke: dark ? #FFFFFF17 : #0000001A;
+
+    out property <brush> info-background: dark ? #2B2B2B : #F6F6F6;
+    out property <brush> success-background: dark ? #393D1B : #DFF6DD;
+    out property <brush> warning-background: dark ? #433519 : #FFF4CE;
+    out property <brush> error-background: dark ? #442726 : #FDE7E9;
+    out property <brush> info-icon: Palette.accent-background;
+    out property <brush> success-icon: dark ? #6CCB5F : #0F7B0F;
+    out property <brush> warning-icon: dark ? #FCE100 : #9D5D00;
+    out property <brush> error-icon: dark ? #FF99A4 : #C42B1C;
+    out property <brush> error-text: dark ? #FF99A4 : #C42B1C;
+
+    out property <length> radius: 4px;
+    out property <length> card-min-height: 68px;
+    out property <length> card-padding-x: 16px;
+    out property <length> card-spacing: 4px;
+    out property <length> page-padding-x: 40px;
+
+    out property <length> title-size: 28px;
+    out property <length> subtitle-size: 20px;
+    out property <length> body-size: 14px;
+    out property <length> caption-size: 12px;
+    out property <length> icon-size: 16px;
+
+    out property <string> text-font: "Yu Gothic UI";
+    out property <string> icon-font: "Segoe Fluent Icons";
+}
+
+// Segoe Fluent Icons の字形 (私用領域のコードポイント)
+export global Icons {
+    out property <string> conversion: "\u{E8C1}";
+    out property <string> candidate-bar: "\u{E8FD}";
+    out property <string> input: "\u{E765}";
+    out property <string> appearance: "\u{E790}";
+    out property <string> keys: "\u{E92E}";
+    out property <string> apps: "\u{E71D}";
+    out property <string> advanced: "\u{E9D9}";
+    out property <string> about: "\u{E946}";
+
+    out property <string> chevron-down: "\u{E70D}";
+    out property <string> chevron-up: "\u{E70E}";
+    out property <string> add: "\u{E710}";
+    out property <string> dismiss: "\u{E711}";
+    out property <string> check: "\u{E73E}";
+    out property <string> error: "\u{E783}";
+}

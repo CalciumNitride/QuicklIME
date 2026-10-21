@@ -1,0 +1,47 @@
+// 詳細のページ
+
+import { LineEdit, Switch } from "std-widgets.slint";
+import { Card } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export component AdvancedPage inherits SettingsPage {
+    in-out property <bool> debug-log;
+    in-out property <string> debug-log-path;
+
+    callback changed();
+    // 出力先のパスは打鍵ごとではなく、Enter かフォーカスが外れたときに確定する
+    callback debug-log-path-committed();
+
+    title: "詳細";
+
+    Card {
+        title: "診断ログを出力する";
+        description: "診断ログは全アプリのキー入力 (パスワード欄の打鍵も含む) を記録します。調査が終わったらオフにしてください。";
+
+        Switch {
+            checked <=> root.debug-log;
+            accessible-label: "診断ログを出力する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "診断ログの出力先";
+
+        path-edit := LineEdit {
+            min-width: 360px;
+            text <=> root.debug-log-path;
+            accessible-label: "診断ログの出力先";
+            accepted => {
+                root.debug-log-path-committed();
+            }
+            changed has-focus => {
+                if !self.has-focus {
+                    root.debug-log-path-committed();
+                }
+            }
+        }
+    }
+}

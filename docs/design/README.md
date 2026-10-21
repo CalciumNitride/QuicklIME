@@ -109,15 +109,18 @@
 
 ## 設定・ツール
 
-- [config-tabs.md](config-tabs.md): 設定ツールのメイン画面のタブ化
+- [config-tabs.md](config-tabs.md): 設定ツールのメイン画面のタブ化。画面の部分は [slint-gui.md](slint-gui.md) で
+  置き換え
 - [app-settings.md](app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
-  編集欄にする (改行キー・起動時の IME の状態)
+  編集欄にする (改行キー・起動時の IME の状態)。画面の部分は [slint-gui.md](slint-gui.md) で置き換え
 - [mode-icon.md](mode-icon.md): タスクバーの入力モードのアイコン (あ・A・入力欄でないときの ×) を、同梱の
   M PLUS Rounded 1c で透明な背景にテーマの色で描く
 - [mode-popup.md](mode-popup.md): オン/オフの切替時と別の入力欄へのフォーカス移動時に、キャレットの近くに
   入力モード (あ / A) を約 1 秒出す (設定 `mode_popup`)
 - [config-input-display.md](config-input-display.md): 設定ツールで入力中の読みの表示先 (`input_buffer`・
   `panel_input`) を「入力」タブの 1 つのコンボで選び、入力モード表示のチェックボックスの文言を短くする
+- [slint-gui.md](slint-gui.md): 設定ツールと単語登録ツールの画面を Slint (fluent スタイル) で作り直す。左のナビと
+  ページのカード、変えたら即保存、キー割当・アプリの展開カード、結果とエラーの InfoBar
 
 ## エンジン
 

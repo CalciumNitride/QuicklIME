@@ -1,0 +1,78 @@
+// 変換のページ
+
+import { ComboBox, Switch } from "std-widgets.slint";
+import { Card, ExpanderCard, SettingRow } from "../components/card.slint";
+import { SettingsPage } from "../components/page.slint";
+
+export component ConversionPage inherits SettingsPage {
+    in-out property <bool> learning;
+    in-out property <bool> typo-correction;
+    in-out property <bool> segment-ui;
+    in-out property <bool> llm;
+    in property <[string]> llm-backend-choices;
+    in-out property <int> llm-backend-index;
+
+    callback changed();
+
+    title: "変換";
+
+    Card {
+        title: "学習する";
+        description: "確定した表記を優先する";
+
+        Switch {
+            checked <=> root.learning;
+            accessible-label: "学習する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "タイプミス補正";
+        description: "曖昧一致の補充";
+
+        Switch {
+            checked <=> root.typo-correction;
+            accessible-label: "タイプミス補正";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "文節単位で変換する";
+
+        Switch {
+            checked <=> root.segment-ui;
+            accessible-label: "文節単位で変換する";
+            toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    ExpanderCard {
+        title: "AI で候補を並べ替える";
+        has-switch: true;
+        switch-checked <=> root.llm;
+        switch-toggled => {
+            root.changed();
+        }
+
+        SettingRow {
+            title: "実行環境";
+
+            ComboBox {
+                model: root.llm-backend-choices;
+                current-index <=> root.llm-backend-index;
+                accessible-label: "実行環境";
+                selected => {
+                    root.changed();
+                }
+            }
+        }
+    }
+}

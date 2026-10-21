@@ -1,0 +1,108 @@
+// WinUI 3 の InfoBar に倣った、重要度つきのお知らせの帯
+
+import { Theme, Icons } from "../theme.slint";
+
+export enum InfoBarSeverity { informational, success, warning, error }
+
+export component InfoBar inherits Rectangle {
+    in property <InfoBarSeverity> severity: InfoBarSeverity.informational;
+    in property <string> title;
+    in property <string> message;
+    in property <bool> closable;
+
+    callback closed();
+
+    background: root.severity == InfoBarSeverity.error ? Theme.error-background
+        : root.severity == InfoBarSeverity.warning ? Theme.warning-background
+        : root.severity == InfoBarSeverity.success ? Theme.success-background
+        : Theme.info-background;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    accessible-role: groupbox;
+    accessible-label: root.title;
+    accessible-description: root.message;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: root.closable ? 4px : 16px;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 12px;
+
+        VerticalLayout {
+            alignment: start;
+            horizontal-stretch: 0;
+
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: root.severity == InfoBarSeverity.error ? Theme.error-icon
+                    : root.severity == InfoBarSeverity.warning ? Theme.warning-icon
+                    : root.severity == InfoBarSeverity.success ? Theme.success-icon
+                    : Theme.info-icon;
+
+                Text {
+                    text: root.severity == InfoBarSeverity.error ? Icons.dismiss
+                        : root.severity == InfoBarSeverity.success ? Icons.check
+                        : root.severity == InfoBarSeverity.warning ? "!" : "i";
+                    font-family: root.severity == InfoBarSeverity.error || root.severity == InfoBarSeverity.success ? Theme.icon-font : Theme.text-font;
+                    font-size: root.severity == InfoBarSeverity.error || root.severity == InfoBarSeverity.success ? 8px : 11px;
+                    font-weight: 700;
+                    color: Theme.dark ? #000000 : #FFFFFF;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 1;
+
+            if root.title != "": Text {
+                text: root.title;
+                font-size: Theme.body-size;
+                font-weight: 600;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+
+            if root.message != "": Text {
+                text: root.message;
+                font-size: Theme.body-size;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+        }
+
+        if root.closable: Rectangle {
+            width: 32px;
+            height: 32px;
+            border-radius: Theme.radius;
+            background: close-touch.pressed ? Theme.subtle-pressed : close-touch.has-hover ? Theme.subtle-hover : transparent;
+            accessible-role: button;
+            accessible-label: "閉じる";
+            accessible-action-default => {
+                root.closed();
+            }
+
+            Text {
+                text: Icons.dismiss;
+                font-family: Theme.icon-font;
+                font-size: 12px;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+
+            close-touch := TouchArea {
+                clicked => {
+                    root.closed();
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,115 @@
+// QuicklIME について のページ。版、Slint の帰属表示 (AboutSlint)、同梱物のライセンスの一覧
+
+import { AboutSlint } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Card } from "../components/card.slint";
+import { SettingsPage, SectionHeader } from "../components/page.slint";
+
+struct License {
+    title: string,
+    text: string,
+}
+
+component LicenseCard inherits Rectangle {
+    in property <License> license;
+
+    background: Theme.card-background;
+    border-radius: Theme.radius;
+    border-width: 1px;
+    border-color: Theme.card-stroke;
+    accessible-role: groupbox;
+    accessible-label: root.license.title;
+    accessible-description: root.license.text;
+
+    VerticalLayout {
+        padding-left: Theme.card-padding-x;
+        padding-right: Theme.card-padding-x;
+        padding-top: 12px;
+        padding-bottom: 12px;
+        spacing: 2px;
+
+        Text {
+            text: root.license.title;
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: root.license.text;
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component AboutPage inherits SettingsPage {
+    in property <string> version;
+
+    // README の「同梱物とライセンス」と同じ内容
+    property <[License]> licenses: [
+        {
+            title: "同梱辞書・単漢字辞書",
+            text: "同梱辞書 (dict\\) および単漢字辞書 (dict\\single_kanji.tsv) は Mozc (BSD ライセンス) のデータを使用しています。ライセンス文書 LICENSE-mozc.txt を同梱しています。",
+        },
+        {
+            title: "UT 辞書",
+            text: "UT 辞書 (dict\\dictionary_ut.txt) は、Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) のうち SudachiDict (一般語。Apache License 2.0、一部 UniDic 由来で BSD ライセンス)、日本郵便の郵便番号データ (地名)、人名データ (Apache License 2.0) から生成したものです。元データの説明および SudachiDict の LEGAL・LICENSE-2.0.txt の全文をまとめた LICENSE-mozcdic-ut.txt を同梱しています。",
+        },
+        {
+            title: "英単語辞書",
+            text: "モードレス入力用の英単語辞書 (dict\\english-words.txt) は SCOWL (English Speller Database, https://github.com/en-wl/wordlist ) から生成したものです。著作権表示と許諾文 LICENSE-SCOWL.txt を同梱しています。固有名詞・技術用語を収録した dict\\english-names.txt は独自に作成したものです。",
+        },
+        {
+            title: "LLM 推論プロセスとモデル",
+            text: "LLM 推論プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) およびモデル (models\\ 配下の zenz-v3.2-xsmall / zenz-v3.2-small) を同梱しています。ライセンス文書として LICENSE-llama.cpp.txt (MIT) および LICENSE-zenz.txt (Apache License 2.0) を同梱しています。",
+        },
+        {
+            title: "入力モードアイコンのフォント",
+            text: "タスクバーの入力モードアイコンは、M PLUS Rounded 1c Regular (SIL Open Font License 1.1) をサブセット化して DLL のリソースに埋め込んで描画しています。著作権表示と許諾文 LICENSE-MPLUSRounded1c.txt を同梱しています。",
+        },
+        {
+            title: "GUI ツールキット",
+            text: "設定ツール (quicklime-config.exe) と単語登録ツール (quicklime-regword.exe) の画面は、GUI ツールキット Slint (https://slint.dev/) を royalty-free ライセンスで使用しています。帰属表示は設定ツールの「QuicklIME について」ページに表示しています。",
+        },
+    ];
+
+    title: "QuicklIME について";
+
+    Card {
+        title: "QuicklIME";
+        description: "バージョン " + root.version;
+    }
+
+    SectionHeader {
+        text: "使用しているソフトウェア";
+    }
+
+    Rectangle {
+        background: Theme.card-background;
+        border-radius: Theme.radius;
+        border-width: 1px;
+        border-color: Theme.card-stroke;
+
+        HorizontalLayout {
+            padding: 12px;
+            alignment: start;
+
+            // AboutSlint の中のロゴは幅いっぱいに伸びるため、ロゴの最小の高さ 48px に縦横比 (212:97) と
+            // AboutSlint 自身の padding 12px を足した幅に固定する
+            AboutSlint {
+                width: 48px * 212 / 97 + 24px;
+                height: self.min-height;
+            }
+        }
+    }
+
+    SectionHeader {
+        text: "同梱物とライセンス";
+    }
+
+    for license in root.licenses: LicenseCard {
+        license: license;
+    }
+}

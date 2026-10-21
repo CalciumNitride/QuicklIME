@@ -238,7 +238,7 @@
     単語コストは 3000 (同じ読みの一般語より上に来やすい中位の値。並びは学習で調整される)
 - 登録 (ADDWORD) はファイルへの追記とメモリへの反映を一緒に行い、エンジンの再起動なしに使える。
   手で編集したファイルは RELOADUSER で読み直す
-- 単語登録ツール quicklime-regword.exe (engine/src/bin/quicklime-regword.rs) は、入力なしの状態の
+- 単語登録ツール quicklime-regword.exe (engine/gui/src/bin/quicklime-regword.rs) は、入力なしの状態の
   `key.register_word` (既定 Ctrl+F7) か、言語バーのメニューから起動する。選択中の文字列 (1行目だけ) を
   単語欄の初期値にする (変換できなかった語を選択してそのまま登録する用途)。よみのカタカナはひらがなに直す。
   エンジンに接続できないときは userdict.tsv へ直接追記し、エンジンの次の起動で反映される
@@ -252,10 +252,10 @@
 - エンジンは起動時と RELOADCONFIG の受信時に読む。TSF 層はフォーカスの切替と IME のオン/オフの切替で
   ファイルの更新時刻を確かめ、変わっていれば読み直す (アプリの再起動は要らない)。設定ツールで保存して
   アプリに戻る操作自体がフォーカスの切替なので、実質すぐ反映される
-- 設定ツール quicklime-config.exe (engine/src/bin/quicklime-config.rs) は、保存で全キーをコメント付きで
-  書き出し、エンジンへ RELOADCONFIG を送る。起動は入力なしの状態の `key.open_config` (既定 Ctrl+F12) か
-  言語バーのメニューから。タブの構成は [config-tabs.md](config-tabs.md)。「開発用」タブで診断ログの
-  出力先 (`debug_log`。空なら出さない) を設定する
+- 設定ツール quicklime-config.exe (engine/gui/src/bin/quicklime-config.rs) は、値を変えるたびに
+  (300 ms まとめて) 全キーをコメント付きで書き出し、エンジンへ RELOADCONFIG を送る。起動は入力なしの状態の
+  `key.open_config` (既定 Ctrl+F12) か言語バーのメニューから。ページの構成と画面は [slint-gui.md](slint-gui.md)。
+  「詳細」ページで診断ログの出力先 (`debug_log`。空なら出さない) を設定する
 - 機能ページに説明の無い基本の設定を読む側 (値と既定は [設定一覧](../user/settings.md)):
 
   | キー | 読む側 |
