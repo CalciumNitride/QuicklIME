@@ -510,6 +510,12 @@ impl LearningStore {
         self.phrases.get(reading)?.get(surface).map(|p| (p.stat, p.kind))
     }
 
+    /// 句の学習の今の度合い (テスト・評価用)
+    #[allow(dead_code)]
+    pub fn phrase_degree(&self, reading: &str, surface: &str) -> Option<f64> {
+        self.phrases.get(reading)?.get(surface).map(|p| now(&p.stat, self.n, &self.weights))
+    }
+
     /// 文脈の句の学習の記録 (テスト用)
     #[allow(dead_code)]
     pub fn ctx_phrase_stat(&self, context: &str, reading: &str, surface: &str) -> Option<Stat> {

@@ -42,7 +42,7 @@
 // 使い方:
 //   cargo run --release --example learning_eval -- --stats <learning_stats.tsv>
 //       [--weights "half=5000,ww=1500"]... [--empty] [--dump-same-span <file>]
-//       [--dump-boundary <file>]
+//       [--dump-boundary <file>] [--dump-pinned <file>]
 //
 // オプション:
 //   --stats <tsv>      learning_stats.tsv
@@ -58,6 +58,11 @@
 //   --dump-boundary <file>
 //                      区切りの行を 1 行ずつ TSV で file に書く (両方のモード)。列はモード・向き・差の読みの長さ・
 //                      正解の順位・1 位の差に Mozc 辞書に無い語・正解の差に Mozc 辞書に無い語・正解の経路・1 位の経路。
+//                      実際の入力の読み・表記が入るので、リポジトリの外に置く
+//   --dump-pinned <file>
+//                      読み全体の学習表記で 1 位を固定した行のうち、同じ・当たり以外の行を 1 行ずつ TSV で file に書く
+//                      (学習ありのモード)。列はモード・区分・行の種類・読み・正解の表記・固定の表記・経路の 1-best の表記・
+//                      正解の順位・固定の表記の句の学習・正解の表記の句の学習 (種類:今の度合い)・読みの句の学習の表記の数。
 //                      実際の入力の読み・表記が入るので、リポジトリの外に置く
 
 #[allow(dead_code)]
@@ -120,6 +125,7 @@ struct Args {
     ut: PathBuf,
     dump_same_span: Option<PathBuf>,
     dump_boundary: Option<PathBuf>,
+    dump_pinned: Option<PathBuf>,
 }
 
 fn parse_args() -> BoxResult<Args> {
@@ -133,6 +139,7 @@ fn parse_args() -> BoxResult<Args> {
         ut: root.join("references/mozcdic-ut/dictionary_ut.txt"),
         dump_same_span: None,
         dump_boundary: None,
+        dump_pinned: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -145,6 +152,7 @@ fn parse_args() -> BoxResult<Args> {
             "--ut" => args.ut = PathBuf::from(value()?),
             "--dump-same-span" => args.dump_same_span = Some(PathBuf::from(value()?)),
             "--dump-boundary" => args.dump_boundary = Some(PathBuf::from(value()?)),
+            "--dump-pinned" => args.dump_pinned = Some(PathBuf::from(value()?)),
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
@@ -479,6 +487,94 @@ struct PinTally {
     same: [usize; 2],
     /// どちらも正解でなく、両者が違う (経路の 1-best が無い行を含む)
     both_miss: usize,
+}
+
+/// 固定した行の、固定の表記と経路の 1-best の表記の比較の区分 (PinTally の数え方)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PinClass {
+    Hit,
+    Lost,
+    /// 固定の表記と経路の 1-best が同じ表記。値は当たりか
+    Same(bool),
+    BothMiss,
+}
+
+impl PinClass {
+    /// --dump-pinned の区分の名前。同じ・当たりは書き出さないので None
+    fn dump_label(self) -> Option<&'static str> {
+        match self {
+            PinClass::Hit => Some("固定で当てた"),
+            PinClass::Lost => Some("固定で外した"),
+            PinClass::Same(true) => None,
+            PinClass::Same(false) => Some("同じ・外れ"),
+            PinClass::BothMiss => Some("どちらも外れ"),
+        }
+    }
+}
+
+/// pinned は固定の表記、path は経路の 1-best の表記 (無ければ None)、surface は正解の表記
+fn pin_class(pinned: &str, path: Option<&str>, surface: &str) -> PinClass {
+    let pinned_hit = pinned == surface;
+    if path == Some(pinned) {
+        PinClass::Same(pinned_hit)
+    } else if pinned_hit {
+        PinClass::Hit
+    } else if path == Some(surface) {
+        PinClass::Lost
+    } else {
+        PinClass::BothMiss
+    }
+}
+
+impl PinTally {
+    fn add(&mut self, class: PinClass) {
+        self.total += 1;
+        match class {
+            PinClass::Hit => self.hit += 1,
+            PinClass::Lost => self.lost += 1,
+            PinClass::Same(hit) => self.same[usize::from(!hit)] += 1,
+            PinClass::BothMiss => self.both_miss += 1,
+        }
+    }
+}
+
+/// --dump-pinned の 1 行 (改行を含む)。同じ・当たりの行は None。mode はモードの名前、whole は p の行の種類が
+/// 読み全体か、rank は正解の順位 (0 始まり)、store は評価に使う学習
+fn pin_dump_line(
+    mode: &str,
+    class: PinClass,
+    whole: bool,
+    reading: &str,
+    surface: &str,
+    pinned: &str,
+    path: Option<&str>,
+    rank: Option<usize>,
+    store: &LearningStore,
+) -> Option<String> {
+    let label = class.dump_label()?;
+    let clean = |s: &str| s.replace(['\t', '\n', '\r'], " ");
+    let phrase = |s: &str| match (store.phrase_stat(reading, s), store.phrase_degree(reading, s)) {
+        (Some((_, kind)), Some(degree)) => {
+            let kind = match kind {
+                learn::PhraseKind::Segment => "seg",
+                learn::PhraseKind::Whole => "whole",
+            };
+            format!("{kind}:{degree:.2}")
+        }
+        _ => "-".to_string(),
+    };
+    Some(format!(
+        "{mode}\t{label}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        if whole { "whole" } else { "seg" },
+        clean(reading),
+        clean(surface),
+        clean(pinned),
+        path.map_or("-".to_string(), clean),
+        rank.map_or("-".to_string(), |r| (r + 1).to_string()),
+        phrase(pinned),
+        phrase(surface),
+        store.phrase_surfaces(reading).len(),
+    ))
 }
 
 /// 分類ごとの [行, 3 位以内, 前文脈の学習あり]
@@ -1024,6 +1120,7 @@ fn main() -> BoxResult<()> {
     let mut empty_same_span = SameSpanTally::default();
     let dump = args.dump_same_span.is_some();
     let dump_boundary = args.dump_boundary.is_some();
+    let dump_pinned = args.dump_pinned.is_some();
     let contexts = segment_contexts(&entries);
     // 位置の区分ごとの [行, 変換 1, 変換 3]
     let mut empty_pos = [[0usize; 3]; PhrasePos::ALL.len()];
@@ -1032,6 +1129,10 @@ fn main() -> BoxResult<()> {
     let mut boundary_text = String::from(
         "モード	向き	差の読みの長さ	正解の順位	1 位の差に Mozc 辞書に無い語	正解の差に Mozc 辞書に無い語	正解の経路	1 位の経路
 ",
+    );
+    let mut pinned_text = String::from(
+        "モード\t区分\t行の種類\t読み\t正解の表記\t固定の表記\t経路の 1-best の表記\t正解の順位\t\
+         固定の表記の句の学習\t正解の表記の句の学習\t読みの句の学習の表記の数\n",
     );
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
         let ctx = segment_ctx(&contexts, e.whole, &e.reading, &e.surface);
@@ -1274,17 +1375,20 @@ fn main() -> BoxResult<()> {
                 if nbest.learned {
                     let pinned = nbest.candidates[0].surface();
                     let path = nbest.best.map(|i| nbest.candidates[i].surface());
-                    let pinned_hit = pinned == row.surface;
-                    let path_hit = path.as_ref().is_some_and(|p| *p == row.surface);
-                    pins.total += 1;
-                    if path.as_ref() == Some(&pinned) {
-                        pins.same[usize::from(!pinned_hit)] += 1;
-                    } else if pinned_hit {
-                        pins.hit += 1;
-                    } else if path_hit {
-                        pins.lost += 1;
-                    } else {
-                        pins.both_miss += 1;
+                    let class = pin_class(&pinned, path.as_deref(), &row.surface);
+                    pins.add(class);
+                    if dump_pinned {
+                        pinned_text.extend(pin_dump_line(
+                            &format!("学習あり ({name})"),
+                            class,
+                            row.whole,
+                            &row.reading,
+                            &row.surface,
+                            &pinned,
+                            path.as_deref(),
+                            rank,
+                            &store,
+                        ));
                     }
                 }
                 if rank == Some(0) {
@@ -1450,6 +1554,10 @@ fn main() -> BoxResult<()> {
     if let Some(file) = &args.dump_boundary {
         std::fs::write(file, &boundary_text)?;
         eprintln!("区切りの行を {} 行書き出した: {}", boundary_text.lines().count() - 1, file.display());
+    }
+    if let Some(file) = &args.dump_pinned {
+        std::fs::write(file, &pinned_text)?;
+        eprintln!("固定した行を {} 行書き出した: {}", pinned_text.lines().count() - 1, file.display());
     }
     Ok(())
 }
@@ -1740,6 +1848,59 @@ mod tests {
         assert_eq!(
             same_span_dump_line("学習が空", &right, &top, Some(1), |_, _| 1.0),
             "学習が空\t1 位の差が空 (正解の側が自立語)\t学習あり\t2\tA/あ | *IU/いう\tA/あ | [いう/いう]\n"
+        );
+    }
+
+    #[test]
+    fn pin_class_matches_pin_tally() {
+        assert_eq!(pin_class("A", Some("B"), "A"), PinClass::Hit);
+        assert_eq!(pin_class("A", None, "A"), PinClass::Hit);
+        assert_eq!(pin_class("A", Some("B"), "B"), PinClass::Lost);
+        assert_eq!(pin_class("A", Some("A"), "A"), PinClass::Same(true));
+        assert_eq!(pin_class("A", Some("A"), "B"), PinClass::Same(false));
+        assert_eq!(pin_class("A", Some("B"), "C"), PinClass::BothMiss);
+        assert_eq!(pin_class("A", None, "C"), PinClass::BothMiss);
+
+        let mut pins = PinTally::default();
+        for class in [
+            PinClass::Hit,
+            PinClass::Lost,
+            PinClass::Lost,
+            PinClass::Same(true),
+            PinClass::Same(false),
+            PinClass::BothMiss,
+        ] {
+            pins.add(class);
+        }
+        assert_eq!((pins.total, pins.hit, pins.lost, pins.same, pins.both_miss), (6, 1, 2, [1, 1], 1));
+        assert_eq!(PinClass::Same(true).dump_label(), None);
+        assert_eq!(PinClass::Same(false).dump_label(), Some("同じ・外れ"));
+    }
+
+    #[test]
+    fn pin_dump_line_has_class_surfaces_and_phrase_learning() {
+        let mut store = LearningStore::in_memory();
+        store.learn_phrase("きょうは", "京は", learn::PhraseKind::Whole, false);
+        store.learn_phrase("きょうは", "京は", learn::PhraseKind::Whole, false);
+        store.learn_phrase("きょうは", "今日は", learn::PhraseKind::Segment, false);
+        let degree = |s: &str| store.phrase_degree("きょうは", s).expect("句の学習");
+        assert_eq!(
+            pin_dump_line("学習あり (既定)", PinClass::Lost, true, "きょうは", "今日は", "京は", Some("今日は"), Some(1), &store),
+            Some(format!(
+                "学習あり (既定)\t固定で外した\twhole\tきょうは\t今日は\t京は\t今日は\t2\twhole:{:.2}\tseg:{:.2}\t2\n",
+                degree("京は"),
+                degree("今日は"),
+            ))
+        );
+        // 正解の表記に句の学習が無く、経路の 1-best も候補の正解も無い行は `-` にする。タブと改行は空白にする
+        let line = pin_dump_line("m", PinClass::BothMiss, false, "きょうは", "教\tは", "京は", None, None, &store)
+            .expect("書き出す行");
+        assert_eq!(line.matches('\t').count(), 10);
+        assert!(line.starts_with("m\tどちらも外れ\tseg\tきょうは\t教 は\t京は\t-\t-\twhole:"));
+        assert!(line.ends_with("\t-\t2\n"));
+        assert_eq!(
+            pin_dump_line("m", PinClass::Same(true), false, "きょうは", "京は", "京は", Some("京は"), Some(0), &store),
+            None
         );
     }
 

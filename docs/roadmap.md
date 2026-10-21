@@ -7,8 +7,6 @@
 
 - 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
   ([unified-suggest.md](design/unified-suggest.md))
-- 前文脈による変換の使い分け (「服を|着る」「紙を|切る」)。今は前文脈を予測と後続語の予測にだけ使う
-  ([learning-score.md](design/learning-score.md))
 - 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
 - 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
@@ -39,6 +37,12 @@
   ([eval-sets.md](design/eval-sets.md)) の学習ありのモードで、同音で 1 位を外した行はすべて正解に学習が無く、
   例外で直る「どちらも学習あり」「正解の方が多く使われている」の行が 0 行だったため
   ([learning-score.md](design/learning-score.md))
+- 前文脈による変換の使い分け (「服を|着る」「紙を|切る」) は見送り。今は前文脈を予測と後続語の予測にだけ使う。
+  語の単位の文脈の割引は評価で変換の 1 位の割合を下げ、再生評価の学習ありのモードで 1 位は 93.6% あり、
+  残る外れも分類に薄く散らばっているため ([learning-score.md](design/learning-score.md))
+- 短い文節の表記ゆれ (こと / 事、できます / 出来ます) を、読み全体の学習表記の固定で取り違える。同じ読みで両方の表記を
+  使うと、決め手が無い。再生評価の学習ありのモードでは、固定した 322 行のうち固定で当てた行が 13 行、外した行が
+  12 行とほぼ同数で、度合いや読みの長さでも分かれない ([eval-sets.md](design/eval-sets.md))
 - ずれのある予測 (候補バーの「補正」の予測) に、UT 辞書の不自然な表記の語 (「おやすまないと → おやスマナイト」)
   が出ることがある。辞書の質の問題 ([unified-suggest.md](design/unified-suggest.md))
 - マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない (対応は見送り)。回避策は Convert キーを使うこと
