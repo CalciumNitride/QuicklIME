@@ -108,6 +108,9 @@ const GEN_N_CTX: u32 = 1024;
 const N_SEQ_MAX: u32 = 16;
 const BEAM_WIDTH: usize = 3;
 
+/// 生成のしきい値の格子で試す、生成をかける読みの最小文字数
+const GEN_MIN_CHARS_GRID: [usize; 7] = [0, 3, 5, 7, 9, 12, 15];
+
 /// 読みの長さ別の区切り (速さの表)
 const LENGTH_BUCKETS: [(&str, usize, usize); 3] = [("9 未満", 0, 9), ("9〜19", 9, 20), ("20 以上", 20, usize::MAX)];
 
@@ -1118,6 +1121,9 @@ fn main() -> BoxResult<()> {
     if args.ac {
         print_greedy_c(&cases, &rows);
     }
+    if args.greedy {
+        print_gen_threshold(&cases, &rows);
+    }
     Ok(())
 }
 
@@ -1504,9 +1510,91 @@ fn print_greedy_c(cases: &[Case], rows: &[Row]) {
     println!("| 計 | {} | {} | {} | {} |", total[0], total[1], total[2], total[3]);
 }
 
+/// 生成のしきい値の格子の 1 行
+#[derive(Debug, PartialEq, Eq)]
+struct GridRow {
+    min_chars: usize,
+    /// 生成をかけた件
+    applied: usize,
+    top1: usize,
+    top3: usize,
+    /// 並べ替えだけの 1 位と比べた得・失
+    gain: usize,
+    loss: usize,
+}
+
+/// 件ごとの (読みの文字数, 並べ替えだけの正解の順位, A 貪欲法の合わせた並びの正解の順位) から、
+/// 読みが min_chars 文字以上の件だけ A 貪欲法の合わせた並びを使ったときの集計を下限ごとに出す
+fn gen_threshold_grid(items: &[(usize, Option<usize>, Option<usize>)], mins: &[usize]) -> Vec<GridRow> {
+    mins.iter()
+        .map(|&min_chars| {
+            let mut row = GridRow { min_chars, applied: 0, top1: 0, top3: 0, gain: 0, loss: 0 };
+            for &(chars, rerank, greedy) in items {
+                let applied = chars >= min_chars;
+                let rank = if applied { greedy } else { rerank };
+                row.applied += usize::from(applied);
+                row.top1 += usize::from(rank == Some(0));
+                row.top3 += usize::from(rank.is_some_and(|r| r < 3));
+                row.gain += usize::from(rank == Some(0) && rerank != Some(0));
+                row.loss += usize::from(rank != Some(0) && rerank == Some(0));
+            }
+            row
+        })
+        .collect()
+}
+
+fn print_gen_threshold(cases: &[Case], rows: &[Row]) {
+    let total = cases.len();
+    let pct = |h: usize| {
+        if total == 0 { "-".to_string() } else { format!("{}/{} ({:.1}%)", h, total, 100.0 * h as f64 / total as f64) }
+    };
+    let items: Vec<(usize, Option<usize>, Option<usize>)> = cases
+        .iter()
+        .zip(rows)
+        .map(|(c, r)| (r.chars, c.rank(&r.reranked), r.combined(Method::Greedy).and_then(|list| c.rank(&list))))
+        .collect();
+    let rerank_top1 = items.iter().filter(|(_, r, _)| *r == Some(0)).count();
+    let rerank_top3 = items.iter().filter(|(_, r, _)| r.is_some_and(|k| k < 3)).count();
+    println!("\n## 生成のしきい値の格子\n");
+    println!(
+        "読みが L 文字以上の件だけ A 貪欲法の出力を合わせた並びの先頭に置き、それ以外は並べ替えだけの並び。\
+         並べ替え自体は上の条件のまま。得・失は並べ替えだけの 1 位と比べた件数\n"
+    );
+    println!("| L | 生成をかけた件 | 1位 | 上位3件 | 得 | 失 |");
+    println!("|---|---|---|---|---|---|");
+    println!("| (並べ替えだけ) | - | {} | {} | - | - |", pct(rerank_top1), pct(rerank_top3));
+    for g in gen_threshold_grid(&items, &GEN_MIN_CHARS_GRID) {
+        println!(
+            "| {} | {} | {} | {} | {} | {} |",
+            g.min_chars,
+            pct(g.applied),
+            pct(g.top1),
+            pct(g.top3),
+            g.gain,
+            g.loss
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn しきい値未満の件は並べ替えだけの順位で数える() {
+        // (文字数, 並べ替えだけ, A 貪欲法の合わせた並び)
+        let items = [
+            (2, Some(0), Some(1)),
+            (6, Some(1), Some(0)),
+            (10, None, Some(2)),
+            (10, Some(0), Some(0)),
+        ];
+        let grid = gen_threshold_grid(&items, &[0, 5, 9, 12]);
+        assert_eq!(grid[0], GridRow { min_chars: 0, applied: 4, top1: 2, top3: 4, gain: 1, loss: 1 });
+        assert_eq!(grid[1], GridRow { min_chars: 5, applied: 3, top1: 3, top3: 4, gain: 1, loss: 0 });
+        assert_eq!(grid[2], GridRow { min_chars: 9, applied: 2, top1: 2, top3: 4, gain: 0, loss: 0 });
+        assert_eq!(grid[3], GridRow { min_chars: 12, applied: 0, top1: 2, top3: 3, gain: 0, loss: 0 });
+    }
 
     #[test]
     fn かなだけの括弧は消し読みにある括弧は残す() {
