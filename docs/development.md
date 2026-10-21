@@ -77,6 +77,20 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv
   cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv --llm cpu
   ```
+- LLM による候補の生成の計測 (実験 0c。[experiment-0c-llm-gen.md](design/experiment-0c-llm-gen.md)):
+  `llm_gen_eval` は辞書と llama.cpp をプロセス内で使い、並べ替えだけ・自由生成 (貪欲法・beam)・統計変換を
+  ドラフトにした照合を、テストセットの左文脈つき・学習が空で比べる。エンジンと quicklime-llm は起動しない。
+  llama.cpp を含むので、ビルドには quicklime-llm と同じ環境変数 (LIBCLANG_PATH、CMake・Ninja、vcvars64。
+  Vulkan 版は VULKAN_SDK・`CMAKE_GENERATOR=Ninja` と、長いパスを避ける `subst` のドライブを `--target-dir` に
+  する) が要る。手順は [experiment-0c-llm-gen-results.md](design/experiment-0c-llm-gen-results.md) の「再現手順」
+  ```
+  cd engine
+  cargo build --release --example llm_gen_eval --features llm-bench
+  target\release\examples\llm_gen_eval --model ..\models\zenz-v3.2-xsmall-Q5_K_M.gguf --backend cpu --threads 4 --cases ..\references\AJIMEE-Bench\ajimee_cases.tsv
+  ```
+  `--features llm-bench-vulkan` でビルドしたものは `--backend vulkan` で測る。`--methods` で方式を絞り
+  (rerank,a-greedy,a-beam,c)、`--limit` で照合の評価の回数の上限 (既定 10) を変え、`--no-cases` で件ごとの表を
+  出さない
 - 学習の再生評価: 実ユーザの learning_stats.tsv を `t` (最後に使った通し番号) の順に分け、学習が空のときの
   変換と、前の件を取り込んだ学習での後ろの件の変換・予測を測る。件の数の 8 割の位置にある件の `t` 以下を前、
   それより大きい件を後ろとし (同じ `t` の件は分けない)、後ろの件のうち `d - 1` が 0.05 以上の件は `d - 1` の

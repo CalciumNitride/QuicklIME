@@ -15,7 +15,8 @@
 - 前文脈による変換の使い分け (「服を|着る」「紙を|切る」)。今は前文脈を予測と後続語の予測にだけ使う
   ([learning-score.md](design/learning-score.md))
 - LLM による候補の生成 (読みに沿うよう制約したデコード) と、補正の候補の LLM での採点
-  ([unified-suggest.md](design/unified-suggest.md))
+  ([unified-suggest.md](design/unified-suggest.md)。生成の前後処理とモデルの調査は
+  [rakukan-llm-notes.md](rakukan-llm-notes.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
 - 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
 - 候補バーの数字キーでの採用。今の数字キーは選ぶだけで、採用はしない

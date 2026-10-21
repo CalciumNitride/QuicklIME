@@ -46,6 +46,10 @@ llm-bench-vulkan = ["llm-bench", "llama-cpp-2/vulkan"]
 name = "llm_bench"
 required-features = ["llm-bench"]
 
+[[example]]
+name = "llm_gen_eval"
+required-features = ["llm-bench"]
+
 # 除外規則などの単体テストを cargo test で実行するため
 [[example]]
 name = "build_ut_dict"

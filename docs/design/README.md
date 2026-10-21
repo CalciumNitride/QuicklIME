@@ -143,6 +143,9 @@
 
 - [experiment-0b-llm.md](experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](experiment-0b-llm-results.md): 上の計測の結果
+- [experiment-0c-llm-gen.md](experiment-0c-llm-gen.md): LLM による候補の生成 (自由生成と、統計変換をドラフトにした
+  照合) の精度・速さ・副作用の計測の仕様
+- [experiment-0c-llm-gen-results.md](experiment-0c-llm-gen-results.md): 上の計測の結果
 
 ## ドキュメント
 

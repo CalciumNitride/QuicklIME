@@ -1836,6 +1836,93 @@ pub fn split_path(
     Some(result)
 }
 
+/// 表記の接頭辞の制約つきの Viterbi (docs/design/experiment-0c-llm-gen.md の C)。計測用の example
+/// (llm_gen_eval) だけが使う。表記の連結が prefix (バイト列) で始まる経路 (exact なら表記が prefix と
+/// 等しい経路) のうち、convert_nbest_rerank の最良経路と同じラティス・コストで最小のものを、N-best と
+/// 同じ区切りの文節 (読み, 表記) で返す。満たす経路が無ければ None。
+/// 状態は (ノード, prefix のうち一致したバイト数) で、一致が prefix の長さに達した後は制約の無い
+/// Viterbi と同じになる。prefix はトークンの区切りで文字の途中で切れることがあるので、バイト単位で比べる
+#[allow(dead_code)]
+pub fn constrained_path(
+    kana: &str,
+    ctx: Option<&Context>,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+    prefix: &[u8],
+    exact: bool,
+) -> Option<Vec<(String, String)>> {
+    let ctx_id = ctx.map_or(0, |c| resolve_context_id(c, dict, user, matrix, functional));
+    let lattice =
+        build_lattice(kana, dict, user, matrix, functional, ctx_id, Some(Learned::full(learning)), None)?;
+    let nodes = &lattice.nodes;
+    let n = lattice.ending_at.len() - 1;
+    // 一致したバイト数 matched の状態から表記 surface のノードへ進んだ後の一致したバイト数
+    let advance = |matched: usize, surface: &[u8]| -> Option<usize> {
+        let rest = &prefix[matched..];
+        if rest.starts_with(surface) {
+            Some(matched + surface.len())
+        } else if !exact && surface.starts_with(rest) {
+            Some(prefix.len())
+        } else {
+            None
+        }
+    };
+    // states[i] = ノード i の (一致したバイト数, BOS からの最小コスト, 直前のノード, 直前の状態の位置)。
+    // 制約が空なら各ノードの状態は 1 つで、直前の候補を build_lattice と同じ順に厳密な < で比べるので、
+    // 同じコストの経路の選び方も best_path と同じになる
+    let mut states: Vec<Vec<(usize, i64, usize, usize)>> = vec![Vec::new(); nodes.len()];
+    states[0].push((0, 0, 0, 0));
+    let mut order: Vec<usize> = (1..nodes.len()).collect();
+    order.sort_by_key(|&i| nodes[i].start);
+    for i in order {
+        let node = &nodes[i];
+        let mut next: Vec<(usize, i64, usize, usize)> = Vec::new();
+        for &p in &lattice.ending_at[node.start] {
+            let step = i64::from(matrix.get(nodes[p].right_id, node.left_id))
+                + i64::from(node.word_cost)
+                + node.penalty;
+            for (k, &(matched, cost, _, _)) in states[p].iter().enumerate() {
+                let Some(m) = advance(matched, node.surface.as_bytes()) else {
+                    continue;
+                };
+                let cost = cost + step;
+                match next.iter_mut().find(|s| s.0 == m) {
+                    Some(s) if cost < s.1 => *s = (m, cost, p, k),
+                    Some(_) => {}
+                    None => next.push((m, cost, p, k)),
+                }
+            }
+        }
+        states[i] = next;
+    }
+    let mut best: Option<(i64, usize, usize)> = None;
+    for &i in &lattice.ending_at[n] {
+        for (k, &(matched, cost, _, _)) in states[i].iter().enumerate() {
+            if matched != prefix.len() {
+                continue;
+            }
+            let cost = cost + lattice.eos_cost(i, matrix);
+            if best.is_none_or(|(c, _, _)| cost < c) {
+                best = Some((cost, i, k));
+            }
+        }
+    }
+    let (_, mut cursor, mut k) = best?;
+    let mut indices: Vec<usize> = Vec::new();
+    while cursor != 0 {
+        indices.push(cursor);
+        let (_, _, prev, prev_k) = states[cursor][k];
+        cursor = prev;
+        k = prev_k;
+    }
+    indices.reverse();
+    let (segments, _) = path_segments(lattice.path_words(&indices), functional);
+    Some(segments.into_iter().map(|s| (s.reading, s.surface)).collect())
+}
+
 // ひらがなをカタカナへ変換する (対象外の文字はそのまま)
 pub(crate) fn to_katakana(kana: &str) -> String {
     kana.chars()
@@ -3733,5 +3820,95 @@ mod tests {
             segment_pairs(&typo_segments("はr", &learning, false))
         );
         assert!(typo_segments("はr", &learning, true).iter().all(|s| s.typo.is_none()));
+    }
+
+    /// 制約つきの Viterbi のテスト用の辞書。経路の最小は 昨日は雨が降った。
+    /// 昨日 (E6 98 A8) と 帰納 (E5 B8 B0) は先頭の 1 バイトが、雨 (E9 9B A8) と 飴 (E9 A3 B4) は 2 バイト目が違う
+    fn kinou_dict() -> Dictionary {
+        dict_from(
+            "きのう\t1\t1\t2000\t昨日\n\
+             きのう\t1\t1\t3000\t機能\n\
+             きのう\t1\t1\t5000\t帰納\n\
+             は\t2\t2\t500\tは\n\
+             あめ\t1\t1\t2000\t雨\n\
+             あめ\t1\t1\t3000\t飴\n\
+             が\t2\t2\t500\tが\n\
+             ふった\t1\t1\t2000\t降った\n\
+             ふった\t1\t1\t3000\t振った\n",
+        )
+    }
+
+    fn constrained_surface(dict: &Dictionary, kana: &str, prefix: &[u8], exact: bool) -> Option<String> {
+        let learning = LearningStore::in_memory();
+        constrained_path(
+            kana, None, dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), &learning, prefix,
+            exact,
+        )
+        .map(|segments| segments.into_iter().map(|(_, surface)| surface).collect())
+    }
+
+    #[test]
+    fn 空の制約では通常の最良経路と同じ文節になる() {
+        let learning = LearningStore::in_memory();
+        for (dict, kana) in [
+            (kinou_dict(), "きのうはあめがふった"),
+            (sample_dict(), "きょうははれです"),
+            (sample_dict(), "にほんごはきょう"),
+            (sample_dict(), "はきょう"),
+        ] {
+            let nbest = convert_nbest_rerank(
+                kana, None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), &learning,
+                TypoSource::Off, &typo::TUNING,
+            );
+            let best = &nbest.candidates[nbest.best.unwrap()];
+            let got = constrained_path(
+                kana, None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(), &learning, b"",
+                false,
+            );
+            assert_eq!(got.as_ref(), Some(&best.segments), "{kana}");
+        }
+    }
+
+    #[test]
+    fn 接頭辞の制約では表記がその接頭辞で始まる最小コストの経路になる() {
+        let dict = kinou_dict();
+        let kana = "きのうはあめがふった";
+        assert_eq!(constrained_surface(&dict, kana, "昨日は飴".as_bytes(), false).as_deref(), Some("昨日は飴が降った"));
+        assert_eq!(constrained_surface(&dict, kana, "機能".as_bytes(), false).as_deref(), Some("機能は雨が降った"));
+        // 制約が経路の語の途中で終わってもよい
+        assert_eq!(constrained_surface(&dict, kana, "昨日は雨が振".as_bytes(), false).as_deref(), Some("昨日は雨が振った"));
+    }
+
+    #[test]
+    fn 文字の途中で切れた制約でもその文字で始まる経路になる() {
+        let dict = kinou_dict();
+        let kana = "きのうはあめがふった";
+        let kinou = "帰納".as_bytes();
+        assert_eq!(constrained_surface(&dict, kana, &kinou[..1], false).as_deref(), Some("帰納は雨が降った"));
+        assert_eq!(constrained_surface(&dict, kana, &kinou[..2], false).as_deref(), Some("帰納は雨が降った"));
+        let mut prefix = "昨日は".as_bytes().to_vec();
+        prefix.extend_from_slice(&"飴".as_bytes()[..2]);
+        assert_eq!(constrained_surface(&dict, kana, &prefix, false).as_deref(), Some("昨日は飴が降った"));
+    }
+
+    #[test]
+    fn 完全一致の制約では表記が等しい経路だけを返す() {
+        let dict = kinou_dict();
+        let kana = "きのうはあめがふった";
+        assert_eq!(
+            constrained_surface(&dict, kana, "機能は飴が振った".as_bytes(), true).as_deref(),
+            Some("機能は飴が振った")
+        );
+        // 接頭辞としては満たせても、表記が等しくなければ None
+        assert_eq!(constrained_surface(&dict, kana, "昨日は雨".as_bytes(), true), None);
+        assert_eq!(constrained_surface(&dict, kana, "昨日は雨が降ったよ".as_bytes(), true), None);
+    }
+
+    #[test]
+    fn 満たす経路が無い接頭辞の制約ではnone() {
+        let dict = kinou_dict();
+        let kana = "きのうはあめがふった";
+        assert_eq!(constrained_surface(&dict, kana, "今日".as_bytes(), false), None);
+        assert_eq!(constrained_surface(&dict, kana, "昨日は雨が降ったよ".as_bytes(), false), None);
     }
 }
