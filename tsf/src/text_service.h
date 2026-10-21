@@ -192,9 +192,9 @@ private:
     // 表示は行わない (両方式で共用)
     void BuildConversionSegments();
     HRESULT CycleCandidate(ITfContext* context, int delta);
-    // 数字キー 1〜9: 候補ウィンドウの表示中ページ内の番号 (0始まり) で
-    // 現在文節の候補を直接選択する (対応する候補が無ければ何もしない)
-    HRESULT SelectCandidateByNumber(ITfContext* context, size_t number);
+    // Ctrl+1〜9: 候補ウィンドウの表示中ページ内の番号 (0始まり) の候補を現在文節で選び、
+    // 変換全体を確定する (対応する候補が無ければ何もしない)
+    HRESULT CommitCandidateByNumber(ITfContext* context, size_t number);
     // 現在文節の選択を index に変えて表示へ反映する共通処理
     HRESULT ApplyCandidateSelection(ITfContext* context, size_t index);
     HRESULT MoveSegment(ITfContext* context, int delta);
@@ -311,9 +311,9 @@ private:
     // 向きに直す。キャレット行の上に反転して出しているパネルでは見た目の方向に合わせて逆にする
     // (docs/design/panel-above-caret.md)。↑ / ↓ 以外の vk では delta のまま
     int ArrowOrder(WPARAM vk, int delta) const;
-    // 数字キー 1〜9: バー選択中に、今出しているページ内の番号 (0始まり) の候補を選ぶ
-    // (無ければ何もしない)
-    HRESULT SelectBarByNumber(size_t number);
+    // Ctrl+1〜9: 今出しているページ内の番号 (0始まり) の候補を確定キーと同じく採用する
+    // (run のバーと後続語の予測。未選択でも働く。無ければ何もしない)
+    HRESULT AdoptBarByNumber(ITfContext* context, size_t number);
     // バーの選択を解除する (バーは表示のまま)
     HRESULT DeselectBar();
     // サジェスト選択中の ForgetLearning: 選んでいる候補の学習をエンジンから消し、消えたものが
@@ -343,8 +343,8 @@ private:
     void ShowNextWordAfterCommit(ITfContext* context);
     // 後続語の予測を出していて、その候補を選んでいるか
     bool NextWordSelected() const;
-    // 打鍵の前処理: 後続語の予測を出しているとき、予測のまま扱うキー (未選択なら選択の機能、
-    // 選択中なら選択・採用・Esc のキー) でなければ予測を消す (そのキーは今どおり処理する)
+    // 打鍵の前処理: 後続語の予測を出しているとき、予測のまま扱うキー (未選択なら選択の機能と
+    // Ctrl+1〜9、選択中なら選択・採用・Esc のキー) でなければ予測を消す (そのキーは今どおり処理する)
     void DismissNextWordForKey(WPARAM wparam);
     // 後続語の予測の選択を動かす (未選択から delta > 0 で先頭、delta < 0 で末尾を選ぶ)
     HRESULT MoveNextWordSelection(int delta);
@@ -534,6 +534,9 @@ private:
     // ←→ (修飾キーなし) を ↑↓ と同じくサジェストの選択移動に使うか (横並びのテーマで
     // run のバーか後続語の予測を選択中。変換中は除く)
     bool ArrowMovesBarSelection(WPARAM wparam) const;
+    // 番号の候補を採用・確定する Ctrl+1〜9 (Shift・Alt なし) で、候補を出しているパネルが
+    // あるか (run のバー・後続語の予測 (未選択を含む)・候補選択中)
+    bool PanelNumberKey(WPARAM wparam) const;
     // 食べずにアプリへ渡すキーのうち run を終えるもの (Enter・矢印・Ctrl 併用など) の
     // 状態処理。候補選択中・バー選択中の Enter は確定してから渡す
     // (EnterNeedsResend のときは食べるのでここでは扱わない)。
@@ -543,7 +546,8 @@ private:
     // composition も無ければ false)
     bool PanelRunActive() const { return (InRun() || Composing()) && runMode_ == RunMode::Panel; }
     // run を終えてアプリへ渡すキーで、読めると判定されていない文書のため食べて文書に入れた後に
-    // 送り直すものか (Enter・矢印・Tab (バーなし)・Home/End/Delete・PgUp/PgDn・Ctrl 併用)
+    // 送り直すものか (Enter・矢印・Tab (バーなし)・Home/End/Delete・PgUp/PgDn・Ctrl 併用
+    // (バーが出ているときの Ctrl+1〜9 を除く))
     bool PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const;
     // PanelKeyNeedsResend のキー: 読み (Enter のバー選択中は選択中の候補) を文書に入れて run を
     // 終えてから、その打鍵をアプリへ送り直す

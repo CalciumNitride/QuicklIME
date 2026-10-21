@@ -14,7 +14,6 @@
 - 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
 - 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
-- 候補バーの数字キーでの採用。今の数字キーは選ぶだけで、採用はしない
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - run が無いときのキャレット直前のかなの変換を、候補バーの対象にする

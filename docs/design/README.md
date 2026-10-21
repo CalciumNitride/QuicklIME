@@ -68,6 +68,8 @@
   Shift+← / → で縮める。予測の学習の点数は [learning-score.md](learning-score.md) で置き換え
 - [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
+- [number-key-adopt.md](number-key-adopt.md): 数字キーをどの状態でも文字キーと同じに扱い、番号での採用・確定を
+  Ctrl+1〜9 にする (候補バー・後続語の予測・候補選択中)。各設計書の数字キーでの選択を置き換え
 
 ## 変換
 

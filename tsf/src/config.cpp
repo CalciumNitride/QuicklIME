@@ -282,6 +282,10 @@ bool IsAssignable(const KeyBinding& binding)
         (binding.vk == 'M' || binding.vk == 'H')) {
         return false;
     }
+    // Ctrl+1〜9 は候補の番号での採用 (割り当てると、その番号の候補だけ採用できなくなる)
+    if (binding.ctrl && !binding.shift && binding.vk >= '1' && binding.vk <= '9') {
+        return false;
+    }
     return true;
 }
 

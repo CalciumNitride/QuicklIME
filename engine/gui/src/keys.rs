@@ -206,6 +206,9 @@ impl KeyCombo {
         if self.ctrl && !self.shift && (self.vk == 0x4D || self.vk == 0x48) {
             return Some("Ctrl+M・Ctrl+H は Enter・Backspace として働くため割り当てられません");
         }
+        if self.ctrl && !self.shift && (0x31..=0x39).contains(&self.vk) {
+            return Some("Ctrl+1〜9 は候補の番号での採用に使うため割り当てられません");
+        }
         None
     }
 }
@@ -362,11 +365,14 @@ mod tests {
     fn rejects_unassignable_keys() {
         for text in [
             "Enter", "A", "Shift+Tab", "Ctrl+H", "Ctrl+M", "Esc", "Shift+1", "VK_19", "VK_F3", "VK_10", "VK_6B",
-            "Alt+S", "Alt+Left", "Alt+F4", "Ctrl+Alt+F7", "Alt+Shift+Space",
+            "Alt+S", "Alt+Left", "Alt+F4", "Ctrl+Alt+F7", "Alt+Shift+Space", "Ctrl+1", "Ctrl+9",
         ] {
             assert!(key(text).unassignable_reason().is_some(), "{text}");
         }
-        for text in ["Ctrl+Enter", "Ctrl+Left", "Ctrl+Shift+M", "Space", "Shift+Space", "Insert", "Kana", "Ctrl+A", "VK_6C"] {
+        for text in [
+            "Ctrl+Enter", "Ctrl+Left", "Ctrl+Shift+M", "Space", "Shift+Space", "Insert", "Kana", "Ctrl+A", "VK_6C",
+            "Ctrl+0", "Ctrl+Shift+1",
+        ] {
             assert!(key(text).unassignable_reason().is_none(), "{text}");
         }
         // 対象外だけなら既定のまま

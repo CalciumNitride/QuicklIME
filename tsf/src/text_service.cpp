@@ -1018,13 +1018,15 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     }
 
     // 候補選択中 (run を昇格した composition)。Ctrl / Alt 併用は原則アプリの
-    // ショートカットなので確定してから渡すが、Ctrl+H (変換の取消) だけは IME が処理する。
+    // ショートカットなので確定してから渡すが、Ctrl+H (変換の取消) と Ctrl+1〜9 (番号の候補で
+    // 確定) は IME が処理する。
     // Enter・Ctrl+M は、読める文書では食べずに EndRunIfPassthroughKey で確定してから
     // アプリへ渡し、そうでなければ食べて確定してから送り直す (EnterNeedsResend)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     if (ctrl || alt) {
-        return ctrl && !alt && (wparam == 'H' || (wparam == 'M' && EnterNeedsResend()));
+        return ctrl && !alt &&
+               (wparam == 'H' || (wparam == 'M' && EnterNeedsResend()) || PanelNumberKey(wparam));
     }
     const bool shifted = IsShiftPressed();
 
@@ -1926,6 +1928,9 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const WPARAM originalVk = wparam;
     if (ctrl) {
+        if (PanelNumberKey(wparam)) {
+            return CommitCandidateByNumber(context, wparam - '1');
+        }
         switch (wparam) {
         case 'H':
             wparam = VK_BACK;
@@ -1945,10 +1950,6 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
     // (DemoteIfLeftConversion)
     DirectKey key;
     if (ClassifyDirectKey(wparam, shifted, &key)) {
-        // 数字 1〜9 は候補番号による直接選択
-        if (!shifted && wparam >= '1' && wparam <= '9' && converting_) {
-            return SelectCandidateByNumber(context, wparam - '1');
-        }
         if (!converting_) {
             return S_OK;
         }
@@ -2251,7 +2252,7 @@ HRESULT TextService::CycleCandidate(ITfContext* context, int delta)
                                    (selected_[segmentIndex_] + count + delta) % count);
 }
 
-HRESULT TextService::SelectCandidateByNumber(ITfContext* context, size_t number)
+HRESULT TextService::CommitCandidateByNumber(ITfContext* context, size_t number)
 {
     if (!converting_ || segments_.empty()) {
         return E_UNEXPECTED;
@@ -2263,7 +2264,9 @@ HRESULT TextService::SelectCandidateByNumber(ITfContext* context, size_t number)
     if (number >= conversionPageSize_ || index >= segments_[segmentIndex_].candidates.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
-    return ApplyCandidateSelection(context, index);
+    selected_[segmentIndex_] = index;
+    SyncPairedSegment(segmentIndex_);
+    return Composing() ? CommitComposition(context) : CommitRunDirect(context);
 }
 
 HRESULT TextService::ApplyCandidateSelection(ITfContext* context, size_t index)
@@ -3264,18 +3267,24 @@ int TextService::ArrowOrder(WPARAM vk, int delta) const
     return delta;
 }
 
-HRESULT TextService::SelectBarByNumber(size_t number)
+HRESULT TextService::AdoptBarByNumber(ITfContext* context, size_t number)
 {
-    if (converting_ || barItems_.empty() || barIndex_ < 0) {
-        return E_UNEXPECTED; // バー選択中のみ呼ばれる
+    if (converting_ || barItems_.empty()) {
+        return E_UNEXPECTED; // バーか後続語の予測が出ているときのみ呼ばれる
     }
     // 番号は今出しているページ内の番号
     const size_t index = suggestPanel_.PageStart() + number;
     if (number >= suggestPanel_.PageItemCount() || index >= barItems_.size()) {
         return S_OK; // 表示されていない番号は無視する
     }
+    // 選び直しで採用範囲の縮めは元に戻るので、選択中と同じ番号でも全体を採用する
     SelectBarIndex(static_cast<int>(index));
-    return S_OK;
+    if (nextWordBar_ && !InRun()) {
+        return AdoptNextWord(context, BarAdopt::CommitKey, L"", nullptr);
+    }
+    const HRESULT hr = AdoptBarItem(context, index, BarAdopt::CommitKey, L"", nullptr);
+    ShowNextWordAfterCommit(context);
+    return hr;
 }
 
 HRESULT TextService::DeselectBar()

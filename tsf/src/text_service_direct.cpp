@@ -280,6 +280,9 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
     const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
     // run の読みは IME が持っているので、run 中の Backspace は常に食べて読みの末尾を削る
     const bool backspaceEaten = converting_ || InRun();
+    if (PanelNumberKey(wparam)) {
+        return true;
+    }
     if (NextWordSelected() && !InRun()) {
         // 後続語の予測の選択中。DismissNextWordForKey が予測を残したキーだけが来る
         if (ctrl || alt) {
@@ -298,7 +301,8 @@ bool TextService::IsKeyEatenDirect(WPARAM wparam) const
         case VK_RIGHT:
             return ArrowMovesBarSelection(wparam);
         default:
-            // 数字は run の外でもアプリへ渡さない (1〜9 は番号の選択、それ以外は採用して run を始める)
+            // 数字も run の外でアプリへ渡さず、採用して run を始める (予測の採用と数字の入力の順序を
+            // 保つため。digits half でも同じ)
             return IsPrintableKey(wparam, IsShiftPressed());
         }
     }
@@ -413,6 +417,23 @@ bool TextService::ArrowMovesBarSelection(WPARAM wparam) const
            suggestPanel_.Horizontal();
 }
 
+bool TextService::PanelNumberKey(WPARAM wparam) const
+{
+    if (wparam < '1' || wparam > '9') {
+        return false;
+    }
+    const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
+    if (!ctrl || alt || IsShiftPressed()) {
+        return false;
+    }
+    // パネルが出ている間はページ外の番号でも食べる (アプリのショートカットより優先する)
+    if (converting_) {
+        return true; // composition に昇格できなかった文書の候補選択中も含む
+    }
+    return !Composing() && !barItems_.empty() && (InRun() || nextWordBar_);
+}
+
 bool TextService::BarRangeKey(WPARAM wparam) const
 {
     if (wparam != VK_LEFT && wparam != VK_RIGHT) {
@@ -520,6 +541,10 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
     const WPARAM originalVk = wparam;
     if (ctrl) {
+        if (PanelNumberKey(wparam)) {
+            return converting_ ? CommitCandidateByNumber(context, wparam - '1')
+                               : AdoptBarByNumber(context, wparam - '1');
+        }
         switch (wparam) {
         case 'H':
             wparam = VK_BACK;
@@ -536,9 +561,6 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
     if (NextWordSelected() && !InRun()) {
         // 後続語の予測の選択中 (run なし)。選択の操作は run のバー選択と同じ
         if (ClassifyDirectKey(wparam, shifted, &key)) {
-            if (!shifted && wparam >= '1' && wparam <= '9') {
-                return SelectBarByNumber(wparam - '1');
-            }
             return AdoptNextWord(context, BarAdopt::Continue, L"", &key);
         }
         switch (wparam) {
@@ -578,15 +600,6 @@ HRESULT TextService::HandleKeyDirect(ITfContext* context, WPARAM wparam)
         }
     }
     if (ClassifyDirectKey(wparam, shifted, &key)) {
-        // 候補選択中・バー選択中の 1〜9 は候補番号による直接選択
-        if (!shifted && wparam >= '1' && wparam <= '9') {
-            if (converting_) {
-                return SelectCandidateByNumber(context, wparam - '1');
-            }
-            if (barIndex_ >= 0) {
-                return SelectBarByNumber(wparam - '1');
-            }
-        }
         // バー選択中の印字キーは選択中の候補を採用し、その打鍵から続ける
         if (barIndex_ >= 0) {
             return AdoptBarItem(context, static_cast<size_t>(barIndex_), BarAdopt::Continue, L"",
@@ -1499,7 +1512,9 @@ void TextService::DismissNextWordForKey(WPARAM wparam)
         return;
     }
     const KeyFunc func = MatchKeyFunc(wparam).func;
-    bool keep = func == KeyFunc::NextWordNext || func == KeyFunc::NextWordPrev;
+    // Ctrl+1〜9 は未選択でも番号の予測を採用する
+    bool keep = func == KeyFunc::NextWordNext || func == KeyFunc::NextWordPrev ||
+                PanelNumberKey(wparam);
     if (!keep && barIndex_ >= 0) {
         const bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
         const bool alt = (GetKeyState(VK_MENU) & 0x8000) != 0;
@@ -2171,8 +2186,9 @@ bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
         return false;
     }
     if (ctrl) {
-        // Ctrl+H は Backspace の読み替えで、IME が読みを削る
-        return wparam != 'H';
+        // Ctrl+H は Backspace の読み替えで、IME が読みを削る。Ctrl+1〜9 はバーの候補の採用
+        // (擬似 Backspace は Ctrl を離した状態で送る)
+        return wparam != 'H' && !PanelNumberKey(wparam);
     }
     switch (wparam) {
     case VK_TAB:
