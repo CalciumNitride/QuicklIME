@@ -31,6 +31,8 @@
 // 数え、向きごとに差に Mozc 辞書 (UT 辞書を積まない) に無い語がある行も出す。
 // 区切りの位置が合っているのに学習で直らない理由を見るため、同じ区間の行は向きで分け、正解の差の語が語の学習に
 // 数えない語・学習あり・学習なしの行を数える。
+// 評価は前文脈なしの BOS から変換するので、入力の先頭の扱いを変えたときの得失を見るため、学習が空のモードは
+// p の行の位置 (読み全体・q の件がある文節・q の件が無い文節) でも分ける。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -175,6 +177,8 @@ struct Entry {
     context: String,
     reading: String,
     surface: String,
+    /// 句の学習 (p) の種類が読み全体 (whole)。ほかは false
+    whole: bool,
     d: f64,
     t: u64,
     /// 取り込みに渡す元の行
@@ -189,10 +193,12 @@ fn load_entries(text: &str) -> (Vec<Entry>, usize) {
     for line in text.lines() {
         let f: Vec<&str> = line.split('\t').collect();
         let filled = |fields: &[&str]| fields.iter().all(|f| !f.is_empty());
-        let (kind, context, reading, surface, d, t) = match f.as_slice() {
-            ["w", r, s, d, t] if filled(&[r, s]) => (Kind::Word, "", *r, *s, *d, *t),
-            ["p", r, s, d, t, "seg" | "whole"] if filled(&[r, s]) => (Kind::Phrase, "", *r, *s, *d, *t),
-            ["q", c, r, s, d, t] if filled(&[c, r, s]) => (Kind::CtxPhrase, *c, *r, *s, *d, *t),
+        let (kind, context, reading, surface, whole, d, t) = match f.as_slice() {
+            ["w", r, s, d, t] if filled(&[r, s]) => (Kind::Word, "", *r, *s, false, *d, *t),
+            ["p", r, s, d, t, k @ ("seg" | "whole")] if filled(&[r, s]) => {
+                (Kind::Phrase, "", *r, *s, *k == "whole", *d, *t)
+            }
+            ["q", c, r, s, d, t] if filled(&[c, r, s]) => (Kind::CtxPhrase, *c, *r, *s, false, *d, *t),
             _ => continue,
         };
         let (Ok(d), Ok(t)) = (d.parse::<f64>(), t.parse::<u64>()) else {
@@ -203,6 +209,7 @@ fn load_entries(text: &str) -> (Vec<Entry>, usize) {
             context: context.to_string(),
             reading: reading.to_string(),
             surface: surface.to_string(),
+            whole,
             d,
             t,
             line: line.to_string(),
@@ -792,6 +799,38 @@ impl SameSpanTally {
     }
 }
 
+/// 学習が空のモードで測る p の行の位置
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PhrasePos {
+    Whole,
+    AfterSegment,
+    FirstSegment,
+}
+
+impl PhrasePos {
+    const ALL: [PhrasePos; 3] = [PhrasePos::Whole, PhrasePos::AfterSegment, PhrasePos::FirstSegment];
+
+    fn label(self) -> &'static str {
+        match self {
+            PhrasePos::Whole => "読み全体",
+            PhrasePos::AfterSegment => "文節で、同じ (読み, 表記) の q の件がある",
+            PhrasePos::FirstSegment => "文節で、q の件が無い",
+        }
+    }
+}
+
+/// q の件は前に文節があった文節にだけできるので、同じ (読み, 表記) の q の件の有無で、前に文節があったかを近似する。
+/// ctx_phrases はファイル全体の q の件の (読み, 表記)
+fn phrase_pos(e: &Entry, ctx_phrases: &HashSet<(&str, &str)>) -> PhrasePos {
+    if e.whole {
+        PhrasePos::Whole
+    } else if ctx_phrases.contains(&(e.reading.as_str(), e.surface.as_str())) {
+        PhrasePos::AfterSegment
+    } else {
+        PhrasePos::FirstSegment
+    }
+}
+
 /// 変換の測定から除く読み。モードレス入力の英字区間は (読み = 表記) の句として学習に入るが、実際の入力では
 /// 変換せずに続くので、読みに ASCII 英字を含む句が CONVNBEST に渡ることはない
 fn latin_reading(reading: &str) -> bool {
@@ -885,6 +924,13 @@ fn main() -> BoxResult<()> {
     let mut empty_boundary = BoundaryTally::default();
     let mut empty_same_span = SameSpanTally::default();
     let dump = args.dump_same_span.is_some();
+    let ctx_phrases: HashSet<(&str, &str)> = entries
+        .iter()
+        .filter(|e| e.kind == Kind::CtxPhrase)
+        .map(|e| (e.reading.as_str(), e.surface.as_str()))
+        .collect();
+    // 位置の区分ごとの [行, 変換 1, 変換 3]
+    let mut empty_pos = [[0usize; 3]; 3];
     let mut dump_text = String::from("モード	向き	学習の区分	正解の順位	正解の経路	1 位の経路
 ");
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
@@ -899,6 +945,10 @@ fn main() -> BoxResult<()> {
         empty_tally.conv1 += usize::from(rank == Some(0));
         empty_tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
         empty_top.insert((&e.reading, &e.surface), rank == Some(0));
+        let pos = &mut empty_pos[PhrasePos::ALL.iter().position(|&p| p == phrase_pos(e, &ctx_phrases)).expect("区分")];
+        pos[0] += 1;
+        pos[1] += usize::from(rank == Some(0));
+        pos[2] += usize::from(rank.is_some_and(|r| r < 3));
         if rank != Some(0) {
             let (right, top) = if nbest.learned {
                 (None, None)
@@ -988,6 +1038,27 @@ fn main() -> BoxResult<()> {
         percent(empty_tally.conv3, empty_tally.conv_total),
         time_stat(&mut empty_times),
     );
+    for i in 0..3 {
+        let sum: usize = empty_pos.iter().map(|c| c[i]).sum();
+        let all = [empty_tally.conv_total, empty_tally.conv1, empty_tally.conv3][i];
+        assert_eq!(sum, all, "位置の区分の合計が学習が空の行の数と一致しない");
+    }
+    println!(
+        "\np の行の位置で分けた変換 1/3 (件数と割合)。q の件は、同じ (読み, 表記) の q の件がファイル全体にあるか。\n"
+    );
+    println!("| 位置 | 行 | 変換 1 | 変換 3 |");
+    println!("|---|---|---|---|");
+    for (pos, c) in PhrasePos::ALL.iter().zip(&empty_pos) {
+        println!(
+            "| {} | {} | {} ({}) | {} ({}) |",
+            pos.label(),
+            c[0],
+            c[1],
+            percent(c[1], c[0]),
+            c[2],
+            percent(c[2], c[0]),
+        );
+    }
     let empty_class_total: usize = empty_classes.counts.values().map(|c| c[0]).sum();
     assert_eq!(
         empty_class_total,
@@ -1276,6 +1347,22 @@ mod tests {
 
         let mut store = LearningStore::in_memory();
         assert_eq!(store.load_stats_from(split.train_text.as_bytes()), 20);
+    }
+
+    #[test]
+    fn phrase_pos_by_kind_and_ctx_phrase() {
+        let text = "p\ta\tA\t1\t1\twhole\np\tb\tB\t1\t2\tseg\np\tc\tC\t1\t3\tseg\n\
+                    q\tx\tb\tB\t1\t4\nq\tx\tc\tC2\t1\t5\nq\tx\ta\tA\t1\t6\n";
+        let (entries, _) = load_entries(text);
+        let ctx: HashSet<(&str, &str)> = entries
+            .iter()
+            .filter(|e| e.kind == Kind::CtxPhrase)
+            .map(|e| (e.reading.as_str(), e.surface.as_str()))
+            .collect();
+        let pos: Vec<PhrasePos> =
+            entries.iter().filter(|e| e.kind == Kind::Phrase).map(|e| phrase_pos(e, &ctx)).collect();
+        // 読み全体は q の件があっても読み全体。q の件は表記まで同じものだけを数える
+        assert_eq!(pos, [PhrasePos::Whole, PhrasePos::AfterSegment, PhrasePos::FirstSegment]);
     }
 
     #[test]
