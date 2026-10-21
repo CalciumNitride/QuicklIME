@@ -329,6 +329,25 @@ impl MissClass {
     }
 }
 
+/// 正解と 1 位の自立語の多重集合の差 [正解にだけある語, 1 位にだけある語] (語の順を保つ)
+fn word_diff(right: &[(String, String)], top: &[(String, String)]) -> (Vec<(String, String)>, Vec<(String, String)>) {
+    let only = |a: &[(String, String)], b: &[(String, String)]| {
+        let mut rest: HashMap<&(String, String), usize> = HashMap::new();
+        for w in b {
+            *rest.entry(w).or_default() += 1;
+        }
+        let mut out: Vec<(String, String)> = Vec::new();
+        for w in a {
+            match rest.get_mut(w) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => out.push(w.clone()),
+            }
+        }
+        out
+    };
+    (only(right, top), only(top, right))
+}
+
 /// 外した行を分類する。right・top は正解と 1 位を split_words で分けた自立語 (分けられなければ None)、
 /// degree は語の学習の今の度合い (無ければ 0)
 fn classify_miss(
@@ -346,23 +365,7 @@ fn classify_miss(
     let Some(top) = top else {
         return MissClass::Other;
     };
-    // 多重集合の差 (語の順を保つ)
-    let only = |a: &[(String, String)], b: &[(String, String)]| {
-        let mut rest: HashMap<&(String, String), usize> = HashMap::new();
-        for w in b {
-            *rest.entry(w).or_default() += 1;
-        }
-        let mut out: Vec<(String, String)> = Vec::new();
-        for w in a {
-            match rest.get_mut(w) {
-                Some(n) if *n > 0 => *n -= 1,
-                _ => out.push(w.clone()),
-            }
-        }
-        out
-    };
-    let d_right = only(right, top);
-    let d_top = only(top, right);
+    let (d_right, d_top) = word_diff(right, top);
     if d_right.is_empty() && d_top.is_empty() {
         return MissClass::SameWords;
     }
@@ -500,6 +503,102 @@ impl UnsplitTally {
     }
 }
 
+/// 「区切り」の行の向き (表の行の順。上から順に最初に当てはまるもの)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BoundaryDir {
+    RightEmpty,
+    TopEmpty,
+    Finer,
+    Coarser,
+    Shifted,
+}
+
+impl BoundaryDir {
+    const ALL: [BoundaryDir; 5] = [
+        BoundaryDir::RightEmpty,
+        BoundaryDir::TopEmpty,
+        BoundaryDir::Finer,
+        BoundaryDir::Coarser,
+        BoundaryDir::Shifted,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            BoundaryDir::RightEmpty => "正解の差が空 (正解では付属語の部分を 1 位が自立語にした)",
+            BoundaryDir::TopEmpty => "1 位の差が空",
+            BoundaryDir::Finer => "正解の方が語が少ない (1 位が細かく切った)",
+            BoundaryDir::Coarser => "正解の方が語が多い (1 位がまとめた)",
+            BoundaryDir::Shifted => "同じ数 (境界の位置のずれ)",
+        }
+    }
+}
+
+/// d_right・d_top は word_diff の [正解にだけある語, 1 位にだけある語]
+fn boundary_dir(d_right: &[(String, String)], d_top: &[(String, String)]) -> BoundaryDir {
+    if d_right.is_empty() {
+        BoundaryDir::RightEmpty
+    } else if d_top.is_empty() {
+        BoundaryDir::TopEmpty
+    } else if d_right.len() < d_top.len() {
+        BoundaryDir::Finer
+    } else if d_right.len() > d_top.len() {
+        BoundaryDir::Coarser
+    } else {
+        BoundaryDir::Shifted
+    }
+}
+
+/// 「区切り」の行の向きごとの [行, 長さ 1–2, 3–4, 5 以上, 2 位, 3 位, 4–10 位, 11 位以下, 候補に無い]
+#[derive(Default)]
+struct BoundaryTally {
+    counts: [[usize; 9]; 5],
+}
+
+impl BoundaryTally {
+    /// right・top は正解と 1 位を split_words で分けた自立語。rank は正解の順位 (0 始まり)
+    fn add(&mut self, right: &[(String, String)], top: &[(String, String)], rank: Option<usize>) {
+        let (d_right, d_top) = word_diff(right, top);
+        let dir = boundary_dir(&d_right, &d_top);
+        let slot = &mut self.counts[BoundaryDir::ALL.iter().position(|&d| d == dir).expect("向き")];
+        let chars = |list: &[(String, String)]| list.iter().map(|(r, _)| r.chars().count()).sum::<usize>();
+        let len = chars(&d_right).max(chars(&d_top));
+        slot[0] += 1;
+        slot[match len {
+            0..=2 => 1,
+            3..=4 => 2,
+            _ => 3,
+        }] += 1;
+        slot[match rank {
+            Some(0) => panic!("1 位が正解の行は外れに入らない"),
+            Some(1) => 4,
+            Some(2) => 5,
+            Some(3..=9) => 6,
+            Some(_) => 7,
+            None => 8,
+        }] += 1;
+    }
+
+    /// 分類の表の後に足す内訳。boundary は「区切り」の行の数
+    fn render(&self, boundary: usize) -> String {
+        let sum = |i: usize| self.counts.iter().map(|c| c[i]).sum::<usize>();
+        assert_eq!(sum(0), boundary, "向きの合計が「区切り」の行の数と一致しない");
+        let mut out = String::from(
+            "\n\n「区切り」の内訳 (向き・差の読みの長さ・正解の順位)。\n\n\
+             | 向き | 行 | 長さ 1–2 | 3–4 | 5 以上 | 2 位 | 3 位 | 4–10 位 | 11 位以下 | 候補に無い |\n\
+             |---|---|---|---|---|---|---|---|---|---|\n",
+        );
+        for (dir, c) in BoundaryDir::ALL.iter().zip(self.counts) {
+            assert_eq!(c[1..4].iter().sum::<usize>(), c[0], "長さの区分の合計が向きの行の数と一致しない");
+            assert_eq!(c[4..9].iter().sum::<usize>(), c[0], "順位の区分の合計が向きの行の数と一致しない");
+            let cells: Vec<String> = c.iter().map(|n| n.to_string()).collect();
+            out.push_str(&format!("| {} | {} |\n", dir.label(), cells.join(" | ")));
+        }
+        let totals: Vec<String> = (0..9).map(|i| sum(i).to_string()).collect();
+        out.push_str(&format!("| 合計 | {} |", totals.join(" | ")));
+        out
+    }
+}
+
 /// 変換の測定から除く読み。モードレス入力の英字区間は (読み = 表記) の句として学習に入るが、実際の入力では
 /// 変換せずに続くので、読みに ASCII 英字を含む句が CONVNBEST に渡ることはない
 fn latin_reading(reading: &str) -> bool {
@@ -585,6 +684,7 @@ fn main() -> BoxResult<()> {
     let mut empty_top: HashMap<(&str, &str), bool> = HashMap::new();
     let mut empty_classes = ClassTally::default();
     let mut empty_unsplit = UnsplitTally::default();
+    let mut empty_boundary = BoundaryTally::default();
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
@@ -609,6 +709,9 @@ fn main() -> BoxResult<()> {
             });
             if class == MissClass::Unsplit {
                 empty_unsplit.add(&e.reading, &e.surface, rank);
+            }
+            if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
+                empty_boundary.add(right, top, rank);
             }
             let slot = empty_classes.counts.entry(class).or_default();
             slot[0] += 1;
@@ -691,7 +794,12 @@ fn main() -> BoxResult<()> {
     let empty_sum = |i: usize| empty_classes.counts.values().map(|c| c[i]).sum::<usize>();
     println!("| 合計 | {} | {} |", empty_sum(0), empty_sum(1));
     let empty_unsplit_rows = empty_classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
-    println!("{}", empty_unsplit.render(empty_unsplit_rows));
+    let empty_boundary_rows = empty_classes.counts.get(&MissClass::Boundary).map_or(0, |c| c[0]);
+    println!(
+        "{}{}",
+        empty_unsplit.render(empty_unsplit_rows),
+        empty_boundary.render(empty_boundary_rows)
+    );
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
     println!("変換 1/3 = p の行 (読みに英字を含む行を除く) の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
@@ -732,6 +840,7 @@ fn main() -> BoxResult<()> {
         let mut classes = ClassTally::default();
         let mut pins = PinTally::default();
         let mut unsplit = UnsplitTally::default();
+        let mut boundary = BoundaryTally::default();
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
@@ -781,6 +890,9 @@ fn main() -> BoxResult<()> {
                     });
                     if class == MissClass::Unsplit {
                         unsplit.add(&row.reading, &row.surface, rank);
+                    }
+                    if let (MissClass::Boundary, Some(right), Some(top)) = (class, &right, &top) {
+                        boundary.add(right, top, rank);
                     }
                     let ctx_learned = contexts_of
                         .get(&(row.reading.as_str(), row.surface.as_str()))
@@ -870,6 +982,8 @@ fn main() -> BoxResult<()> {
         table.push_str(&format!("| 合計 | {} | {} | {} |\n", sum(0), sum(1), sum(2)));
         let unsplit_rows = classes.counts.get(&MissClass::Unsplit).map_or(0, |c| c[0]);
         table.push_str(&unsplit.render(unsplit_rows));
+        let boundary_rows = classes.counts.get(&MissClass::Boundary).map_or(0, |c| c[0]);
+        table.push_str(&boundary.render(boundary_rows));
         assert_eq!(
             pins.hit + pins.lost + pins.same[0] + pins.same[1] + pins.both_miss,
             pins.total,
@@ -972,6 +1086,48 @@ mod tests {
         assert_eq!(classify(Some(&[("b", "B1")]), Some(&[("b", "B2")])), MissClass::HomophoneBoth);
         assert_eq!(classify(Some(&[("a", "A3")]), Some(&[("a", "A1")])), MissClass::HomophoneUnlearned);
         assert_eq!(classify(Some(&[("c", "C1")]), Some(&[("c", "C2")])), MissClass::HomophoneUnlearned);
+    }
+
+    #[test]
+    fn boundary_dir_by_first_match() {
+        let words = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|(r, s)| (r.to_string(), s.to_string())).collect()
+        };
+        let dir = |right: &[(&str, &str)], top: &[(&str, &str)]| {
+            let (d_right, d_top) = word_diff(&words(right), &words(top));
+            boundary_dir(&d_right, &d_top)
+        };
+        assert_eq!(dir(&[("x", "X")], &[("x", "X"), ("y", "Y")]), BoundaryDir::RightEmpty);
+        assert_eq!(dir(&[("x", "X"), ("y", "Y")], &[("x", "X")]), BoundaryDir::TopEmpty);
+        assert_eq!(dir(&[("xy", "XY")], &[("x", "X"), ("y", "Y")]), BoundaryDir::Finer);
+        assert_eq!(dir(&[("x", "X"), ("y", "Y")], &[("xy", "XY")]), BoundaryDir::Coarser);
+        assert_eq!(dir(&[("xy", "XY"), ("z", "Z")], &[("x", "X"), ("yz", "YZ")]), BoundaryDir::Shifted);
+        // 共通の語は差に入らない
+        assert_eq!(dir(&[("a", "A"), ("xy", "XY")], &[("a", "A"), ("x", "X"), ("y", "Y")]), BoundaryDir::Finer);
+    }
+
+    #[test]
+    fn boundary_tally_counts_length_and_rank() {
+        let words = |list: &[(&str, &str)]| -> Vec<(String, String)> {
+            list.iter().map(|(r, s)| (r.to_string(), s.to_string())).collect()
+        };
+        let mut tally = BoundaryTally::default();
+        // 差の読みの長さ: 2 (1 + 1 と 2 の大きい方)
+        tally.add(&words(&[("あ", "A"), ("い", "I")]), &words(&[("あい", "AI")]), Some(1));
+        // 3 (差は 1 位の「かきく」だけ)
+        tally.add(&words(&[("う", "U")]), &words(&[("う", "U"), ("かきく", "KKK")]), Some(2));
+        // 5 (「さしす」+「せそ」)
+        tally.add(&words(&[("さしす", "S"), ("せそ", "T")]), &words(&[("さしすせそ", "ST")]), Some(3));
+        tally.add(&words(&[("たち", "T"), ("つ", "U")]), &words(&[("た", "T"), ("ちつ", "C")]), Some(9));
+        tally.add(&words(&[("な", "N"), ("に", "M")]), &words(&[("なに", "NM")]), Some(10));
+        tally.add(&words(&[("は", "H"), ("ひ", "I")]), &words(&[("はひ", "HI")]), None);
+        assert_eq!(tally.counts[0], [1, 0, 1, 0, 0, 1, 0, 0, 0]);
+        assert_eq!(tally.counts[1], [0; 9]);
+        assert_eq!(tally.counts[3], [4, 3, 0, 1, 1, 0, 1, 1, 1]);
+        assert_eq!(tally.counts[4], [1, 0, 1, 0, 0, 0, 1, 0, 0]);
+        let out = tally.render(6);
+        assert!(out.contains("| 正解の方が語が多い (1 位がまとめた) | 4 | 3 | 0 | 1 | 1 | 0 | 1 | 1 | 1 |"));
+        assert!(out.ends_with("| 合計 | 6 | 3 | 2 | 1 | 1 | 1 | 2 | 1 | 1 |"));
     }
 
     #[test]
