@@ -19,7 +19,8 @@
 // 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。あわせて、外れが語の学習の割引の
 // 上限の例外と前文脈のどちらで直りうるかを見るため、正解と 1 位の自立語の違いで分類する: 固定 (1 位が読み全体の
 // 学習表記)・分けられない・自立語が同じ・区切り・同音 (違う語の今の度合いが正解の方が大きい / どちらも学習あり /
-// 正解に学習なし)・その他 (1 位を分けられない)。
+// 正解に学習なし)・その他 (1 位を分けられない)。固定の得失を見るため、1 位が読み全体の学習表記だった行は、
+// その表記と経路の 1-best の表記のどちらが正解かでも数える。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -389,6 +390,20 @@ fn classify_miss(
     }
 }
 
+/// 1 位が読み全体の学習表記 (固定) だった p の行の、固定の表記と経路の 1-best の表記の比較
+#[derive(Default)]
+struct PinTally {
+    total: usize,
+    /// 固定の表記が正解で、経路の 1-best は正解でない
+    hit: usize,
+    /// 固定の表記が正解でなく、経路の 1-best が正解
+    lost: usize,
+    /// 固定の表記と経路の 1-best が同じ表記 [当たり, 外れ]
+    same: [usize; 2],
+    /// どちらも正解でなく、両者が違う (経路の 1-best が無い行を含む)
+    both_miss: usize,
+}
+
 /// 分類ごとの [行, 3 位以内, 前文脈の学習あり]
 #[derive(Default)]
 struct ClassTally {
@@ -572,6 +587,7 @@ fn main() -> BoxResult<()> {
         let mut suggest_times: Vec<f64> = Vec::new();
         let mut misses = Misses::default();
         let mut classes = ClassTally::default();
+        let mut pins = PinTally::default();
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
@@ -584,6 +600,22 @@ fn main() -> BoxResult<()> {
                 );
                 nbest_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 let rank = nbest.candidates.iter().position(|c| c.surface() == row.surface);
+                if nbest.learned {
+                    let pinned = nbest.candidates[0].surface();
+                    let path = nbest.best.map(|i| nbest.candidates[i].surface());
+                    let pinned_hit = pinned == row.surface;
+                    let path_hit = path.as_ref().is_some_and(|p| *p == row.surface);
+                    pins.total += 1;
+                    if path.as_ref() == Some(&pinned) {
+                        pins.same[usize::from(!pinned_hit)] += 1;
+                    } else if pinned_hit {
+                        pins.hit += 1;
+                    } else if path_hit {
+                        pins.lost += 1;
+                    } else {
+                        pins.both_miss += 1;
+                    }
+                }
                 if rank == Some(0) {
                     misses.gained += usize::from(!row.empty_top);
                 } else {
@@ -689,6 +721,21 @@ fn main() -> BoxResult<()> {
         }
         let sum = |i: usize| classes.counts.values().map(|c| c[i]).sum::<usize>();
         table.push_str(&format!("| 合計 | {} | {} | {} |", sum(0), sum(1), sum(2)));
+        assert_eq!(
+            pins.hit + pins.lost + pins.same[0] + pins.same[1] + pins.both_miss,
+            pins.total,
+            "固定の得失の合計が固定した行の数と一致しない"
+        );
+        table.push_str(&format!(
+            "\n\n- 固定した行 {} 行: 固定で当てた {}・固定で外した {}・同じ {} (当たり {} / 外れ {})・どちらも外れ {}",
+            pins.total,
+            pins.hit,
+            pins.lost,
+            pins.same[0] + pins.same[1],
+            pins.same[0],
+            pins.same[1],
+            pins.both_miss,
+        ));
         class_tables.push(table);
     }
     println!("\n## 1 位を外した行の内訳\n");
