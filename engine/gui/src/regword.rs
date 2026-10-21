@@ -11,6 +11,7 @@ use std::ptr::null_mut;
 
 use windows_sys::Win32::Globalization::{MB_ERR_INVALID_CHARS, MultiByteToWideChar};
 
+use crate::config::rewrite_file;
 use crate::import;
 
 /// 品詞コンボの項目 (ADDWORD の品詞フィールドにそのまま使う)
@@ -126,7 +127,7 @@ pub fn import_file(source: &Path) -> Result<String, String> {
 
     std::fs::create_dir_all(&dir).map_err(|e| format!("保存先を作れません ({e})"))?;
     let path = dir.join(&file_name);
-    std::fs::write(&path, import::to_tsv(&result.entries))
+    rewrite_file(&path, &import::to_tsv(&result.entries))
         .map_err(|e| format!("保存できません ({e})"))?;
 
     let summary = format!(

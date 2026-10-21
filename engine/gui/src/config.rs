@@ -1,7 +1,7 @@
 // config.tsv (エンジンと TSF 層が読む共通の設定ファイル) の読み書き
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::apps::{DEFAULT_NEWLINE_APPS, ImeStart, format_ime_start_apps, parse_app_list, parse_ime_start_apps};
 use crate::keys::{KEY_ITEMS, KeyAssign, STATES, default_key_assigns, format_key_list, parse_key_list};
@@ -130,6 +130,34 @@ pub fn config_path() -> Result<PathBuf, String> {
     }
     let appdata = std::env::var("APPDATA").map_err(|_| "保存先を特定できません".to_string())?;
     Ok(PathBuf::from(appdata).join("QuicklIME").join("config.tsv"))
+}
+
+/// ファイルの内容を content で置き換える。書き込みの途中を TSF 層・エンジンが読まないよう、
+/// 同じディレクトリの一時ファイルに書いてから rename する。
+/// TSF 層は std::ifstream (削除の共有を許さない) で読むため、読んでいる瞬間は rename が
+/// 共有違反・アクセス拒否で失敗しうる。読み終わるのを待って数回やり直す
+pub fn rewrite_file(path: &Path, content: &str) -> std::io::Result<()> {
+    const RENAME_RETRIES: u32 = 5;
+    const RENAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+
+    let mut tmp_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+    let result = std::fs::write(&tmp, content).and_then(|()| {
+        let mut result = std::fs::rename(&tmp, path);
+        for _ in 0..RENAME_RETRIES {
+            if result.is_ok() {
+                break;
+            }
+            std::thread::sleep(RENAME_INTERVAL);
+            result = std::fs::rename(&tmp, path);
+        }
+        result
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 /// テーマフォルダ。優先順: QUICKLIME_THEME_DIR > %APPDATA%\QuicklIME\themes (TSF 層と同じ)
@@ -348,7 +376,7 @@ impl Config {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        std::fs::write(&path, self.file_text().as_bytes())
+        rewrite_file(&path, &self.file_text())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
 
         // エンジンに再読込を伝える。未起動なら何もしない
@@ -649,6 +677,21 @@ input_buffer	panel
         assert_eq!(names, ["Upper", "mine"]);
         std::fs::remove_dir_all(&dir).unwrap();
         assert!(user_theme_names(&dir).is_empty());
+    }
+
+    #[test]
+    fn rewrites_file_through_temp_file() {
+        let dir = std::env::temp_dir().join(format!("quicklime-rewrite-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.tsv");
+        rewrite_file(&path, "learning\t1\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "learning\t1\n");
+        rewrite_file(&path, "learning\t0\n").unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "learning\t0\n");
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, ["config.tsv"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

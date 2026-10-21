@@ -106,9 +106,11 @@ STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
     return g_classFactory.QueryInterface(riid, ppv);
 }
 
+// 登録したウィンドウクラスを解除せず SetTimer も使うため、アンロード後に届いたメッセージが
+// 消えた wndproc を呼んでホストアプリが落ちうる。参照数によらず DLL をプロセスに常駐させる
 STDAPI DllCanUnloadNow()
 {
-    return globals::DllRefCount() == 0 ? S_OK : S_FALSE;
+    return S_FALSE;
 }
 
 STDAPI DllRegisterServer()
