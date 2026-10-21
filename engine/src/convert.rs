@@ -1439,8 +1439,13 @@ fn build_lattice(
     };
     for i in order {
         // 自立語の開始 = 文節の開始とみなしてペナルティを加算する
-        // (付属語は前の文節に吸収されるため対象外)
-        let penalty = if functional.is_functional(nodes[i].left_id) {
+        // (付属語は前の文節に吸収されるため対象外)。
+        // ただし前文脈なしの BOS の直後の付属語は付く文節が無いので自立語と同じに足す。免除すると
+        // 同じ読みの自立語より安くなり、入力の先頭が接尾語や助動詞になる。
+        // 位置 0 で終わるノードは BOS だけなので、直前が BOS かどうかは start == 0 で決まり、
+        // ペナルティはノードごとに 1 つに定まる (nbest_paths が nodes[i].penalty をそのまま使う)
+        let after_bos = nodes[i].start == 0 && left_context_id == 0;
+        let penalty = if functional.is_functional(nodes[i].left_id) && !after_bos {
             0
         } else {
             i64::from(SEGMENT_PENALTY) + adjust.get(nodes[i].start).copied().unwrap_or(0)
@@ -3034,6 +3039,37 @@ mod tests {
         let segments = convert_segments(
             "あ", Some(&ctx), &dict, &no_user(), &matrix, &FunctionalIds::empty(), &learning, false);
         assert_eq!(segments[0].candidates[0], "亜");
+    }
+
+    /// 読み「ほう」に名詞 (id 1) の「方」と、それよりコストが高く差が SEGMENT_PENALTY 未満の
+    /// 接尾語 (id 5) の「法」。前文脈用に名詞の「きょう」(今日)
+    fn suffix_head_dict() -> Dictionary {
+        let mut dict = Dictionary::empty();
+        dict.load_from(
+            "ほう\t1\t1\t2000\t方\nほう\t5\t5\t2500\t法\nきょう\t1\t1\t2000\t今日\n".as_bytes(),
+        )
+        .unwrap();
+        dict.finalize();
+        dict
+    }
+
+    #[test]
+    fn 前文脈なしでは先頭の付属語にも文節境界ペナルティを足す() {
+        // 方 2000 + 1000 < 法 2500 + 1000
+        let segments = convert_segments(
+            "ほう", None, &suffix_head_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory(), false);
+        assert_eq!(segments[0].candidates[0], "方");
+    }
+
+    #[test]
+    fn 前文脈があれば先頭の付属語にペナルティを足さない() {
+        // 今日 (right_id 1) が左文脈になり、法 2500 < 方 2000 + 1000
+        let ctx = Context { reading: "きょう".to_string(), surface: "今日".to_string() };
+        let segments = convert_segments(
+            "ほう", Some(&ctx), &suffix_head_dict(), &no_user(), &ConnectionMatrix::empty(),
+            &sample_functional(), &LearningStore::in_memory(), false);
+        assert_eq!(segments[0].candidates[0], "法");
     }
 
     #[test]
