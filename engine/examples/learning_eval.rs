@@ -15,6 +15,9 @@
 //   - 予測 (p と q の行): 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、行の表記が
 //     9 位以内に入る割合。q の行は文脈の表記を前文脈にする (文脈の読みはファイルに無いので空)
 //   - 「既出」は前の学習に入れた件か (読み, 表記) が前の p か q の件にもある行、「初出」はそれ以外の行
+// 読みに ASCII 英字を含む p の行は、どちらのモードでも変換の測定から除く。モードレス入力の英字区間は
+// (読み = 表記) の句として学習に入るが、実際の入力では変換に渡らないため。学習の取り込みと既出・初出の判定には
+// 含める (エンジンは英字区間の学習も持つ)。予測は、読みを打鍵にできないので測れた行に入らない。
 // learning_stats.tsv は追記ログなので、同じ件の行は後の行だけを使う (エンジンの読み込みと同じ)。
 // ファイルは読むだけで、学習はメモリ上にだけ作る。
 // 1 位を外した行は、学習が空のときの 1 位と比べて内訳を出す (件数だけ)。あわせて、外れが語の学習の割引の
@@ -497,6 +500,12 @@ impl UnsplitTally {
     }
 }
 
+/// 変換の測定から除く読み。モードレス入力の英字区間は (読み = 表記) の句として学習に入るが、実際の入力では
+/// 変換せずに続くので、読みに ASCII 英字を含む句が CONVNBEST に渡ることはない
+fn latin_reading(reading: &str) -> bool {
+    reading.chars().any(|c| c.is_ascii_alphabetic())
+}
+
 fn percent(n: usize, total: usize) -> String {
     format!("{:.1}%", 100.0 * n as f64 / total.max(1) as f64)
 }
@@ -576,7 +585,7 @@ fn main() -> BoxResult<()> {
     let mut empty_top: HashMap<(&str, &str), bool> = HashMap::new();
     let mut empty_classes = ClassTally::default();
     let mut empty_unsplit = UnsplitTally::default();
-    for e in entries.iter().filter(|e| e.kind == Kind::Phrase) {
+    for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
             &e.reading, None, &dictionary, &user, &matrix, &functional, &empty,
@@ -616,7 +625,9 @@ fn main() -> BoxResult<()> {
                 reading: e.reading.clone(),
                 surface: e.surface.clone(),
                 seen: carried.contains(&i) || known.contains(&(e.reading.as_str(), e.surface.as_str())),
-                empty_top: e.kind == Kind::Phrase && empty_top[&(e.reading.as_str(), e.surface.as_str())],
+                empty_top: e.kind == Kind::Phrase
+                    && !latin_reading(&e.reading)
+                    && empty_top[&(e.reading.as_str(), e.surface.as_str())],
             }
         })
         .collect();
@@ -635,6 +646,15 @@ fn main() -> BoxResult<()> {
         rows_of(Some(false), false),
         rows_of(Some(false), true),
     );
+    let phrases = entries.iter().filter(|e| e.kind == Kind::Phrase);
+    let test_phrases = rows.iter().filter(|r| r.context.is_none());
+    println!(
+        "- 変換の測定から除いた読みに英字を含む p の行: 学習が空 {} 行 (全 p の件 {} 件のうち)・学習あり {} 行 (後ろの p の行 {} 行のうち)",
+        phrases.clone().filter(|e| latin_reading(&e.reading)).count(),
+        phrases.count(),
+        test_phrases.clone().filter(|r| latin_reading(&r.reading)).count(),
+        test_phrases.count(),
+    );
     {
         let mut store = LearningStore::in_memory();
         store.load_stats_from(train_text.as_bytes());
@@ -644,7 +664,7 @@ fn main() -> BoxResult<()> {
         println!("- 測る行のうち辞書の語に分けられない (読み, 表記): {unsplit} 行");
     }
 
-    println!("\n## 学習が空 (すべての p の行)\n");
+    println!("\n## 学習が空 (読みに英字を含まないすべての p の行)\n");
     println!("変換 1/3 = CONVNBEST で 1 位・3 位以内の割合。時間は CONVNBEST 1 回の中央値 / p95 (ms)。\n");
     println!("| 行 | 変換 1 | 変換 3 | CONVNBEST |");
     println!("|---|---|---|---|");
@@ -674,7 +694,7 @@ fn main() -> BoxResult<()> {
     println!("{}", empty_unsplit.render(empty_unsplit_rows));
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
-    println!("変換 1/3 = p の行の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
+    println!("変換 1/3 = p の行 (読みに英字を含む行を除く) の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
     println!("(全体 (p / q) の順)。既出は前の学習にも入れた件か (読み, 表記) が前の p か q の件にもある行、初出はそれ以外の行。");
     println!("変換 1 位外 (固定) = 変換で 1 位に入らなかった行の数 (うち 1 位が読み全体の学習表記の行の数)。時間は CONVNBEST・SUGGEST 1 回の中央値 / p95 (ms)。\n");
     println!("| 方式 | 変換 1 | 変換 3 | 予測 9 | 既出 変換 1 | 既出 変換 3 | 既出 予測 9 | 初出 変換 1 | 初出 変換 3 | 初出 予測 9 | 変換 1 位外 (固定) | CONVNBEST | SUGGEST |");
@@ -716,7 +736,7 @@ fn main() -> BoxResult<()> {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
             // 前文脈は変換の経路に効かないので、q の行は予測だけを測る
-            let conversion = row.context.is_none().then(|| {
+            let conversion = (row.context.is_none() && !latin_reading(&row.reading)).then(|| {
                 let t = Instant::now();
                 let nbest = convert::convert_nbest_scored(
                     &row.reading, None, &dictionary, &user, &matrix, &functional, &store,
@@ -968,6 +988,19 @@ mod tests {
         assert_eq!(char_class("テストです"), CharClass::Other);
         assert_eq!(char_class("123"), CharClass::Other);
         assert_eq!(char_class("！？"), CharClass::Other);
+    }
+
+    #[test]
+    fn latin_reading_has_ascii_letter() {
+        assert!(latin_reading("abc"));
+        assert!(latin_reading("Word"));
+        assert!(latin_reading("てすとa"));
+        assert!(latin_reading("x1"));
+        assert!(!latin_reading("てすと"));
+        assert!(!latin_reading("１２３"));
+        assert!(!latin_reading("123"));
+        assert!(!latin_reading("ａｂｃ"));
+        assert!(!latin_reading(""));
     }
 
     #[test]
