@@ -56,7 +56,8 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 - LLM の並べ替えの計測 (エンジンを隔離して起動し、llm_cases.tsv の左文脈で RERANK を送る):
   `cargo run --release --example nbest_eval -- --cases examples/data/llm_cases.tsv --llm cpu`
   (`--llm vulkan` で Vulkan 版)。`--grid` を足すと、読みの文字数の下限と統計変換の 1 位と 2 位の
-  コスト差 (読み 1 文字あたり) の上限の格子で、条件を満たす件だけ並べ替えたときの正解率を表で出す。
+  コスト差 (読み 1 文字あたり) の上限の格子で、条件を満たす件だけ並べ替えたときの正解率を表で出す
+  (全件を並べ替えて測るため、エンジンに `QUICKLIME_RERANK_MIN_CHARS=0` を渡す)。
   `--no-cases` は読み・正解・候補を含む件ごとの表を出さない (実ユーザのデータを測るとき用)
 
 ## 変換精度と学習の評価
@@ -158,3 +159,4 @@ IME の DLL は全アプリケーションのプロセスにロードされる�
 |---|---|
 | `QUICKLIME_IMPORT_DIR` | 取り込んだ辞書の保存先ディレクトリ (既定は `%APPDATA%\QuicklIME\imported\`) を変更する (エンジン・単語登録ツール共通。動作検証時の隔離用)。[dict-import.md](design/dict-import.md) |
 | `QUICKLIME_LLM_MODEL_DIR` | エンジンが LLM のモデルを探すディレクトリ。設定するとほかの場所より先に探す。探す順は [llm-rerank.md](design/llm-rerank.md) |
+| `QUICKLIME_RERANK_MIN_CHARS` | エンジンが並べ替える読みの最小文字数 (0 以上の整数。既定は 9、不正な値なら既定値)。起動時に 1 回だけ読む。計測用。[llm-rerank.md](design/llm-rerank.md) |

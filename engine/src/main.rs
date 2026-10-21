@@ -64,6 +64,8 @@ struct EngineData {
     /// 英単語辞書 (ASCIISTART 用。ユーザ辞書の英字の語は user が持つ。
     /// 大文字小文字の補正に使う表記は user にも写してある)
     english: EnglishDict,
+    /// これより短い読みの RERANK は並べ替えない (起動時に決まる)
+    rerank_min_chars: usize,
 }
 
 /// 二重起動の防止に使う named mutex の名前。パイプ名ごとに分け、隔離したエンジンが
@@ -125,6 +127,7 @@ fn main() -> std::io::Result<()> {
         config: Mutex::new(config),
         llm: llm::LlmManager::new(Box::new(llm::ProcessLauncher)),
         english,
+        rerank_min_chars: llm::rerank_min_chars(),
     });
     data.llm.configure(config.llm, config.llm_backend);
 
@@ -370,7 +373,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
     match fields.next() {
         Some("RERANK") => {
             // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : LLM による
-            // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む) ときは ID 0 (並べ替えをしない)
+            // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む)・読みが短いときは ID 0 (並べ替えをしない)
             let llm_context = fields.next().unwrap_or("");
             let ctx = fields.next().and_then(parse_context);
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
@@ -381,7 +384,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                 Err(e) => return format!("ERR\t{e}\n"),
             };
             let cfg = *data.config.lock().expect("config lock");
-            if !cfg.llm {
+            if !cfg.llm || kana.chars().count() < data.rerank_min_chars {
                 return "OK\t0\n".to_string();
             }
             let candidates = {
@@ -1044,6 +1047,7 @@ mod tests {
             config: Mutex::new(Config::default()),
             llm: test_llm(),
             english: EnglishDict::empty(),
+            rerank_min_chars: llm::RERANK_MIN_CHARS,
         }
     }
 
@@ -1088,6 +1092,7 @@ mod tests {
             config: Mutex::new(Config::default()),
             llm: test_llm(),
             english: EnglishDict::empty(),
+            rerank_min_chars: llm::RERANK_MIN_CHARS,
         }
     }
 
@@ -1832,7 +1837,7 @@ mod tests {
     fn llm無効ならrerankはid0を返す() {
         let data = sample_data();
         let mut session = Session::new();
-        assert_eq!(handle_line("RERANK\t\t\tきょうははれ", &data, &mut session), "OK\t0\n");
+        assert_eq!(handle_line("RERANK\t\t\tきょうははれきょうは", &data, &mut session), "OK\t0\n");
         assert_eq!(handle_line("RERANKGET\t0", &data, &mut session), "OK\tNONE\n");
         assert!(handle_line("RERANK\t\t\t", &data, &mut session).starts_with("ERR\t"));
         assert!(handle_line("RERANKGET\tabc", &data, &mut session).starts_with("ERR\t"));
@@ -1846,7 +1851,7 @@ mod tests {
         llm::tests::wait_ready(&data.llm);
         let mut session = Session::new();
         // 読み込み済みなので ID を振る (接続ごとに 1 から)
-        assert_eq!(handle_line("RERANK\t熱が出て\t\tきょうははれ", &data, &mut session), "OK\t1\n");
+        assert_eq!(handle_line("RERANK\t熱が出て\t\tきょうははれきょうは", &data, &mut session), "OK\t1\n");
         let started = Instant::now();
         let response = loop {
             let response = handle_line("RERANKGET\t1", &data, &mut session);
@@ -1857,7 +1862,7 @@ mod tests {
             thread::sleep(std::time::Duration::from_millis(5));
         };
         // 偽の子プロセスは後ろの候補ほど高い尤度を返すので、並びが変わる (候補の集合は同じ)
-        let nbest = handle_request("CONVNBEST\t\tきょうははれ", &data);
+        let nbest = handle_request("CONVNBEST\t\tきょうははれきょうは", &data);
         let body = response.strip_prefix("OK\tDONE\t").expect("DONE の応答");
         let mut got: Vec<&str> = body.trim_end().split('\t').collect();
         let mut expected: Vec<&str> =
@@ -1867,10 +1872,35 @@ mod tests {
         expected.sort();
         assert_eq!(got, expected);
         // 古い ID・別の接続の ID は NONE
-        assert_eq!(handle_line("RERANK\t\t\tきょうは", &data, &mut session), "OK\t2\n");
+        assert_eq!(handle_line("RERANK\t\t\tはれきょうははれは", &data, &mut session), "OK\t2\n");
         assert_eq!(handle_line("RERANKGET\t1", &data, &mut session), "OK\tNONE\n");
         let mut other = Session::new();
         assert_eq!(handle_line("RERANKGET\t2", &data, &mut other), "OK\tNONE\n");
+    }
+
+    #[test]
+    fn 読みが短いrerankはllmが有効でもid0を返す() {
+        let data = sample_data();
+        data.config.lock().unwrap().llm = true;
+        data.llm.configure(true, config::LlmBackend::Cpu);
+        llm::tests::wait_ready(&data.llm);
+        let mut session = Session::new();
+        // 8 文字は並べ替えず、ID も消費しない
+        assert_eq!(handle_line("RERANK\t\t\tはれきょうははれ", &data, &mut session), "OK\t0\n");
+        assert_eq!(handle_line("RERANK\t\t\tはれきょうははれは", &data, &mut session), "OK\t1\n");
+        // 形式の誤りは長さによらず ERR
+        assert!(handle_line("RERANK\t\t\tきょう\tkinds\tkyo", &data, &mut session).starts_with("ERR\t"));
+    }
+
+    #[test]
+    fn rerankの最小文字数を0にすると短い読みも並べ替える() {
+        let mut data = sample_data();
+        data.rerank_min_chars = 0;
+        data.config.lock().unwrap().llm = true;
+        data.llm.configure(true, config::LlmBackend::Cpu);
+        llm::tests::wait_ready(&data.llm);
+        let mut session = Session::new();
+        assert_eq!(handle_line("RERANK\t\t\tきょうは", &data, &mut session), "OK\t1\n");
     }
 
     /// RERANK を送り、DONE になるまで RERANKGET を送り続けて DONE の候補の欄を返す

@@ -30,10 +30,6 @@
   効果を実験で確かめる必要がある ([conversion-range.md](design/conversion-range.md))
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
   ([llm-rerank-notes.md](archive/llm-rerank-notes.md))
-- (保留・後で検討) LLM の並べ替えの段階式の省略。統計変換の 1 位と 2 位のコスト差 (読み 1 字あたり) が
-  しきい値を超えるときは RERANK を送らず、LLM の呼び出しと遅延を減らす。しきい値は `nbest_eval --llm` で
-  正解率を落とさない値を測って決める。shunti IME (Japanese-IME-for-HarmonyOS-next) は同じ方式で、
-  正解率をほぼ保ったまま普段の入力でのモデルの呼び出しを約 4 割に減らしている
 - 設定ツールと単語登録ツールのハイコントラスト対応。Slint の fluent スタイルにハイコントラストの配色が無い
   ([slint-gui.md](design/slint-gui.md))
 - 設定ツールと単語登録ツールの背景の Mica。winit の unstable な API と透明ウィンドウの組み合わせが要り

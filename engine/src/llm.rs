@@ -17,6 +17,9 @@ use crate::convert::{SentenceCandidate, to_katakana};
 
 /// 並べ替えの対象にする CONVNBEST の上位件数
 pub const RERANK_TOP: usize = 10;
+/// これより短い読み (かなの文字数) は並べ替えない。短い読みでは並べ替えが 1 位の正解率を下げるため
+/// (しきい値の根拠は docs/design/llm-rerank.md の「並べ替えの規則」)
+pub const RERANK_MIN_CHARS: usize = 9;
 /// LLM に渡す左文脈の最大文字数 (zenz の前処理と同じ)
 pub const LLM_CONTEXT_CHARS: usize = 40;
 /// 1要求の応答を待つ上限。超えたらその依頼は NONE にするが、子プロセスは止めずに応答を待ち続ける
@@ -54,6 +57,17 @@ const CPU_EXE: &str = "quicklime-llm.exe";
 const VULKAN_EXE: &str = "quicklime-llm-vulkan.exe";
 const CPU_MODEL: &str = "zenz-v3.2-xsmall-Q5_K_M.gguf";
 const VULKAN_MODEL: &str = "zenz-v3.2-small-Q5_K_M.gguf";
+
+/// 並べ替える読みの最小文字数。計測用に環境変数 QUICKLIME_RERANK_MIN_CHARS で上書きできる
+/// (nbest_eval --grid が 0 にして全件を並べ替える)
+pub fn rerank_min_chars() -> usize {
+    parse_rerank_min_chars(std::env::var("QUICKLIME_RERANK_MIN_CHARS").ok().as_deref())
+}
+
+/// QUICKLIME_RERANK_MIN_CHARS の値を読む。無い・0 以上の整数でないときは RERANK_MIN_CHARS
+fn parse_rerank_min_chars(value: Option<&str>) -> usize {
+    value.and_then(|v| v.parse().ok()).unwrap_or(RERANK_MIN_CHARS)
+}
 
 /// LLM に渡す左文脈の前処理: 先頭の空白を除き、末尾 LLM_CONTEXT_CHARS 文字にし、
 /// 半角スペースを U+3000 にする (zenz のトークナイザは半角スペースを扱えない)
@@ -633,6 +647,16 @@ pub mod tests {
 
     fn surfaces(candidates: &[SentenceCandidate]) -> Vec<String> {
         candidates.iter().map(SentenceCandidate::surface).collect()
+    }
+
+    #[test]
+    fn rerank_min_charsは環境変数の値が不正なら既定値() {
+        assert_eq!(parse_rerank_min_chars(None), RERANK_MIN_CHARS);
+        assert_eq!(parse_rerank_min_chars(Some("0")), 0);
+        assert_eq!(parse_rerank_min_chars(Some("12")), 12);
+        assert_eq!(parse_rerank_min_chars(Some("-1")), RERANK_MIN_CHARS);
+        assert_eq!(parse_rerank_min_chars(Some("")), RERANK_MIN_CHARS);
+        assert_eq!(parse_rerank_min_chars(Some("abc")), RERANK_MIN_CHARS);
     }
 
     #[test]

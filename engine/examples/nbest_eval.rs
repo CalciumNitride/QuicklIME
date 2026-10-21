@@ -21,7 +21,8 @@
 //   --grid         --llm と一緒に使う。「読みの文字数 >= L かつ統計変換の 1 位と 2 位のコスト差
 //                  (読み 1 文字あたり) <= G」のときだけ並べ替えを掛けた場合の 1 位・3 位以内の割合を、
 //                  L と G の格子の表で出す。コスト差は example の中で辞書を読み込み、前文脈なし・学習が空・
-//                  補正なしの convert_nbest_scored で求める
+//                  補正なしの convert_nbest_scored で求める。全件を並べ替えて測るため、エンジンには
+//                  QUICKLIME_RERANK_MIN_CHARS=0 を渡して読みの長さのしきい値を外す
 //   --no-cases     件ごとの表 (読み・正解・候補) と、応答時間の表の最大の読みを出さない
 //   <読み>...      時間だけを測る追加の読み (長い入力の確認用)
 //
@@ -167,8 +168,9 @@ struct Engine {
 }
 
 impl Engine {
-    /// llm は並べ替えを測るときのバックエンド。設定ファイルに llm 1 と llm_backend を書いて起動する
-    fn spawn(llm: Option<&str>) -> BoxResult<Self> {
+    /// llm は並べ替えを測るときのバックエンド。設定ファイルに llm 1 と llm_backend を書いて起動する。
+    /// rerank_all なら読みの長さによらず並べ替えさせる
+    fn spawn(llm: Option<&str>, rerank_all: bool) -> BoxResult<Self> {
         // examples の exe は target/<profile>/examples/ に置かれる
         let exe = std::env::current_exe()?
             .parent()
@@ -184,7 +186,11 @@ impl Engine {
         if let Some(backend) = llm {
             std::fs::write(dir.join("config.tsv"), format!("llm\t1\nllm_backend\t{backend}\n"))?;
         }
-        let child = Command::new(&exe)
+        let mut command = Command::new(&exe);
+        if rerank_all {
+            command.env("QUICKLIME_RERANK_MIN_CHARS", "0");
+        }
+        let child = command
             .env("QUICKLIME_PIPE_NAME", &pipe)
             .env("QUICKLIME_LEARN_FILE", dir.join("learning.tsv"))
             .env("QUICKLIME_USER_DICT_FILE", dir.join("userdict.tsv"))
@@ -231,23 +237,23 @@ impl Engine {
         Ok(id.ok_or_else(|| format!("応答が不正: {response}"))?)
     }
 
-    /// RERANK の後、DONE になるまで RERANKGET を送り続け、(並べ替えた候補の表記, RERANK から
-    /// DONE までの時間) を返す。NONE なら None
-    fn rerank_result(&mut self, left_context: &str, kana: &str) -> BoxResult<Option<(Vec<String>, f64)>> {
+    /// RERANK の後、DONE になるまで RERANKGET を送り続けて結果を返す。READY を待った後の ID 0 は
+    /// 読みが短くて並べ替えなかったものとみなす
+    fn rerank_result(&mut self, left_context: &str, kana: &str) -> BoxResult<Rerank> {
         let started = Instant::now();
         let id = self.rerank(left_context, kana)?;
         if id == 0 {
-            return Err("RERANK が受け付けられません (ID 0)".into());
+            return Ok(Rerank::Short);
         }
         loop {
             let response = self.request(&format!("RERANKGET\t{id}"))?;
             if let Some(body) = response.strip_prefix("OK\tDONE\t") {
                 let elapsed = started.elapsed().as_secs_f64() * 1000.0;
-                return Ok(Some((candidate_surfaces(body), elapsed)));
+                return Ok(Rerank::Done(candidate_surfaces(body), elapsed));
             }
             match response.as_str() {
                 "OK\tPENDING" => std::thread::sleep(Duration::from_millis(1)),
-                "OK\tNONE" => return Ok(None),
+                "OK\tNONE" => return Ok(Rerank::None),
                 _ => return Err(format!("応答が不正: {response}").into()),
             }
         }
@@ -257,7 +263,8 @@ impl Engine {
     fn wait_llm_ready(&mut self) -> BoxResult<()> {
         let started = Instant::now();
         loop {
-            let id = self.rerank("", "あ")?;
+            // エンジンの既定のしきい値 (RERANK_MIN_CHARS) より長くして、しきい値によらず受け付けさせる
+            let id = self.rerank("", "あいうえおかきくけこさしすせそ")?;
             if id != 0 {
                 return Ok(());
             }
@@ -267,6 +274,16 @@ impl Engine {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
+}
+
+/// RERANK の結果
+enum Rerank {
+    /// 並べ替えた候補の表記と、RERANK から DONE までの時間 (ms)
+    Done(Vec<String>, f64),
+    /// RERANKGET が NONE (推論の失敗・タイムアウトなど)
+    None,
+    /// ID 0 (読みが短くて並べ替えない)
+    Short,
 }
 
 /// CONVNBEST 形式の候補列 (タブ区切り、文節は \x1e 区切り) を表記の列にする
@@ -324,7 +341,7 @@ fn main() -> BoxResult<()> {
     let args = parse_args()?;
     let cases = load_cases(&args.cases)?;
     let converter = if args.grid { Some(Converter::load()?) } else { None };
-    let mut engine = Engine::spawn(args.llm.as_deref())?;
+    let mut engine = Engine::spawn(args.llm.as_deref(), args.grid)?;
     if args.llm.is_some() {
         return measure_llm(&mut engine, &cases, args.iters, converter.as_ref(), args.no_cases);
     }
@@ -421,6 +438,7 @@ fn measure_llm(
     let mut before = [0usize; 3];
     let mut after = [0usize; 3];
     let mut none = 0;
+    let mut short = 0;
     let mut times: Vec<f64> = Vec::new();
     let mut grid_cases: Vec<GridCase> = Vec::new();
     let mut top_mismatches = 0;
@@ -442,14 +460,21 @@ fn measure_llm(
                 });
             }
         };
-        let Some((reranked, _)) = engine.rerank_result(&case.left_context, &case.reading)? else {
-            none += 1;
-            count_hits(&mut after, rank_before);
-            grid_case(rank_before);
-            continue;
+        let reranked = match engine.rerank_result(&case.left_context, &case.reading)? {
+            Rerank::Done(reranked, _) => reranked,
+            skipped => {
+                if matches!(skipped, Rerank::Short) {
+                    short += 1;
+                } else {
+                    none += 1;
+                }
+                count_hits(&mut after, rank_before);
+                grid_case(rank_before);
+                continue;
+            }
         };
         for _ in 0..iters {
-            if let Some((_, ms)) = engine.rerank_result(&case.left_context, &case.reading)? {
+            if let Rerank::Done(_, ms) = engine.rerank_result(&case.left_context, &case.reading)? {
                 times.push(ms);
             }
         }
@@ -480,6 +505,9 @@ fn measure_llm(
     println!("| 並べ替え後 | {} | {} | {} |", pct(after[0]), pct(after[1]), pct(after[2]));
     if none > 0 {
         println!("\n- 並べ替えの結果が NONE だった読み: {none} 件 (並べ替え前の順位で数えた)");
+    }
+    if short > 0 {
+        println!("\n- 短い読みで並べ替えなし: {short} 件 (並べ替え前の順位で数えた)");
     }
     if !times.is_empty() {
         let max = times.iter().copied().fold(0.0f64, f64::max);
