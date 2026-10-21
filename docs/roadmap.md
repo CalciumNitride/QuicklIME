@@ -5,9 +5,6 @@
 
 ## 未着手
 
-- アプリ・システムからの再変換の依頼の入口 (TSF の ITfFnReconversion)。Word の再変換や CUAS 経由の
-  IMM32 アプリの再変換の依頼を受ける。今の後置再変換は、自分で変換キー・F6〜F10 を押したときだけ働く
-  ([selection-reconversion.md](design/selection-reconversion.md))
 - 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
   ([unified-suggest.md](design/unified-suggest.md))
 - 同音異義語の学習の割引の上限の例外。学習の度合いが最も大きい語が勝つようにするか
@@ -33,6 +30,10 @@
 
 ## 見送り・既知の問題
 
+- アプリ・システムからの再変換の依頼の入口 (TSF の ITfFnReconversion) は見送り。Word の右クリックの再変換や、
+  サクラエディタ・秀丸エディタなど IMM32 アプリの再変換コマンド (CUAS 経由) の依頼を受ける入口だが、
+  使う場面が無いため。今の後置再変換は、自分で変換キー・F6〜F10 を押したときだけ働く
+  ([selection-reconversion.md](design/selection-reconversion.md))
 - 初めて打つ句の予測が、学習した句に押し出されやすい。再生評価 ([eval-sets.md](design/eval-sets.md)) の初出の
   `p` の行で、予測が 9 位以内に入る割合は学習なし 4.0%・学習あり 2.2% (266 行) と下がり、予測の上位 9 件の多くを
   学習した句が占める。全体では学習で予測が上がり (11.6% → 26.6%)、件数も少ないので点数の調整は見送り
@@ -47,7 +48,8 @@
   - 試した対策: OnKeyDown が来ないまま OnTestKeyUp が来たら機能を実行する方式。変換の開始はできても、
     候補選択中の候補送りはできなかった
   - 入力パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
-- 逆変換で数字の後の 日 が ひ と読まれる (3日 → 3ひ)。数字の後の助数詞の読みを優先する仕組みが無い
+- 逆変換で、数字の後の助数詞の複合語の、単位の後ろの部分の読みを誤ることがある (10キロ位 → きろい、
+  5パーセント増 → ぱーせんとます)。数字の後の読みの表は語の先頭だけを見る
   ([selection-reconversion.md](design/selection-reconversion.md))
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))

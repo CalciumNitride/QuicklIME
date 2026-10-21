@@ -60,6 +60,11 @@ impl FunctionalIds {
         self.is_functional.get(id as usize).copied().unwrap_or(false)
     }
 
+    /// この品詞IDが助数詞 (名詞,接尾,助数詞) か
+    pub fn is_counter(&self, id: u16) -> bool {
+        self.names.get(id as usize).is_some_and(|n| n.starts_with("名詞,接尾,助数詞"))
+    }
+
     /// 品詞パスが prefix で始まる最初のIDを返す (ユーザ辞書の品詞名解決用)。
     /// 呼ばれるのは登録・読み込み時のみなので線形走査で足りる
     pub fn find_id(&self, prefix: &str) -> Option<u16> {

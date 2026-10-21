@@ -161,7 +161,88 @@ pub fn reverse(
     let mut kept = keep.into_iter();
     nodes.retain(|_| kept.next().unwrap_or(false));
 
+    // 辞書では数字の後で使わない助数詞の読み (日 → ひ など) の方が安いことがあるため外す
+    nodes.retain(|node| {
+        !(node.start > 0
+            && is_digit(chars[node.start - 1])
+            && !node.learned
+            && functional.is_counter(node.left_id)
+            && is_counter_misread(&node.surface, &node.reading))
+    });
+
     best_path(nodes, n, matrix, functional)
+}
+
+/// 数字の直後の助数詞の表記の見出しと、その見出しの数字の後の読み
+/// (docs/design/selection-reconversion.md の B「数字の直後の助数詞の読み」)
+const COUNTER_READINGS: &[(&str, &[&str])] = &[
+    ("日", &["にち"]),
+    ("人", &["にん"]),
+    ("時", &["じ"]),
+    ("次", &["じ"]),
+    ("字", &["じ"]),
+    ("年", &["ねん"]),
+    ("歳", &["さい"]),
+    ("名", &["めい"]),
+    ("問", &["もん"]),
+    ("巻", &["かん"]),
+    ("戦", &["せん"]),
+    ("銭", &["せん"]),
+    ("話", &["わ"]),
+    ("種", &["しゅ"]),
+    ("色", &["しょく"]),
+    ("食", &["しょく"]),
+    ("軒", &["けん"]),
+    ("店", &["てん"]),
+    ("戸", &["こ"]),
+    ("個", &["こ"]),
+    ("床", &["しょう"]),
+    ("勝", &["しょう"]),
+    ("章", &["しょう"]),
+    ("球", &["きゅう"]),
+    ("泊", &["はく"]),
+    ("畳", &["じょう"]),
+    ("元", &["げん"]),
+    ("円", &["えん"]),
+    ("合", &["ごう"]),
+    ("世", &["せい"]),
+    ("体", &["たい"]),
+    ("位", &["い"]),
+    ("通", &["つう"]),
+    ("連", &["れん"]),
+    ("重", &["じゅう"]),
+    ("品", &["ひん"]),
+    ("棟", &["とう"]),
+    ("行", &["ぎょう", "こう"]),
+    ("分", &["ふん"]),
+    ("か月", &["かげつ"]),
+    ("カ月", &["かげつ"]),
+    ("ヶ月", &["かげつ"]),
+    ("ヵ月", &["かげつ"]),
+    ("ケ月", &["かげつ"]),
+];
+
+/// 表記 surface が COUNTER_READINGS の見出し (最長のもの) で始まり、読み reading がその見出しの
+/// 読みのどれでも始まらないか。連濁・半濁音化 (ふん → ぷん・ぶん) を受けるため濁点・半濁点を外して比べる
+fn is_counter_misread(surface: &str, reading: &str) -> bool {
+    let Some((_, readings)) = COUNTER_READINGS
+        .iter()
+        .filter(|(head, _)| surface.starts_with(head))
+        .max_by_key(|(head, _)| head.chars().count())
+    else {
+        return false;
+    };
+    let reading = strip_voicing(reading);
+    !readings.iter().any(|r| reading.starts_with(&strip_voicing(r)))
+}
+
+/// ひらがなの濁点・半濁点を外す
+fn strip_voicing(s: &str) -> String {
+    const VOICED: &str = "がぎぐげござじずぜぞだぢづでどばびぶべぼぱぴぷぺぽゔ";
+    const PLAIN: &str = "かきくけこさしすせそたちつてとはひふへほはひふへほう";
+    s.chars()
+        .map(|c| VOICED.chars().position(|v| v == c).and_then(|i| PLAIN.chars().nth(i)).unwrap_or(c))
+        .collect()
 }
 
 /// 数字の並び digits の語の (left_id, right_id, 単語コスト)。変換の merge_digit_runs が数字の語を
@@ -292,6 +373,41 @@ mod tests {
         run_with(text, &UserDict::empty(), &LearningStore::in_memory())
     }
 
+    /// 助数詞の検査用。4 は助数詞 (付属語)。実辞書と同じく、数字の後で使わない読みの方を安くする
+    fn counter_functional() -> FunctionalIds {
+        FunctionalIds::load_from("1 名詞,一般\n4 名詞,接尾,助数詞\n".as_bytes()).unwrap()
+    }
+
+    fn counter_sample() -> (Dictionary, SurfaceIndex) {
+        let mut dict = Dictionary::empty();
+        let data = "2\t1\t1\t2000\t2\n\
+                    3\t1\t1\t2000\t3\n\
+                    みっか\t1\t1\t1000\t3日\n\
+                    ひ\t4\t4\t1734\t日\n\
+                    にち\t4\t4\t1826\t日\n\
+                    にほん\t1\t1\t3000\t日本\n\
+                    ひとのり\t4\t4\t3000\t人乗り\n\
+                    にんのり\t4\t4\t3500\t人乗り\n\
+                    ときごろ\t4\t4\t3000\t時ごろ\n\
+                    じごろ\t4\t4\t3500\t時ごろ\n\
+                    かつきたらず\t4\t4\t3000\tか月足らず\n\
+                    かげつたらず\t4\t4\t3500\tか月足らず\n\
+                    ぶ\t4\t4\t1000\t分\n\
+                    ぶん\t4\t4\t1500\t分\n\
+                    ぷん\t4\t4\t2000\t分\n\
+                    ふん\t4\t4\t2500\t分\n";
+        dict.load_from(data.as_bytes()).unwrap();
+        dict.finalize();
+        let index = SurfaceIndex::build(&dict);
+        (dict, index)
+    }
+
+    fn run_counter(text: &str, learning: &LearningStore) -> Option<Vec<(String, String)>> {
+        let (dict, index) = counter_sample();
+        let user = UserDict::empty();
+        reverse(text, &dict, &index, &user, &ConnectionMatrix::empty(), &counter_functional(), learning)
+    }
+
     fn words(list: &[(&str, &str)]) -> Option<Vec<(String, String)>> {
         Some(list.iter().map(|&(r, s)| (r.to_string(), s.to_string())).collect())
     }
@@ -359,6 +475,50 @@ mod tests {
             run_with("今日は", &UserDict::empty(), &learning),
             words(&[("こんにち", "今日"), ("は", "は")])
         );
+    }
+
+    #[test]
+    fn 数字の直後の助数詞は数字の後の読みにする() {
+        let learning = LearningStore::in_memory();
+        assert_eq!(run_counter("3日", &learning), words(&[("3", "3"), ("にち", "日")]));
+        assert_eq!(run_counter("3人乗り", &learning), words(&[("3", "3"), ("にんのり", "人乗り")]));
+        assert_eq!(run_counter("3時ごろ", &learning), words(&[("3", "3"), ("じごろ", "時ごろ")]));
+        assert_eq!(
+            run_counter("2か月足らず", &learning),
+            words(&[("2", "2"), ("かげつたらず", "か月足らず")])
+        );
+        // 数字の後でなければ外さない
+        assert_eq!(run_counter("日", &learning), words(&[("ひ", "日")]));
+    }
+
+    #[test]
+    fn 助数詞の読みは濁点と半濁点を外して比べる() {
+        let learning = LearningStore::in_memory();
+        // ぶ だけが外れ、ぶん・ぷん・ふん は残る (残るうち最も安い ぶん になる)
+        assert_eq!(run_counter("3分", &learning), words(&[("3", "3"), ("ぶん", "分")]));
+        assert!(is_counter_misread("分", "ぶ"));
+        assert!(!is_counter_misread("分", "ふん"));
+        assert!(!is_counter_misread("分", "ぷん"));
+        assert!(!is_counter_misread("分", "ぶん"));
+        assert!(!is_counter_misread("行", "ぎょう"));
+        assert!(!is_counter_misread("行", "こう"));
+        assert!(is_counter_misread("行", "いき"));
+        // 表に無い見出しは外さない
+        assert!(!is_counter_misread("月", "つき"));
+    }
+
+    #[test]
+    fn 助数詞でない語は数字の直後でも外さない() {
+        let learning = LearningStore::in_memory();
+        assert_eq!(run_counter("3日本", &learning), words(&[("3", "3"), ("にほん", "日本")]));
+    }
+
+    #[test]
+    fn 学習にある助数詞の読みは数字の直後でも外さない() {
+        let mut learning = LearningStore::in_memory();
+        let split = [("ひ".to_string(), "日".to_string())];
+        learning.learn_segment("ひ", "日", "", Some(&split));
+        assert_eq!(run_counter("3日", &learning), words(&[("3", "3"), ("ひ", "日")]));
     }
 
     #[test]
