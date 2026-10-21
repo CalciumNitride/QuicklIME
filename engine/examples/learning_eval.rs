@@ -31,8 +31,12 @@
 // 数え、向きごとに差に Mozc 辞書 (UT 辞書を積まない) に無い語がある行も出す。
 // 区切りの位置が合っているのに学習で直らない理由を見るため、同じ区間の行は向きで分け、正解の差の語が語の学習に
 // 数えない語・学習あり・学習なしの行を数える。
-// 評価は前文脈なしの BOS から変換するので、入力の先頭の扱いを変えたときの得失を見るため、学習が空のモードは
-// p の行の位置 (読み全体・q の件がある文節・q の件が無い文節) でも分ける。
+// 文節の p の行で同じ (読み, 表記) の q の件があるものは、前の文節を前文脈にして変換する (両方のモード)。
+// 実際の入力では前に語があり、BOS から変換すると入力の先頭にしか起きない外れを数えてしまうため。文脈は q の件の
+// d の大きい (並べば t の新しい) ものの表記で、読みは同じ表記の文節の p の件から引く。引けない行は前文脈なしで
+// 変換する。予測は今までどおり q の行の文脈の表記だけを前文脈にする。
+// 入力の先頭の扱いを変えたときの得失を見るため、学習が空のモードは p の行の位置 (読み全体・前文脈を付けた文節・
+// q の件はあるが文脈の読みを引けない文節・q の件が無い文節) でも分ける。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -274,6 +278,8 @@ struct Row {
     context: Option<String>,
     reading: String,
     surface: String,
+    /// p の行の種類が読み全体 (whole)。q の行は false
+    whole: bool,
     /// 既出 (前の学習にも入れた件か、(読み, 表記) が前の p か q の件にもある)
     seen: bool,
     /// 学習が空のときの変換の 1 位が行の表記 (p の行だけ)
@@ -803,32 +809,81 @@ impl SameSpanTally {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum PhrasePos {
     Whole,
-    AfterSegment,
+    AfterSegmentWithContext,
+    AfterSegmentNoReading,
     FirstSegment,
 }
 
 impl PhrasePos {
-    const ALL: [PhrasePos; 3] = [PhrasePos::Whole, PhrasePos::AfterSegment, PhrasePos::FirstSegment];
+    const ALL: [PhrasePos; 4] = [
+        PhrasePos::Whole,
+        PhrasePos::AfterSegmentWithContext,
+        PhrasePos::AfterSegmentNoReading,
+        PhrasePos::FirstSegment,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             PhrasePos::Whole => "読み全体",
-            PhrasePos::AfterSegment => "文節で、同じ (読み, 表記) の q の件がある",
+            PhrasePos::AfterSegmentWithContext => "文節で、同じ (読み, 表記) の q の件があり、前文脈を付けた",
+            PhrasePos::AfterSegmentNoReading => "文節で、同じ (読み, 表記) の q の件があるが、文脈の読みを引けない",
             PhrasePos::FirstSegment => "文節で、q の件が無い",
         }
     }
 }
 
 /// q の件は前に文節があった文節にだけできるので、同じ (読み, 表記) の q の件の有無で、前に文節があったかを近似する。
-/// ctx_phrases はファイル全体の q の件の (読み, 表記)
-fn phrase_pos(e: &Entry, ctx_phrases: &HashSet<(&str, &str)>) -> PhrasePos {
+/// contexts は segment_contexts の結果
+fn phrase_pos(e: &Entry, contexts: &HashMap<(&str, &str), Option<Context>>) -> PhrasePos {
     if e.whole {
-        PhrasePos::Whole
-    } else if ctx_phrases.contains(&(e.reading.as_str(), e.surface.as_str())) {
-        PhrasePos::AfterSegment
-    } else {
-        PhrasePos::FirstSegment
+        return PhrasePos::Whole;
     }
+    match contexts.get(&(e.reading.as_str(), e.surface.as_str())) {
+        Some(Some(_)) => PhrasePos::AfterSegmentWithContext,
+        Some(None) => PhrasePos::AfterSegmentNoReading,
+        None => PhrasePos::FirstSegment,
+    }
+}
+
+/// 文節の p の行を変換するときの前文脈。キーはファイル全体の q の件の (読み, 表記) で、文脈の読みを引けなければ None。
+/// 実際の入力では前に文節があり、BOS から変換すると入力の先頭にしか起きない外れを数えてしまうため。
+/// q の件の文脈は表記だけなので、読みは同じ表記の文節の p の件から引く (resolve_context_id は読みが無いと
+/// 前文脈なしになる)。どちらも複数あれば d の大きいもの、並べば t の新しいものを使う
+fn segment_contexts(entries: &[Entry]) -> HashMap<(&str, &str), Option<Context>> {
+    fn pick<'a, K: std::hash::Hash + Eq>(map: &mut HashMap<K, &'a Entry>, key: K, e: &'a Entry) {
+        let slot = map.entry(key).or_insert(e);
+        if (e.d, e.t) > (slot.d, slot.t) {
+            *slot = e;
+        }
+    }
+    let mut chosen: HashMap<(&str, &str), &Entry> = HashMap::new();
+    let mut readings: HashMap<&str, &Entry> = HashMap::new();
+    for e in entries {
+        match e.kind {
+            Kind::CtxPhrase => pick(&mut chosen, (e.reading.as_str(), e.surface.as_str()), e),
+            Kind::Phrase if !e.whole => pick(&mut readings, e.surface.as_str(), e),
+            _ => {}
+        }
+    }
+    chosen
+        .into_iter()
+        .map(|(key, q)| {
+            let ctx = readings
+                .get(q.context.as_str())
+                .map(|p| Context { reading: p.reading.clone(), surface: q.context.clone() });
+            (key, ctx)
+        })
+        .collect()
+}
+
+/// 文節の p の行を変換するときの前文脈 (segment_contexts で引けたときだけ)
+fn segment_ctx<'a>(
+    contexts: &'a HashMap<(&'a str, &'a str), Option<Context>>,
+    whole: bool,
+    reading: &'a str,
+    surface: &'a str,
+) -> Option<&'a Context> {
+    if whole { None } else { contexts.get(&(reading, surface)).and_then(Option::as_ref) }
 }
 
 /// 変換の測定から除く読み。モードレス入力の英字区間は (読み = 表記) の句として学習に入るが、実際の入力では
@@ -924,19 +979,16 @@ fn main() -> BoxResult<()> {
     let mut empty_boundary = BoundaryTally::default();
     let mut empty_same_span = SameSpanTally::default();
     let dump = args.dump_same_span.is_some();
-    let ctx_phrases: HashSet<(&str, &str)> = entries
-        .iter()
-        .filter(|e| e.kind == Kind::CtxPhrase)
-        .map(|e| (e.reading.as_str(), e.surface.as_str()))
-        .collect();
+    let contexts = segment_contexts(&entries);
     // 位置の区分ごとの [行, 変換 1, 変換 3]
-    let mut empty_pos = [[0usize; 3]; 3];
+    let mut empty_pos = [[0usize; 3]; PhrasePos::ALL.len()];
     let mut dump_text = String::from("モード	向き	学習の区分	正解の順位	正解の経路	1 位の経路
 ");
     for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !latin_reading(&e.reading)) {
+        let ctx = segment_ctx(&contexts, e.whole, &e.reading, &e.surface);
         let t = Instant::now();
         let nbest = convert::convert_nbest_scored(
-            &e.reading, None, &dictionary, &user, &matrix, &functional, &empty,
+            &e.reading, ctx, &dictionary, &user, &matrix, &functional, &empty,
             convert::TypoSource::Off, &typo::TUNING,
         );
         empty_times.push(t.elapsed().as_secs_f64() * 1000.0);
@@ -945,7 +997,7 @@ fn main() -> BoxResult<()> {
         empty_tally.conv1 += usize::from(rank == Some(0));
         empty_tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
         empty_top.insert((&e.reading, &e.surface), rank == Some(0));
-        let pos = &mut empty_pos[PhrasePos::ALL.iter().position(|&p| p == phrase_pos(e, &ctx_phrases)).expect("区分")];
+        let pos = &mut empty_pos[PhrasePos::ALL.iter().position(|&p| p == phrase_pos(e, &contexts)).expect("区分")];
         pos[0] += 1;
         pos[1] += usize::from(rank == Some(0));
         pos[2] += usize::from(rank.is_some_and(|r| r < 3));
@@ -987,6 +1039,7 @@ fn main() -> BoxResult<()> {
                 context: (e.kind == Kind::CtxPhrase).then(|| e.context.clone()),
                 reading: e.reading.clone(),
                 surface: e.surface.clone(),
+                whole: e.whole,
                 seen: carried.contains(&i) || known.contains(&(e.reading.as_str(), e.surface.as_str())),
                 empty_top: e.kind == Kind::Phrase
                     && !latin_reading(&e.reading)
@@ -1017,6 +1070,34 @@ fn main() -> BoxResult<()> {
         phrases.count(),
         test_phrases.clone().filter(|r| latin_reading(&r.reading)).count(),
         test_phrases.count(),
+    );
+    // [q の件がある文節の行, そのうち文脈の読みを引けない行]
+    let count_ctx = |n: &mut [usize; 2], whole: bool, r: &str, s: &str| {
+        if whole || latin_reading(r) {
+            return;
+        }
+        if let Some(ctx) = contexts.get(&(r, s)) {
+            n[0] += 1;
+            n[1] += usize::from(ctx.is_none());
+        }
+    };
+    let mut empty_ctx = [0usize; 2];
+    for e in entries.iter().filter(|e| e.kind == Kind::Phrase) {
+        count_ctx(&mut empty_ctx, e.whole, &e.reading, &e.surface);
+    }
+    let mut test_ctx = [0usize; 2];
+    for r in rows.iter().filter(|r| r.context.is_none()) {
+        count_ctx(&mut test_ctx, r.whole, &r.reading, &r.surface);
+    }
+    println!(
+        "- 前文脈を付けて変換した文節の p の行: 学習が空 {} 行 (q の件がある文節の行 {} 行のうち、文脈の読みを引けない行 {} 行)・\
+         学習あり {} 行 (後ろの p の行のうち、q の件がある文節の行 {} 行のうち、文脈の読みを引けない行 {} 行)",
+        empty_ctx[0] - empty_ctx[1],
+        empty_ctx[0],
+        empty_ctx[1],
+        test_ctx[0] - test_ctx[1],
+        test_ctx[0],
+        test_ctx[1],
     );
     {
         let mut store = LearningStore::in_memory();
@@ -1128,11 +1209,12 @@ fn main() -> BoxResult<()> {
         for row in &rows {
             let kind = usize::from(row.context.is_some());
             let ctx = row.context.as_ref().map(|c| Context { reading: String::new(), surface: c.clone() });
-            // 前文脈は変換の経路に効かないので、q の行は予測だけを測る
+            // 文脈の句の学習は変換の経路に効かず、q の行の変換は同じ件の p の行と変わらないので、予測だけを測る
             let conversion = (row.context.is_none() && !latin_reading(&row.reading)).then(|| {
+                let conv_ctx = segment_ctx(&contexts, row.whole, &row.reading, &row.surface);
                 let t = Instant::now();
                 let nbest = convert::convert_nbest_scored(
-                    &row.reading, None, &dictionary, &user, &matrix, &functional, &store,
+                    &row.reading, conv_ctx, &dictionary, &user, &matrix, &functional, &store,
                     convert::TypoSource::Off, &typo::TUNING,
                 );
                 nbest_times.push(t.elapsed().as_secs_f64() * 1000.0);
@@ -1351,18 +1433,40 @@ mod tests {
 
     #[test]
     fn phrase_pos_by_kind_and_ctx_phrase() {
-        let text = "p\ta\tA\t1\t1\twhole\np\tb\tB\t1\t2\tseg\np\tc\tC\t1\t3\tseg\n\
-                    q\tx\tb\tB\t1\t4\nq\tx\tc\tC2\t1\t5\nq\tx\ta\tA\t1\t6\n";
+        let text = "p\ta\tA\t1\t1\twhole\np\tb\tB\t1\t2\tseg\np\tc\tC\t1\t3\tseg\np\td\tD\t1\t4\tseg\n\
+                    q\tB\td\tD\t1\t5\nq\tx\tb\tB\t1\t6\nq\tx\tc\tC2\t1\t7\nq\tx\ta\tA\t1\t8\n";
         let (entries, _) = load_entries(text);
-        let ctx: HashSet<(&str, &str)> = entries
-            .iter()
-            .filter(|e| e.kind == Kind::CtxPhrase)
-            .map(|e| (e.reading.as_str(), e.surface.as_str()))
-            .collect();
+        let ctx = segment_contexts(&entries);
         let pos: Vec<PhrasePos> =
             entries.iter().filter(|e| e.kind == Kind::Phrase).map(|e| phrase_pos(e, &ctx)).collect();
         // 読み全体は q の件があっても読み全体。q の件は表記まで同じものだけを数える
-        assert_eq!(pos, [PhrasePos::Whole, PhrasePos::AfterSegment, PhrasePos::FirstSegment]);
+        assert_eq!(
+            pos,
+            [
+                PhrasePos::Whole,
+                PhrasePos::AfterSegmentNoReading,
+                PhrasePos::FirstSegment,
+                PhrasePos::AfterSegmentWithContext,
+            ]
+        );
+    }
+
+    #[test]
+    fn segment_contexts_picks_max_d_then_newest_t() {
+        // b は d の大きい文脈 X、c は d が並ぶので t の新しい文脈 Y。文脈の読みも同じ表記の文節の p の件で
+        // d の大きい (並べば t の新しい) もの。読み全体の p の件からは引かない
+        let text = "p\tえっくす1\tX\t1\t1\tseg\np\tえっくす2\tX\t3\t2\tseg\np\tわい1\tY\t2\t3\tseg\n\
+                    p\tわい2\tY\t2\t4\tseg\np\tわい3\tY\t9\t5\twhole\n\
+                    q\tX\tb\tB\t2\t6\nq\tY\tb\tB\t1\t7\nq\tX\tc\tC\t1\t8\nq\tY\tc\tC\t1\t9\n\
+                    q\tZ\td\tD\t1\t10\nq\tY\td\tD\t1\t9\n";
+        let (entries, _) = load_entries(text);
+        let ctx = segment_contexts(&entries);
+        let get = |r: &str, s: &str| ctx[&(r, s)].as_ref().map(|c| format!("{}/{}", c.reading, c.surface));
+        assert_eq!(get("b", "B").as_deref(), Some("えっくす2/X"));
+        assert_eq!(get("c", "C").as_deref(), Some("わい2/Y"));
+        // 文脈 Z の読みは引けないので、引ける Y があっても選んだ文脈のまま前文脈なし
+        assert_eq!(get("d", "D"), None);
+        assert_eq!(ctx.len(), 3);
     }
 
     #[test]
