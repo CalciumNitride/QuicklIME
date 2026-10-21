@@ -1,4 +1,5 @@
-// LLM による候補の並べ替え (docs/design/llm-rerank.md)
+// LLM による候補の並べ替え (docs/design/llm-rerank.md) と、Vulkan 版での候補の生成
+// (docs/design/llm-generate.md)
 //
 // llama.cpp は子プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) で動かし、標準入出力の
 // 行プロトコルでやり取りする。子プロセスとのやり取りはエンジン内の専用スレッド (LLM ワーカー)
@@ -13,7 +14,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::config::LlmBackend;
-use crate::convert::{SentenceCandidate, to_katakana};
+use crate::convert::{Context, SentenceCandidate, to_katakana};
 
 /// 並べ替えの対象にする CONVNBEST の上位件数
 pub const RERANK_TOP: usize = 10;
@@ -95,6 +96,87 @@ pub fn reorder(mut candidates: Vec<SentenceCandidate>, targets: &[usize], scores
         slots[position] = Some(candidate);
     }
     slots.into_iter().map(|c| c.expect("全位置が埋まっている")).collect()
+}
+
+fn is_kana(c: char) -> bool {
+    matches!(c, '\u{3041}'..='\u{3096}' | '\u{30A1}'..='\u{30FA}' | 'ー')
+}
+
+/// 括弧の中がかなだけなら括弧ごと消す (健診(けんしん) → 健診)。読み自体にその括弧があれば消さない
+fn strip_ruby(text: &str, reading: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if matches!(c, '(' | '（') && !reading.contains(c) {
+            let close = chars[i + 1..].iter().position(|&d| matches!(d, ')' | '）')).map(|k| i + 1 + k);
+            if let Some(j) = close
+                && j > i + 1
+                && !reading.contains(chars[j])
+                && chars[i + 1..j].iter().all(|&d| is_kana(d))
+            {
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// 同じ 2 文字以上の並びが 3 回以上続けて現れるか
+fn has_tandem_repeat(text: &str) -> bool {
+    let v: Vec<char> = text.chars().collect();
+    for k in 2..=v.len() / 3 {
+        for i in 0..=v.len() - 3 * k {
+            if v[i..i + k] == v[i + k..i + 2 * k] && v[i..i + k] == v[i + 2 * k..i + 3 * k] {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_private_use(c: char) -> bool {
+    matches!(c, '\u{E000}'..='\u{F8FF}' | '\u{F0000}'..='\u{10FFFF}')
+}
+
+/// 生成した表記の後処理: ルビを除き、捨てる出力 (空・読みより長い・繰り返し・私用領域の文字を含む) なら None
+pub fn postprocess_generated(text: &str, reading: &str) -> Option<String> {
+    let text = strip_ruby(text, reading);
+    let discard = text.is_empty()
+        || text.chars().count() > reading.chars().count()
+        || (has_tandem_repeat(&text) && !has_tandem_repeat(reading))
+        || text.chars().any(is_private_use);
+    (!discard).then_some(text)
+}
+
+/// 生成した表記 surface を並びに入れる。位置は先頭から見て最初の、利用者の選んだ候補でない候補の位置
+/// (英字・数字の書き方・補正の候補は並べ替えから外しているだけなので、その前にも入る)。
+/// 同じ表記の候補があれば、利用者の選んだ候補でなければその位置へ動かし、利用者の選んだ候補なら
+/// 何もしない。新しい候補として入れたときだけ、その位置を返す (文節は仮に読み全体の 1 文節にする)
+pub fn insert_generated(candidates: &mut Vec<SentenceCandidate>, reading: &str, surface: String) -> Option<usize> {
+    let position = candidates.iter().position(|c| !c.user_chosen).unwrap_or(candidates.len());
+    if let Some(existing) = candidates.iter().position(|c| c.surface() == surface) {
+        // 利用者の選んだ候補でない同じ表記の候補は、position より後ろにしか無い
+        if !candidates[existing].user_chosen {
+            let candidate = candidates.remove(existing);
+            candidates.insert(position, candidate);
+        }
+        return None;
+    }
+    candidates.insert(
+        position,
+        SentenceCandidate {
+            segments: vec![(reading.to_string(), surface)],
+            protected: false,
+            user_chosen: false,
+            typo: false,
+        },
+    );
+    Some(position)
 }
 
 // ---------------------------------------------------------------------------
@@ -277,12 +359,39 @@ pub struct Job {
     pub reading: String,
     /// CONVNBEST と同じ並びの候補 (保護の印つき)
     pub candidates: Vec<SentenceCandidate>,
+    /// 前文脈。生成した候補の文節を決めるのに使う
+    pub segment_context: Option<Context>,
+}
+
+/// 並べ替えの結果
+pub struct Reranked {
+    pub candidates: Vec<SentenceCandidate>,
+    /// 生成して新しく入れた候補の位置。その文節は仮に読み全体の 1 文節で、辞書はワーカーのスレッドから
+    /// 使わないため、RERANKGET を処理するスレッドが決め直す
+    pub generated: Option<usize>,
+    /// 依頼の読み (ひらがな) と前文脈
+    pub reading: String,
+    pub segment_context: Option<Context>,
+}
+
+impl Reranked {
+    fn clone(&self) -> Self {
+        Reranked {
+            candidates: self.candidates.iter().map(clone_candidate).collect(),
+            generated: self.generated,
+            reading: self.reading.clone(),
+            segment_context: self
+                .segment_context
+                .as_ref()
+                .map(|c| Context { reading: c.reading.clone(), surface: c.surface.clone() }),
+        }
+    }
 }
 
 /// RERANKGET の結果
 pub enum Poll {
     Pending,
-    Done(Vec<SentenceCandidate>),
+    Done(Reranked),
     None,
 }
 
@@ -308,8 +417,8 @@ struct State {
     running: Option<(u64, u64)>,
     /// 接続ごとの最新の依頼 ID
     latest: HashMap<u64, u64>,
-    /// 接続ごとの最新の結果 (ID, 並べ替えた候補。失敗なら None)
-    results: HashMap<u64, (u64, Option<Vec<SentenceCandidate>>)>,
+    /// 接続ごとの最新の結果 (ID, 並べ替えの結果。失敗なら None)
+    results: HashMap<u64, (u64, Option<Reranked>)>,
     shutdown: bool,
 }
 
@@ -399,7 +508,7 @@ impl LlmManager {
             && *result_id == id
         {
             return match result {
-                Some(candidates) => Poll::Done(candidates.iter().map(clone_candidate).collect()),
+                Some(reranked) => Poll::Done(reranked.clone()),
                 None => Poll::None,
             };
         }
@@ -427,7 +536,12 @@ impl Drop for LlmManager {
 }
 
 fn clone_candidate(c: &SentenceCandidate) -> SentenceCandidate {
-    SentenceCandidate { segments: c.segments.clone(), protected: c.protected, typo: c.typo }
+    SentenceCandidate {
+        segments: c.segments.clone(),
+        protected: c.protected,
+        user_chosen: c.user_chosen,
+        typo: c.typo,
+    }
 }
 
 /// 子プロセスを止めたときに、待っている依頼を失敗にする (RERANKGET は NONE になる)
@@ -447,6 +561,8 @@ fn note_failure(state: &mut State, timing: &Timing) {
 
 fn worker_loop(shared: &Shared, launcher: &dyn Launcher) {
     let mut child: Option<Box<dyn ChildProcess>> = None;
+    // 動いている子プロセスの種類 (設定が vulkan でも CPU 版へ切り替えていれば Cpu)
+    let mut child_backend = LlmBackend::Cpu;
     let mut state = shared.state.lock().expect("llm state lock");
     loop {
         if state.shutdown {
@@ -483,6 +599,7 @@ fn worker_loop(shared: &Shared, launcher: &dyn Launcher) {
                     if !state.restart && !state.shutdown {
                         eprintln!("LLM の子プロセスを起動しました ({backend:?})");
                         child = Some(started);
+                        child_backend = backend;
                         state.ready = true;
                     }
                 }
@@ -507,13 +624,15 @@ fn worker_loop(shared: &Shared, launcher: &dyn Launcher) {
         state.running = Some((conn, job.id));
         drop(state);
         let running = child.as_mut().expect("子プロセスは起動済み");
-        let outcome = score_job(running.as_mut(), job, &shared.timing);
+        // CPU 版では生成の得が小さいため、Vulkan 版で動いているときだけ生成する
+        let generate = child_backend == LlmBackend::Vulkan;
+        let outcome = score_job(running.as_mut(), job, &shared.timing, generate);
         state = shared.state.lock().expect("llm state lock");
         state.running = None;
         let broken = match outcome {
-            JobOutcome::Done(id, candidates) => {
+            JobOutcome::Done(id, reranked) => {
                 state.failures = 0;
-                state.results.insert(conn, (id, Some(candidates)));
+                state.results.insert(conn, (id, Some(reranked)));
                 None
             }
             JobOutcome::Rejected(id) => {
@@ -593,7 +712,7 @@ fn start_child(shared: &Shared, launcher: &dyn Launcher, backend: LlmBackend) ->
 }
 
 enum JobOutcome {
-    Done(u64, Vec<SentenceCandidate>),
+    Done(u64, Reranked),
     /// 子プロセスが ERR を返した (入力が長すぎるなど。子プロセスは正常)
     Rejected(u64),
     /// LLM_TIMEOUT_MS までに応答が無かった (送った時刻)
@@ -602,38 +721,77 @@ enum JobOutcome {
     Broken(u64, String),
 }
 
-fn score_job(child: &mut dyn ChildProcess, job: Job, timing: &Timing) -> JobOutcome {
-    let targets = rerank_targets(&job.candidates);
-    if targets.len() < 2 {
-        return JobOutcome::Done(job.id, job.candidates);
-    }
-    let mut line = format!("SCORE\t{}\t{}", job.context, to_katakana(&job.reading));
-    for &i in &targets {
-        line.push('\t');
-        line.push_str(&job.candidates[i].surface());
-    }
+/// 1 要求を送って応答の行を待つ。送れない・応答が無い・子プロセスが終了したときは、その依頼の結果を Err で返す
+fn exchange(child: &mut dyn ChildProcess, id: u64, line: &str, timing: &Timing) -> Result<String, JobOutcome> {
     let sent_at = Instant::now();
-    if let Err(e) = child.send(&line) {
-        return JobOutcome::Broken(job.id, format!("送信に失敗: {e}"));
+    if let Err(e) = child.send(line) {
+        return Err(JobOutcome::Broken(id, format!("送信に失敗: {e}")));
     }
-    let response = match child.recv(timing.timeout) {
-        Ok(response) => response,
-        Err(RecvError::Timeout) => return JobOutcome::TimedOut(job.id, sent_at),
-        Err(RecvError::Closed) => return JobOutcome::Broken(job.id, "子プロセスが終了しました".to_string()),
-    };
-    if response.starts_with("ERR\t") {
-        return JobOutcome::Rejected(job.id);
+    match child.recv(timing.timeout) {
+        Ok(response) => Ok(response),
+        Err(RecvError::Timeout) => Err(JobOutcome::TimedOut(id, sent_at)),
+        Err(RecvError::Closed) => Err(JobOutcome::Broken(id, "子プロセスが終了しました".to_string())),
     }
-    let scores: Option<Vec<f64>> = response
-        .strip_prefix("OK\t")
-        .map(|body| body.split('\t').map(|s| s.parse::<f64>().ok()).collect::<Option<Vec<f64>>>())
-        .unwrap_or(None);
-    match scores {
-        Some(scores) if scores.len() == targets.len() => {
-            JobOutcome::Done(job.id, reorder(job.candidates, &targets, &scores))
+}
+
+fn score_job(child: &mut dyn ChildProcess, job: Job, timing: &Timing, generate: bool) -> JobOutcome {
+    let Job { id, context, reading, candidates, segment_context } = job;
+    let targets = rerank_targets(&candidates);
+    // SCORE が ERR (入力が長すぎるなど。子プロセスは正常) でも、生成はプロンプトに出力 1 件を足すだけで
+    // SCORE より短く収まるので、並べ替えていない並びに生成した候補を入れる
+    let mut rejected = false;
+    let mut candidates = if targets.len() < 2 {
+        candidates
+    } else {
+        let mut line = format!("SCORE\t{context}\t{}", to_katakana(&reading));
+        for &i in &targets {
+            line.push('\t');
+            line.push_str(&candidates[i].surface());
         }
-        _ => JobOutcome::Broken(job.id, "応答が不正です".to_string()),
+        let response = match exchange(child, id, &line, timing) {
+            Ok(response) => response,
+            Err(outcome) => return outcome,
+        };
+        if response.starts_with("ERR\t") {
+            if !generate {
+                return JobOutcome::Rejected(id);
+            }
+            rejected = true;
+            candidates
+        } else {
+            let scores: Option<Vec<f64>> = response
+                .strip_prefix("OK\t")
+                .map(|body| body.split('\t').map(|s| s.parse::<f64>().ok()).collect::<Option<Vec<f64>>>())
+                .unwrap_or(None);
+            match scores {
+                Some(scores) if scores.len() == targets.len() => reorder(candidates, &targets, &scores),
+                _ => return JobOutcome::Broken(id, "応答が不正です".to_string()),
+            }
+        }
+    };
+    let mut generated = None;
+    let mut inserted = false;
+    if generate {
+        let line = format!("GENERATE\t{context}\t{}", to_katakana(&reading));
+        let response = match exchange(child, id, &line, timing) {
+            Ok(response) => response,
+            Err(outcome) => return outcome,
+        };
+        // ERR (入力が長すぎるなど。子プロセスは正常) は生成なしの並べ替えの結果にする
+        if !response.starts_with("ERR\t") {
+            let Some(surface) = response.strip_prefix("OK\t") else {
+                return JobOutcome::Broken(id, "応答が不正です".to_string());
+            };
+            if let Some(surface) = postprocess_generated(surface, &reading) {
+                generated = insert_generated(&mut candidates, &reading, surface);
+                inserted = true;
+            }
+        }
     }
+    if rejected && !inserted {
+        return JobOutcome::Rejected(id);
+    }
+    JobOutcome::Done(id, Reranked { candidates, generated, reading, segment_context })
 }
 
 #[cfg(test)]
@@ -642,7 +800,17 @@ pub mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     pub fn candidate(surface: &str, protected: bool) -> SentenceCandidate {
-        SentenceCandidate { segments: vec![("よみ".to_string(), surface.to_string())], protected, typo: false }
+        SentenceCandidate {
+            segments: vec![("よみ".to_string(), surface.to_string())],
+            protected,
+            user_chosen: false,
+            typo: false,
+        }
+    }
+
+    /// 利用者の選んだ候補 (学習・ユーザ辞書。保護もする)
+    fn chosen(surface: &str) -> SentenceCandidate {
+        SentenceCandidate { user_chosen: true, ..candidate(surface, true) }
     }
 
     fn surfaces(candidates: &[SentenceCandidate]) -> Vec<String> {
@@ -714,6 +882,19 @@ pub mod tests {
         Garbage,
         /// READY を返さずに ERR で終了する
         LoadError,
+        /// READY の後、SCORE に ERR を返す (入力が長すぎるなど。子プロセスは正常)
+        ScoreErr,
+    }
+
+    /// 偽の子プロセスの GENERATE への応答 (SCORE の後に送られる)
+    #[derive(Clone)]
+    pub enum FakeGenerate {
+        /// この行を返す
+        Reply(String),
+        /// 応答しない
+        Silent,
+        /// 終了する
+        Exit,
     }
 
     pub struct FakeLauncher {
@@ -723,19 +904,48 @@ pub mod tests {
         pub sends: Arc<AtomicUsize>,
         /// SCORE を受け取ってから応答するまでの時間
         pub delay: Arc<Mutex<Duration>>,
+        pub generate: Arc<Mutex<FakeGenerate>>,
+        /// 子プロセスへ送った GENERATE の数
+        pub generates: Arc<AtomicUsize>,
     }
 
     struct FakeChild {
         behavior: FakeBehavior,
         delay: Arc<Mutex<Duration>>,
         sends: Arc<AtomicUsize>,
+        generate: Arc<Mutex<FakeGenerate>>,
+        generates: Arc<AtomicUsize>,
         /// 返す予定の応答と、返せるようになる時刻 (送った順)
         queue: std::collections::VecDeque<(Instant, Result<String, RecvError>)>,
         started: bool,
     }
 
+    impl FakeChild {
+        fn new(behavior: FakeBehavior, delay: Arc<Mutex<Duration>>, sends: Arc<AtomicUsize>) -> Self {
+            FakeChild {
+                behavior,
+                delay,
+                sends,
+                generate: Arc::new(Mutex::new(FakeGenerate::Reply("OK\t".to_string()))),
+                generates: Arc::new(AtomicUsize::new(0)),
+                queue: Default::default(),
+                started: false,
+            }
+        }
+    }
+
     impl ChildProcess for FakeChild {
         fn send(&mut self, line: &str) -> std::io::Result<()> {
+            if line.starts_with("GENERATE\t") {
+                self.generates.fetch_add(1, Ordering::SeqCst);
+                let response = match self.generate.lock().unwrap().clone() {
+                    FakeGenerate::Reply(response) => Ok(response),
+                    FakeGenerate::Silent => return Ok(()),
+                    FakeGenerate::Exit => Err(RecvError::Closed),
+                };
+                self.queue.push_back((Instant::now(), response));
+                return Ok(());
+            }
             self.sends.fetch_add(1, Ordering::SeqCst);
             let count = line.split('\t').count().saturating_sub(3);
             let response = match self.behavior {
@@ -746,6 +956,7 @@ pub mod tests {
                 FakeBehavior::Silent => return Ok(()),
                 FakeBehavior::Exit | FakeBehavior::LoadError => Err(RecvError::Closed),
                 FakeBehavior::Garbage => Ok("OK\tabc".to_string()),
+                FakeBehavior::ScoreErr => Ok("ERR\t入力が長すぎます".to_string()),
             };
             let delay = *self.delay.lock().unwrap();
             self.queue.push_back((Instant::now() + delay, response));
@@ -777,35 +988,47 @@ pub mod tests {
     impl Launcher for FakeLauncher {
         fn launch(&self, _backend: LlmBackend) -> std::io::Result<Box<dyn ChildProcess>> {
             self.launches.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::new(FakeChild {
-                behavior: *self.behavior.lock().unwrap(),
-                delay: Arc::clone(&self.delay),
-                sends: Arc::clone(&self.sends),
-                queue: Default::default(),
-                started: false,
-            }))
+            let mut child =
+                FakeChild::new(*self.behavior.lock().unwrap(), Arc::clone(&self.delay), Arc::clone(&self.sends));
+            child.generate = Arc::clone(&self.generate);
+            child.generates = Arc::clone(&self.generates);
+            Ok(Box::new(child))
         }
     }
 
-    /// 偽の子プロセスを使うワーカーと、起動の回数・送った SCORE の数・応答の遅れ (後から変えられる)
+    /// 偽の子プロセスを使うワーカーと、起動の回数・送った SCORE の数・応答の遅れ・GENERATE への応答
+    /// (後から変えられる)・送った GENERATE の数
     pub struct Fake {
         pub manager: LlmManager,
         pub launches: Arc<AtomicUsize>,
         pub sends: Arc<AtomicUsize>,
         pub delay: Arc<Mutex<Duration>>,
+        pub generate: Arc<Mutex<FakeGenerate>>,
+        pub generates: Arc<AtomicUsize>,
     }
 
     pub fn fake_with(behavior: FakeBehavior, delay: Duration, timing: Timing) -> Fake {
         let launches = Arc::new(AtomicUsize::new(0));
         let sends = Arc::new(AtomicUsize::new(0));
         let delay = Arc::new(Mutex::new(delay));
+        let generate = Arc::new(Mutex::new(FakeGenerate::Reply("OK\t".to_string())));
+        let generates = Arc::new(AtomicUsize::new(0));
         let launcher = FakeLauncher {
             behavior: Arc::new(Mutex::new(behavior)),
             launches: Arc::clone(&launches),
             sends: Arc::clone(&sends),
             delay: Arc::clone(&delay),
+            generate: Arc::clone(&generate),
+            generates: Arc::clone(&generates),
         };
-        Fake { manager: LlmManager::with_timing(Box::new(launcher), timing), launches, sends, delay }
+        Fake {
+            manager: LlmManager::with_timing(Box::new(launcher), timing),
+            launches,
+            sends,
+            delay,
+            generate,
+            generates,
+        }
     }
 
     pub fn fake_manager(behavior: FakeBehavior, delay: Duration) -> (LlmManager, Arc<AtomicUsize>) {
@@ -838,6 +1061,7 @@ pub mod tests {
             context: String::new(),
             reading: "よみ".to_string(),
             candidates: vec![candidate("A", false), candidate("B", false), candidate("C", false)],
+            segment_context: None,
         }
     }
 
@@ -868,7 +1092,7 @@ pub mod tests {
         wait_ready(&manager);
         assert!(manager.request(1, job(1)));
         match wait_result(&manager, 1, 1) {
-            Poll::Done(candidates) => assert_eq!(surfaces(&candidates), ["C", "B", "A"]),
+            Poll::Done(reranked) => assert_eq!(surfaces(&reranked.candidates), ["C", "B", "A"]),
             _ => panic!("DONE にならない"),
         }
         // ID 0 と不明な ID は NONE
@@ -921,7 +1145,7 @@ pub mod tests {
         std::thread::sleep(Duration::from_millis(400));
         assert!(manager.request(1, job(3)));
         match wait_result(manager, 1, 3) {
-            Poll::Done(candidates) => assert_eq!(surfaces(&candidates), ["C", "B", "A"]),
+            Poll::Done(reranked) => assert_eq!(surfaces(&reranked.candidates), ["C", "B", "A"]),
             _ => panic!("遅れた応答の後の依頼が DONE にならない"),
         }
         assert_eq!(fake.sends.load(Ordering::SeqCst), 2);
@@ -1000,13 +1224,11 @@ pub mod tests {
                 self.0.lock().unwrap().push(backend);
                 let behavior =
                     if backend == LlmBackend::Vulkan { FakeBehavior::LoadError } else { FakeBehavior::Normal };
-                Ok(Box::new(FakeChild {
+                Ok(Box::new(FakeChild::new(
                     behavior,
-                    delay: Arc::new(Mutex::new(Duration::ZERO)),
-                    sends: Arc::new(AtomicUsize::new(0)),
-                    queue: Default::default(),
-                    started: false,
-                }))
+                    Arc::new(Mutex::new(Duration::ZERO)),
+                    Arc::new(AtomicUsize::new(0)),
+                )))
             }
         }
         let launched = Arc::new(Mutex::new(Vec::new()));
@@ -1040,5 +1262,286 @@ pub mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(!manager.request(1, job(1)));
+    }
+
+    // ---- 生成 ----
+
+    #[test]
+    fn かなだけの括弧は消し読みにある括弧は残す() {
+        assert_eq!(postprocess_generated("健診(けんしん)を受ける", "けんしんをうける").as_deref(), Some("健診を受ける"));
+        assert_eq!(postprocess_generated("健診（ケンシン）", "けんしん").as_deref(), Some("健診"));
+        // 中に漢字がある括弧・空の括弧は消さない
+        assert_eq!(postprocess_generated("A(漢字)", "えーかんじかっこ").as_deref(), Some("A(漢字)"));
+        assert_eq!(postprocess_generated("A()", "えーかっこ").as_deref(), Some("A()"));
+        // 読みにある括弧は消さない
+        assert_eq!(postprocess_generated("（せいさく", "（せいさく").as_deref(), Some("（せいさく"));
+        assert_eq!(postprocess_generated("（かな）", "（かな）").as_deref(), Some("（かな）"));
+    }
+
+    #[test]
+    fn 捨てる出力() {
+        assert_eq!(postprocess_generated("", "よみ"), None);
+        // ルビを除いて空になる
+        assert_eq!(postprocess_generated("(よみ)", "よみ"), None);
+        // 読みより長い (ルビを除いた後の文字数で比べる)
+        assert_eq!(postprocess_generated("読み方です", "よみかた"), None);
+        assert_eq!(postprocess_generated("読み方", "よみかた").as_deref(), Some("読み方"));
+        assert_eq!(postprocess_generated("読(よみ)み方", "よみかた").as_deref(), Some("読み方"));
+        // 同じ 2 文字以上の並びが 3 回続く
+        assert_eq!(postprocess_generated("あいあいあい", "あいうえおかきくけ"), None);
+        assert_eq!(postprocess_generated("あいあい", "あいうえおかきくけ").as_deref(), Some("あいあい"));
+        // 読み自体に繰り返しがあれば判定しない
+        assert_eq!(postprocess_generated("はははははは", "はははははは").as_deref(), Some("はははははは"));
+        // 私用領域の文字 (プロンプトの区切り)
+        assert_eq!(postprocess_generated("読み\u{EE01}よみ", "よみよみよみ"), None);
+        assert_eq!(postprocess_generated("読み\u{E000}", "よみよみ"), None);
+    }
+
+    fn marked(surface: &str, protected: bool, typo: bool) -> SentenceCandidate {
+        SentenceCandidate { typo, ..candidate(surface, protected) }
+    }
+
+    #[test]
+    fn 生成した候補は最初の利用者の選んだ候補でない候補の位置に入る() {
+        let mut candidates = vec![chosen("学習"), chosen("ユーザ辞書"), candidate("A", false), candidate("B", false)];
+        assert_eq!(insert_generated(&mut candidates, "よみ", "生成".to_string()), Some(2));
+        assert_eq!(surfaces(&candidates), ["学習", "ユーザ辞書", "生成", "A", "B"]);
+        let generated = &candidates[2];
+        assert_eq!(generated.segments, [("よみ".to_string(), "生成".to_string())]);
+        assert!(!generated.protected && !generated.user_chosen && !generated.typo);
+    }
+
+    #[test]
+    fn 英字と数字の書き方と補正の候補より前に入る() {
+        // 英字・数字の書き方・補正の候補は保護するが、利用者の選んだ候補ではない
+        let mut candidates = vec![
+            chosen("学習"),
+            candidate("英字x", true),
+            candidate("一二三", true),
+            marked("補正", true, true),
+            candidate("A", false),
+        ];
+        assert_eq!(insert_generated(&mut candidates, "よみ", "生成".to_string()), Some(1));
+        assert_eq!(surfaces(&candidates), ["学習", "生成", "英字x", "一二三", "補正", "A"]);
+
+        let mut candidates = vec![marked("補正", true, true), candidate("A", false)];
+        assert_eq!(insert_generated(&mut candidates, "よみ", "生成".to_string()), Some(0));
+        assert_eq!(surfaces(&candidates), ["生成", "補正", "A"]);
+    }
+
+    #[test]
+    fn 同じ表記の利用者の選んだ候補でない候補はその位置へ動き件数は増えない() {
+        let mut candidates = vec![
+            chosen("学習"),
+            candidate("A", false),
+            marked("B", true, true),
+            candidate("英字x", true),
+            candidate("C", false),
+        ];
+        assert_eq!(insert_generated(&mut candidates, "よみ", "C".to_string()), None);
+        assert_eq!(surfaces(&candidates), ["学習", "C", "A", "B", "英字x"]);
+        // 保護する候補も動かす。動かした候補は自分の文節と印のまま
+        assert_eq!(insert_generated(&mut candidates, "よみ", "B".to_string()), None);
+        assert_eq!(surfaces(&candidates), ["学習", "B", "C", "A", "英字x"]);
+        assert!(candidates[1].typo && candidates[1].protected && !candidates[1].user_chosen);
+        assert_eq!(insert_generated(&mut candidates, "よみ", "英字x".to_string()), None);
+        assert_eq!(surfaces(&candidates), ["学習", "英字x", "B", "C", "A"]);
+        assert!(candidates[1].protected);
+    }
+
+    #[test]
+    fn 同じ表記が利用者の選んだ候補なら何もしない() {
+        let mut candidates = vec![chosen("学習"), candidate("A", false), chosen("ユーザ辞書"), candidate("B", false)];
+        assert_eq!(insert_generated(&mut candidates, "よみ", "ユーザ辞書".to_string()), None);
+        assert_eq!(surfaces(&candidates), ["学習", "A", "ユーザ辞書", "B"]);
+        assert_eq!(insert_generated(&mut candidates, "よみ", "学習".to_string()), None);
+        assert_eq!(surfaces(&candidates), ["学習", "A", "ユーザ辞書", "B"]);
+    }
+
+    #[test]
+    fn 上位件数より後ろでも最初の利用者の選んだ候補でない候補の位置に入る() {
+        let mut candidates: Vec<SentenceCandidate> = (0..RERANK_TOP + 2)
+            .map(|i| if i <= RERANK_TOP { chosen(&format!("学習{i}")) } else { candidate("A", false) })
+            .collect();
+        assert_eq!(insert_generated(&mut candidates, "よみ", "生成".to_string()), Some(RERANK_TOP + 1));
+        assert_eq!(candidates[RERANK_TOP + 1].surface(), "生成");
+        assert_eq!(candidates.len(), RERANK_TOP + 3);
+        // すべて利用者の選んだ候補なら末尾
+        let mut short = vec![chosen("学習")];
+        assert_eq!(insert_generated(&mut short, "よみ", "生成".to_string()), Some(1));
+        assert_eq!(surfaces(&short), ["学習", "生成"]);
+    }
+
+    fn done(poll: Poll) -> Reranked {
+        match poll {
+            Poll::Done(reranked) => reranked,
+            _ => panic!("DONE にならない"),
+        }
+    }
+
+    #[test]
+    fn vulkan版で動いているときだけ生成する() {
+        let fake = fake_with(FakeBehavior::Normal, Duration::ZERO, Timing::default());
+        *fake.generate.lock().unwrap() = FakeGenerate::Reply("OK\t生成".to_string());
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        assert!(manager.request(1, job(1)));
+        let reranked = done(wait_result(manager, 1, 1));
+        assert_eq!(surfaces(&reranked.candidates), ["生成", "C", "B", "A"]);
+        assert_eq!(reranked.generated, Some(0));
+        assert_eq!(reranked.reading, "よみ");
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 1);
+
+        // 同じ表記の候補を動かしたときは、文節を決め直す候補は無い
+        *fake.generate.lock().unwrap() = FakeGenerate::Reply("OK\tA".to_string());
+        assert!(manager.request(1, job(2)));
+        let reranked = done(wait_result(manager, 1, 2));
+        assert_eq!(surfaces(&reranked.candidates), ["A", "C", "B"]);
+        assert_eq!(reranked.generated, None);
+
+        manager.configure(true, LlmBackend::Cpu);
+        let started = Instant::now();
+        while fake.launches.load(Ordering::SeqCst) < 2 {
+            assert!(started.elapsed() < Duration::from_secs(5), "起動し直さない");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        wait_ready(manager);
+        assert!(manager.request(1, job(3)));
+        let reranked = done(wait_result(manager, 1, 3));
+        assert_eq!(surfaces(&reranked.candidates), ["C", "B", "A"]);
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn vulkan版からcpu版へ切り替えた後は生成しない() {
+        struct VulkanFails(Arc<AtomicUsize>);
+        impl Launcher for VulkanFails {
+            fn launch(&self, backend: LlmBackend) -> std::io::Result<Box<dyn ChildProcess>> {
+                let behavior =
+                    if backend == LlmBackend::Vulkan { FakeBehavior::LoadError } else { FakeBehavior::Normal };
+                let mut child =
+                    FakeChild::new(behavior, Arc::new(Mutex::new(Duration::ZERO)), Arc::new(AtomicUsize::new(0)));
+                child.generate = Arc::new(Mutex::new(FakeGenerate::Reply("OK\t生成".to_string())));
+                child.generates = Arc::clone(&self.0);
+                Ok(Box::new(child))
+            }
+        }
+        let generates = Arc::new(AtomicUsize::new(0));
+        let manager = LlmManager::new(Box::new(VulkanFails(Arc::clone(&generates))));
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(&manager);
+        assert!(manager.lock().fell_back);
+        assert!(manager.request(1, job(1)));
+        let reranked = done(wait_result(&manager, 1, 1));
+        assert_eq!(surfaces(&reranked.candidates), ["C", "B", "A"]);
+        assert_eq!(generates.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn 生成がerrか空なら生成なしの並べ替えの結果になる() {
+        let fake = fake_with(FakeBehavior::Normal, Duration::ZERO, Timing::default());
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        for (id, reply) in [(1, "ERR\t入力が長すぎます"), (2, "OK\t"), (3, "OK\t読みより長い表記")] {
+            *fake.generate.lock().unwrap() = FakeGenerate::Reply(reply.to_string());
+            assert!(manager.request(1, job(id)));
+            let reranked = done(wait_result(manager, 1, id));
+            assert_eq!(surfaces(&reranked.candidates), ["C", "B", "A"], "{reply}");
+            assert_eq!(reranked.generated, None);
+        }
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 3);
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.lock().failures, 0);
+    }
+
+    #[test]
+    fn 生成に応答しなければscoreと同じく異常とみなして起動し直す() {
+        let fake = fake_with(FakeBehavior::Normal, Duration::ZERO, short_timing());
+        *fake.generate.lock().unwrap() = FakeGenerate::Silent;
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        let started = Instant::now();
+        assert!(manager.request(1, job(1)));
+        // 応答待ちの上限 (100ms) で NONE にし、異常とみなす時間 (600ms) を超えてから起動し直す
+        assert!(matches!(wait_result(manager, 1, 1), Poll::None));
+        assert!(started.elapsed() < Duration::from_millis(400));
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        while fake.launches.load(Ordering::SeqCst) < 2 {
+            assert!(started.elapsed() < Duration::from_secs(5), "起動し直さない");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(manager.lock().failures, 1);
+    }
+
+    #[test]
+    fn 生成で子プロセスが終了したら起動し直す() {
+        let fake = fake_with(FakeBehavior::Normal, Duration::ZERO, short_timing());
+        *fake.generate.lock().unwrap() = FakeGenerate::Exit;
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        assert!(manager.request(1, job(1)));
+        assert!(matches!(wait_result(manager, 1, 1), Poll::None));
+        let started = Instant::now();
+        while fake.launches.load(Ordering::SeqCst) < 2 {
+            assert!(started.elapsed() < Duration::from_secs(5), "起動し直さない");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(manager.lock().failures, 1);
+    }
+
+    #[test]
+    fn scoreがerrでも生成した候補を並べ替えていない並びに入れる() {
+        let fake = fake_with(FakeBehavior::ScoreErr, Duration::ZERO, Timing::default());
+        *fake.generate.lock().unwrap() = FakeGenerate::Reply("OK\t生成".to_string());
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        assert!(manager.request(1, job(1)));
+        let reranked = done(wait_result(manager, 1, 1));
+        assert_eq!(surfaces(&reranked.candidates), ["生成", "A", "B", "C"]);
+        assert_eq!(reranked.generated, Some(0));
+        assert_eq!(fake.sends.load(Ordering::SeqCst), 1);
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 1);
+
+        // 生成も ERR・空・捨てる出力なら NONE。子プロセスは正常のまま
+        for (id, reply) in [(2, "ERR\t入力が長すぎます"), (3, "OK\t"), (4, "OK\t読みより長い表記")] {
+            *fake.generate.lock().unwrap() = FakeGenerate::Reply(reply.to_string());
+            assert!(manager.request(1, job(id)));
+            assert!(matches!(wait_result(manager, 1, id), Poll::None), "{reply}");
+        }
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 4);
+        assert_eq!(fake.launches.load(Ordering::SeqCst), 1);
+        assert_eq!(manager.lock().failures, 0);
+    }
+
+    #[test]
+    fn cpu版ではscoreがerrなら生成せずnone() {
+        let fake = fake_with(FakeBehavior::ScoreErr, Duration::ZERO, Timing::default());
+        *fake.generate.lock().unwrap() = FakeGenerate::Reply("OK\t生成".to_string());
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Cpu);
+        wait_ready(manager);
+        assert!(manager.request(1, job(1)));
+        assert!(matches!(wait_result(manager, 1, 1), Poll::None));
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn 保護しない候補が2件未満でscoreを送らない依頼も生成する() {
+        let fake = fake_with(FakeBehavior::Normal, Duration::ZERO, Timing::default());
+        *fake.generate.lock().unwrap() = FakeGenerate::Reply("OK\t生成".to_string());
+        let manager = &fake.manager;
+        manager.configure(true, LlmBackend::Vulkan);
+        wait_ready(manager);
+        let job = Job { candidates: vec![chosen("学習"), candidate("A", false)], ..job(1) };
+        assert!(manager.request(1, job));
+        let reranked = done(wait_result(manager, 1, 1));
+        assert_eq!(surfaces(&reranked.candidates), ["学習", "生成", "A"]);
+        assert_eq!(fake.sends.load(Ordering::SeqCst), 0);
+        assert_eq!(fake.generates.load(Ordering::SeqCst), 1);
     }
 }

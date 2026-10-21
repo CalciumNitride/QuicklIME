@@ -137,6 +137,16 @@ fn log_prob(logits: &[f32], token: LlamaToken) -> f64 {
     logits[token.0 as usize] as f64 - max - sum.ln()
 }
 
+fn argmax(logits: &[f32]) -> LlamaToken {
+    let mut best = 0;
+    for (i, &l) in logits.iter().enumerate() {
+        if l > logits[best] {
+            best = i;
+        }
+    }
+    LlamaToken(best as i32)
+}
+
 /// 候補の尤度の終わりの項に使うトークン。zenz が出力の終わりに出すのは </s> で、語彙の EOS
 /// (zenz では <s>) の確率は文の終わりを表さず、送り仮名を落とした形や語の途中で切れた候補を上げてしまう。
 /// </s> は llama.cpp の API に特殊トークンとして引く手段が無いため、語彙の文字列から引く
@@ -256,17 +266,63 @@ impl<'a> Scorer<'a> {
         }
         Ok(scores)
     }
+
+    /// 貪欲法で表記を生成する。EOG トークンで止まったらその表記、生成するトークン数の上限
+    /// (読みの文字数 x 2 + 8) に達したか、出力が UTF-8 として正しくなければ空を返す。
+    /// プロンプトと出力が N_CTX に収まらなければ Err
+    fn generate(&mut self, left_context: &str, reading: &str) -> BoxResult<String> {
+        let prompt = self.model.vocab().tokenize(build_prompt(left_context, reading).as_bytes(), true, false);
+        let p = prompt.len();
+        if p == 0 || p >= N_CTX as usize {
+            return Err("入力が長すぎます".into());
+        }
+        let max_new = reading.chars().count() * 2 + 8;
+        self.ctx.clear_kv_cache();
+        self.batch.clear();
+        for (i, &t) in prompt.iter().enumerate() {
+            self.batch.add(t, i as i32, &[0], i == p - 1)?;
+        }
+        self.ctx.decode(&mut self.batch)?;
+        let mut logits = self.ctx.get_logits_ith((p - 1) as i32).to_vec();
+        let mut pos = p;
+        let mut out: Vec<u8> = Vec::new();
+        for _ in 0..max_new {
+            let next = argmax(&logits);
+            if self.model.vocab().is_eog(next) {
+                return Ok(String::from_utf8(out).unwrap_or_default());
+            }
+            if pos >= N_CTX as usize {
+                return Err("入力が長すぎます".into());
+            }
+            out.extend(self.model.vocab().token_to_piece(next, false, None));
+            self.batch.clear();
+            self.batch.add(next, pos as i32, &[0], true)?;
+            self.ctx.decode(&mut self.batch)?;
+            logits = self.ctx.get_logits_ith(0).to_vec();
+            pos += 1;
+        }
+        Ok(String::new())
+    }
 }
 
 /// 1行の要求を処理して応答の行 (改行なし) を返す
 fn handle_line(scorer: &mut Scorer, line: &str) -> String {
     let mut fields = line.split('\t');
-    if fields.next() != Some("SCORE") {
+    let command = fields.next();
+    if !matches!(command, Some("SCORE" | "GENERATE")) {
         return "ERR\t不明なコマンドです".to_string();
     }
     let (Some(context), Some(reading)) = (fields.next(), fields.next()) else {
         return "ERR\t引数が足りません".to_string();
     };
+    let error = |e: Box<dyn std::error::Error>| format!("ERR\t{}", e.to_string().replace(['\t', '\r', '\n'], " "));
+    if command == Some("GENERATE") {
+        return match scorer.generate(context, reading) {
+            // 表記にタブ・改行が混ざると行プロトコルが崩れるため空白にする
+            Ok(surface) => format!("OK\t{}", surface.replace(['\t', '\r', '\n'], " ")),
+            Err(e) => error(e),
+        };
+    }
     let candidates: Vec<&str> = fields.collect();
     match scorer.score(context, reading, &candidates) {
         Ok(scores) => {
@@ -277,7 +333,7 @@ fn handle_line(scorer: &mut Scorer, line: &str) -> String {
             }
             response
         }
-        Err(e) => format!("ERR\t{}", e.to_string().replace(['\t', '\r', '\n'], " ")),
+        Err(e) => error(e),
     }
 }
 

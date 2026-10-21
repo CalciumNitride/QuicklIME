@@ -397,8 +397,9 @@ private:
     // バーを作り直した後に並べ替えを依頼し、結果の問い合わせ (タイマー) を始める
     // (keys はかなの打鍵。空なら送らない)
     void RequestRerank(const std::wstring& kana, const std::wstring& keys);
-    // 表示中のバーの全体変換を、並べ替えの結果の順で全体変換が占めている位置に入れ直した並び
-    // (予測・英字候補の位置は動かさず、バーに無い全体変換は足さない)
+    // 表示中のバーの全体変換の枠を、並べ替えの結果の上位から埋め直した並び (枠の位置と数、予測・
+    // 英字候補の位置は変えない。かな・予測・英字候補・埋めた候補と同じ表記は飛ばし、埋まらない枠は
+    // 元の全体変換を元の順で埋める)
     std::vector<BarCandidate> RerankedBarItems(const std::vector<SentenceCandidate>& result) const;
     // 結果の問い合わせを止める (依頼と受け取った結果は変換キーで使うので覚えておく)
     void StopRerankPolling();

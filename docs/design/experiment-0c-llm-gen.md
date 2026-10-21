@@ -32,7 +32,7 @@ AJIMEE-Bench (197 件、左文脈あり、前文脈なし) で、Vulkan 版と z
 
 #### A. 自由生成と後処理
 
-zenz に読みから表記を生成させ、出力を後処理で検査する (rakukan の方式。[rakukan-llm-notes.md](../rakukan-llm-notes.md))。
+zenz に読みから表記を生成させ、出力を後処理で検査する (rakukan の方式。[rakukan-llm-notes.md](../archive/rakukan-llm-notes.md))。
 
 - 貪欲法 (毎トークン argmax) と、beam 幅 3 の beam search の 2 通りを測る。beam search は累積の対数確率の
   高い順に最大 3 件を出す

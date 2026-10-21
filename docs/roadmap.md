@@ -14,15 +14,10 @@
   ([learning-score.md](design/learning-score.md))
 - 前文脈による変換の使い分け (「服を|着る」「紙を|切る」)。今は前文脈を予測と後続語の予測にだけ使う
   ([learning-score.md](design/learning-score.md))
-- LLM による候補の生成 (読みに沿うよう制約したデコード) と、補正の候補の LLM での採点
-  ([unified-suggest.md](design/unified-suggest.md)。生成の前後処理とモデルの調査は
-  [rakukan-llm-notes.md](rakukan-llm-notes.md))
+- 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
 - 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
 - 候補バーの数字キーでの採用。今の数字キーは選ぶだけで、採用はしない
-- LLM の並べ替えの結果で、候補バーの全体変換の位置を結果の上位から埋め直す。今はバーにある全体変換の中で
-  入れ替えるだけで、全体変換の 3 枠の外にあった候補は LLM が上位にしても出ない
-  ([unified-suggest.md](design/unified-suggest.md) の G)
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - run が無いときのキャレット直前のかなの変換を、候補バーの対象にする

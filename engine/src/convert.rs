@@ -106,6 +106,9 @@ pub struct SentenceCandidate {
     /// ユーザ辞書の語を含む候補、英字を含む候補、数字の書き方の候補、補正の候補。
     /// docs/design/llm-rerank.md)
     pub protected: bool,
+    /// 利用者の選んだ候補 (protected のうち、読み全体の学習表記、学習で表記が変わった 1-best、
+    /// ユーザ辞書の語を含む候補)。LLM で生成した候補をこれより前に入れない (docs/design/llm-generate.md)
+    pub user_chosen: bool,
     /// 1 打の誤りを戻した読みの語 (補正の語) を通る経路の補正の候補 (docs/design/typo-conversion.md、
     /// docs/design/unified-suggest.md の D)
     pub typo: bool,
@@ -219,7 +222,7 @@ pub fn convert_segments(
         let words = lattice.path_words(&indices);
         return segments_from_path(words, dict, user, functional, learning);
     };
-    let (_, protected) =
+    let (_, protected, _) =
         protected_best(kana, &lattice, &indices, ctx_id, learned, dict, user, matrix, functional, true);
     let top = delta >= TYPO_TOP && learning.best_phrase(kana).is_none() && !protected;
 
@@ -283,8 +286,9 @@ fn typo_segment(
 }
 
 /// 1-best の経路 (学習の割引を当てたラティス lattice のノード index 列 indices) を文節にまとめ、
-/// 補正の候補に先頭を譲らない印 (ユーザ辞書の語・英字を含む、check_learned なら学習で表記が変わった)
-/// とともに返す。学習で表記が変わったかは、学習の割引なしのラティスを作り直して最良経路の表記と比べる
+/// 補正の候補に先頭を譲らない印 (ユーザ辞書の語・英字を含む、check_learned なら学習で表記が変わった)、
+/// 利用者の選んだ候補の印 (前者から英字を除いたもの) とともに返す。学習で表記が変わったかは、学習の
+/// 割引なしのラティスを作り直して最良経路の表記と比べる
 fn protected_best(
     kana: &str,
     lattice: &Lattice,
@@ -296,7 +300,7 @@ fn protected_best(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     check_learned: bool,
-) -> (Vec<Segment>, bool) {
+) -> (Vec<Segment>, bool, bool) {
     let words = lattice.path_words(indices);
     let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
     let segments = segments_from_path(words, dict, user, functional, learned.store);
@@ -310,8 +314,9 @@ fn protected_best(
                 merge_digit_runs(words).iter().map(|w| w.surface.as_str()).collect::<String>() != surface
             })
     };
-    let protected = changed || has_user || surface.chars().any(|c| c.is_ascii_alphabetic());
-    (segments, protected)
+    let user_chosen = changed || has_user;
+    let protected = user_chosen || surface.chars().any(|c| c.is_ascii_alphabetic());
+    (segments, protected, user_chosen)
 }
 
 /// 経路の単語列を文節にまとめる (連続する数字を1語にし、付属語を前の自立語に付ける)
@@ -789,10 +794,11 @@ fn nbest_with(
     // 戻り値は候補の位置 (表記が既にあればその候補の位置) と、足したか
     let mut add = |segments: Vec<(String, String)>,
                    protected: bool,
+                   user_chosen: bool,
                    typo: bool,
                    cost: Option<i64>|
      -> (usize, bool) {
-        let mut candidate = SentenceCandidate { segments, protected, typo };
+        let mut candidate = SentenceCandidate { segments, protected, user_chosen, typo };
         let surface = candidate.surface();
         if let Some(i) = surfaces.iter().position(|s| *s == surface) {
             return (i, false);
@@ -807,7 +813,7 @@ fn nbest_with(
 
     let learned_whole = learning.best_phrase(kana);
     if let Some(learned) = learned_whole {
-        add(whole(learned), true, false, None);
+        add(whole(learned), true, true, false, None);
         nbest.learned = true;
     }
     // Δ = 通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で割った値
@@ -821,7 +827,7 @@ fn nbest_with(
         let best_cost = best_end(&lattice, matrix, 0).map(|(cost, _)| cost);
         nbest.best_cost = best_cost;
         // 学習・ユーザ辞書の語・英字で保護する 1-best は、補正の候補で 2 番目に下げない
-        let (segments, protected) = protected_best(
+        let (segments, protected, user_chosen) = protected_best(
             kana, &lattice, &indices, ctx_id, learned, dict, user, matrix, functional,
             protect_learned || corrected.is_some(),
         );
@@ -830,22 +836,22 @@ fn nbest_with(
         let top = learned_whole.is_none() && !protected;
         let best = match corrected {
             Some((delta, typo_segments, _)) if top && delta >= tuning.typo_top => {
-                add(typo_segments, true, true, None);
-                add(segments.clone(), protected, false, best_cost).0
+                add(typo_segments, true, false, true, None);
+                add(segments.clone(), protected, user_chosen, false, best_cost).0
             }
             Some((_, typo_segments, typo_cost)) => {
-                let best = add(segments.clone(), protected, false, best_cost).0;
-                add(typo_segments, true, true, Some(typo_cost));
+                let best = add(segments.clone(), protected, user_chosen, false, best_cost).0;
+                add(typo_segments, true, false, true, Some(typo_cost));
                 best
             }
-            None => add(segments.clone(), protected, false, best_cost).0,
+            None => add(segments.clone(), protected, user_chosen, false, best_cost).0,
         };
         nbest.best = Some(best);
         best_segments = Some((segments, group_path(lattice.path_words(&indices), functional)));
     }
     for (cost, path, words) in nbest_paths(&lattice, matrix, functional) {
         let has_user = words.iter().any(|w| is_user_word(&w.reading, &w.surface, user));
-        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user, false, Some(cost));
+        add(path.into_iter().map(|s| (s.reading, s.surface)).collect(), has_user, has_user, false, Some(cost));
     }
 
     // 数字の読みに対する漢数字などは LLM の尤度が高く出やすく、打ったとおりの数より
@@ -873,7 +879,7 @@ fn nbest_with(
                     (reading.clone(), form.clone() + &tail)
                 })
                 .collect();
-            add(replaced, true, false, None);
+            add(replaced, true, false, false, None);
         }
     }
 
@@ -887,18 +893,18 @@ fn nbest_with(
         if dict_count >= MAX_DICT_CANDIDATES {
             break;
         }
-        if add(whole(surface), from_user, false, None).1 {
+        if add(whole(surface), from_user, from_user, false, None).1 {
             dict_count += 1;
         }
     }
     for kanji in dict.lookup_single_kanji(kana) {
-        add(whole(kanji), false, false, None);
+        add(whole(kanji), false, false, false, None);
     }
     for symbol in dict.lookup_symbols(kana) {
-        add(whole(symbol), false, false, None);
+        add(whole(symbol), false, false, false, None);
     }
-    add(whole(&to_katakana(kana)), false, false, None);
-    add(whole(kana), false, false, None);
+    add(whole(&to_katakana(kana)), false, false, false, None);
+    add(whole(kana), false, false, false, None);
     nbest
 }
 
@@ -1836,13 +1842,13 @@ pub fn split_path(
     Some(result)
 }
 
-/// 表記の接頭辞の制約つきの Viterbi (docs/design/experiment-0c-llm-gen.md の C)。計測用の example
-/// (llm_gen_eval) だけが使う。表記の連結が prefix (バイト列) で始まる経路 (exact なら表記が prefix と
+/// 表記の接頭辞の制約つきの Viterbi (docs/design/experiment-0c-llm-gen.md の C)。エンジンは LLM で
+/// 生成した候補の文節を決めるのに完全一致で使う (docs/design/llm-generate.md)。
+/// 表記の連結が prefix (バイト列) で始まる経路 (exact なら表記が prefix と
 /// 等しい経路) のうち、convert_nbest_rerank の最良経路と同じラティス・コストで最小のものを、N-best と
 /// 同じ区切りの文節 (読み, 表記) で返す。満たす経路が無ければ None。
 /// 状態は (ノード, prefix のうち一致したバイト数) で、一致が prefix の長さに達した後は制約の無い
 /// Viterbi と同じになる。prefix はトークンの区切りで文字の途中で切れることがあるので、バイト単位で比べる
-#[allow(dead_code)]
 pub fn constrained_path(
     kana: &str,
     ctx: Option<&Context>,
@@ -3426,9 +3432,9 @@ mod tests {
             &sample_functional(), &learning, false);
         // 読み全体の学習表記は保護する。学習で表記が変わった 1-best は、補正の候補があるときだけ保護する
         // (補正の候補がある場合は 学習で表記が変わった1bestは補正の候補で2番目に下がらない)
-        assert!(got[0].protected);
+        assert!(got[0].protected && got[0].user_chosen);
         assert_eq!(got[1].surface(), "京は晴れです");
-        assert!(!got[1].protected);
+        assert!(!got[1].protected && !got[1].user_chosen);
         // RERANK に渡す候補では、補正の候補が無くても学習で変わった 1-best を保護する
         let reranked = convert_nbest_rerank(
             "きょうははれです", None, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional(),
@@ -3436,10 +3442,10 @@ mod tests {
         )
         .candidates;
         assert_eq!(reranked[1].surface(), "京は晴れです");
-        assert!(reranked[1].protected);
-        assert!(!reranked[2].protected);
+        assert!(reranked[1].protected && reranked[1].user_chosen);
+        assert!(!reranked[2].protected && !reranked[2].user_chosen);
         assert_eq!(got[2].surface(), "今日は晴れです");
-        assert!(!got[2].protected);
+        assert!(!got[2].protected && !got[2].user_chosen);
 
         // 学習で表記が変わらなければ 1-best は保護しない
         let got = convert_nbest(
@@ -3473,6 +3479,11 @@ mod tests {
         assert!(find("今日はHARE").protected);
         assert!(!find("今日は晴れ").protected);
         assert!(!find("京は晴れ").protected);
+        // 利用者の選んだ候補の印はユーザ辞書の語を含む候補だけ (英字を含む候補には付かない)
+        assert!(find("今日は腫れ").user_chosen);
+        assert!(!find("今日はHARE").user_chosen);
+        assert!(!find("今日は晴れ").user_chosen);
+        assert!(!find("京は晴れ").user_chosen);
     }
 
     #[test]
@@ -3496,7 +3507,7 @@ mod tests {
         assert!(surfaces[..start].contains(&"1234縁と5600円".to_string()), "{surfaces:?}");
         assert_eq!(surfaces.len(), start + expected.len() + 2, "{surfaces:?}");
         for candidate in &got[start..start + expected.len()] {
-            assert!(candidate.protected);
+            assert!(candidate.protected && !candidate.user_chosen);
             // 文節は 1-best の文節のまま
             let readings: Vec<&str> = candidate.segments.iter().map(|(r, _)| r.as_str()).collect();
             assert_eq!(readings, vec!["1234えんと", "5600えん"]);
@@ -3647,7 +3658,7 @@ mod tests {
     fn 打ち間違いがはっきりしていれば補正の候補が先頭に出る() {
         let got = typo_nbest("よろしくおねぎあします", &LearningStore::in_memory(), true);
         assert_eq!(got[0].surface(), "よろしくお願いします");
-        assert!(got[0].typo && got[0].protected);
+        assert!(got[0].typo && got[0].protected && !got[0].user_chosen);
         // 文節の読みは打ったかなの区間で、連結すると打ったかなになる
         let readings: Vec<&str> = got[0].segments.iter().map(|(r, _)| r.as_str()).collect();
         assert_eq!(readings.concat(), "よろしくおねぎあします");
@@ -3678,8 +3689,8 @@ mod tests {
         learn(&mut learning, &dict, "よろしく", "宜しく", "");
         let got = typo_nbest_in(&dict, "よろしくおねぎあします", &learning, true);
         assert!(got[0].surface().starts_with("宜しく"), "{:?}", surfaces_of(&got));
-        assert!(!got[0].typo && got[0].protected);
-        assert!(got[1].typo);
+        assert!(!got[0].typo && got[0].protected && got[0].user_chosen);
+        assert!(got[1].typo && !got[1].user_chosen);
     }
 
     #[test]

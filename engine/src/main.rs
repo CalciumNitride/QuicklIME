@@ -408,6 +408,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                 context: llm::preprocess_context(llm_context),
                 reading: kana.to_string(),
                 candidates,
+                segment_context: ctx,
             };
             if !data.llm.request(session.conn, job) {
                 return "OK\t0\n".to_string();
@@ -424,13 +425,38 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
             match data.llm.poll(session.conn, id) {
                 llm::Poll::Pending => "OK\tPENDING\n".to_string(),
                 // 結果が返るのは最後に受け付けた ID だけなので、種類の有無はその要求に従う
-                llm::Poll::Done(candidates) => {
-                    format!("OK\tDONE\t{}\n", format_candidates(&candidates, session.last_kinds))
+                llm::Poll::Done(mut reranked) => {
+                    decide_generated_segments(&mut reranked, data);
+                    format!("OK\tDONE\t{}\n", format_candidates(&reranked.candidates, session.last_kinds))
                 }
                 llm::Poll::None => "OK\tNONE\n".to_string(),
             }
         }
         _ => handle_request(line, data),
+    }
+}
+
+/// 生成して新しく入れた候補の文節を、依頼の前文脈と読みの完全一致の制約つき Viterbi の経路で決める。
+/// 経路が無ければ (数の書き方など、辞書の語でたどれない表記) 読み全体の 1 文節のまま
+fn decide_generated_segments(reranked: &mut llm::Reranked, data: &EngineData) {
+    let Some(index) = reranked.generated else {
+        return;
+    };
+    let surface = reranked.candidates[index].surface();
+    let user = data.user.lock().expect("user lock");
+    let learning = data.learning.lock().expect("learning lock");
+    if let Some(segments) = convert::constrained_path(
+        &reranked.reading,
+        reranked.segment_context.as_ref(),
+        &data.dictionary,
+        &user,
+        &data.matrix,
+        &data.functional,
+        &learning,
+        surface.as_bytes(),
+        true,
+    ) {
+        reranked.candidates[index].segments = segments;
     }
 }
 
@@ -1938,6 +1964,77 @@ mod tests {
         // kinds の無い RERANK の結果には種類を付けない
         let body = rerank_done("RERANK\t\t\tよろしくおねぎあします", &data, &mut session);
         assert!(!body.contains(KIND_SEPARATOR), "{body}");
+    }
+
+    fn generated_result(reading: &str, surface: &str) -> llm::Reranked {
+        llm::Reranked {
+            candidates: vec![convert::SentenceCandidate {
+                segments: vec![(reading.to_string(), surface.to_string())],
+                protected: false,
+                user_chosen: false,
+                typo: false,
+            }],
+            generated: Some(0),
+            reading: reading.to_string(),
+            segment_context: None,
+        }
+    }
+
+    #[test]
+    fn 生成した候補の文節は辞書でたどれれば経路の文節になる() {
+        let data = sample_data();
+        let mut reranked = generated_result("きょうははれきょうは", "今日は晴れ今日は");
+        decide_generated_segments(&mut reranked, &data);
+        let segments = &reranked.candidates[0].segments;
+        assert!(segments.len() > 1, "{segments:?}");
+        assert_eq!(segments.iter().map(|(r, _)| r.as_str()).collect::<String>(), "きょうははれきょうは");
+        assert_eq!(reranked.candidates[0].surface(), "今日は晴れ今日は");
+    }
+
+    #[test]
+    fn 生成した候補の文節は辞書でたどれなければ読み全体の1文節() {
+        let data = sample_data();
+        let mut reranked = generated_result("きょうははれきょうは", "京は晴れ今日は");
+        decide_generated_segments(&mut reranked, &data);
+        assert_eq!(
+            reranked.candidates[0].segments,
+            [("きょうははれきょうは".to_string(), "京は晴れ今日は".to_string())]
+        );
+    }
+
+    #[test]
+    fn rerankの結果に生成した候補が入る() {
+        let mut data = sample_data();
+        let fake = llm::tests::fake_with(
+            llm::tests::FakeBehavior::Normal,
+            std::time::Duration::ZERO,
+            llm::Timing::default(),
+        );
+        *fake.generate.lock().unwrap() = llm::tests::FakeGenerate::Reply("OK\t京は晴れ今日は".to_string());
+        let generate = std::sync::Arc::clone(&fake.generate);
+        data.llm = fake.manager;
+        data.config.lock().unwrap().llm = true;
+        data.llm.configure(true, config::LlmBackend::Vulkan);
+        llm::tests::wait_ready(&data.llm);
+        let mut session = Session::new();
+        let body = rerank_done("RERANK\t\t\tきょうははれきょうは", &data, &mut session);
+        let nbest = handle_request("CONVNBEST\t\tきょうははれきょうは", &data);
+        let reranked: Vec<&str> = body.trim_end().split('\t').collect();
+        let fields: Vec<&str> = nbest.strip_prefix("OK\t").unwrap().trim_end().split('\t').collect();
+        assert_eq!(reranked[0], "きょうははれきょうは\x1f京は晴れ今日は");
+        assert_eq!(reranked.len(), fields.len() + 1);
+
+        // 辞書でたどれる表記は経路の文節になる (N-best に無ければ新しく入る)
+        let traceable = "今日は晴れ今日は";
+        *generate.lock().unwrap() = llm::tests::FakeGenerate::Reply(format!("OK\t{traceable}"));
+        let body = rerank_done("RERANK\t\t\tきょうははれきょうは", &data, &mut session);
+        let reranked: Vec<&str> = body.trim_end().split('\t').collect();
+        let surface = |field: &str| -> String {
+            field.split(SEGMENT_SEPARATOR).map(|s| s.split(FIELD_SEPARATOR).nth(1).unwrap()).collect()
+        };
+        assert_eq!(surface(reranked[0]), traceable);
+        assert!(reranked[0].contains(SEGMENT_SEPARATOR), "{body}");
+        assert_eq!(reranked.iter().filter(|f| surface(f) == traceable).count(), 1);
     }
 
     /// ASCIISTART のテスト用の英単語辞書 (1〜2文字の語も入れて、短い英字区間を候補にしないことを確かめる)

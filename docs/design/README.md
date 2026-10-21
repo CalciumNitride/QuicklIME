@@ -74,6 +74,8 @@
 - [nbest.md](nbest.md): 入力全体の N-best。候補バーと変換キーの候補に使い、文節 UI を設定 `segment_ui`
   のオプションにする。候補バーの並びと先頭文節は [unified-suggest.md](unified-suggest.md) で置き換え
 - [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え
+- [llm-generate.md](llm-generate.md): Vulkan 版で、9 文字以上の読みの並べ替えに LLM の貪欲法で生成した候補を 1 件足し、
+  候補バーの全体変換の枠を並べ替えの結果の上位から埋め直す
 - [conversion-range.md](conversion-range.md): run が無いときのキャレット直前のかなの変換と、候補選択中の
   ←→ による変換の範囲の伸縮
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
@@ -166,3 +168,5 @@
   Meltype の調査。採った項目は [modeless-detection.md](modeless-detection.md)
 - [llm-rerank-notes.md](../archive/llm-rerank-notes.md): Zenzai・mozkey の LLM 補正の調査。並べ替えは
   [llm-rerank.md](llm-rerank.md) で実装し、フィードバック学習は [roadmap](../roadmap.md) の未着手
+- [rakukan-llm-notes.md](../archive/rakukan-llm-notes.md): rakukan の LLM 変換 (生成の前後処理・jinen・運用) の調査。
+  生成は [llm-generate.md](llm-generate.md) で実装

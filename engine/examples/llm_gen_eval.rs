@@ -1135,7 +1135,12 @@ fn run_case(args: &Args, case: &Case, conv: &Converter, rr: &mut Llm, gen_llm: &
     let candidates: Vec<SentenceCandidate> = nbest
         .candidates
         .iter()
-        .map(|c| SentenceCandidate { segments: c.segments.clone(), protected: c.protected, typo: c.typo })
+        .map(|c| SentenceCandidate {
+            segments: c.segments.clone(),
+            protected: c.protected,
+            user_chosen: c.user_chosen,
+            typo: c.typo,
+        })
         .collect();
 
     let before: Vec<String> = candidates.iter().map(SentenceCandidate::surface).collect();

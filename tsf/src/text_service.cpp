@@ -3116,30 +3116,43 @@ std::vector<TextService::BarCandidate> TextService::RerankedBarItems(
     std::vector<BarCandidate> items = barBuilt_;
     std::vector<size_t> positions;
     std::vector<BarCandidate> wholes;
+    std::vector<std::wstring> taken;  // 全体変換の枠に入れない表記
+    taken.push_back(barKana_);
     for (size_t i = 0; i < items.size(); ++i) {
         if (items[i].kind == BarKind::Whole) {
             positions.push_back(i);
             wholes.push_back(items[i]);
+        } else {
+            taken.push_back(items[i].surface);
         }
     }
+    const auto isTaken = [&taken](const std::wstring& surface) {
+        return std::find(taken.begin(), taken.end(), surface) != taken.end();
+    };
     std::vector<BarCandidate> ordered;
-    std::vector<bool> used(wholes.size(), false);
     for (const SentenceCandidate& candidate : result) {
-        for (size_t i = 0; i < wholes.size(); ++i) {
-            if (!used[i] && wholes[i].surface == candidate.surface) {
-                used[i] = true;
-                ordered.push_back(wholes[i]);
-                break;
-            }
+        if (ordered.size() >= positions.size()) {
+            break;
         }
-    }
-    // 結果に無いバーの全体変換は、元の順のまま後ろに残す
-    for (size_t i = 0; i < wholes.size(); ++i) {
-        if (!used[i]) {
-            ordered.push_back(wholes[i]);
+        if (isTaken(candidate.surface)) {
+            continue;
         }
+        taken.push_back(candidate.surface);
+        ordered.push_back(
+            {BarKind::Whole, candidate.surface, barKana_, candidate.segments, candidate.typo});
     }
-    for (size_t i = 0; i < positions.size(); ++i) {
+    // 結果で埋まらない枠は、元の全体変換を元の順で埋める
+    for (const BarCandidate& whole : wholes) {
+        if (ordered.size() >= positions.size()) {
+            break;
+        }
+        if (isTaken(whole.surface)) {
+            continue;
+        }
+        taken.push_back(whole.surface);
+        ordered.push_back(whole);
+    }
+    for (size_t i = 0; i < ordered.size(); ++i) {
         items[positions[i]] = ordered[i];
     }
     return items;
