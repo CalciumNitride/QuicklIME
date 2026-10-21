@@ -53,3 +53,8 @@
   - 入力パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))
+- 変換の区切りの誤り。再生評価 ([eval-sets.md](design/eval-sets.md)) の学習が空のモード (8320 行) で、1 位を外した
+  行のうち区切りが 225 行、同じ区間 (区切りは同じで、自立語と付属語の別が違う) が 126 行ある
+  - 区切りの中心は、境界の位置のずれ (85 行) と、正解では複数の語の部分を Mozc 辞書の長い 1 語にまとめる誤り (69 行)
+  - 同じ区間の多くは、正解の語が語の学習に数えない語 (読みが 1 文字の語・ひらがなのままの語) か、学習の無い語で、
+    学習でも直りにくい
