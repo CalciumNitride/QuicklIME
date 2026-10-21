@@ -30,7 +30,7 @@ const MAX_CONTEXT_KEY_CHARS: usize = 16;
 pub const MIN_BOUNDARY_CHARS: usize = 2;
 
 /// learning_stats.tsv を書き直すときに捨てる今の度合いの下限
-const MIN_KEEP: f64 = 0.05;
+pub const MIN_KEEP: f64 = 0.05;
 
 /// 度合いと割引の定数 (docs/design/learning-score.md の B)。評価 (examples/learning_eval.rs) で
 /// 値を振れるよう、ストアごとに持つ

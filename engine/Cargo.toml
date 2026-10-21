@@ -50,6 +50,11 @@ required-features = ["llm-bench"]
 name = "build_ut_dict"
 test = true
 
+# 分け方の単体テストを cargo test で実行するため
+[[example]]
+name = "learning_eval"
+test = true
+
 # 設定ツール・単語登録ツールの exe を小さくする (画面の処理は速さより大きさが効く)。
 # package 単位の override なので、エンジン本体と依存 crate には効かない
 [profile.release.package.quicklime-gui]
