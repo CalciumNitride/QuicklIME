@@ -9,7 +9,7 @@
 #
 # 前提: Visual Studio 2022 Community、Rust ツールチェーン、Inno Setup 6
 #       (winget install -e --id JRSoftware.InnoSetup)、references/mozc の辞書と単漢字辞書、
-#       scripts\fetch-ut-dict.ps1 で生成した UT 辞書、
+#       scripts\fetch-ut-dict.ps1 で生成した UT 辞書、scripts\fetch-wiki-ngram.ps1 で生成した後続語の統計、
 #       scripts\build-llm.ps1 でビルドした LLM の exe、scripts\fetch-models.ps1 で取得したモデル
 
 $ErrorActionPreference = 'Stop'
@@ -23,6 +23,9 @@ $singleKanjiSrc = Join-Path $root 'references\mozc\src\data\single_kanji\single_
 $utDir = Join-Path $root 'references\mozcdic-ut'
 $utDict = Join-Path $utDir 'dictionary_ut.txt'
 $sudachiLicenses = @('SudachiDict-LEGAL', 'SudachiDict-LICENSE-2.0.txt')
+$wikiDir = Join-Path $root 'references\jawiki'
+$nextWord = Join-Path $wikiDir 'next_word.tsv'
+$wikiManifest = Join-Path $wikiDir 'manifest.tsv'
 $mozcLicense = Join-Path $root 'references\mozc\LICENSE'
 $vs = 'C:\Program Files\Microsoft Visual Studio\2022\Community'
 $llmRelease = Join-Path $root 'llm\target\release'
@@ -49,6 +52,21 @@ foreach ($license in $sudachiLicenses) {
         throw "SudachiDict のライセンス文書がありません: $license (scripts\fetch-ut-dict.ps1 で取得してください)"
     }
 }
+if (-not (Test-Path $nextWord)) {
+    throw "後続語の統計がありません: $nextWord (scripts\fetch-wiki-ngram.ps1 で生成してください)"
+}
+# 出典の表示に使うダンプの名前 (日付を含む)。生成に使ったダンプは manifest.tsv にだけ残る
+$wikiDumps = @(Get-Content -Encoding UTF8 $wikiManifest -ErrorAction SilentlyContinue |
+    Select-Object -Skip 1 | ForEach-Object { ($_ -split "`t")[0] } | Where-Object { $_ })
+if ($wikiDumps.Count -eq 0) {
+    throw "ダンプの一覧がありません: $wikiManifest (scripts\fetch-wiki-ngram.ps1 で生成してください)"
+}
+$wikiDates = @($wikiDumps | ForEach-Object { if ($_ -match '^jawiki_content-(\d{8})-\d{5}\.json\.bz2$') { $Matches[1] } } |
+    Sort-Object -Unique)
+if ($wikiDates.Count -ne 1) {
+    throw "manifest.tsv のダンプの日付が 1 つに決まりません: $wikiManifest"
+}
+$wikiDate = $wikiDates[0]
 if (-not (Test-Path $cmake)) {
     throw "VS 同梱 cmake がありません: $cmake"
 }
@@ -152,14 +170,15 @@ foreach ($dll in $redistDlls) {
 }
 
 # 辞書一式 (エンジンの load_dictionary / load_matrix / load_functional_ids /
-# load_symbols / load_single_kanji が読むファイル。symbol.tsv・single_kanji.tsv・
-# dictionary_ut.txt は dict 直下が最優先で読まれる)
+# load_symbols / load_single_kanji / next_word_path が読むファイル。symbol.tsv・single_kanji.tsv・
+# dictionary_ut.txt・next_word.tsv は dict 直下が最優先で読まれる)
 Copy-Item (Join-Path $dictSrc 'dictionary0*.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'connection_single_column.txt') "$staging\dict\"
 Copy-Item (Join-Path $dictSrc 'id.def') "$staging\dict\"
 Copy-Item $symbolSrc "$staging\dict\"
 Copy-Item $singleKanjiSrc "$staging\dict\"
 Copy-Item $utDict "$staging\dict\"
+Copy-Item $nextWord "$staging\dict\"
 # 英単語辞書 (エンジンの load_english が exe と同じディレクトリの dict\ から読む)
 Copy-Item (Join-Path $root 'data\english-words.txt') "$staging\dict\"
 Copy-Item (Join-Path $root 'data\english-names.txt') "$staging\dict\"
@@ -191,6 +210,19 @@ foreach ($license in $sudachiLicenses) {
     $utLicense += [IO.File]::ReadAllText((Join-Path $utDir $license))
 }
 [IO.File]::WriteAllText("$staging\LICENSE-mozcdic-ut.txt", $utLicense, [Text.UTF8Encoding]::new($false))
+$wikiLicense = @"
+QuicklIME の dict\next_word.tsv (後続語の予測の統計) は、日本語版ウィキペディアの本文から、
+隣り合う文節の連なりの回数を数えて生成したものです。
+
+  出典: ウィキペディア日本語版 (https://ja.wikipedia.org/)
+  取得元: https://dumps.wikimedia.org/other/cirrus_search_index/$wikiDate/index_name=jawiki_content/
+  ダンプの日付: $wikiDate
+  使用したファイル: $($wikiDumps -join ', ')
+  ライセンス: クリエイティブ・コモンズ 表示-継承 4.0 国際 (CC BY-SA 4.0)
+  https://creativecommons.org/licenses/by-sa/4.0/
+
+"@
+[IO.File]::WriteAllText("$staging\LICENSE-wikipedia.txt", $wikiLicense, [Text.UTF8Encoding]::new($false))
 Copy-Item (Join-Path $root 'LICENSE') "$staging\LICENSE.txt"
 Copy-Item (Join-Path $root 'data\LICENSE-SCOWL.txt') $staging
 Copy-Item (Join-Path $llmLicenses 'LICENSE-llama.cpp.txt') $staging

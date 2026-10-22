@@ -100,6 +100,8 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   cd engine
   cargo run --release --example learning_eval -- --stats <learning_stats.tsv> [--weights "half=5000"]...
   ```
+  `--next-word ..\references\jawiki\next_word.tsv` を付けると、読みなしの後続語予測 (NEXTWORD) を学習と後続語の
+  統計のあり・なしの 4 つの組で測る
 
 ## インストーラのビルド
 
@@ -107,6 +109,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 (前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書と
 単漢字辞書 (`git -C references/mozc sparse-checkout add src/data/single_kanji` で取得)、
 `scripts\fetch-ut-dict.ps1` で生成した UT 辞書 (`references\mozcdic-ut\dictionary_ut.txt`)、
+`scripts\fetch-wiki-ngram.ps1` で生成した後続語の統計 (`references\jawiki\next_word.tsv` と `manifest.tsv`)、
 `scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル、
 Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成する cargo-about =
 `cargo install --locked --features cli cargo-about`)。
@@ -120,6 +123,18 @@ Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成す�
 - UT 辞書 (`dict\dictionary_ut.txt`): `scripts\fetch-ut-dict.ps1` が元データをリビジョン固定で
   `references\mozcdic-ut\` に取得し (サイズと SHA-256 を確かめる)、`engine/examples/build_ut_dict.rs`
   で、Mozc 辞書と重複する語などを除いて生成する
+- 後続語の統計 (`dict\next_word.tsv`): 日本語版ウィキペディアの CirrusSearch のダンプから、
+  `engine/examples/build_next_word.rs` で文節の連なりの回数を数えて生成する
+  ([next-word-ngram.md](design/next-word-ngram.md))。ダンプの置き場所
+  (https://dumps.wikimedia.org/other/cirrus_search_index/) は週ごとに作られ直近 4 週だけが残るので、日付は
+  そこで今あるものを選ぶ。1 分割 (約 650MB) の取得に約 30 分、4 分割の生成に約 15 分かかる
+  ```
+  scripts\fetch-wiki-ngram.ps1 -Date <日付> -Parts (0..3)
+  ```
+  分割を `references\jawiki\` に取得して名前・サイズ・SHA-256 を `manifest.tsv` に書き (取得済みでサイズが一致する
+  分割は取り直さない)、`references\jawiki\next_word.tsv` を生成する。開発版のエンジンは辞書ディレクトリに
+  next_word.tsv が無ければこれを読む。インストーラは manifest.tsv のダンプの日付を出典の表示
+  (`LICENSE-wikipedia.txt`) に書く
 - モードレス入力の英単語辞書 (`dict\english-words.txt`) は SCOWL (English Speller Database、
   https://github.com/en-wl/wordlist) から生成したもの。生成の手順と条件はファイル先頭のコメントにある
 - タスクバーの入力モードのアイコンは、M PLUS Rounded 1c Regular を「あ」「A」「×」の 3 字に

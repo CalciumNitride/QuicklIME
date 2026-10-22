@@ -23,7 +23,7 @@ Windows 用の日本語 IME です。一般的なローマ字入力をベース�
 - 打ち間違いの補正: キーの押しすぎ・抜け・隣接キーの誤打・文字の入れ替えなどを自動補正した候補を表示します ([入力と変換](docs/user/input.md))
 - 学習: 確定・採用した表記の使用頻度や新しさを学習し、次回以降の変換で優先的に表示します ([学習](docs/user/learning.md))
 - 後置再変換・確定アンドゥ: 入力済みの文字列を再変換したり、直前の確定を取り消して入力中の読みに戻したりできます ([入力と変換](docs/user/input.md))
-- 次の語の予測: 確定直後に、過去に続けて確定したことのある語を候補として表示します ([次の語の予測](docs/user/candidate-bar.md#次の語の予測))
+- 次の語の予測: 確定直後に、過去に続けて確定したことのある語と、日本語版ウィキペディアの文章でよく続く語を候補として表示します ([次の語の予測](docs/user/candidate-bar.md#次の語の予測))
 - モードレス入力: 英語の入力を自動で判別し、IME をオフに切り替えることなく英字のまま入力できます ([モードレス入力](docs/user/modeless.md))
 - AI による並べ替え: 文脈を考慮した AI（LLM）により、最適な候補を上位に並べ替えます。GPU (Vulkan) で動かすときは、AI が生成した候補も加えます ([AI による候補の並べ替え](docs/user/llm.md))
 - 辞書インポート: 他の IME のユーザー辞書形式のファイルを取り込めます ([辞書とローマ字](docs/user/dictionary.md))
@@ -109,6 +109,7 @@ QuicklIME 本体のソースコードは MIT License です (`LICENSE`。イン�
 
 - 同梱辞書 (`dict\`) および単漢字辞書 (`dict\single_kanji.tsv`) は Mozc (BSD ライセンス) のデータを使用しています。ライセンス文書 `LICENSE-mozc.txt` を同梱しています。
 - UT 辞書 (`dict\dictionary_ut.txt`) は、Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) のうち SudachiDict (一般語。Apache License 2.0、一部 UniDic 由来で BSD ライセンス)、日本郵便の郵便番号データ (地名)、人名データ (Apache License 2.0) から生成したものです。元データの説明および SudachiDict の LEGAL・LICENSE-2.0.txt の全文をまとめた `LICENSE-mozcdic-ut.txt` を同梱しています。
+- 次の語の予測の統計 (`dict\next_word.tsv`) は、日本語版ウィキペディアの本文 (CC BY-SA 4.0) から文節の連なりの回数を数えて生成したもので、CC BY-SA 4.0 に従います。出典・取得元・ダンプの日付を記した `LICENSE-wikipedia.txt` を同梱しています。
 - モードレス入力用の英単語辞書 (`dict\english-words.txt`) は SCOWL (English Speller Database, https://github.com/en-wl/wordlist ) から生成したものです。著作権表示と許諾文 `LICENSE-SCOWL.txt` を同梱しています。固有名詞・技術用語を収録した `dict\english-names.txt` は独自に作成したものです。
 - LLM 推論プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) およびモデル (`models\` 配下の zenz-v3.2-xsmall / zenz-v3.2-small) を同梱しています。ライセンス文書として `LICENSE-llama.cpp.txt` (MIT) および `LICENSE-zenz.txt` (Apache License 2.0) を同梱しています。
 - タスクバーの入力モードアイコンは、M PLUS Rounded 1c Regular (SIL Open Font License 1.1) をサブセット化して DLL のリソースに埋め込んで描画しています。著作権表示と許諾文 `LICENSE-MPLUSRounded1c.txt` を同梱しています。

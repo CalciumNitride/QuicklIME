@@ -817,7 +817,7 @@ pub fn rewrite_file(path: &Path, content: &str) -> std::io::Result<()> {
 }
 
 /// 文脈キーの正規化: 末尾 MAX_CONTEXT_KEY_CHARS 文字に切り詰める
-fn context_key(context: &str) -> String {
+pub(crate) fn context_key(context: &str) -> String {
     let chars: Vec<char> = context.chars().collect();
     chars[chars.len().saturating_sub(MAX_CONTEXT_KEY_CHARS)..].iter().collect()
 }

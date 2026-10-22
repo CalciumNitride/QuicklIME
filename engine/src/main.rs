@@ -56,6 +56,9 @@ struct EngineData {
     /// dictionary の逆引きの索引。起動を待たせないよう待ち受けを始めてから別スレッドで作るので、
     /// できるまでは空 (spawn_surface_index_build)
     surface_index: OnceLock<SurfaceIndex>,
+    /// 後続語の統計の表 (next_word.tsv)。起動を待たせないよう待ち受けを始めてから別スレッドで
+    /// 読み込むので、読み終えるまでとファイルが無いときは空 (spawn_next_word_load)
+    next_word: OnceLock<predict::NextWordTable>,
     matrix: ConnectionMatrix,
     functional: FunctionalIds,
     /// ユーザ辞書 (ADDWORD で書き込むため Mutex で保護)
@@ -180,6 +183,7 @@ fn main() -> std::io::Result<()> {
     let data = Arc::new(EngineData {
         dictionary,
         surface_index: OnceLock::new(),
+        next_word: OnceLock::new(),
         matrix,
         functional,
         user: Mutex::new(user),
@@ -201,6 +205,9 @@ fn main() -> std::io::Result<()> {
     let listener = options.create_sync()?;
     eprintln!("quicklime-engine: \\\\.\\pipe\\{pipe} で待機中");
     spawn_surface_index_build(&data);
+    if let Some(path) = dictionary_dir().and_then(|dir| next_word_path(&dir)) {
+        spawn_next_word_load(&data, path);
+    }
 
     // クライアント (アプリごとの TSF DLL) を1接続=1スレッドで処理する
     for conn in listener.incoming() {
@@ -227,6 +234,26 @@ fn spawn_surface_index_build(data: &Arc<EngineData>) -> thread::JoinHandle<()> {
             started.elapsed().as_secs_f64()
         );
         let _ = data.surface_index.set(index);
+    })
+}
+
+/// 後続語の統計の表を別スレッドで読み込み、data.next_word に入れる
+fn spawn_next_word_load(data: &Arc<EngineData>, path: PathBuf) -> thread::JoinHandle<()> {
+    let data = Arc::clone(data);
+    thread::spawn(move || {
+        let started = Instant::now();
+        match predict::NextWordTable::load(&path) {
+            Ok(table) => {
+                eprintln!(
+                    "後続語の統計を読み込みました: {} 件 ({:.2}秒) [{}]",
+                    table.len(),
+                    started.elapsed().as_secs_f64(),
+                    path.display()
+                );
+                let _ = data.next_word.set(table);
+            }
+            Err(e) => eprintln!("後続語の統計の読み込みに失敗しました ({e})。統計なしで動作します"),
+        }
     })
 }
 
@@ -299,6 +326,26 @@ fn ut_dictionary_path(dictionary_dir: &Path) -> Option<PathBuf> {
         return Some(dev);
     }
     eprintln!("UT 辞書 (dictionary_ut.txt) がありません。Mozc 辞書だけで動作します");
+    None
+}
+
+/// 後続語の統計の表 (next_word.tsv) の場所。UT 辞書と同じく、辞書ディレクトリ直下を優先し、無ければ
+/// プロジェクトルートの references/jawiki/ (exe が engine/target/{debug,release}/ にある前提で相対解決)。
+/// QUICKLIME_DICT_DIR を指定したときはプロジェクトルートを見ない。どちらにも無ければ None
+fn next_word_path(dictionary_dir: &Path) -> Option<PathBuf> {
+    let bundled = dictionary_dir.join("next_word.tsv");
+    if bundled.is_file() {
+        return Some(bundled);
+    }
+    if std::env::var_os("QUICKLIME_DICT_DIR").is_none() {
+        let exe = std::env::current_exe().ok()?;
+        let project_root = exe.parent()?.parent()?.parent()?.parent()?;
+        let dev = project_root.join("references/jawiki/next_word.tsv");
+        if dev.is_file() {
+            return Some(dev);
+        }
+    }
+    eprintln!("後続語の統計 (next_word.tsv) がありません。統計なしで動作します");
     None
 }
 
@@ -949,8 +996,22 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             if !cfg.suggest {
                 return "OK\n".to_string();
             }
+            let table = data.next_word.get();
+            // バックオフの表は前文脈の最後の自立語で引く。表が無ければ分ける必要が無い
+            let head = table.and_then(|_| {
+                let user = data.user.lock().expect("user lock");
+                let words = convert::split_words(
+                    &ctx.reading,
+                    &ctx.surface,
+                    &data.dictionary,
+                    &user,
+                    &data.matrix,
+                    &data.functional,
+                )?;
+                words.into_iter().last().map(|(_, surface)| surface)
+            });
             let learning = data.learning.lock().expect("learning lock");
-            predictions_response(&predict::next_words(&ctx.surface, &learning, &cfg))
+            predictions_response(&predict::next_words(&ctx.surface, head.as_deref(), &learning, table, &cfg))
         }
         Some("LEARN") => {
             // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する。
@@ -1172,6 +1233,7 @@ mod tests {
         EngineData {
             dictionary: Dictionary::empty(),
             surface_index: OnceLock::new(),
+            next_word: OnceLock::new(),
             matrix: ConnectionMatrix::empty(),
             functional: FunctionalIds::empty(),
             user: Mutex::new(UserDict::empty()),
@@ -1270,6 +1332,7 @@ mod tests {
         EngineData {
             dictionary,
             surface_index: OnceLock::new(),
+            next_word: OnceLock::new(),
             matrix: ConnectionMatrix::empty(),
             functional,
             user: Mutex::new(UserDict::empty()),
@@ -1910,6 +1973,44 @@ mod tests {
         data.config.lock().unwrap().learning = false;
         assert_eq!(handle_request("LEARN2\tあめ\x1f雨\x1f今日は", &data), "OK\n");
         assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\tはれ\x1f晴れ\n");
+    }
+
+    const NEXT_WORD_TSV: &str = "c\t今日は\tいいてんき\tいい天気\t30\n\
+                                 c\t今日は\tはれ\t晴れ\t20\n\
+                                 b\t今日\tくもり\t曇り\t50\n\
+                                 b\t今日\tはれ\t晴れ\t40\n";
+
+    #[test]
+    fn nextwordは統計の表を読み終えてから学習の後に文節の表とバックオフの表を並べる() {
+        let data = Arc::new(sample_data());
+        assert_eq!(handle_request("LEARN2\tあめ\x1f雨\x1f今日は", &data), "OK\n");
+        let path = std::env::temp_dir().join(format!("quicklime-test-next-word-{}.tsv", std::process::id()));
+        std::fs::write(&path, NEXT_WORD_TSV).unwrap();
+        // 読み込み前は学習だけ
+        assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\tあめ\x1f雨\n");
+        spawn_next_word_load(&data, path.clone()).join().unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(data.next_word.get().map(|t| t.len()), Some(4));
+        // 前文脈 今日は を分けた最後の自立語 今日 でバックオフの表を引く (晴れ は重複なので除く)
+        assert_eq!(
+            handle_request("NEXTWORD\tきょうは\x1f今日は", &data),
+            "OK\tあめ\x1f雨\tいいてんき\x1fいい天気\tはれ\x1f晴れ\tくもり\x1f曇り\n"
+        );
+        // 辞書の語に分けられない前文脈 (も が辞書に無い) はバックオフの表を引かない
+        assert_eq!(handle_request("NEXTWORD\tきょうも\x1f今日も", &data), "OK\n");
+    }
+
+    #[test]
+    fn nextwordの統計の表は学習無効でも使いサジェスト無効なら使わない() {
+        let data = sample_data();
+        let _ = data.next_word.set(predict::NextWordTable::from_text(NEXT_WORD_TSV.to_string()));
+        data.config.lock().unwrap().learning = false;
+        assert_eq!(
+            handle_request("NEXTWORD\tきょうは\x1f今日は", &data),
+            "OK\tいいてんき\x1fいい天気\tはれ\x1f晴れ\tくもり\x1f曇り\n"
+        );
+        data.config.lock().unwrap().suggest = false;
+        assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\n");
     }
 
     #[test]

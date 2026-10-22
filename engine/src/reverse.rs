@@ -31,6 +31,8 @@ struct Node {
     word_cost: i32,
     /// 学習にある (読み, 表記) の組
     learned: bool,
+    /// どの語にも当たらないかなの 1 文字
+    unknown: bool,
     best_cost: i64,
     best_prev: usize,
 }
@@ -44,8 +46,19 @@ fn is_digit(c: char) -> bool {
 }
 
 /// 逆変換の対象にする文字 (docs/design/selection-reconversion.md の A)
-fn is_allowed(c: char) -> bool {
+pub(crate) fn is_allowed(c: char) -> bool {
     is_kana(c) || dict::is_kanji(c) || is_digit(c) || c == '〇' || c == '〆'
+}
+
+/// 逆変換した 1 語
+#[derive(Debug, PartialEq)]
+pub struct ReversedWord {
+    pub reading: String,
+    pub surface: String,
+    /// 付属語 (左の品詞 ID が付属語) か
+    pub functional: bool,
+    /// 未知語 (どの語にも当たらず 1 文字の一般名詞として入れたかな) か
+    pub unknown: bool,
 }
 
 /// 表記 text を語の列 (読み, 表記) にする。対象外の文字がある・格子が繋がらない・読みが
@@ -59,6 +72,20 @@ pub fn reverse(
     functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Option<Vec<(String, String)>> {
+    let words = reverse_words(text, dict, index, user, matrix, functional, learning)?;
+    Some(words.into_iter().map(|w| (w.reading, w.surface)).collect())
+}
+
+/// reverse と同じ逆変換で、語が付属語かどうか・未知語かどうかも返す
+pub fn reverse_words(
+    text: &str,
+    dict: &Dictionary,
+    index: &SurfaceIndex,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+    learning: &LearningStore,
+) -> Option<Vec<ReversedWord>> {
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     if n == 0 || !chars.iter().all(|&c| is_allowed(c)) {
@@ -69,7 +96,14 @@ pub fn reverse(
 
     let mut nodes: Vec<Node> = Vec::new();
     // 変換の build_lattice と同じく、自立語には語の学習の割引を当てる
-    let mut push = |start: usize, len: usize, reading: &str, surface: &str, left_id: u16, right_id: u16, cost: i32| {
+    let mut push = |start: usize,
+                    len: usize,
+                    reading: &str,
+                    surface: &str,
+                    left_id: u16,
+                    right_id: u16,
+                    cost: i32,
+                    unknown: bool| {
         let functional_word = functional.is_functional(left_id);
         let bonus = if functional_word { 0 } else { learning.word_bonus(reading, surface) };
         nodes.push(Node {
@@ -81,6 +115,7 @@ pub fn reverse(
             right_id,
             word_cost: (i64::from(cost) - bonus) as i32,
             learned: bonus > 0 || learning.has_phrase(reading, surface),
+            unknown,
             best_cost: i64::MAX,
             best_prev: 0,
         });
@@ -97,12 +132,12 @@ pub fn reverse(
             .chain(user.imported_surface_prefix(rest, MAX_READING_CHARS))
         {
             for e in m.entries.into_iter().filter(|e| !has_digit(&e.surface)) {
-                push(start, m.len, &m.reading, &e.surface, e.left_id, e.right_id, i32::from(e.cost));
+                push(start, m.len, &m.reading, &e.surface, e.left_id, e.right_id, i32::from(e.cost), false);
             }
         }
         for (len, w) in user.surface_prefix_words(rest) {
             if !has_digit(&w.surface) {
-                push(start, len, &w.reading, &w.surface, w.left_id, w.right_id, i32::from(w.cost));
+                push(start, len, &w.reading, &w.surface, w.left_id, w.right_id, i32::from(w.cost), false);
             }
         }
 
@@ -119,19 +154,19 @@ pub fn reverse(
                 let surface = surface_of(len);
                 let reading: String = kana[..len].iter().collect();
                 for e in entries.iter().filter(|e| e.surface == surface) {
-                    push(start, len, &reading, &e.surface, e.left_id, e.right_id, i32::from(e.cost));
+                    push(start, len, &reading, &e.surface, e.left_id, e.right_id, i32::from(e.cost), false);
                 }
             }
             for (len, w) in user.common_prefix_words(kana) {
                 if w.surface == surface_of(len) {
-                    push(start, len, &w.reading, &w.surface, w.left_id, w.right_id, i32::from(w.cost));
+                    push(start, len, &w.reading, &w.surface, w.left_id, w.right_id, i32::from(w.cost), false);
                 }
             }
             // どの語にも当たらないときの 1 文字。ヶ は ゖ でなく、地名などの語の中の読み け にする
             let reading = if chars[start] == 'ヶ' { 'け' } else { hira[start] };
             push(
                 start, 1, &reading.to_string(), &chars[start].to_string(),
-                DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, UNKNOWN_WORD_COST,
+                DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, UNKNOWN_WORD_COST, true,
             );
         }
 
@@ -139,13 +174,13 @@ pub fn reverse(
             let len = rest.iter().take_while(|&&c| is_digit(c)).count();
             let (left_id, right_id, cost) = digit_word(&rest[..len], dict);
             let digits: String = rest[..len].iter().collect();
-            push(start, len, &digits, &digits, left_id, right_id, cost);
+            push(start, len, &digits, &digits, left_id, right_id, cost, false);
         }
 
         if dict::is_kanji(chars[start]) {
             let surface = chars[start].to_string();
             for reading in dict.lookup_single_kanji_readings(chars[start]) {
-                push(start, 1, reading, &surface, DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, SINGLE_KANJI_COST);
+                push(start, 1, reading, &surface, DEFAULT_NOUN_ID, DEFAULT_NOUN_ID, SINGLE_KANJI_COST, false);
             }
         }
     }
@@ -267,14 +302,14 @@ fn digit_word(digits: &[char], dict: &Dictionary) -> (u16, u16, i32) {
     (first.0, last.1, words.iter().map(|w| w.2).sum())
 }
 
-/// 格子 nodes (表記の文字数は n) の最小コストの経路の (読み, 表記) を返す。経路が無い・読みが
+/// 格子 nodes (表記の文字数は n) の最小コストの経路の語を返す。経路が無い・読みが
 /// MAX_READING_LEN 文字を超えるときは None
 fn best_path(
     mut nodes: Vec<Node>,
     n: usize,
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
-) -> Option<Vec<(String, String)>> {
+) -> Option<Vec<ReversedWord>> {
     // 安定ソートで、同じ位置の語の並び (同じコストの経路の選び方) を引いた順に保つ
     nodes.sort_by_key(|node| node.start);
     // ending_at[p] = 位置 p で終わる語。usize::MAX は BOS
@@ -313,14 +348,19 @@ fn best_path(
         .copied()?;
     let mut words = Vec::new();
     loop {
-        words.push((std::mem::take(&mut nodes[cursor].reading), std::mem::take(&mut nodes[cursor].surface)));
+        words.push(ReversedWord {
+            reading: std::mem::take(&mut nodes[cursor].reading),
+            surface: std::mem::take(&mut nodes[cursor].surface),
+            functional: functional.is_functional(nodes[cursor].left_id),
+            unknown: nodes[cursor].unknown,
+        });
         match nodes[cursor].best_prev {
             usize::MAX => break,
             prev => cursor = prev,
         }
     }
     words.reverse();
-    let length: usize = words.iter().map(|(reading, _)| reading.chars().count()).sum();
+    let length: usize = words.iter().map(|w| w.reading.chars().count()).sum();
     (length <= MAX_READING_LEN).then_some(words)
 }
 
@@ -418,6 +458,43 @@ mod tests {
             run("今日は良い天気"),
             words(&[("きょう", "今日"), ("は", "は"), ("よい", "良い"), ("てんき", "天気")])
         );
+    }
+
+    #[test]
+    fn 付属語かどうかも返す版は語の列が同じで助詞と助数詞が付属語になる() {        let (dict, index) = sample();
+        let (user, learning) = (UserDict::empty(), LearningStore::in_memory());
+        let run_words = |text: &str| {
+            reverse_words(text, &dict, &index, &user, &ConnectionMatrix::empty(), &functional(), &learning)
+        };
+        for text in ["今日は良い天気", "東京都", "3月", "カタカナ", "霰は"] {
+            let pairs = run_words(text).map(|w| w.into_iter().map(|w| (w.reading, w.surface)).collect());
+            assert_eq!(pairs, run(text), "{text}");
+        }
+        let flags = |text: &str| run_words(text).unwrap().iter().map(|w| w.functional).collect::<Vec<_>>();
+        assert_eq!(flags("今日は良い天気"), [false, true, false, false]);
+        assert_eq!(run_words("今日はabc"), None);
+        let (dict, index) = counter_sample();
+        let got = reverse_words("3日", &dict, &index, &user, &ConnectionMatrix::empty(), &counter_functional(), &learning)
+            .unwrap();
+        assert_eq!(got.iter().map(|w| w.functional).collect::<Vec<_>>(), [false, true]);
+    }
+
+    #[test]
+    fn どの語にも当たらないかなの1文字だけを未知語にする() {
+        let (dict, index) = sample();
+        let (user, learning) = (UserDict::empty(), LearningStore::in_memory());
+        let unknown = |text: &str| {
+            reverse_words(text, &dict, &index, &user, &ConnectionMatrix::empty(), &functional(), &learning)
+                .unwrap()
+                .iter()
+                .map(|w| w.unknown)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(unknown("ヌぬは"), [true, true, false]);
+        assert_eq!(unknown("今日はカタカナ"), [false, false, false]);
+        // 数字の並びと単漢字辞書の読みは未知語にしない
+        assert_eq!(unknown("3月"), [false, false]);
+        assert_eq!(unknown("霰"), [false]);
     }
 
     #[test]

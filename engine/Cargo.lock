@@ -3708,6 +3708,7 @@ dependencies = [
  "fst",
  "interprocess",
  "llama-cpp-2",
+ "serde_json",
  "unicode-normalization",
  "widestring",
  "windows-sys 0.61.2",

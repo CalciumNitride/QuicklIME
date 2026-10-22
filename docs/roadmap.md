@@ -9,7 +9,8 @@
   ([unified-suggest.md](design/unified-suggest.md))
 - 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
-- 一般の語の連なりの統計による後続語の予測 ([unified-suggest.md](design/unified-suggest.md))
+- 前文脈つきの予測 (PREDICT・SUGGEST) への文節の連なりの統計の利用。今は統計を読みなしの後続語予測
+  (NEXTWORD) にだけ使う ([next-word-ngram.md](design/next-word-ngram.md))
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - run が無いときのキャレット直前のかなの変換を、候補バーの対象にする
@@ -56,6 +57,8 @@
 - 逆変換で、数字の後の助数詞の複合語の、単位の後ろの部分の読みを誤ることがある (10キロ位 → きろい、
   5パーセント増 → ぱーせんとます)。数字の後の読みの表は語の先頭だけを見る
   ([selection-reconversion.md](design/selection-reconversion.md))
+- 後続語の予測の統計に逆変換の読み誤り (何の → なにの、一日 → ひといち) が入る。採用するとその読みで学習される
+  ([next-word-ngram.md](design/next-word-ngram.md))
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input-scope.md](design/input-scope.md))
 - 変換の区切りの誤り。再生評価 ([eval-sets.md](design/eval-sets.md)) の学習が空のモード (8066 行) で、1 位を外した

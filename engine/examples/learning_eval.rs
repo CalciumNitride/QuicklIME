@@ -37,12 +37,16 @@
 // 変換する。予測は今までどおり q の行の文脈の表記だけを前文脈にする。
 // 入力の先頭の扱いを変えたときの得失を見るため、学習が空のモードは p の行の位置 (読み全体・前文脈を付けた文節・
 // q の件はあるが文脈の読みを引けない文節・q の件が無い文節) でも分ける。
+// --next-word を指定したときは、後ろの q の行の表記が読みなしの後続語予測 (NEXTWORD) の 9 位以内・1 位に入る割合を、
+// 学習なし・あり × 後続語の統計の表なし・ありの 4 つの組で出す (docs/design/next-word-ngram.md)。バックオフの表を引く
+// 前文脈の最後の自立語は、文脈の表記と同じ表記の文節の p の件の読みで文脈を辞書の語に分けて求める (q の件の文脈は
+// 表記だけのため)。引けない行はバックオフの表を引かない。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
 //   cargo run --release --example learning_eval -- --stats <learning_stats.tsv>
 //       [--weights "half=5000,ww=1500"]... [--empty] [--dump-same-span <file>]
-//       [--dump-boundary <file>] [--dump-pinned <file>]
+//       [--dump-boundary <file>] [--dump-pinned <file>] [--next-word <next_word.tsv>]
 //
 // オプション:
 //   --stats <tsv>      learning_stats.tsv
@@ -64,6 +68,7 @@
 //                      (学習ありのモード)。列はモード・区分・行の種類・読み・正解の表記・固定の表記・経路の 1-best の表記・
 //                      正解の順位・固定の表記の句の学習・正解の表記の句の学習 (種類:今の度合い)・読みの句の学習の表記の数。
 //                      実際の入力の読み・表記が入るので、リポジトリの外に置く
+//   --next-word <tsv>  後続語の統計の表 (next_word.tsv)。指定すると NEXTWORD の評価を出す
 
 #[allow(dead_code)]
 #[path = "../src/config.rs"]
@@ -126,6 +131,7 @@ struct Args {
     dump_same_span: Option<PathBuf>,
     dump_boundary: Option<PathBuf>,
     dump_pinned: Option<PathBuf>,
+    next_word: Option<PathBuf>,
 }
 
 fn parse_args() -> BoxResult<Args> {
@@ -140,6 +146,7 @@ fn parse_args() -> BoxResult<Args> {
         dump_same_span: None,
         dump_boundary: None,
         dump_pinned: None,
+        next_word: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -153,6 +160,7 @@ fn parse_args() -> BoxResult<Args> {
             "--dump-same-span" => args.dump_same_span = Some(PathBuf::from(value()?)),
             "--dump-boundary" => args.dump_boundary = Some(PathBuf::from(value()?)),
             "--dump-pinned" => args.dump_pinned = Some(PathBuf::from(value()?)),
+            "--next-word" => args.next_word = Some(PathBuf::from(value()?)),
             other => return Err(format!("不明な引数: {other}").into()),
         }
     }
@@ -1016,6 +1024,35 @@ fn segment_contexts(entries: &[Entry]) -> HashMap<(&str, &str), Option<Context>>
         .collect()
 }
 
+/// 文脈の表記 → 読み。q の件の文脈は表記だけなので、segment_contexts と同じく同じ表記の文節の p の件から
+/// 引く (複数あれば d の大きいもの、並べば t の新しいもの)
+fn context_readings(entries: &[Entry]) -> HashMap<&str, &str> {
+    let mut chosen: HashMap<&str, &Entry> = HashMap::new();
+    for e in entries.iter().filter(|e| e.kind == Kind::Phrase && !e.whole) {
+        let slot = chosen.entry(e.surface.as_str()).or_insert(e);
+        if (e.d, e.t) > (slot.d, slot.t) {
+            *slot = e;
+        }
+    }
+    chosen.into_iter().map(|(surface, e)| (surface, e.reading.as_str())).collect()
+}
+
+/// NEXTWORD の評価の 1 つの組の数
+#[derive(Default, Clone, Copy)]
+struct NextTally {
+    total: usize,
+    top1: usize,
+    top9: usize,
+}
+
+impl NextTally {
+    fn add(&mut self, rank: Option<usize>) {
+        self.total += 1;
+        self.top1 += usize::from(rank == Some(0));
+        self.top9 += usize::from(rank.is_some_and(|r| r < 9));
+    }
+}
+
 /// 文節の p の行を変換するときの前文脈 (segment_contexts で引けたときだけ)
 fn segment_ctx<'a>(
     contexts: &'a HashMap<(&'a str, &'a str), Option<Context>>,
@@ -1536,6 +1573,64 @@ fn main() -> BoxResult<()> {
         ));
         class_tables.push(table);
     }
+    if let Some(file) = &args.next_word {
+        let started = Instant::now();
+        let table = predict::NextWordTable::load(file)?;
+        eprintln!("後続語の統計の読み込み: {} 件 ({:.2} 秒)", table.len(), started.elapsed().as_secs_f64());
+        let mut store = LearningStore::in_memory();
+        store.load_stats_from(train_text.as_bytes());
+        store.refresh_phrases(&split);
+        let readings = context_readings(&entries);
+        let q_rows: Vec<&Row> = rows.iter().filter(|r| r.context.is_some()).collect();
+        // 前文脈の最後の自立語 (バックオフの表を引く文脈)
+        let heads: Vec<Option<String>> = q_rows
+            .iter()
+            .map(|r| {
+                let context = r.context.as_deref().expect("q の行");
+                let reading = readings.get(context)?;
+                split(reading, context)?.pop().map(|(_, surface)| surface)
+            })
+            .collect();
+        println!("\n## 後続語の予測 (NEXTWORD。後ろの q の行)\n");
+        println!(
+            "q の行の表記が、文脈の表記を前文脈にした NEXTWORD の 9 位以内・1 位に入る割合 (既出・初出は学習ありと同じ分け方)。\n\
+             学習ありは既定の定数で前の学習を取り込んだもの。q の行 {} 行のうち、前文脈の最後の自立語を引けた行 {} 行 \
+             (引けない行はバックオフの表を引かない)。表は {} 件。\n",
+            q_rows.len(),
+            heads.iter().filter(|h| h.is_some()).count(),
+            table.len(),
+        );
+        println!("| 学習 | 表 | 9 位以内 | 1 位 | 既出 9 位以内 | 既出 1 位 | 初出 9 位以内 | 初出 1 位 |");
+        println!("|---|---|---|---|---|---|---|---|");
+        let empty = LearningStore::in_memory();
+        for (learning_name, learning) in [("なし", &empty), ("あり", &store)] {
+            for (table_name, table) in [("なし", None), ("あり", Some(&table))] {
+                let (mut all, mut seen, mut unseen) = (NextTally::default(), NextTally::default(), NextTally::default());
+                for (row, head) in q_rows.iter().zip(&heads) {
+                    let context = row.context.as_deref().expect("q の行");
+                    let list = predict::next_words(context, head.as_deref(), learning, table, &cfg);
+                    let rank = list.iter().position(|(_, surface)| *surface == row.surface);
+                    all.add(rank);
+                    if row.seen { seen.add(rank) } else { unseen.add(rank) }
+                }
+                println!(
+                    "| {learning_name} | {table_name} | {} | {} | {} | {} | {} | {} |",
+                    percent(all.top9, all.total),
+                    percent(all.top1, all.total),
+                    percent(seen.top9, seen.total),
+                    percent(seen.top1, seen.total),
+                    percent(unseen.top9, unseen.total),
+                    percent(unseen.top1, unseen.total),
+                );
+            }
+        }
+        println!(
+            "\n既出 {} 行・初出 {} 行。",
+            q_rows.iter().filter(|r| r.seen).count(),
+            q_rows.iter().filter(|r| !r.seen).count()
+        );
+    }
+
     println!("\n## 1 位を外した行の内訳\n");
     for line in details {
         println!("{line}");
@@ -1634,6 +1729,28 @@ mod tests {
         // 文脈 Z の読みは引けないので、引ける Y があっても選んだ文脈のまま前文脈なし
         assert_eq!(get("d", "D"), None);
         assert_eq!(ctx.len(), 3);
+    }
+
+    #[test]
+    fn context_readings_picks_max_d_then_newest_t_of_segment_phrases() {
+        let text = "p\tえっくす1\tX\t1\t1\tseg\np\tえっくす2\tX\t3\t2\tseg\np\tわい1\tY\t2\t3\tseg\n\
+                    p\tわい2\tY\t2\t4\tseg\np\tぜっと\tZ\t9\t5\twhole\nq\tX\tb\tB\t2\t6\n";
+        let (entries, _) = load_entries(text);
+        let readings = context_readings(&entries);
+        assert_eq!(readings.get("X"), Some(&"えっくす2"));
+        assert_eq!(readings.get("Y"), Some(&"わい2"));
+        // 読み全体の p の件と q の件からは引かない
+        assert_eq!(readings.get("Z"), None);
+        assert_eq!(readings.get("B"), None);
+    }
+
+    #[test]
+    fn next_tally_counts_top1_and_top9() {
+        let mut tally = NextTally::default();
+        for rank in [Some(0), Some(8), Some(9), None] {
+            tally.add(rank);
+        }
+        assert_eq!((tally.total, tally.top1, tally.top9), (4, 1, 2));
     }
 
     #[test]

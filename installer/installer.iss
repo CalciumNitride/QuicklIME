@@ -64,6 +64,7 @@ Source: "{#Staging}\models\*"; DestDir: "{app}\models"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozc.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-mozcdic-ut.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#Staging}\LICENSE-wikipedia.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-SCOWL.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-llama.cpp.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#Staging}\LICENSE-zenz.txt"; DestDir: "{app}"; Flags: ignoreversion

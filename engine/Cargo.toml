@@ -37,9 +37,11 @@ llama-cpp-2 = { version = "=0.1.158", optional = true, default-features = false,
 winresource = "0.1"
 
 # UT 辞書の生成 (examples/build_ut_dict.rs) 専用。元データ (.bz2) の展開と表記の NFKC 正規化
+# serde_json は後続語の統計の生成 (examples/build_next_word.rs) 専用。Wikipedia のダンプの JSON の読み取り
 [dev-dependencies]
 bzip2 = "0.6"
 unicode-normalization = "0.1"
+serde_json = "1"
 
 [features]
 llm-bench = ["dep:llama-cpp-2"]
@@ -61,6 +63,11 @@ test = true
 # 分け方の単体テストを cargo test で実行するため
 [[example]]
 name = "learning_eval"
+test = true
+
+# 文節へのまとめ・数え方の単体テストを cargo test で実行するため
+[[example]]
+name = "build_next_word"
 test = true
 
 # 設定ツール・単語登録ツールの exe を小さくする (画面の処理は速さより大きさが効く)。

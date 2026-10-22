@@ -54,6 +54,8 @@
   テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
   出し、予測候補の順位にも前文脈を使う。予測の材料と並びは [learning-score.md](learning-score.md) で置き換え
+- [next-word-ngram.md](next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
+  読みなしの後続語予測で学習の後ろに足す
 - [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧を入力パネルで出す (テーマ・表示位置・
   変換中の入力行)
 - [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
