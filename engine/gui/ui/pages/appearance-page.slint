@@ -2,7 +2,47 @@
 
 import { Button, ComboBox, Switch } from "std-widgets.slint";
 import { Card } from "../components/card.slint";
-import { SettingsPage } from "../components/page.slint";
+import { SettingsPage, SectionHeader } from "../components/page.slint";
+import { Theme } from "../theme.slint";
+
+// 入力パネルの見本 1 つ。DLL が描いた画像を実物と同じ画素の大きさ (1phx) で、文書を模した背景の上に
+// 出す。領域より広い見本は縮小せずに右側を切る
+component PreviewSample {
+    in property <string> title;
+    in property <image> source;
+    in property <bool> dark;
+
+    VerticalLayout {
+        spacing: 4px;
+
+        Text {
+            text: root.title;
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+        }
+
+        Rectangle {
+            min-width: 0px;
+            height: root.source.height * 1phx + 24px;
+            background: root.dark ? #1F1F1F : #FFFFFF;
+            border-radius: Theme.radius;
+            border-width: 1px;
+            border-color: Theme.card-stroke;
+            clip: true;
+            accessible-role: image;
+            accessible-label: root.title + "の見本";
+
+            Image {
+                x: 12px;
+                y: 12px;
+                width: root.source.width * 1phx;
+                height: root.source.height * 1phx;
+                source: root.source;
+                accessible-role: none;
+            }
+        }
+    }
+}
 
 export component AppearancePage inherits SettingsPage {
     in property <[string]> theme-choices;
@@ -12,6 +52,13 @@ export component AppearancePage inherits SettingsPage {
     in property <[string]> font-size-choices;
     in-out property <int> font-size-index;
     in-out property <bool> mode-popup;
+    in property <image> preview-bar;
+    in property <image> preview-conversion;
+    // 見本のテーマをダークの配色で解決した (見本の背景を合わせる)
+    in property <bool> preview-dark;
+    in property <bool> preview-blur;
+    // 見本を描けなかった理由。空でなければ見本の代わりに出す
+    in property <string> preview-error;
 
     callback changed();
     callback open-theme-dir();
@@ -75,6 +122,40 @@ export component AppearancePage inherits SettingsPage {
             toggled => {
                 root.changed();
             }
+        }
+    }
+
+    SectionHeader {
+        text: "プレビュー";
+    }
+
+    if root.preview-error != "": Text {
+        text: root.preview-error;
+        font-size: Theme.body-size;
+        color: Theme.text-secondary;
+        wrap: word-wrap;
+    }
+
+    if root.preview-error == "": VerticalLayout {
+        spacing: 12px;
+
+        PreviewSample {
+            title: "入力パネル";
+            source: root.preview-bar;
+            dark: root.preview-dark;
+        }
+
+        PreviewSample {
+            title: "変換の候補一覧";
+            source: root.preview-conversion;
+            dark: root.preview-dark;
+        }
+
+        if root.preview-blur: Text {
+            text: "ぼかしはプレビューでは再現されません";
+            font-size: Theme.caption-size;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
         }
     }
 }

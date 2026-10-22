@@ -452,7 +452,7 @@ SuggestPanel::SuggestPanel()
       dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
       theme_(PanelTheme::Defaults(false)), blur_(false), blurFailed_(false), blurActive_(false),
-      conversion_(false), inputTop_(0.0f), separator_(false),
+      offscreen_(false), snapshotWidth_(0), snapshotHeight_(0), conversion_(false), inputTop_(0.0f), separator_(false),
       separatorTop_(0.0f), pageTop_(0.0f), pageInline_(false), pageLeft_(0.0f), pageStart_(0),
       selection_(0), page_(0), pageLabelWidth_(0.0f), inputWidth_(0.0f), placementCaret_{},
       work_{}, pointerHeight_(0), columnSide_(ColumnSide::None), hasInput_(false),
@@ -1275,6 +1275,9 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
 
 bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
 {
+    if (offscreen_) {
+        return RenderOffscreen(kind);
+    }
     if (!EnsureWindowClass()) {
         if (logger_) {
             logger_(std::wstring(kind) + L": ウィンドウクラスの登録に失敗 error=" +
@@ -1346,25 +1349,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
 
     HRESULT hr = E_FAIL;
     if (bitmap != nullptr) {
-        const RECT rect = {0, 0, windowWidth, windowHeight};
-        // 描画先を作り直す必要が出たときは1度だけやり直す
-        for (int attempt = 0; attempt < 2; ++attempt) {
-            if (!EnsureTarget()) {
-                break;
-            }
-            hr = target_->BindDC(memory, &rect);
-            if (SUCCEEDED(hr)) {
-                drawTarget_ = target_;
-                target_->BeginDraw();
-                target_->Clear(D2D1::ColorF(0, 0, 0, 0));
-                Draw();
-                hr = target_->EndDraw();
-            }
-            if (hr != D2DERR_RECREATE_TARGET) {
-                break;
-            }
-            ReleaseTarget();
-        }
+        hr = DrawLayered(memory, {0, 0, windowWidth, windowHeight});
     }
 
     DWORD createError = ERROR_SUCCESS;
@@ -1416,6 +1401,91 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
     }
     LogShow(kind, anchor, created, updated ? ERROR_SUCCESS : createError);
     return hwnd_ != nullptr && updated;
+}
+
+HRESULT SuggestPanel::DrawLayered(HDC memory, const RECT& rect)
+{
+    HRESULT hr = E_FAIL;
+    // 描画先を作り直す必要が出たときは1度だけやり直す
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (!EnsureTarget()) {
+            break;
+        }
+        hr = target_->BindDC(memory, &rect);
+        if (SUCCEEDED(hr)) {
+            drawTarget_ = target_;
+            target_->BeginDraw();
+            target_->Clear(D2D1::ColorF(0, 0, 0, 0));
+            Draw();
+            hr = target_->EndDraw();
+        }
+        if (hr != D2DERR_RECREATE_TARGET) {
+            break;
+        }
+        ReleaseTarget();
+    }
+    return hr;
+}
+
+bool SuggestPanel::RenderOffscreen(const wchar_t* kind)
+{
+    snapshot_.clear();
+    snapshotWidth_ = 0;
+    snapshotHeight_ = 0;
+    if (!EnsureTarget()) {
+        if (logger_) {
+            logger_(std::wstring(kind) + L": Direct2D の描画先を作れない");
+        }
+        return false;
+    }
+    const int width = bodyWidth_ + margin_ * 2;
+    const int height = bodyHeight_ + margin_ * 2 + TopTailPad() + BottomTailPad();
+    if (width <= 0 || height <= 0) {
+        return false;
+    }
+
+    HDC memory = CreateCompatibleDC(nullptr);
+    BITMAPINFO info = {};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = width;
+    info.bmiHeader.biHeight = -height;  // 上から下へ並ぶ DIB
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    void* bits = nullptr;
+    HBITMAP bitmap = memory != nullptr
+                         ? CreateDIBSection(memory, &info, DIB_RGB_COLORS, &bits, nullptr, 0)
+                         : nullptr;
+    HGDIOBJ oldBitmap = bitmap != nullptr ? SelectObject(memory, bitmap) : nullptr;
+
+    HRESULT hr = E_FAIL;
+    if (bitmap != nullptr) {
+        hr = DrawLayered(memory, {0, 0, width, height});
+    }
+    if (SUCCEEDED(hr) && bits != nullptr) {
+        GdiFlush();
+        const BYTE* begin = static_cast<const BYTE*>(bits);
+        snapshot_.assign(begin, begin + static_cast<size_t>(width) * static_cast<size_t>(height) * 4);
+        snapshotWidth_ = width;
+        snapshotHeight_ = height;
+    }
+
+    if (oldBitmap != nullptr) {
+        SelectObject(memory, oldBitmap);
+    }
+    if (bitmap != nullptr) {
+        DeleteObject(bitmap);
+    }
+    if (memory != nullptr) {
+        DeleteDC(memory);
+    }
+    if (FAILED(hr)) {
+        if (logger_) {
+            logger_(std::wstring(kind) + L": 描画に失敗 hr=" + DebugHResultText(hr));
+        }
+        return false;
+    }
+    return !snapshot_.empty();
 }
 
 bool SuggestPanel::CreateBlurWindow(const wchar_t* kind)

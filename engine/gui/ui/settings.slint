@@ -72,6 +72,11 @@ export component SettingsWindow inherits Window {
     in property <[string]> font-size-choices;
     in-out property <int> font-size-index;
     in-out property <bool> mode-popup;
+    in property <image> preview-bar;
+    in property <image> preview-conversion;
+    in property <bool> preview-dark;
+    in property <bool> preview-blur;
+    in property <string> preview-error;
 
     // 詳細
     in-out property <bool> debug-log;
@@ -208,6 +213,11 @@ export component SettingsWindow inherits Window {
                 font-size-choices: root.font-size-choices;
                 font-size-index <=> root.font-size-index;
                 mode-popup <=> root.mode-popup;
+                preview-bar: root.preview-bar;
+                preview-conversion: root.preview-conversion;
+                preview-dark: root.preview-dark;
+                preview-blur: root.preview-blur;
+                preview-error: root.preview-error;
                 changed => {
                     root.settings-changed();
                 }

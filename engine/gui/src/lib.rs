@@ -6,5 +6,6 @@ pub mod config;
 #[path = "../../src/import.rs"]
 pub mod import;
 pub mod keys;
+pub mod preview;
 pub mod regword;
 pub mod win32;

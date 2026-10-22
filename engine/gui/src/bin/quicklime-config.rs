@@ -14,7 +14,12 @@ use std::ptr::null_mut;
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::{ComponentHandle, Model, ModelRc, SharedString, Timer, TimerMode, VecModel};
+use slint::winit_030::winit::event::WindowEvent;
+use slint::winit_030::{EventResult, WinitWindowAccessor};
+use slint::{
+    ComponentHandle, Image, Model, ModelRc, Rgba8Pixel, SharedPixelBuffer, SharedString, Timer,
+    TimerMode, VecModel,
+};
 
 use quicklime_gui::apps::{
     AppSetting, IME_START_LABELS, add_app_setting, app_summary, exe_file_name, merge_app_settings,
@@ -29,6 +34,7 @@ use quicklime_gui::keys::{
     KEY_ITEMS, KeyAssign, KeyCombo, STATES, check_captured_key, default_key_assigns,
     effective_keys, find_key_conflict, working_states,
 };
+use quicklime_gui::preview::{self, Preview, Sample};
 use quicklime_gui::win32::{self, CaptureEvent};
 
 slint::include_modules!();
@@ -38,6 +44,9 @@ const MUTEX_NAME: &str = "QuicklimeConfig";
 /// 値を変えてから書き込むまでの時間。コンボを続けて切り替えたときに、書き込みと
 /// LLM の子プロセスの起動・終了を繰り返さないため
 const SAVE_DELAY: Duration = Duration::from_millis(300);
+
+/// 「見た目」ページの番号 (settings.slint の pages の並び)
+const APPEARANCE_PAGE: i32 = 3;
 
 /// スペース (space) の選択肢。先頭が full
 const SPACE_ITEMS: [&str; 2] = ["全角スペース", "半角スペース"];
@@ -283,6 +292,34 @@ impl State {
         }
     }
 
+    // ---- 入力パネルのプレビュー ----
+
+    /// 見本を描く元の値 (テーマ・フォント・サイズ)
+    fn preview_source(&self) -> (String, String, u32) {
+        let c = &self.config;
+        (c.panel_theme.clone(), c.candidate_font.clone(), c.candidate_font_size)
+    }
+
+    /// 入力パネルの見本を、画面で選んでいる (保存前の) テーマ・フォント・サイズで描き直す。
+    /// 描けなければ見本の代わりに理由を出す
+    fn refresh_preview(&self) {
+        let Some(window) = self.window.upgrade() else {
+            return;
+        };
+        let (theme, font, size) = self.preview_source();
+        let render = |sample| preview::render(&theme, &font, size, sample);
+        match render(Sample::Bar).and_then(|bar| Ok((bar, render(Sample::Conversion)?))) {
+            Ok((bar, conversion)) => {
+                window.set_preview_bar(preview_image(&bar));
+                window.set_preview_conversion(preview_image(&conversion));
+                window.set_preview_dark(bar.dark);
+                window.set_preview_blur(bar.blur);
+                window.set_preview_error(SharedString::default());
+            }
+            Err(message) => window.set_preview_error(message.into()),
+        }
+    }
+
     // ---- キー割当 ----
 
     fn key_function(&self, index: usize) -> KeyFunction {
@@ -419,6 +456,11 @@ impl State {
     }
 }
 
+fn preview_image(preview: &Preview) -> Image {
+    let buffer = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&preview.rgba, preview.width, preview.height);
+    Image::from_rgba8_premultiplied(buffer)
+}
+
 fn app_entry(app: &AppSetting) -> AppEntry {
     AppEntry {
         exe: app.exe.as_str().into(),
@@ -467,8 +509,12 @@ fn connect(window: &SettingsWindow, state: &Shared) {
         };
         {
             let mut s = s.borrow_mut();
+            let before = s.preview_source();
             s.read_window(&window);
             s.dirty = true;
+            if s.preview_source() != before {
+                s.refresh_preview();
+            }
         }
         schedule_save(&s);
     });
@@ -500,7 +546,14 @@ fn connect(window: &SettingsWindow, state: &Shared) {
 
     // 取り込み中にページを移ったら、取り込みをやめる
     let s = state.clone();
-    window.on_page_changed(move || s.borrow_mut().stop_capture());
+    let weak = window.as_weak();
+    window.on_page_changed(move || {
+        let mut st = s.borrow_mut();
+        st.stop_capture();
+        if weak.upgrade().is_some_and(|window| window.get_current_page() == APPEARANCE_PAGE) {
+            st.refresh_preview();
+        }
+    });
 
     // ---- キー割当 ----
 
@@ -738,12 +791,27 @@ fn main() -> Result<(), slint::PlatformError> {
     let window = SettingsWindow::new()?;
     let state: Shared = Rc::new(RefCell::new(State::new(&window, Config::load())));
     state.borrow().fill_window(&window);
+    state.borrow().refresh_preview();
     connect(&window, &state);
 
     window.show()?;
     if let Some(hwnd) = win32::window_hwnd(window.window()) {
         win32::set_window_icon(hwnd);
     }
+    // フォーカスを得たら見本を描き直す (テーマファイルを外のエディタで書き換えた場合に読み直す)。
+    // winit のイベントの処理中に画面を変えないよう、イベントループに回してから描く
+    let weak = Rc::downgrade(&state);
+    window.window().on_winit_window_event(move |_, event| {
+        if matches!(event, WindowEvent::Focused(true)) {
+            let weak = weak.clone();
+            slint::Timer::single_shot(Duration::ZERO, move || {
+                if let Some(state) = weak.upgrade() {
+                    state.borrow().refresh_preview();
+                }
+            });
+        }
+        EventResult::Propagate
+    });
     slint::run_event_loop()?;
     state.borrow_mut().flush();
     Ok(())

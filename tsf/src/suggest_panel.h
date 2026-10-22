@@ -138,6 +138,16 @@ public:
     // 未設定ならログの文字列も組み立てない
     void SetLogger(std::function<void(const std::wstring&)> logger) { logger_ = std::move(logger); }
 
+    // ウィンドウを作らずに描く方式にする (設定ツールのプレビュー。docs/design/panel-preview.md)。
+    // 有効なら Show・ShowConversion はウィンドウを出さず、layered window に出すのと同じ画像
+    // (影・にじみの余白を含む) を Snapshot に残す。ぼかし (SetBlur) は使わない
+    void SetOffscreen(bool enabled) { offscreen_ = enabled; }
+
+    // offscreen で最後に描いた画像。上から下へ並ぶ BGRA (premultiplied alpha)。描いていなければ空
+    const std::vector<BYTE>& SnapshotPixels() const { return snapshot_; }
+    int SnapshotWidth() const { return snapshotWidth_; }
+    int SnapshotHeight() const { return snapshotHeight_; }
+
     // 表示中かどうか (Hide 済み・未表示なら false)
     bool Visible() const { return hwnd_ != nullptr; }
 
@@ -194,6 +204,10 @@ private:
     std::wstring PageText(size_t selection) const;
     // 今のレイアウトをウィンドウ (bodyX_, bodyY_ の位置) に描いて出す
     bool Render(const wchar_t* kind, const RECT* anchor);
+    // 今のレイアウトを、memory に選択した rect の大きさの DIB に描く
+    HRESULT DrawLayered(HDC memory, const RECT& rect);
+    // offscreen の方式で今のレイアウトを描き、Snapshot に残す
+    bool RenderOffscreen(const wchar_t* kind);
     // ぼかしのウィンドウを作る。使えなければ作りかけを破棄して false (理由はログに出す)
     bool CreateBlurWindow(const wchar_t* kind);
     // 今のレイアウトを残したまま、ぼかしのウィンドウとその描画先を破棄する
@@ -257,6 +271,10 @@ private:
     bool blur_;          // ぼかしを使う設定
     bool blurFailed_;    // API が使えずぼかしをやめた (SetBlur で有効にし直すまで試さない)
     bool blurActive_;    // 今のウィンドウがぼかしの方式
+    bool offscreen_;     // ウィンドウを作らずに描く (SetOffscreen)
+    std::vector<BYTE> snapshot_;  // offscreen で描いた画像
+    int snapshotWidth_;
+    int snapshotHeight_;
 
     // 今のレイアウト (座標は影を除いたパネルの左上を原点とする px)
     bool conversion_;  // 変換の候補一覧 (ShowConversion) を出している
