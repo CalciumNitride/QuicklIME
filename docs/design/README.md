@@ -8,44 +8,27 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・変換のタイプミス補正・記号・
-  日付時刻の候補・確定アンドゥ・ローマ字テーブル・ユーザ辞書と単語登録・
-  設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ・パスワード欄) の仕様と理由。
+- [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・変換のタイプミス補正・記号辞書・
+  日付時刻の候補・ユーザ辞書と単語登録・
+  設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ) の仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
-  サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ移した
+  サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
+  ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
 ## 入力方式
 
-- [input-model-v2.md](input-model-v2.md): 入力モデル v2 の総論 (文書を自動で書き換えない・1キー1機能
-  などの原則と段階の区切り)。各段階の詳細は下記の各設計書、LLM のプロセス構成の詳細は
-  [llm-rerank.md](llm-rerank.md)
-- [direct-input.md](direct-input.md): 直接入力方式。打鍵した文字を文書に直接入れ、run を覚えて変換キーで
-  後置変換する。composition 方式とフォールバックは [append-input.md](append-input.md) で廃止。かなの
-  追記の方法と文書の分類は [append-input.md](append-input.md)、パネル保持入力は
-  [panel-buffer.md](panel-buffer.md)。文書に直接入れる方式は [input-buffer-modes.md](input-buffer-modes.md)
-  で廃止し、run のキーの意味と後置再変換はそちらで置き換え
-- [append-input.md](append-input.md): 追記型入力。未完成のローマ字を小窓に出し、かなを文書に追記する。
-  読める文書と追記のみの文書の扱い。[input-buffer-modes.md](input-buffer-modes.md) で廃止し、文書の分類は
-  そちらで置き換え
+- 入力方式 (run・入力中の読みの表示 `input_buffer`・読める文書の判定・送り直し・確定アンドゥ・IME のオン/オフと
+  起動時の状態・InputScope の欄・パスワード欄): [docs/spec/input.md](../spec/input.md) (設計書は下の「archive」の節)
 - [keymap.md](keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける
-- [panel-buffer.md](panel-buffer.md): パネル保持入力 (設定 `input_buffer panel`)。入力中の読みを文書に
-  書かずパネルの入力行だけに持ち、採用・確定で挿入する。設定の値・文書の分類・確定アンドゥは
-  [input-buffer-modes.md](input-buffer-modes.md) で置き換え
-- [input-buffer-modes.md](input-buffer-modes.md): 入力方式の選択 (設定 `input_buffer` の `composition` /
-  `panel`)。文書書き込み入力・擬似 Backspace・`append_only_apps` を廃止し、2方式で run とキー処理を
-  共通にする。後置再変換・確定アンドゥは読める文書だけで働く
 - [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
+  改行の入れ方・対象アプリ・機能は [docs/spec/input.md](../spec/input.md) へ移した (設定ツールの画面は本書)。
   設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
-- [ime-start-state.md](ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに決める
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
-- [append-only-apps.md](append-only-apps.md): 指定したアプリ (既定 Discord.exe) では読める文書も追記のみとして扱い、文字の置き換えを擬似 Backspace で行う。
-  [input-buffer-modes.md](input-buffer-modes.md) で廃止
 - [forget-learning.md](forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
   消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え
-- [input-scope.md](input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンのままキーを食べない (設定 `input_scope_passthrough`)
 
 ## 候補の表示
 
@@ -171,6 +154,23 @@
   出し、予測候補の順位にも前文脈を使う。[docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [suggest-paging.md](../archive/suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の
   上限を `max_predictions` (9 / 18 / 27 / 36) にする。[docs/spec/suggest.md](../spec/suggest.md) へ移した
+- [input-model-v2.md](../archive/input-model-v2.md): 入力モデル v2 の総論 (文書を自動で書き換えない・1キー1機能
+  などの原則と段階の区切り)。今も成り立つ原則は [docs/spec/input.md](../spec/input.md) へ移した
+- [direct-input.md](../archive/direct-input.md): 直接入力方式 (打鍵した文字を文書に直接入れ、run を覚えて変換キーで
+  後置変換する)。[input-buffer-modes.md](../archive/input-buffer-modes.md) で廃止。今も成り立つ理由 (CUAS の文書の
+  読み戻し・Chromium の置き換えの制約・半角数字の素通し) は [docs/spec/input.md](../spec/input.md) へ移した
+- [append-input.md](../archive/append-input.md): 追記型入力 (未完成のローマ字を小窓に出し、かなを文書に追記する。
+  読める文書と追記のみの文書・擬似 Backspace)。[input-buffer-modes.md](../archive/input-buffer-modes.md) で廃止
+- [append-only-apps.md](../archive/append-only-apps.md): 指定したアプリ (既定 Discord.exe) を追記のみの文書として扱う。
+  [input-buffer-modes.md](../archive/input-buffer-modes.md) で廃止
+- [panel-buffer.md](../archive/panel-buffer.md): パネル保持入力 (設定 `input_buffer panel`)。
+  [docs/spec/input.md](../spec/input.md) へ移した
+- [input-buffer-modes.md](../archive/input-buffer-modes.md): 入力方式の選択 (設定 `input_buffer` の `composition` /
+  `panel`)、2 方式で共通の run、送り直し、文書の分類。[docs/spec/input.md](../spec/input.md) へ移した
+- [ime-start-state.md](../archive/ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに
+  決める。[docs/spec/input.md](../spec/input.md) へ移した
+- [input-scope.md](../archive/input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンの
+  ままキーを食べない (設定 `input_scope_passthrough`)。[docs/spec/input.md](../spec/input.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
@@ -183,7 +183,7 @@
   設計書の分担と、設定一覧 docs/user/settings.md)
 
 - [experiment-0a-append-input.md](../archive/experiment-0a-append-input.md): 追記型入力の2方式 (F1 / F2)
-  の試作と比較。F1 を [append-input.md](append-input.md) で採用
+  の試作と比較。F1 を [append-input.md](../archive/append-input.md) で採用
 - [live-conversion-commit-notes.md](../archive/live-conversion-commit-notes.md): ライブ変換の結果を途中で
   確定する手段の検討。後続の打鍵で前方の変換が変わる問題は [candidate-bar.md](candidate-bar.md) の採用で扱う
 - [single-unit-conversion-notes.md](../archive/single-unit-conversion-notes.md): 連文節変換をやめ、文節を

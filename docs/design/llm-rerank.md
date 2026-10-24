@@ -1,6 +1,6 @@
 # LLM による順位補正
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階5。段階4 (docs/design/nbest.md) の
+入力モデル v2 (docs/archive/input-model-v2.md) の段階5。段階4 (docs/design/nbest.md) の
 入力全体の N-best を、zenz 系のかな漢字変換モデルで並べ替え、結果を候補バーへ非同期に反映する。
 
 ## 背景と目的
@@ -250,7 +250,7 @@ TSF 層にはスレッドを作らない。エンジンへの要求はどれも�
 | installer/build.ps1, installer/installer.iss | llm の exe・モデル・ライセンスの同梱 |
 | .gitignore | `/models/` |
 | docs/protocol.md | RERANK・RERANKGET |
-| docs/design/input-model-v2.md | LLM の決定事項 (別プロセス、構成) と段階表 (本書の作成時に済ませる) |
+| docs/archive/input-model-v2.md | LLM の決定事項 (別プロセス、構成) と段階表 (本書の作成時に済ませる) |
 | README.md | LLM の説明、設定、ビルド手順 |
 
 ## 実装手順

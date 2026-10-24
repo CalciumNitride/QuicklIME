@@ -3,7 +3,7 @@
 ## 背景と目的
 
 数字・電話番号・メールアドレス・URL などの入力欄は、半角英数字を前提にしている。IME を通った文字は全角になったり
-composition になったりして、1文字1枠の認証コード欄などで崩れる (docs/design/input-buffer-modes.md の
+composition になったりして、1文字1枠の認証コード欄などで崩れる (docs/archive/input-buffer-modes.md の
 「フォームの計測結果」)。今は run の外の半角数字だけを素通しにしている (`digits=half`) ので、英字を含む欄は
 救えず、利用者が IME をオフにするしかない。
 
@@ -104,12 +104,12 @@ Chromium は入力欄を移るたびに `ITfThreadMgr::SetFocus` を呼び直す
 4. `IsKeyEaten` の入口で素通しにする。診断ログを足す
 5. README.md・docs を直す
 
-docs/design/input-buffer-modes.md とは独立に実装できる。両方を進めるときは input-buffer-modes.md を先に終える
+docs/archive/input-buffer-modes.md とは独立に実装できる。両方を進めるときは input-buffer-modes.md を先に終える
 (同じ text_service.cpp の入口を触るため)。
 
 ## 検証方法
 
-ビルドと反映は docs/design/input-buffer-modes.md と同じ。検証用の HTML (次の欄を並べ、各欄の keydown・input と
+ビルドと反映は docs/archive/input-buffer-modes.md と同じ。検証用の HTML (次の欄を並べ、各欄の keydown・input と
 value を記録するもの) を Chrome で開いて確かめる。`debug_log` で InputScope と判定を確認する。
 
 ### テストケース

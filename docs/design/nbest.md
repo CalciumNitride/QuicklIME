@@ -1,6 +1,6 @@
 # 入力全体の N-best
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階4。入力全体を1単位とした N-best 候補を
+入力モデル v2 (docs/archive/input-model-v2.md) の段階4。入力全体を1単位とした N-best 候補を
 エンジンで作り、候補バーと変換キーの候補選択で使う。文節 UI (文節移動・伸縮・文節別の候補選択) は
 設定でオンにしたときだけ使うオプションにする。
 
@@ -120,7 +120,7 @@ CONVNBEST を新設する。CONVERT・CONVSEG・CONVCTX はそのまま残す (C
 | docs/protocol.md | CONVNBEST、LEARN2 で読み全体を送ること |
 | docs/design/keymap.md | コア操作の表 (候補選択中の ← → PgUp PgDn) |
 | docs/design/candidate-bar.md | バーの内容の表と先頭文節の取り方を本書に合わせて書き換える |
-| docs/design/input-model-v2.md | 段階表の詳細設計に本書を記す (本書の作成時に済ませる) |
+| docs/archive/input-model-v2.md | 段階表の詳細設計に本書を記す (本書の作成時に済ませる) |
 | README.md | 候補選択の説明、`segment_ui`、キー操作 |
 
 ## 実装手順

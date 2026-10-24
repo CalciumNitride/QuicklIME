@@ -1,6 +1,6 @@
 # 実験 0b: LLM による順位補正の計測
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階0b。段階5 (LLM による順位補正) を
+入力モデル v2 (docs/archive/input-model-v2.md) の段階0b。段階5 (LLM による順位補正) を
 採るかどうかと、その規模を決めるための計測の仕様。
 
 ## 背景と目的

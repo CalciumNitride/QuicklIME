@@ -32,7 +32,7 @@ Discord の検索欄では、変換・サジェストの採用で run を置き�
 
 ### 対象アプリでの挙動
 
-追記のみの文書 (docs/design/append-input.md) と同じになる。
+追記のみの文書 (docs/archive/append-input.md) と同じになる。
 
 - 変換: 擬似 Backspace で run を消し、空の composition を張って候補選択に入る
 - サジェスト: Tab・↑↓ では文書を書き換えず、採用時に擬似 Backspace で消してから追記する

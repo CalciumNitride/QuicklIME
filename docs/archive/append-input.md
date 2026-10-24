@@ -1,6 +1,6 @@
 # 追記型入力への一本化と composition 方式の廃止
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階2。実験 0a
+入力モデル v2 (docs/archive/input-model-v2.md) の段階2。実験 0a
 (docs/archive/experiment-0a-append-input.md) で採用を決めた F1 方式を本実装とし、
 composition 方式を廃止する。
 
@@ -159,7 +159,7 @@ Alt+Backspace (元に戻す) として届いてしまう。
 | tsf/src/edit_session.h, tsf/src/edit_session.cpp | F2 用・フォールバック判定用で不要になった edit session の削除 |
 | engine/src/bin/quicklime-config.rs | 「入力方式」「ライブ変換」の項目の削除 |
 | README.md | 「入力方式」「モードレス入力」の節を新しい挙動に書き直す |
-| docs/design/direct-input.md | フォールバック判定・composition 方式・ライブ変換の記述を、本書の内容に合わせて書き換える |
+| docs/archive/direct-input.md | フォールバック判定・composition 方式・ライブ変換の記述を、本書の内容に合わせて書き換える |
 | docs/design/modeless.md | composition 方式とライブ変換に触れている箇所を直す |
 | docs/archive/experiment-0a-append-input.md | docs/design/ から移す |
 

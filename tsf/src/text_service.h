@@ -43,7 +43,7 @@ bool ContainsAsciiLetter(const std::wstring& text);
 // TSF テキストサービス本体。
 // 打鍵した読みを run として IME が持ち、文書の composition (composition 入力) か
 // パネルの入力行 (パネル保持入力) に出す。採用・確定で文書へ入れ、変換キーでは
-// composition で候補を選ぶ (docs/design/input-buffer-modes.md)。
+// composition で候補を選ぶ (docs/spec/input.md「入力中の読みの表示 (`input_buffer`)」)。
 class TextService : public ITfTextInputProcessorEx,
                     public ITfThreadMgrEventSink,
                     public ITfKeyEventSink,
@@ -510,7 +510,7 @@ private:
     // 候補選択中の composition があるか (run の composition は runComposition_ に別に持つ)
     bool Composing() const { return composition_ != nullptr; }
 
-    // ---- run (実装は text_service_direct.cpp。docs/design/input-buffer-modes.md) ----
+    // ---- run (実装は text_service_direct.cpp。docs/spec/input.md「run」) ----
     // 打鍵した読み (composer_) = run を IME が持ち、採用・確定したときに文書へ入れる。
     // 読みの表示場所は run を始めた時点の設定で決め (RunMode)、変換するときは composition で
     // 候補を選ぶ
@@ -910,7 +910,7 @@ private:
     std::bitset<256> pendingKeyUps_;
     // ホストプロセスの exe 名 (改行キー・起動時の IME の対象アプリの判定用。プロセスごとに不変)
     std::wstring hostExeName_;
-    // フォーカス中の文書の InputScope (docs/design/input-scope.md)。後から走る取得の
+    // フォーカス中の文書の InputScope (docs/spec/input.md「InputScope の欄」)。後から走る取得の
     // edit session と共有するため shared_ptr で持つ
     std::shared_ptr<FocusInputScope> focusInputScope_;
 };

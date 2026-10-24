@@ -19,10 +19,10 @@ maxlength にあった。Chromium では、composition を使わずに挿入し�
 フォームに効いていたのは、run の外の半角数字の素通し (`digits=half`) である。
 
 そこで文書書き込み入力を廃止し、入力方式を次の2つから設定で選べるようにする。フォームへの対応は
-InputScope による素通し (docs/design/input-scope.md) で行う。
+InputScope による素通し (docs/archive/input-scope.md) で行う。
 
 - パネル保持入力 (`panel`): 入力中の読みをパネルの入力行だけに持ち、採用・確定のときに文書へ挿入する
-  (docs/design/panel-buffer.md を引き継ぐ)
+  (docs/archive/panel-buffer.md を引き継ぐ)
 - composition 入力 (`composition`): 入力中の読みを文書の composition (下線付きの未確定文字列) に出す。
   ほかの IME と同じ見た目
 
@@ -86,7 +86,7 @@ Chrome で使った。
 run を終えて文字列を入れてからアプリへ渡すキー (Enter・矢印・Tab・Home/End・Delete・PgUp/PgDn・Ctrl 併用) は、
 両方式とも今のパネル保持入力の規則に従う。読めると判定された文書では食べずに `OnTestKeyDown` / `OnKeyDown` の
 中で確定してから渡し、それ以外の文書では食べて確定の後に `SendInput` で送り直す (CUAS 経由のアプリは確定結果を
-IME メッセージで後から受け取るため)。Alt 併用は送り直さず run も終えない (docs/design/panel-buffer.md)。
+IME メッセージで後から受け取るため)。Alt 併用は送り直さず run も終えない (docs/archive/panel-buffer.md)。
 
 ### 文書の分類
 
@@ -96,7 +96,7 @@ IME メッセージで後から受け取るため)。Alt 併用は送り直さ�
 
 ### 文書の既存の文字列に触れる機能
 
-run が無いときの変換 (後置再変換。docs/design/direct-input.md、conversion-range.md、adopted-reconversion.md) と
+run が無いときの変換 (後置再変換。docs/archive/direct-input.md、conversion-range.md、adopted-reconversion.md) と
 確定アンドゥは、文書を読み戻して置換できる場合だけ働く。擬似 Backspace による書き換えは廃止する。
 
 | 機能 | 働く条件 | 働かないとき |
@@ -195,7 +195,7 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離し、`debug_log` で文書の�
 
 | # | 環境 | 操作 | 期待 |
 |---|---|---|---|
-| 21 | メモ帳 | `input_buffer panel` で docs/design/panel-buffer.md のテストケース 1〜29 | 追記のみの文書の擬似 Backspace に関するもの (21: WezTerm の確定アンドゥ) を除き、今どおり。21 は何も起きずアプリへ渡る |
+| 21 | メモ帳 | `input_buffer panel` で docs/archive/panel-buffer.md のテストケース 1〜29 | 追記のみの文書の擬似 Backspace に関するもの (21: WezTerm の確定アンドゥ) を除き、今どおり。21 は何も起きずアプリへ渡る |
 | 22 | メモ帳 | config.tsv に `input_buffer document` | composition 入力として動く |
 | 23 | メモ帳 | run の途中で config.tsv の `input_buffer` を書き換えて保存 | その run は始めたときの方式のまま。次の run から切り替わる |
 | 24 | 設定ツール | 「入力」タブの2択を切り替えて保存 / 「アプリ」タブ | config.tsv の `input_buffer` が書き換わる。「置換」の列が無い。`append_only_apps` の行が書かれない |

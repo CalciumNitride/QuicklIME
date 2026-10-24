@@ -70,7 +70,7 @@ struct KeyMatch {
 // 機能が働く状態か
 bool KeyFuncWorksIn(KeyFunc func, KeyState state);
 
-// アプリの起動時の IME の状態の1項目 (設定 ime_start_apps。docs/design/ime-start-state.md)
+// アプリの起動時の IME の状態の1項目 (設定 ime_start_apps。docs/spec/input.md「起動時の IME の状態」)
 struct ImeStartApp {
     std::wstring exe;
     bool open = true;
@@ -98,10 +98,10 @@ struct TsfConfig {
     // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
     bool panelInput = false;
     // 入力中の読みを文書に書かず、パネルの入力行だけに持つ (設定 input_buffer の panel。
-    // composition なら読みを文書の composition に出す。docs/design/input-buffer-modes.md)
+    // composition なら読みを文書の composition に出す。docs/spec/input.md「入力中の読みの表示 (`input_buffer`)」)
     bool panelBuffer = false;
     // 半角英数字を前提にした InputScope の欄 (数字・電話番号・メールアドレス・URL など) では
-    // キーを食べない (設定 input_scope_passthrough。docs/design/input-scope.md)
+    // キーを食べない (設定 input_scope_passthrough。docs/spec/input.md「InputScope の欄」)
     bool inputScopePassthrough = true;
     // 入力パネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
     std::wstring panelTheme = L"capsule";

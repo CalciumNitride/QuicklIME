@@ -117,7 +117,7 @@ run が終わった後 (Space・Enter・確定キーで終えた後、キャレ�
   変換開始 (`StartConversion` / `ApplyFunctionKey`) の既存の経路を組み合わせる
 - 採らなかった案: `ITfComposition::ShiftStart` で composition の先頭を動かす。広げるときに
   確定済みの文字列を composition に取り込むことになり、Discord の入力欄で確定時に元のかなが
-  残る問題 (docs/design/direct-input.md「昇格」) と同じことが起きうるため
+  残る問題 (docs/archive/direct-input.md「昇格」) と同じことが起きうるため
 
 ### 追記のみの文書での範囲の伸縮
 
@@ -167,7 +167,7 @@ run が終わった後 (Space・Enter・確定キーで終えた後、キャレ�
 | engine/src/bin/quicklime-config.rs | キー割当の画面で F6〜F10 の働く状態の表示を合わせる (状態別の上書きに idle を書けるようにする) |
 | README.md | 「入力方式」の変換キー・後置再変換・候補選択中の ←→・F6〜F10、「キー割当」の表 |
 | docs/design/keymap.md | 機能の表の働く状態と、入力なしの状態で食べる条件 |
-| docs/design/direct-input.md | キー操作の表 (run なしの変換キー、候補選択中の ←→) |
+| docs/archive/direct-input.md | キー操作の表 (run なしの変換キー、候補選択中の ←→) |
 
 ## 実装手順
 
@@ -186,7 +186,7 @@ run が終わった後 (Space・Enter・確定キーで終えた後、キャレ�
    (`RemoveFront`、外したかなを前文脈にする) か、文書から1文字読んで先頭に足す →
    昇格 → 覚えた種類の変換をやり直す。direct の候補選択と昇格した composition の候補選択の
    両方の経路に入れる
-6. 文書 (README.md・docs/design/keymap.md・docs/design/direct-input.md) を最新の仕様に合わせる
+6. 文書 (README.md・docs/design/keymap.md・docs/archive/direct-input.md) を最新の仕様に合わせる
 7. 手動テスト (下記)
 
 ## 検証方法

@@ -18,7 +18,7 @@ Enter で確定してはじめてアプリの文書に入れていた。この�
 
 この方式を「直接入力方式 (direct)」と呼ぶ。入力方式はこれだけで、composition を
 使うのは変換中 (候補選択中) に限る。かなを文書に入れる方法 (追記型入力) と、
-文書を読み戻せないアプリでの扱いは docs/design/append-input.md に定める。
+文書を読み戻せないアプリでの扱いは docs/archive/append-input.md に定める。
 モードレス入力 (docs/design/modeless.md) はこの方式の上に載せる。
 
 ## 決定事項
@@ -31,9 +31,9 @@ Enter で確定してはじめてアプリの文書に入れていた。この�
   保てない (文字列を変えた後にキャレットが挿入末尾へ戻される) ため、変換中の強調は
   composition の表示属性で行う
 - かなは完成した時点で文書に追記する。未完成のローマ字 (`k`、`ky` など) は文書に入れず、
-  キャレット付近の小窓に出す (docs/design/append-input.md)
+  キャレット付近の小窓に出す (docs/archive/append-input.md)
 - 入力中の読みを文書に書かず、パネルの入力行だけに持って採用・確定のときに挿入する
-  入力方式 (パネル保持入力、設定 `input_buffer panel`) は docs/design/panel-buffer.md で定める。
+  入力方式 (パネル保持入力、設定 `input_buffer panel`) は docs/archive/panel-buffer.md で定める。
   本書は既定の `input_buffer document` (文書書き込み入力) の挙動を定める
 
 ### run モデル
@@ -51,7 +51,7 @@ run 中は、かなが完成するたびに増えた分をキャレット位置�
 追記の前にキャレット直前が surface と一致するかを照合し、一致しない場合 (キャレット移動・
 アプリ側の編集・別欄への自動移動) は run を捨て、その打鍵を新しい run の先頭として
 追記する。照合できない文書 (追記のみの文書) では、キャレットが動く操作を検知して
-run を終える (docs/design/append-input.md)。
+run を終える (docs/archive/append-input.md)。
 
 run の終了 (= IME が忘れる) の契機:
 
@@ -148,7 +148,7 @@ composition の変換経路と表示属性 (入力中の下線・現在文節の
   4. composition を張れなければ、消した文字列を `AppendRunText` で入れ直して run を続け、
      選択による文節強調で変換する。入れ直しにも失敗したら run を捨てる
 - 追記のみの文書では、Backspace の擬似打鍵で run の文字列を文書から消してから、
-  run の読みで composition を張る (docs/design/append-input.md)
+  run の読みで composition を張る (docs/archive/append-input.md)
 - 昇格に成功したら run の文書上の状態 (`surface_` / `surfaceCaret_` /
   `surfaceSelectLength_`) を捨てて `promoted_` を立てる。`composer_`・文脈は
   composition にそのまま引き継ぐ (学習・確定アンドゥの記憶はしない)。
@@ -241,7 +241,7 @@ SetText 直後は同じロック内でレイアウトが更新されていない
   を宣言している) ので、CUAS の判別には使えない
 - そこで文書 (フォーカス中の ITfDocumentMgr) ごとに、run の2文字目以降を追記するときの
   読み戻しで「読める」か「追記のみ」に分類し、`OnSetFocus` で未判定に戻す。
-  分類と、追記のみの文書での変換・作り直しの方法は docs/design/append-input.md に定める
+  分類と、追記のみの文書での変換・作り直しの方法は docs/archive/append-input.md に定める
 
 ### 確定アンドゥ
 
@@ -250,7 +250,7 @@ direct 方式では run 中の Backspace で読みを直せるため出番は減
 確定したかなを `newText` として `ReplaceRunEditSession` を実行し、成功したら run を
 再開する (composition は開始しない。未完成のローマ字は小窓に出す)。追記のみの文書では、
 Backspace の擬似打鍵で確定文字列を消してから読みのかなを追記する
-(docs/design/append-input.md)。
+(docs/archive/append-input.md)。
 
 ### 既知のトレードオフ (受け入れる)
 
@@ -287,7 +287,7 @@ Backspace の擬似打鍵で確定文字列を消してから読みのかなを�
    Space (run 終了 + スペース)、Enter/Esc/矢印/Tab の通過と run 終了、
    フォーカス移動・IME オフでの run 終了
 4. `IsKeyEaten` / `HandleKey` の入口で composition の有無を見て分岐
-5. 文書の分類 (docs/design/append-input.md)
+5. 文書の分類 (docs/archive/append-input.md)
 6. 確定アンドゥの direct 版
 7. 手動テスト (下記「段階1」)
 

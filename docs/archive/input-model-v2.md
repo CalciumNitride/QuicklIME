@@ -6,7 +6,7 @@
 
 ## 背景と目的
 
-direct 方式 (docs/design/direct-input.md) を作ったことで、Space をスペース専用にし、
+direct 方式 (docs/archive/direct-input.md) を作ったことで、Space をスペース専用にし、
 変換を変換キーに分けられた。一方で、次の問題が残っている。
 
 - ライブ変換で、途中まで正しかった前方の変換結果が後続の打鍵で書き換わる
@@ -84,7 +84,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | 0a | 実験: 追記型入力 (F1 / F2) の試作と比較 | TSF | docs/archive/experiment-0a-append-input.md |
 | 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/archive/experiment-0b-llm.md |
 | 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
-| 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
+| 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/archive/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | docs/design/nbest.md |
 | 5 | LLM による順位補正 | エンジン・TSF | docs/design/llm-rerank.md |
@@ -169,7 +169,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | scripts/fetch-models.ps1, scripts/build-llm.ps1 | 5 |
 | installer/build.ps1, installer/installer.iss | 5 |
 | docs/protocol.md | 4, 5 |
-| docs/design/direct-input.md | 1, 2 (フォールバック判定・composition 方式の記述を更新), 3 |
+| docs/archive/direct-input.md | 1, 2 (フォールバック判定・composition 方式の記述を更新), 3 |
 
 ## 検証方法
 

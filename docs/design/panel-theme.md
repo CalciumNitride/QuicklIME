@@ -308,4 +308,4 @@ TSF 層のテスト前に `taskkill /IM Notepad.exe /F` でメモ帳を終了し
 
 ## 未決事項
 
-- 入力中のかなを文書に書かず、パネルだけに持つ設定は docs/design/panel-buffer.md で扱う
+- 入力中のかなを文書に書かず、パネルだけに持つ設定は docs/archive/panel-buffer.md で扱う

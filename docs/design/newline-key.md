@@ -12,46 +12,15 @@ Ctrl+J も改行になるが、統一されていない。IME の機能として
 
 ### 改行の入れ方
 
-改行キーを食べて、アプリへ Shift+Enter を送る (`SendKeyWithModifiers`)。チャット系のアプリでは
-Shift+Enter が改行の事実上の標準のため。
-
-採らなかった案:
-
-- TSF で `\n` を文字として挿入する: 改行コードの扱いがアプリごとに違い (`\r`・`\r\n`・`\n`)、
-  Web のエディタが文字としての改行を改行として扱うかは不確実。TSF に対応していないアプリでは
-  効かない
-- 全アプリで有効にする: ターミナルでは Shift+Enter が Enter と同じ扱いになりやすく、コマンドが
-  実行されてしまう。Excel では Shift+Enter がセルの移動になる。ブラウザ (ダウンロード)・
-  VS Code (パネルの切替) では Ctrl+J のショートカットを奪う
+[docs/spec/input.md](../spec/input.md)「改行キー」へ移した
 
 ### 対象アプリ (ホワイトリスト)
 
-- ホストプロセスの exe 名 (`GetModuleFileNameW(nullptr, ...)` のファイル名部分) が対象リストに
-  あるときだけ働く。照合は大文字小文字を区別しない
-- 対象外のアプリでは、改行キーは割当なしのときと同じ扱い (アプリへ渡る。run 中なら Ctrl 併用の
-  キーとして既存どおり run を終えてから渡る)
-- 設定キー `newline_apps`。値は exe 名のカンマ区切り (前後の空白は無視)。値が空なら対象なし。
-  設定ファイルに行が無いときは既定のリストを使う
-- 既定のリスト: `Discord.exe,slack.exe,ms-teams.exe,Teams.exe,LINE.exe`。ブラウザは Ctrl+J を
-  奪うため既定には入れない (必要ならユーザが足す)
-- exe 名はプロセスごとに不変なので、TextService の生成時に一度だけ取得する
+[docs/spec/input.md](../spec/input.md)「改行キー」へ移した
 
 ### 機能
 
-| 機能 (`KeyFunc`) | 設定キー | 働く状態 | 既定の割当 | 動作 |
-|---|---|---|---|---|
-| `InsertNewline` | `key.insert_newline` | 全状態 | `Ctrl+J` | 対象アプリでは Shift+Enter を送る (下記) |
-
-- 入力なし: 打鍵を食べて Shift+Enter を送る
-- run 中・候補選択中・サジェスト選択中: Enter と同じ確定処理 (サジェスト選択中は選択中の候補の
-  採用) をしてから Shift+Enter を送る。確定より先に改行が届かないよう、常に食べて確定の後に
-  送り直す (`CommitAndResendEnter` の経路を、送り直す打鍵を Shift+Enter にして使う。
-  擬似 Backspace を送ったときは書き換えが終わってから送る)
-- IME オフのときは働かない (既存の機能キーと同じく `IsKeyEaten` が何も食べない)
-- 対象アプリかどうかは `CanRunKeyFunc` で判定する。対象外なら一致しても食べない
-- `KeyFunc` の並び順は `OpenConfig` の後 (`None` の前) に置く
-- 送り直した Shift+Enter は擬似打鍵の目印 (`kPseudoKeyExtraInfo`) が付くので、IME 自身は
-  処理しない
+[docs/spec/input.md](../spec/input.md)「改行キー」へ移した (キー割当の一覧は [keymap.md](keymap.md)「機能」)
 
 ### 設定ツール
 

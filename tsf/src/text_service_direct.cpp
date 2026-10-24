@@ -1,6 +1,6 @@
 // run (打鍵した読みを IME が持ち、採用・確定で文書へ入れる入力) のキー処理。
 // TextService のメンバ関数のうち run に固有のものをこの翻訳単位に置く
-// (設計は docs/design/input-buffer-modes.md)
+// (設計は docs/spec/input.md「run」)
 #include "text_service.h"
 
 #include <algorithm>

@@ -2,8 +2,8 @@
 
 設定ツール (engine/src/bin/quicklime-config.rs) の「アプリ」タブを、アプリを1つの一覧に並べ、
 アプリごとに各設定を変える画面にする。今の設定は改行キー (docs/design/newline-key.md)、
-起動時の IME の状態 (docs/design/ime-start-state.md)、学習の停止 (docs/design/no-learning-apps.md)、
-追記のみ扱い (docs/design/append-only-apps.md) の4つ。
+起動時の IME の状態 (docs/archive/ime-start-state.md)、学習の停止 (docs/design/no-learning-apps.md)、
+追記のみ扱い (docs/archive/append-only-apps.md) の4つ。
 
 ## 背景と目的
 
@@ -46,7 +46,7 @@
 ### 設定ファイルとの対応
 
 - config.tsv のキーは機能ごとに分けたままにする: `newline_apps` (今の形式) と `ime_start_apps`
-  (docs/design/ime-start-state.md)。TSF 層の読み方と既存の設定ファイルとの互換性は変えない
+  (docs/archive/ime-start-state.md)。TSF 層の読み方と既存の設定ファイルとの互換性は変えない
 - 設定ツールの中では、アプリごとの設定 (exe 名・改行キーの有無・起動時の IME) の一覧として持つ
 - 読み込み: `newline_apps` の順にアプリを並べ (改行キーあり)、続けて `ime_start_apps` にだけあるアプリを
   その順に足す。exe 名の照合は大文字小文字を区別しない。`newline_apps` の行が無ければ既定のリストを使う

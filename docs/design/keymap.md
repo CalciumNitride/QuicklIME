@@ -1,6 +1,6 @@
 # キーマップ刷新
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階1。キー割当を「状態 x キー → 機能」の
+入力モデル v2 (docs/archive/input-model-v2.md) の段階1。キー割当を「状態 x キー → 機能」の
 表に置き換え、Enter をアプリへ渡すキーとして分離し、確定キーを新設する。
 
 ## 背景と目的
@@ -200,8 +200,8 @@
 | tsf/src/text_service_direct.cpp | `IsKeyEatenDirect`・`HandleKeyDirect`・`EndRunIfPassthroughKey` を照合関数で書き直す。Enter の「確定してから渡す」、擬似 Backspace が要る場合の Enter の送り直し、`CommitRun` |
 | engine/src/bin/quicklime-config.rs | キー割当の一覧・編集ダイアログ・キー取り込み・重なりの検査、新しい書式の読み書き |
 | README.md | 「入力方式」のキー操作の記述、キー割当の書式と対象外のキー |
-| docs/design/direct-input.md | キー処理の表と「変換キー」の節を本書に合わせて書き換える |
-| docs/design/input-model-v2.md | 段階表の詳細設計に本書を記し、未決事項からコア操作の範囲を外す (本書の作成時に済ませる) |
+| docs/archive/direct-input.md | キー処理の表と「変換キー」の節を本書に合わせて書き換える |
+| docs/archive/input-model-v2.md | 段階表の詳細設計に本書を記し、未決事項からコア操作の範囲を外す (本書の作成時に済ませる) |
 
 ## 実装手順
 

@@ -78,7 +78,7 @@
 - docs/design/keymap.md: 「候補番号の選択は数字キーに固定」を Ctrl+数字キーに。コア操作の表の 1〜9 の行。
   「割当の対象外にするキー」に Ctrl+1〜9 を足す
 - docs/user/ のキー割当の説明に割り当てられないキーの一覧があれば、Ctrl+1〜9 を足す
-- docs/design/direct-input.md: 印字キーの表の「数字 1〜9 は候補番号の選択」の注記
+- docs/archive/direct-input.md: 印字キーの表の「数字 1〜9 は候補番号の選択」の注記
 - docs/archive/suggest-paging.md・docs/design/conversion-panel.md: 数字キーの対応付けを Ctrl+数字キーに
   (テストケースの「数字キー 2」も Ctrl+2 で確定する内容に)
 - docs/design/unified-suggest.md: 未決事項の「バーの数字キーでの採用」を消す

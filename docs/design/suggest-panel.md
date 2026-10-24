@@ -30,7 +30,7 @@
 - 入力中のかなは今どおり文書にも書く (直接入力方式・追記型入力は変えない)。入力行は文書の内容を
   パネルに重ねて見せるだけ
 - 入力中のかなを文書に書かず、採用・確定までパネルだけに持つ入力方式 (設定 `input_buffer panel`) は
-  docs/design/panel-buffer.md で定める
+  docs/archive/panel-buffer.md で定める
 - 見た目の値は内部の `PanelTheme` 構造体にまとめるが、設定にはまだ出さない
   (ユーザが変えられる範囲は、案 D (ゴースト HUD) を作るときに合わせて決める)
 
@@ -297,6 +297,6 @@ TSF 層のテスト前に `taskkill /IM Notepad.exe /F` でメモ帳を終了し
 
 ## 未決事項
 
-- 入力中のかなを文書に書かず、パネルだけに持つ設定は docs/design/panel-buffer.md で扱う
+- 入力中のかなを文書に書かず、パネルだけに持つ設定は docs/archive/panel-buffer.md で扱う
 - 見た目のカスタマイズ (ユーザが変えられる範囲と指定方法) と案 D (ゴースト HUD) は
   docs/design/panel-theme.md で扱う

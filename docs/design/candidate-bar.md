@@ -1,6 +1,6 @@
 # 候補バー
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階3。入力中は横一列の候補バーを常時表示し、
+入力モデル v2 (docs/archive/input-model-v2.md) の段階3。入力中は横一列の候補バーを常時表示し、
 ライブ変換と予測サジェストをそこへ統合する。文書は採用したときにだけ書き換える (P1)。
 
 ## 背景と目的
@@ -73,8 +73,8 @@ docs/design/suggest-panel.md による。以下は `candidate_position caret` (�
 | tsf/src/config.h, tsf/src/config.cpp | `candidate_bar`・`min_suggest_chars` の読み込み |
 | engine/src/bin/quicklime-config.rs | 「候補バーを表示する」チェックボックス |
 | README.md | 候補バーの説明、キー操作、設定 |
-| docs/design/direct-input.md, docs/design/keymap.md | サジェスト・確定キーの記述を本書に合わせて書き換える |
-| docs/design/input-model-v2.md | 段階表の詳細設計に本書を記し、未決事項から候補バーの項目を外す (本書の作成時に済ませる) |
+| docs/archive/direct-input.md, docs/design/keymap.md | サジェスト・確定キーの記述を本書に合わせて書き換える |
+| docs/archive/input-model-v2.md | 段階表の詳細設計に本書を記し、未決事項から候補バーの項目を外す (本書の作成時に済ませる) |
 
 ## 実装手順
 

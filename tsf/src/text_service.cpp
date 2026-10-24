@@ -1001,7 +1001,7 @@ bool TextService::IsKeyEaten(ITfContext* context, WPARAM wparam) const
     if (!IsKeyboardOpen()) {
         return false;
     }
-    // 数字・メールアドレスなどの欄では IME オフと同じく何も食べない (docs/design/input-scope.md)
+    // 数字・メールアドレスなどの欄では IME オフと同じく何も食べない (docs/spec/input.md「InputScope の欄」)
     if (IsInputScopePassthrough(context)) {
         return false;
     }

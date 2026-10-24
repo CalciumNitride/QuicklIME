@@ -18,7 +18,7 @@ IME がオンかオフかは、タスクバーの入力モードのアイコン 
     出ると目障りなため
   - 入力欄でないとき (モードのアイコンが × になる条件: フォーカスに context が無い、または
     `KEYBOARD_DISABLED`・`EMPTYCONTEXT` が立っている) は出さない
-- アプリの起動時の IME の状態 ([ime-start-state.md](ime-start-state.md)) を適用したときは、適用後の状態を
+- アプリの起動時の IME の状態 ([ime-start-state.md](../archive/ime-start-state.md)) を適用したときは、適用後の状態を
   出す (適用前の状態を一瞬出してから切り替えない)
 - QuicklIME の入力モードはオン (あ) とオフ (A) の 2 つだけなので、モードの変化はオン/オフの切替と同じ。
   モードを増やすときは同じ仕組みで出す

@@ -255,7 +255,7 @@ private:
     bool* succeededOut_;
 };
 
-// フォーカス中の文書の InputScope (docs/design/input-scope.md)。TextService と、後から走る
+// フォーカス中の文書の InputScope (docs/spec/input.md「InputScope の欄」)。TextService と、後から走る
 // GetInputScopeEditSession で共有する。generation はフォーカスの世代で、フォーカスが移るたびに進める
 struct FocusInputScope {
     unsigned generation = 0;

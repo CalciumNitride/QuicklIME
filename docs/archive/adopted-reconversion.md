@@ -70,7 +70,7 @@ conversion-range.md の範囲の伸縮を、記憶にまたがって行えるよ
   学習も同じく送る。確定した範囲は新しい1件として記憶し、範囲が覆っていた記憶 (範囲に一部だけ
   入った記憶を含む) を置き換える。範囲の外でかなに書き直した部分は、かなの1件として記憶する
 - 取消 (Esc・Backspace・Tab など、今の変換の取消の経路): ほかの後置再変換と同じく、読みのかなの
-  run に戻す (docs/design/input-buffer-modes.md)。元の表記は composition を張るときに文書から消えている
+  run に戻す (docs/archive/input-buffer-modes.md)。元の表記は composition を張るときに文書から消えている
 
 ### 確定アンドゥとの関係
 
@@ -96,7 +96,7 @@ conversion-range.md の範囲の伸縮を、記憶にまたがって行えるよ
 | tsf/src/text_service.cpp | 候補選択の確定時の記憶の更新 (`PrepareConversionCommit` まわり)、候補の先頭への記憶の表記の追加、フォーカス移動・IME オフでの破棄 |
 | README.md | 「入力方式」の変換キー・後置再変換の説明 |
 | docs/archive/conversion-range.md | 変換の対象の表と範囲の伸縮に、本書の記憶を参照する記述を足す |
-| docs/design/direct-input.md | キー操作の表 (run なしの変換キー) |
+| docs/archive/direct-input.md | キー操作の表 (run なしの変換キー) |
 
 ## 実装手順
 

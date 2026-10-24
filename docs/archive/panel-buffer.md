@@ -2,7 +2,7 @@
 
 ## 背景と目的
 
-直接入力方式 (docs/design/direct-input.md、docs/design/append-input.md) は、run のかなを完成した
+直接入力方式 (docs/archive/direct-input.md、docs/archive/append-input.md) は、run のかなを完成した
 時点で文書に追記し、候補バーの採用や変換の確定でその文字列を置き換える。入力パネル
 (docs/design/suggest-panel.md) の入力行は、文書に入っている run の文字列をパネルに重ねて見せているだけである。
 
@@ -62,7 +62,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 
 ### キーの意味 (パネル保持入力、IME オン時)
 
-文書書き込み入力 (docs/design/direct-input.md の表) と違うところだけを書く。書かないキーは文書書き込み入力と同じ。
+文書書き込み入力 (docs/archive/direct-input.md の表) と違うところだけを書く。書かないキーは文書書き込み入力と同じ。
 
 | キー | 状態 | 挙動 |
 |---|---|---|
@@ -158,7 +158,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 | engine/src/bin/quicklime-config.rs | 「入力」タブのチェックボックスと `input_buffer` の読み書き |
 | README.md | 設定 `input_buffer` と、パネル保持入力でのキー操作の違い |
 | docs/design/suggest-panel.md, docs/design/panel-theme.md | 「パネルだけに持つ設定は別の設計書で扱う」の記述を、本書への参照に書き換える |
-| docs/design/direct-input.md | 方式の節に、パネル保持入力を本書で定めることを書く |
+| docs/archive/direct-input.md | 方式の節に、パネル保持入力を本書で定めることを書く |
 
 エンジン (Rust の変換部) とプロトコルは変更しない。
 
@@ -213,7 +213,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 | 22 | Chrome の検索欄 (逐次検索) | `kyouhaiitenki` | 打鍵中は検索候補が変わらない。採用・確定で初めて反応する |
 | 23 | Discord の入力欄 | `kyouha` → 変換キー → 確定 / Esc | 確定では漢字だけが入る。Esc では何も残らない |
 | 24 | メモ帳 | `candidate_bar 0`、`kyouha` → Tab | 入力行だけのパネルが出る。Tab で `きょうは` が入ってから Tab がアプリへ渡る |
-| 25 | メモ帳 | `input_buffer document` (既定) | 文書書き込み入力のテスト (docs/design/direct-input.md、candidate-bar.md) が今どおり通る |
+| 25 | メモ帳 | `input_buffer document` (既定) | 文書書き込み入力のテスト (docs/archive/direct-input.md、candidate-bar.md) が今どおり通る |
 | 26 | メモ帳 | run の途中で config.tsv の `input_buffer` を書き換えて保存 | その run は始めたときの方式のまま。次の run から切り替わる |
 | 27 | 設定ツール | 「入力」タブのチェックボックスを切り替えて保存 | config.tsv に `input_buffer` が書かれ、次の run から反映される |
 | 28 | WezTerm | IME オフで `echo abc ` → IME オン → `kyouha` → Alt+B (シェルの単語移動) → 無変換 | Alt+B で run は終わらず入力行に `きょうは` が残り、キャレットは `abc` の前へ動く。無変換で `echo きょうはabc ` になる |

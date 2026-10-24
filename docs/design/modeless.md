@@ -6,7 +6,7 @@
 英語の打鍵列を IME が自動で見分けてアルファベットのまま入れ、日本語の打鍵列は
 従来どおりかな漢字変換する。
 
-前提として direct 方式 (docs/design/direct-input.md) の上に載せる。判定と英字モードの
+前提として direct 方式 (docs/archive/direct-input.md) の上に載せる。判定と英字モードの
 扱いは RomajiComposer 層に入れる。
 
 既存の部品:

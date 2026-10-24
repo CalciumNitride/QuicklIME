@@ -7,7 +7,7 @@ pub const DEFAULT_NEWLINE_APPS: &str = "Discord.exe,slack.exe,ms-teams.exe,Teams
 pub const IME_START_LABELS: [(ImeStart, &str); 3] =
     [(ImeStart::Auto, "自動"), (ImeStart::On, "オン"), (ImeStart::Off, "オフ")];
 
-/// アプリの起動時の IME の状態 (docs/design/ime-start-state.md)。自動は ime_start_apps に
+/// アプリの起動時の IME の状態 (docs/spec/input.md「起動時の IME の状態」)。自動は ime_start_apps に
 /// 載せないことで表す
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum ImeStart {

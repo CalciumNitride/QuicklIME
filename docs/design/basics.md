@@ -117,12 +117,10 @@
 
 - 記号辞書は Mozc の symbol.tsv (辞書ディレクトリ直下、無ければ Mozc の配置の `symbol/`)。
   「やじるし」→「→」のように引く。無ければ記号候補なしで動く
-- 記号キーと Shift+数字キーは、日本語キーボード (JIS 配列) の刻印どおりの全角記号として run に入る
-  (tsf/src/text_service.cpp `FindSymbolKey`)。読点・句点は設定 `punctuation`、数字は `digits` に従う。
-  テンキーは数値の入力用なので、演算記号は常に半角で入る (数字は `digits` に従う)
+- 記号キー・Shift+数字キー・テンキーで run に入る文字は [docs/spec/input.md](../spec/input.md)「印字キー」へ移した
 - 記号辞書を引くときは、読みの全角英数記号を半角にしてから引き直す。記号キーは全角形で run に入るが、
   symbol.tsv の読みは半角形で載っているため (「（」を変換すると ［ 〔 などが出る)
-- Shift+英字は大文字をそのまま入れて英字モードに入り、以降の英字はローマ字変換せずに続く
+- Shift+英字の英字モードは [docs/spec/input.md](../spec/input.md)「印字キー」へ移した
   (モードレス入力での扱いは [モードレス入力](../user/modeless.md) と [modeless.md](modeless.md))
 
 ## 対記号の両側同期
@@ -147,46 +145,15 @@
 
 ## 確定アンドゥ
 
-操作は [入力と変換](../user/input.md) の Ctrl+Backspace と「読める文書」にある。
-
-- 直前の確定の文字列と、確定前の読みの状態 (`RomajiComposer`) を1件だけ覚える
-- 一度きりの操作で、成否によらず押した時点で記憶を消す。確定後に別の編集があって文書と一致しないとき、
-  以降の Ctrl+Backspace を奪い続けないため
-- 読める文書でキャレット直前が確定の文字列と一致するときだけ、その文字列を消して読みの run に戻す。
-  読めると判定されていない文書では消す範囲を照合できないので働かず、打鍵はアプリへ渡す
-  ([input-buffer-modes.md](input-buffer-modes.md))
-- 戻した run の方式 (composition 入力・パネル保持入力) は、確定アンドゥの時点の設定 `input_buffer` で決める
-- 確定を取り消すので、その確定を前提にした前文脈と LLM の左文脈も捨てる
+[docs/spec/input.md](../spec/input.md)「確定アンドゥ」へ移した
 
 ## 読める文書の判定
 
-利用者向けの説明は [入力と変換](../user/input.md) の「読める文書」にある。文書の分類は TSF 層が持つ
-(tsf/src/text_service_direct.cpp `ClassifyByLastInsert`)。
-
-- IME が直前に文書へ入れた文字列 (挿入・未確定文字列の確定) をキャレット直前から読み戻し、一致すれば
-  読める文書とする。分類は「読める」と「未判定」の 2 つだけ
-- 確かめる時点は次の 3 つ
-  - run の始め (最初の打鍵。`TypeAppend`)
-  - 入力なしの状態の変換キー・F6〜F10・確定アンドゥのキー (`ClassifyBeforeIdleKey`)。これらはキャレット直前を
-    読めると分かっている文書でしか働かず、キーを食べるかどうかを分類で決めるため、キーの処理の前に確かめる
-  - 確定アンドゥの実行 (`UndoCommit`)
-- 照合に使った直前の挿入は、一致してもしなくても捨てる。一致しなければ未判定のまま残し、次に入れた文字列で
-  また確かめる。挿入の後にアプリへ渡したキーで文書が変わったのか、読めない文書なのかを区別できないため。
-  CUAS 経由のアプリ (WezTerm など) は確定した文字列を後から受け取るので、未判定のまま残る
-- 読めると判定した後は、フォーカスが移るまで確かめ直さない。フォーカス移動 (`OnSetFocus`) で未判定に戻し、
-  直前の挿入も捨てる。読めるかどうかは文書 (アプリ・編集コントロール) の性質で決まるため、文書ごとに判定し直す
+[docs/spec/input.md](../spec/input.md)「読める文書の判定」へ移した
 
 ## ローマ字テーブル
 
-- 既定のテーブルは TSF 層に持つ (tsf/src/romaji.cpp `kDefaultTable`)。ユーザのテーブル
-  `%APPDATA%\QuicklIME\romaji.tsv` (`QUICKLIME_ROMAJI_FILE` で変更可) を既定のテーブルへ追加・上書きする。
-  書式は [辞書とローマ字](../user/dictionary.md#ローマ字テーブルのカスタマイズ)
-- 3列目が空でない行 (Google 日本語入力の「次の入力」付きの形式) は対応せず読み飛ばす
-- テーブルはプロセスごとに初回の参照で一度だけ作る。IME の DLL はアプリのプロセスごとにロードされる
-  ため、ファイルの変更はアプリの再起動後に反映される
-- AZIK 風のプリセット [data/romaji-azik.tsv](../../data/romaji-azik.tsv) は撥音拡張と二重母音拡張を持つ。
-  本家 AZIK の「x = しゃ行」「q = ん」は、既定のテーブルの小書き文字 (`xa` = ぁ) と くぁ行 (`qa`) に
-  衝突するため含めない。使えなくなる既定の打ち方はプリセットの先頭のコメントにある
+[docs/spec/input.md](../spec/input.md)「ローマ字テーブル」へ移した
 
 ## ユーザ辞書と単語登録ツール
 
@@ -285,14 +252,7 @@ installer/build.ps1 がバイナリ・辞書・ライセンスを集めてから
 
 ## パスワード欄などキー入力が無効な文書
 
-- フォーカス中の文書・context が無いとき、または context の compartment `GUID_COMPARTMENT_KEYBOARD_DISABLED`・
-  `GUID_COMPARTMENT_EMPTYCONTEXT` が立っているときは、キーを食べない (SampleIME・CorvusSKK と同じ判定)。
-  アプリが IME を無効にする手段に従えば足りる
-- そのとき残っている run は、学習・LLM の左文脈・前文脈に残さずに捨てる
-- この判定に InputScope は使わない。Chrome のパスワード欄は両方の compartment を立てるが、InputScope は
-  `IS_PASSWORD` ではなく `IS_PRIVATE` を返すため。半角英数字を前提にした InputScope の欄でキーを食べない
-  扱いは [input-scope.md](input-scope.md)
-- 診断ログ (`debug_log`) には、フォーカス先の無効化の状態と InputScope を出す
+[docs/spec/input.md](../spec/input.md)「キー入力が無効な文書」へ移した
 
 ## 横並びのテーマでのサジェスト選択の ←→
 

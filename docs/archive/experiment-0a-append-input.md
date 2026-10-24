@@ -1,12 +1,12 @@
 # 実験 0a: 追記型入力 (F1 / F2)
 
-入力モデル v2 (docs/design/input-model-v2.md) の段階0a。段階2 (フォールバック改善) の
+入力モデル v2 (docs/archive/input-model-v2.md) の段階0a。段階2 (フォールバック改善) の
 方式を決めるための試作と比較の仕様。
 
 ## 背景と目的
 
 direct 方式は、打鍵ごとにキャレット直前の run を置換して文字を入れる
-(docs/design/direct-input.md「置換 edit session」)。置換するには文書を読み戻す必要がある。
+(docs/archive/direct-input.md「置換 edit session」)。置換するには文書を読み戻す必要がある。
 そのため、読み戻せない次の2つの場面では composition 方式にフォールバックしている。
 
 - 空の入力欄の冒頭: 周辺テキストが無く、CUAS と区別できない
