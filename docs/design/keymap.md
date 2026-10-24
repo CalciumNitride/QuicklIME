@@ -30,7 +30,7 @@
 | 入力なし | `idle` | run が無い |
 | run 中 | `run` | run があり、候補選択中でもサジェスト選択中でもない |
 | 候補選択中 | `candidate` | `converting_` (composition に昇格しているかどうかは問わない) |
-| サジェスト選択中 | `suggest` | 候補バー (docs/design/candidate-bar.md) で候補を選んでいる (`barIndex_ >= 0`)。run の無いときに出す読みなしの予測 (docs/design/next-word-prediction.md) で候補を選んでいるときも含む |
+| サジェスト選択中 | `suggest` | 候補バー (docs/design/candidate-bar.md) で候補を選んでいる (`barIndex_ >= 0`)。run の無いときに出す読みなしの予測 (docs/archive/next-word-prediction.md) で候補を選んでいるときも含む |
 
 ### 割当の対象外にするキー
 
@@ -69,7 +69,7 @@
 | `RegisterWord` | `key.register_word` | 入力なし | `Ctrl+F7` | 単語登録ツールの起動 |
 | `OpenConfig` | `key.open_config` | 入力なし | `Ctrl+F12` | 設定ツールの起動 |
 | `InsertNewline` | `key.insert_newline` | 全状態 | `Ctrl+J` | 対象アプリ (`newline_apps`) で Shift+Enter を送る。入力中は Enter と同じく確定してから送る。対象外のアプリでは割当なしと同じ (docs/design/newline-key.md) |
-| `NextWordNext` | `key.next_word_next` | 入力なし・サジェスト選択中 | `Ctrl+Down` | 読みなしの予測 (docs/design/next-word-prediction.md) の選択を右へ動かす (未選択から先頭) |
+| `NextWordNext` | `key.next_word_next` | 入力なし・サジェスト選択中 | `Ctrl+Down` | 読みなしの予測 (docs/archive/next-word-prediction.md) の選択を右へ動かす (未選択から先頭) |
 | `NextWordPrev` | `key.next_word_prev` | 入力なし・サジェスト選択中 | `Ctrl+Up` | 読みなしの予測の選択を左へ動かす (未選択から末尾、先頭から未選択) |
 | `ForgetLearning` | `key.forget_learning` | サジェスト選択中 | `Ctrl+Delete` | 選んでいる候補の学習を消し、候補を作り直す (docs/design/forget-learning.md)。英字候補・学習でない候補・エンジン未接続でも打鍵を食べて何もしない |
 

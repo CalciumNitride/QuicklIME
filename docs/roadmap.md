@@ -19,6 +19,10 @@
   ([slint-gui.md](design/slint-gui.md))
 - 設定ツールと単語登録ツールの背景の Mica。winit の unstable な API と透明ウィンドウの組み合わせが要り
   壊れやすいため、今は Fluent の単色 ([slint-gui.md](design/slint-gui.md))
+- Space・Enter で run を終えたときに後続語の予測を出さないことの見直し。出さない理由が設計書にもコードにも無く、
+  確定キーで終えたときとの違いを残すかを決める ([suggest.md](spec/suggest.md)「後続語の予測」)
+- PageUp / PageDown を候補バーのページ送りに使わないことの見直し。run 中は run を終えてアプリへ渡しているが、
+  その理由が残っておらず、ページ送りに割り当てるかを決める ([suggest.md](spec/suggest.md)「ページ送り」)
 
 ## 見送り・既知の問題
 

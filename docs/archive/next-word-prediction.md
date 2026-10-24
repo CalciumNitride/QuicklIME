@@ -15,8 +15,8 @@
 
 ### 予測の材料
 
-予測の材料と並びは [learning-score.md](learning-score.md) の A・D で置き換え (文脈の句の学習を割引の大きい順に引く)。
-学習の後ろに、日本語版ウィキペディアから数えた文節の連なりの統計を足す ([next-word-ngram.md](next-word-ngram.md))。
+予測の材料と並びは [learning-score.md](../design/learning-score.md) の A・D で置き換え (文脈の句の学習を割引の大きい順に引く)。
+学習の後ろに、日本語版ウィキペディアから数えた文節の連なりの統計を足す ([next-word-ngram.md](../design/next-word-ngram.md))。
 
 - 文脈付きの学習 (`LearningStore` の ctx_map) を文脈キー (直前文節の表記の末尾 16 文字) で引き、
   記録が新しい順に (読み, 表記) を返す。表記の重複は先勝ちで除く
@@ -73,7 +73,7 @@
   `NextWordNext` / `NextWordPrev` も引き続き選択を動かす
 - 選択では文書を書き換えない。採用は今の候補バーと同じ操作で行う
 - Ctrl+1〜9 は未選択でも働き、今出しているページ内のその番号の候補を確定キーと同じく入れる
-  ([number-key-adopt.md](number-key-adopt.md))。予測が出ている間は、ページ内に無い番号でも食べて何もしない
+  ([number-key-adopt.md](../design/number-key-adopt.md))。予測が出ている間は、ページ内に無い番号でも食べて何もしない
   (アプリの Ctrl+数字は効かない)
 
 | 操作 | 選択中の動作 |

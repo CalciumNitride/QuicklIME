@@ -87,7 +87,7 @@ public:
     SuggestPanel& operator=(const SuggestPanel&) = delete;
 
     // 候補をテーマの並べ方 (横一列・縦積み) で並べ、input があれば上に入力行を置いて出す。
-    // 候補はページに区切り (docs/design/suggest-paging.md)、selection を含むページを出す。番号は
+    // 候補はページに区切り (docs/spec/suggest.md「ページ送り」)、selection を含むページを出す。番号は
     // ページ内で 1 から振り、複数ページなら位置 (12/24) を出す。selection が範囲外ならどの候補も
     // 強調せず 1 ページ目を出す。出したページの候補の数を返す (候補が無く入力行だけを出したときも 0)。
     // 候補も入力行も無ければ隠す

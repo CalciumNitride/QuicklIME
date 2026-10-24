@@ -80,7 +80,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 | Alt 併用 (Ctrl+Alt 併用を含む) | run 中 (候補選択中を除く) | 食べずにアプリへ渡し、run は終えない。文書の分類によらない (下記) |
 | 変換キー・F4〜F10 | run 中 | 消す文字列が無いので、そのまま空の composition を張って候補選択に入る (下記) |
 
-- 後続語の予測 (docs/design/next-word-prediction.md) は、挿入の後に同じ条件で出す。予測の採用は今も挿入なので変わらない
+- 後続語の予測 (docs/archive/next-word-prediction.md) は、挿入の後に同じ条件で出す。予測の採用は今も挿入なので変わらない
 - モードレス入力 (docs/design/modeless.md) の英字切替・Backspace による判定の巻き戻しは、読みと入力行が
   変わるだけで、文書の書き換え (`RewriteAppendRun`) は要らない
 - run を終えるときのモードレスの判定 (ルール3 など) を適用するかどうかは、文書書き込み入力のそれぞれのキーと同じにする

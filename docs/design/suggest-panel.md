@@ -2,7 +2,7 @@
 
 ## 背景と目的
 
-候補バー (docs/design/candidate-bar.md) と読みなしの後続語予測 (docs/design/next-word-prediction.md)
+候補バー (docs/design/candidate-bar.md) と読みなしの後続語予測 (docs/archive/next-word-prediction.md)
 により、読みを少し打って候補を採用し、採用後は次の語の予測から選んでいく入力ができるようになった。
 この「単語ごとに候補から選んで進める」入力をスマートフォンの文字入力のような感覚で使えるよう、
 表示を次のように改める。
@@ -120,7 +120,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
     `center` ではキャレットの矩形が取れなくてもパネルを出す
   - パネルの幅は固定にする: min(f × 36, 作業領域の幅 × 0.9)。チップと入力行は左詰めにし、
     打鍵ごとに候補の位置が左右へ動かないようにする。幅に収まらない後ろの候補は次のページに送る
-    (docs/design/suggest-paging.md)
+    (docs/archive/suggest-paging.md)
   - パネルの高さは、`panel_input` の設定で決まる行数で一定になる。候補が無いときもチップ列の高さを
     確保して、入力行の位置が上下しないようにする
 - 未完成ローマ字の小窓 (`panel_input 0`) は `center` のときもキャレットの位置に出す

@@ -335,7 +335,7 @@ private:
     // (run 終了時の判定 (ルール3・6・7) も全体変換も適用しない)
     HRESULT CommitRunKey(ITfContext* context);
 
-    // ---- 読みなしの後続語予測 (docs/design/next-word-prediction.md) ----
+    // ---- 読みなしの後続語予測 (docs/spec/suggest.md「後続語の予測」) ----
     // run の無いときに、今の前文脈の後続語の予測を候補バーに出す (設定・前文脈・候補・接続の
     // どれかが欠ければ何もしない)
     void ShowNextWordBar(ITfContext* context);

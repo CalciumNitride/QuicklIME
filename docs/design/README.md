@@ -8,12 +8,12 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・予測・タイプミス補正・記号・
-  横並びのテーマでのサジェスト選択の ←→・
+- [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・変換のタイプミス補正・記号・
   日付時刻の候補・確定アンドゥ・ローマ字テーブル・ユーザ辞書と単語登録・
   設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ・パスワード欄) の仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
-  [docs/spec/conversion.md](../spec/conversion.md) へ移した
+  [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
+  サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -50,30 +50,27 @@
 ## 候補の表示
 
 - [candidate-bar.md](candidate-bar.md): 候補バー。入力中に変換結果と予測候補を横一列に出し、採用時だけ
-  文書を書き換える。バーの全体変換の件数と先頭文節の取り方は [nbest.md](nbest.md) で、見た目・表示位置・
-  入力行は [suggest-panel.md](suggest-panel.md) で、バーの並び・先頭文節の候補・エンジンへの問い合わせは
-  [unified-suggest.md](unified-suggest.md) で置き換え
+  文書を書き換える。見た目・表示位置・入力行は [suggest-panel.md](suggest-panel.md) で置き換え。
+  バーの内容・表示条件・選択・採用・設定・エンジンへの問い合わせは [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [suggest-panel.md](suggest-panel.md): 入力パネル。候補バーの見た目の刷新 (カプセル)、画面中央への
   表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
   [conversion-panel.md](conversion-panel.md)、設定 `panel_blur` は [theme-blur.md](theme-blur.md) で置き換え
 - [panel-theme.md](panel-theme.md): 入力パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
   テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
-- [next-word-prediction.md](next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
-  出し、予測候補の順位にも前文脈を使う。予測の材料と並びは [learning-score.md](learning-score.md) で置き換え
+- 読みなしの後続語予測: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - [next-word-ngram.md](next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
-  読みなしの後続語予測で学習の後ろに足す
+  読みなしの後続語予測で学習の後ろに足す。コーパス・文節への分け方・表・生成・エンジンは
+  [docs/spec/suggest.md](../spec/suggest.md) へ移した (同梱は本書)
 - [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧を入力パネルで出す (テーマ・表示位置・
   変換中の入力行)
 - [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
   印 (テーマの `caret_marker`。パネルの吹き出しの尻尾か、キャレットの下の三角) で示す
 - [theme-blur.md](theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
   `capsule-blur` を足す。設定 `panel_blur` を廃止
-- [suggest-paging.md](suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の上限を
-  `max_predictions` (9 / 18 / 27 / 36) にする。候補バーの組み立ての件数は [unified-suggest.md](unified-suggest.md)
-  で置き換え
+- 候補バーのページ送り: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
   予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
-  Shift+← / → で縮める。予測の学習の点数は [learning-score.md](learning-score.md) で置き換え
+  Shift+← / → で縮める。全体変換の補正 (D) と CONVNBEST・RERANK の打鍵を除き [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 - [number-key-adopt.md](number-key-adopt.md): 数字キーをどの状態でも文字キーと同じに扱い、番号での採用・確定を
@@ -82,11 +79,11 @@
 ## 変換
 
 - [nbest.md](nbest.md): 入力全体の N-best。候補バーと変換キーの候補に使い、文節 UI を設定 `segment_ui`
-  のオプションにする。候補バーの並びと先頭文節は [unified-suggest.md](unified-suggest.md) で置き換え。
-  学習・変換キーの候補選択・設定は [docs/spec/conversion.md](../spec/conversion.md) へ移した
+  のオプションにする。学習・変換キーの候補選択・設定は [docs/spec/conversion.md](../spec/conversion.md) へ、
+  候補バーは [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え
 - [llm-generate.md](llm-generate.md): Vulkan 版で、9 文字以上の読みの並べ替えに LLM の貪欲法で生成した候補を 1 件足し、
-  候補バーの全体変換の枠を並べ替えの結果の上位から埋め直す
+  候補バーの全体変換の枠を並べ替えの結果の上位から埋め直す。候補バーへの反映は [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - run が無いときのキャレット直前のかなの変換と範囲の伸縮、採用した文字列の記憶からの再変換:
   [docs/spec/conversion.md](../spec/conversion.md) (設計書は下の「archive」の節)
 - [selection-reconversion.md](selection-reconversion.md): 漢字を含む選択範囲を、エンジンの逆変換 (REVERSE) で
@@ -96,7 +93,7 @@
   対象の数・書き方は [docs/spec/conversion.md](../spec/conversion.md) へ移した (候補の並びは本書)
 - [learning-score.md](learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
   語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を
-  前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)
+  前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)。予測の点数と並び (D) は [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す。
   補正の元 (打鍵)、補正の語のコストと Viterbi の状態の数、候補バーの先頭文節は
   [unified-suggest.md](unified-suggest.md) で置き換え
@@ -170,6 +167,10 @@
   ←→ による変換の範囲の伸縮。[docs/spec/conversion.md](../spec/conversion.md) へ移した
 - [adopted-reconversion.md](../archive/adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す。[docs/spec/conversion.md](../spec/conversion.md) へ移した
+- [next-word-prediction.md](../archive/next-word-prediction.md): 読みなしの後続語予測。確定の直後に次の語を候補バーに
+  出し、予測候補の順位にも前文脈を使う。[docs/spec/suggest.md](../spec/suggest.md) へ移した
+- [suggest-paging.md](../archive/suggest-paging.md): 候補バー (run のサジェスト・後続語の予測) のページ送り。合計の
+  上限を `max_predictions` (9 / 18 / 27 / 36) にする。[docs/spec/suggest.md](../spec/suggest.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果

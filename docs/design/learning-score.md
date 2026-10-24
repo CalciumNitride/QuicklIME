@@ -81,15 +81,7 @@
 
 ### D. 予測
 
-- SUGGEST の予測の点数は次のとおり (unified-suggest.md の E の仮の点数を置き換える)
-  - 辞書の語: s = 1 語の経路のコスト (語の学習の割引を引いたもの) − C0
-    + ずれのコスト + `PREDICT_BIAS`
-  - 句の学習: s = `PHRASE_BASE` − 句の学習の割引 − C0 + ずれのコスト。前文脈があれば、その文脈の句の学習の
-    割引も引く (前文脈に続いた文節で、句の学習に無いものも候補にする)
-  - 同じ表記が辞書の語と句の学習の両方にあれば、s の小さいほうの 1 件にする
-- 短縮よみは今の仮の点数 (−1) のまま
-- PREDICT (旧エンジン向けの並び) と NEXTWORD は、確定履歴と文脈の句の学習を「新しい順」ではなく割引の大きい順に
-  並べる。NEXTWORD が返すのは文脈の句の学習の文節 (今と同じく文節の読みと表記)
+[docs/spec/suggest.md](../spec/suggest.md)「SUGGEST の並び」の「点数」と「旧エンジンとの互換」、「後続語の予測」の「候補」へ移した
 
 ### E. ファイル
 
@@ -150,7 +142,7 @@ q\t<文脈>\t<読み>\t<表記>\t<d>\t<t>
 | docs/protocol.md | LEARN・LEARN2・LEARNWORD・FORGET・PREDICT・NEXTWORD の説明 (要求と応答の形式は変えない) |
 | docs/design/basics.md | 「学習」「予測」 |
 | docs/design/unified-suggest.md | E の学習の仮の点数が本書で置き換わることを書く |
-| docs/design/forget-learning.md, docs/design/next-word-prediction.md | 本書で置き換わる所の注記 |
+| docs/design/forget-learning.md, docs/archive/next-word-prediction.md | 本書で置き換わる所の注記 |
 | docs/design/README.md | 本書の 1 行 |
 | docs/roadmap.md | 「学習の改良」を消す (打ち間違えやすいキーの組の学習は残す) |
 | README.md | 学習の説明 |

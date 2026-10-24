@@ -2187,7 +2187,6 @@ bool TextService::PanelKeyNeedsResend(ITfContext* context, WPARAM wparam) const
     }
     if (ctrl) {
         // Ctrl+H は Backspace の読み替えで、IME が読みを削る。Ctrl+1〜9 はバーの候補の採用
-        // (擬似 Backspace は Ctrl を離した状態で送る)
         return wparam != 'H' && !PanelNumberKey(wparam);
     }
     switch (wparam) {

@@ -108,10 +108,10 @@ struct TsfConfig {
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
     // 候補バーの合計の上限 (設定 max_predictions。9 / 18 / 27 / 36。エンジンの PREDICT と同じ設定を読む。
-    // docs/design/suggest-paging.md)
+    // docs/spec/suggest.md「件数」)
     int maxPredictions = 9;
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す
-    // (docs/design/next-word-prediction.md)
+    // (docs/spec/suggest.md「後続語の予測」)
     bool nextWord = true;
     // オン/オフの切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
     // (設定 mode_popup。docs/design/mode-popup.md)
