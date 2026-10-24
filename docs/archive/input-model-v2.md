@@ -57,7 +57,7 @@ direct 方式 (docs/archive/direct-input.md) を作ったことで、Space を�
 - 状態は4つ: 入力なし / run 中 / 候補選択中 / サジェスト選択中
 - 1つの機能に複数のキーを割り当てられる
 - 設定 UI では、機能ごとの一覧に状態別の上書きを足す見せ方にする
-- コア操作は割当変更の対象にしない (範囲は docs/design/keymap.md)
+- コア操作は割当変更の対象にしない (範囲は docs/archive/keymap.md)
 
 ### フォールバック
 
@@ -83,7 +83,7 @@ direct 方式 (docs/archive/direct-input.md) を作ったことで、Space を�
 |---|---|---|---|
 | 0a | 実験: 追記型入力 (F1 / F2) の試作と比較 | TSF | docs/archive/experiment-0a-append-input.md |
 | 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/archive/experiment-0b-llm.md |
-| 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
+| 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/archive/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/archive/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | docs/design/nbest.md |

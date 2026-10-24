@@ -93,7 +93,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
   Enter 以外の素通しキーにも広げる)
 - 読める文書では食べずに、`OnTestKeyDown` / `OnKeyDown` の中で挿入してから渡す (Enter と同じ)
 - Alt 併用のキーは送り直しの対象にしない。Alt 併用の打鍵は key event sink に届かないアプリがあり
-  (WezTerm・メモ帳で確認。docs/design/keymap.md)、届かないアプリでは run を終える契機が無い。届くアプリでも
+  (WezTerm・メモ帳で確認。docs/archive/keymap.md)、届かないアプリでは run を終える契機が無い。届くアプリでも
   run を終えず、キャレット移動と同じ扱い (run を続け、採用・確定した時点のキャレット位置に挿入する) に揃える。
   読みは文書に書いていないので、Alt 併用のショートカットでキャレットや文書が変わっても読みは壊れない
 

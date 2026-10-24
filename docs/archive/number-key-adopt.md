@@ -75,7 +75,7 @@
 
 - docs/design/candidate-bar.md: 選択の「数字 1〜9 は選ぶ」を本書の Ctrl+数字に書き換え、採用の表に Ctrl+数字の行を足す
 - docs/archive/next-word-prediction.md: 選択の数字 1〜9 の記述と採用の表
-- docs/design/keymap.md: 「候補番号の選択は数字キーに固定」を Ctrl+数字キーに。コア操作の表の 1〜9 の行。
+- docs/archive/keymap.md: 「候補番号の選択は数字キーに固定」を Ctrl+数字キーに。コア操作の表の 1〜9 の行。
   「割当の対象外にするキー」に Ctrl+1〜9 を足す
 - docs/user/ のキー割当の説明に割り当てられないキーの一覧があれば、Ctrl+1〜9 を足す
 - docs/archive/direct-input.md: 印字キーの表の「数字 1〜9 は候補番号の選択」の注記

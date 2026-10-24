@@ -73,7 +73,7 @@ run 終了時に行うこと (既存の確定処理と同じ):
 
 Space はスペース、変換は専用の変換キーで行う。変換キー・確定キー・Space (候補選択中)・
 F4〜F10・Ctrl+Backspace などは割当を変えられる機能で、表の記述は既定の割当のもの
-(docs/design/keymap.md)。割当に一致した打鍵は機能として処理し、一致しない打鍵は下表の
+(docs/archive/keymap.md)。割当に一致した打鍵は機能として処理し、一致しない打鍵は下表の
 キー本来の処理に進む。候補選択中は composition に昇格したかどうかによらず同じ挙動にする。
 
 | キー | 状態 | 挙動 |
@@ -82,7 +82,7 @@ F4〜F10・Ctrl+Backspace などは割当を変えられる機能で、表の記
 | 数字・テンキー | run なし、設定 digits=half | 食べない (アプリに素のキーを渡す)。電話番号・郵便番号など自動で次欄へ移動するフォームは keydown/keyup/input をそのまま受け取る必要があるため。run は始まらない (数字で始まる run の助数詞サジェストは諦める) |
 | 数字・テンキー | run なし、設定 digits=full | 新しい run を開始して全角で追記 |
 | 英字・記号・数字・テンキー | run 中 | 読みに追加し、増えたかなを追記 |
-| 同上 | 候補選択中 | 選択を確定して run 終了、新しい run を開始 (数字 1〜9 も同じ。番号での確定は Ctrl+1〜9。docs/design/number-key-adopt.md) |
+| 同上 | 候補選択中 | 選択を確定して run 終了、新しい run を開始 (数字 1〜9 も同じ。番号での確定は Ctrl+1〜9。docs/archive/number-key-adopt.md) |
 | 同上 | サジェスト選択中 (バー選択中) | 選択中の候補を採用し、その打鍵から続ける (数字 1〜9 も同じ。後続語の予測の選択中は digits=half の数字も食べて run を始める。番号での採用は Ctrl+1〜9) |
 | Space | run なし | スペース挿入 (設定 space に従う)。食べずに通す場合も既存どおり |
 | Space | run 中 | run 終了 (未変換ローマ字は `Commit()` の救済で付ける) + スペース挿入 |
@@ -123,7 +123,7 @@ F4〜F10・Ctrl+Backspace などは割当を変えられる機能で、表の記
 
 - 機能 `KeyFunc::Convert`。設定キーは `key.convert`、既定値は `Convert`
   (VK_CONVERT、JIS 配列の変換キー)。US 配列では `Ctrl+Space` などを割り当てる
-- 割当の書式・複数キー・状態別の上書きは docs/design/keymap.md に定める
+- 割当の書式・複数キー・状態別の上書きは docs/archive/keymap.md に定める
 
 ### 変換中の composition
 

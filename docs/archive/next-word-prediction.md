@@ -73,7 +73,7 @@
   `NextWordNext` / `NextWordPrev` も引き続き選択を動かす
 - 選択では文書を書き換えない。採用は今の候補バーと同じ操作で行う
 - Ctrl+1〜9 は未選択でも働き、今出しているページ内のその番号の候補を確定キーと同じく入れる
-  ([number-key-adopt.md](../design/number-key-adopt.md))。予測が出ている間は、ページ内に無い番号でも食べて何もしない
+  ([number-key-adopt.md](number-key-adopt.md))。予測が出ている間は、ページ内に無い番号でも食べて何もしない
   (アプリの Ctrl+数字は効かない)
 
 | 操作 | 選択中の動作 |
@@ -112,7 +112,7 @@
 | tsf/src/text_service_direct.cpp | run 終了時の表示、選択・採用 (追記、学習、前文脈の更新、続けての予測)、PREDICT への前文脈の受け渡し |
 | engine/src/bin/quicklime-config.rs | 「確定の後に次の語を予測する」チェックボックス、キー割当の一覧の2機能 |
 | README.md | 読みなしの予測の説明、キー割当、設定 |
-| docs/design/keymap.md | 機能の表に2機能を足す |
+| docs/archive/keymap.md | 機能の表に2機能を足す |
 | docs/design/candidate-bar.md | バーの表示条件に、run なしで出す場合 (本書) を参照する記述を足す |
 
 ## 実装手順

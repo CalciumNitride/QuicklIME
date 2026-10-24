@@ -106,7 +106,7 @@ private:
     // (context は direct 方式の後置再変換の判定で選択テキストを読むのに使う)
     bool IsKeyEaten(ITfContext* context, WPARAM wparam) const;
 
-    // ---- キー割当 (docs/design/keymap.md) ----
+    // ---- キー割当 (docs/spec/keys.md「割当の照合」) ----
     // 現在の入力状態 (割当の照合に使う)
     KeyState CurrentKeyState() const;
     // 押されている修飾キーと wparam を現在の状態の割当と照合する

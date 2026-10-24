@@ -20,7 +20,7 @@ Ctrl+J も改行になるが、統一されていない。IME の機能として
 
 ### 機能
 
-[docs/spec/input.md](../spec/input.md)「改行キー」へ移した (キー割当の一覧は [keymap.md](keymap.md)「機能」)
+[docs/spec/input.md](../spec/input.md)「改行キー」へ移した (キー割当は [docs/spec/keys.md](../spec/keys.md)「機能」)
 
 ### 設定ツール
 
@@ -61,7 +61,7 @@ Ctrl+J も改行になるが、統一されていない。IME の機能として
 | engine/src/bin/quicklime-config.rs | キー割当の一覧への追加、`newline_apps` の読み書き、「アプリ」タブの中身と実行中のアプリから選ぶダイアログ、テスト |
 | engine/Cargo.toml | windows-sys の feature に `Win32_System_Threading` を追加 (プロセスの exe パスの取得) |
 | README.md | キー操作の一覧と設定項目に改行キーと対象アプリを追記 |
-| docs/design/keymap.md | 「機能」の表に `InsertNewline` を追加 (本書を参照) |
+| docs/archive/keymap.md | 「機能」の表に `InsertNewline` を追加 (本書を参照) |
 
 ## 実装手順
 

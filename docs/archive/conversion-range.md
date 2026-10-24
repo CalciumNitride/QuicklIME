@@ -166,7 +166,7 @@ run が終わった後 (Space・Enter・確定キーで終えた後、キャレ�
 | tsf/src/config.cpp ほか keymap の状態表 | F6〜F10 の働く状態に「入力なし」を足す |
 | engine/src/bin/quicklime-config.rs | キー割当の画面で F6〜F10 の働く状態の表示を合わせる (状態別の上書きに idle を書けるようにする) |
 | README.md | 「入力方式」の変換キー・後置再変換・候補選択中の ←→・F6〜F10、「キー割当」の表 |
-| docs/design/keymap.md | 機能の表の働く状態と、入力なしの状態で食べる条件 |
+| docs/archive/keymap.md | 機能の表の働く状態と、入力なしの状態で食べる条件 |
 | docs/archive/direct-input.md | キー操作の表 (run なしの変換キー、候補選択中の ←→) |
 
 ## 実装手順
@@ -186,7 +186,7 @@ run が終わった後 (Space・Enter・確定キーで終えた後、キャレ�
    (`RemoveFront`、外したかなを前文脈にする) か、文書から1文字読んで先頭に足す →
    昇格 → 覚えた種類の変換をやり直す。direct の候補選択と昇格した composition の候補選択の
    両方の経路に入れる
-6. 文書 (README.md・docs/design/keymap.md・docs/archive/direct-input.md) を最新の仕様に合わせる
+6. 文書 (README.md・docs/archive/keymap.md・docs/archive/direct-input.md) を最新の仕様に合わせる
 7. 手動テスト (下記)
 
 ## 検証方法

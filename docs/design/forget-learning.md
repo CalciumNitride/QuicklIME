@@ -63,11 +63,8 @@
 
 ### キー割当
 
-- 割当機能 `ForgetLearning` (設定キー `key.forget_learning`、働く状態はサジェスト選択中、
-  既定 `Ctrl+Delete`) を足す。keymap.md の機能の表の末尾に置く
-- サジェスト選択中は、割当に一致した打鍵を常に食べる (keymap.md の規則どおり)。英字候補を選んでいる
-  とき・学習でない候補のとき・エンジン未接続のときも食べて何もしない。アプリへ渡すとキャレットの
-  後ろの文字が消えるため
+[docs/spec/keys.md](../spec/keys.md)「機能」へ移した (設定ツールの画面は下記)
+
 - 設定ツールの「キー」タブに「学習の削除」として足す
 
 ### 削除後の表示
@@ -92,7 +89,7 @@
 | tsf/src/engine_client.h / engine_client.cpp | `Forget(pairs, &count)`。自動起動・接続待ちはしない |
 | tsf/src/text_service.h / text_service.cpp / text_service_direct.cpp | サジェスト選択中の `ForgetLearning` の処理 (送る組の組み立て・作り直し・選択の復元) |
 | docs/protocol.md | FORGET の節 |
-| docs/design/keymap.md | 機能の表に `ForgetLearning` |
+| docs/archive/keymap.md | 機能の表に `ForgetLearning` |
 | docs/design/basics.md | 「学習」の節に削除の手段を1行 |
 | README.md | キー割当の表と候補バーの操作の説明 |
 | docs/design/README.md | 本書を索引に足す |

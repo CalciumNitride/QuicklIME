@@ -14,7 +14,8 @@
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
   サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
-  ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ移した
+  ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ、
+  キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -22,13 +23,15 @@
 
 - 入力方式 (run・入力中の読みの表示 `input_buffer`・読める文書の判定・送り直し・確定アンドゥ・IME のオン/オフと
   起動時の状態・InputScope の欄・パスワード欄): [docs/spec/input.md](../spec/input.md) (設計書は下の「archive」の節)
-- [keymap.md](keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける
+- キー割当 (状態・機能・割り当てられないキー・割当の照合・状態ごとのキーの働き・数字キーと Ctrl+1〜9・設定ファイルの書式):
+  [docs/spec/keys.md](../spec/keys.md) (設計書は下の「archive」の節)
 - [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
   改行の入れ方・対象アプリ・機能は [docs/spec/input.md](../spec/input.md) へ移した (設定ツールの画面は本書)。
   設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
 - [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
 - [forget-learning.md](forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
-  消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え
+  消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え。キー割当は
+  [docs/spec/keys.md](../spec/keys.md) へ移した
 
 ## 候補の表示
 
@@ -56,8 +59,6 @@
   Shift+← / → で縮める。全体変換の補正 (D) と CONVNBEST・RERANK の打鍵を除き [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
   キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
-- [number-key-adopt.md](number-key-adopt.md): 数字キーをどの状態でも文字キーと同じに扱い、番号での採用・確定を
-  Ctrl+1〜9 にする (候補バー・後続語の予測・候補選択中)。各設計書の数字キーでの選択を置き換え
 
 ## 変換
 
@@ -169,6 +170,10 @@
   `panel`)、2 方式で共通の run、送り直し、文書の分類。[docs/spec/input.md](../spec/input.md) へ移した
 - [ime-start-state.md](../archive/ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに
   決める。[docs/spec/input.md](../spec/input.md) へ移した
+- [keymap.md](../archive/keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける。
+  [docs/spec/keys.md](../spec/keys.md) へ移した。設定ツールの画面は [slint-gui.md](slint-gui.md) で置き換え
+- [number-key-adopt.md](../archive/number-key-adopt.md): 数字キーをどの状態でも文字キーと同じに扱い、番号での採用・確定を
+  Ctrl+1〜9 にする (候補バー・後続語の予測・候補選択中)。[docs/spec/keys.md](../spec/keys.md) へ移した
 - [input-scope.md](../archive/input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンの
   ままキーを食べない (設定 `input_scope_passthrough`)。[docs/spec/input.md](../spec/input.md) へ移した
 

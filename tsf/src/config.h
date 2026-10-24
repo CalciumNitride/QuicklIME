@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-// キー割当を変えられる機能 (docs/design/keymap.md)。コア操作 (Enter/Esc/Tab/矢印など) と
+// キー割当を変えられる機能 (docs/spec/keys.md「機能」)。コア操作 (Enter/Esc/Tab/矢印など) と
 // 印字キーは対象外。並び順は、同じ状態で同じキーが重なったときの優先順位を兼ねる
 enum class KeyFunc {
     Convert,         // 変換・次候補・後置再変換 (既定 変換キー)

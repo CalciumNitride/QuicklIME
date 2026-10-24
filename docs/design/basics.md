@@ -201,7 +201,7 @@
   | `candidate_font` / `candidate_font_size` | TSF 層 |
   | `debug_log` | TSF 層 |
 
-- キー割当 (`key.*`) は [キー割当](../user/keymap.md) と [keymap.md](keymap.md)
+- キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md)「設定ファイルの書式」へ移した
 
 ## 言語バー
 

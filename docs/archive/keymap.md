@@ -40,7 +40,7 @@
   無修飾と Shift 併用。Ctrl+M・Ctrl+H (Enter・Backspace の読み替え。Shift を
   足した打鍵は対象にする)
 - 印字キー (英字・数字・記号・テンキーの数字と演算子) の、無修飾と Shift 併用
-- Ctrl+1〜9 (上段の数字。候補の番号での採用・確定。docs/design/number-key-adopt.md)。割り当てると
+- Ctrl+1〜9 (上段の数字。候補の番号での採用・確定。docs/archive/number-key-adopt.md)。割り当てると
   その番号の候補だけが採用できなくなるため。Shift を足した打鍵と Ctrl+0 は対象にする
 - IME の切替キー (半角/全角・VK_KANJI・VK_IME_ON・VK_IME_OFF)。修飾キーによらない
 - 修飾キー単体、Alt 併用、Win キー併用。Alt 併用の打鍵は key event sink に届かない
@@ -119,7 +119,7 @@
 
 - Ctrl+1〜9 は、候補を出しているパネル (run のバー・読みなしの予測 (未選択を含む)・候補選択中) が
   あるときに食べ、今出しているページ内の番号の候補を採用・確定する。ページ内に無い番号でも食べて
-  何もしない。詳細は docs/design/number-key-adopt.md
+  何もしない。詳細は docs/archive/number-key-adopt.md
 
 - 候補選択は既定で入力全体から1つ選ぶ (docs/design/nbest.md)。文節の操作は設定 `segment_ui` 1
   (文節 UI) のときだけ使える

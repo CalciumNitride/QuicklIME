@@ -70,7 +70,7 @@ Chrome で使った。
 | フォーカス移動 | run を捨てる | run を終える。composition の文字列はアプリの扱いに任せる (学習しない) |
 | IME オフ | 読みを挿入して run を終える | composition を見えているとおりに確定して run を終える |
 
-- キー体系は両方式で同じにする (docs/design/keymap.md)。Space はスペース、変換は変換キー、Enter は確定してから
+- キー体系は両方式で同じにする (docs/archive/keymap.md)。Space はスペース、変換は変換キー、Enter は確定してから
   アプリへ渡す、確定キーは確定だけ
 - composition の開始と文字列の設定は別々の edit session で行う (開始と同じ session で SetText すると CUAS が
   WM_IME_COMPOSITION を生成しない制約。既存の `StartCompositionEditSession` の注記と同じ)
