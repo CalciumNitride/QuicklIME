@@ -3,7 +3,7 @@
 ## 背景と目的
 
 run が無いときの変換キー・F6〜F10 の対象は、キャレット直前のひらがな・ー の連続か、
-かなだけの選択範囲に限られる (docs/design/conversion-range.md)。漢字・カタカナ・英字を含む
+かなだけの選択範囲に限られる (docs/archive/conversion-range.md)。漢字・カタカナ・英字を含む
 部分は読みが分からないため、採用・確定した後に直すにはアプリの Undo でかなに戻すか、
 直前の1件だけを確定アンドゥ (Ctrl+Backspace) で読みに戻すしかない。
 
@@ -95,7 +95,7 @@ conversion-range.md の範囲の伸縮を、記憶にまたがって行えるよ
 | tsf/src/text_service_direct.cpp | run 終了・採用時の記憶への追加、`ReadIdleTarget` / `ConvertIdleTarget` の記憶からの対象決定、範囲の伸縮の記憶へのまたがり |
 | tsf/src/text_service.cpp | 候補選択の確定時の記憶の更新 (`PrepareConversionCommit` まわり)、候補の先頭への記憶の表記の追加、フォーカス移動・IME オフでの破棄 |
 | README.md | 「入力方式」の変換キー・後置再変換の説明 |
-| docs/design/conversion-range.md | 変換の対象の表と範囲の伸縮に、本書の記憶を参照する記述を足す |
+| docs/archive/conversion-range.md | 変換の対象の表と範囲の伸縮に、本書の記憶を参照する記述を足す |
 | docs/design/direct-input.md | キー操作の表 (run なしの変換キー) |
 
 ## 実装手順

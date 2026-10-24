@@ -6,7 +6,8 @@
 - **目的**: 常用に耐える実用IMEを作ること（学習目的ではない）
 - **入力方式**: 通常のローマ字入力。変換を工夫して様々なシーンでの高速入力を目指す
 
-機能ごとの設計は [docs/design/README.md](design/README.md) (設計書の索引)、未着手の項目と既知の問題は
+機能の領域ごとの今の仕様は [docs/spec/README.md](spec/README.md) (仕様書の索引)、機能ごとの実装前の設計は
+[docs/design/README.md](design/README.md) (設計書の索引)、未着手の項目と既知の問題は
 [docs/roadmap.md](roadmap.md) にある。
 
 ## アーキテクチャ

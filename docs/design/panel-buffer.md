@@ -57,7 +57,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
     文書が変わったのか、読めない文書なのかを区別できないため)
   - `OnSetFocus` で未判定に戻すのは文書書き込み入力と同じ
 - 未判定の文書は、追記のみの文書と同じく安全側に扱う (Enter の送り直しなど。下記)
-- 採用済み文字列の記憶 (docs/design/adopted-reconversion.md) は、未判定の文書でも記憶する。
+- 採用済み文字列の記憶 (docs/archive/adopted-reconversion.md) は、未判定の文書でも記憶する。
   使う時点で「読める」と判定されていて、照合で一致したものだけを使う (今と同じ)。追記のみの文書では記憶しない
 
 ### キーの意味 (パネル保持入力、IME オン時)
@@ -107,7 +107,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 - 確定 (Enter・候補番号・確定キー・印字キーなど) は composition の確定で文書に入る (今と同じ)
 - 変換の取消 (Esc・Backspace・Tab) で run に戻るとき (降格) は、composition を空の文字列で終え、読みを入力行に戻す。
   文書には何も残らない
-- 変換の範囲の伸縮 (docs/design/conversion-range.md) は、文書の分類によらず、追記のみの文書と同じく composition の
+- 変換の範囲の伸縮 (docs/archive/conversion-range.md) は、文書の分類によらず、追記のみの文書と同じく composition の
   中だけで行う。縮めて外したかなは composition の先頭に残し、広げられるのは外したかなを戻すところまで
   (run より前の文書の文字列へは広げない。外したかなを文書に書かないため)
 - 候補選択中にアプリが composition を終えたとき (`OnCompositionTerminated`) は、今と同じく run を捨てる

@@ -115,7 +115,7 @@ README から次を移す。本文はそのまま移す。
 | LLM の子プロセスの時間 (2 秒・60 秒・10 秒) と、続けて 3 回で止まること | docs/design/llm-rerank.md | 記載あり (`LLM_TIMEOUT_MS` 2000ms・`LLM_HANG_MS` 60000ms・`LLM_RESTART_COOLDOWN_MS` 10s・3 回)。README から削るだけ |
 | LLM の exe とモデルを探す順 | docs/design/llm-rerank.md | 記載あり (`QUICKLIME_LLM_MODEL_DIR` → 同じディレクトリ → 開発レイアウト)。README から削るだけ |
 | モードレス入力のルール番号と判定の細部 (4 文字までの保留、3 文字以上 / 4 文字以上の一致、ルール 7 の語リストの作り方など) | docs/design/modeless.md (ルール 1〜3)・docs/design/modeless-detection.md (ルール 4〜7・保留・英単語の始まり) | 記載あり。利用者向けには例と結果 (英字になる / ならない / 直し方) だけを残す。ルール番号は使わない |
-| 後置再変換の記憶の内部 (127 文字、文書の末尾との照合、途切れる条件) | docs/design/adopted-reconversion.md | 記載あり。利用者向けには「直前に IME で入れた文字列を打ち直さずに直せる」「スペース・改行を挟むと使えない」「フォーカス移動・IME オフで忘れる」程度を残す |
+| 後置再変換の記憶の内部 (127 文字、文書の末尾との照合、途切れる条件) | docs/archive/adopted-reconversion.md | 記載あり。利用者向けには「直前に IME で入れた文字列を打ち直さずに直せる」「スペース・改行を挟むと使えない」「フォーカス移動・IME オフで忘れる」程度を残す |
 | 読める文書の判定の時点 (次の run の始め・変換キー・確定アンドゥで確かめる、フォーカス移動で未判定に戻す) | docs/design/basics.md | append-input.md は「2 文字目以降の追記時に読み戻して分類する」と書いており README と食い違う。実装時にコードで今の挙動を確かめて basics.md に書き、利用者向けには「働く文書・働かない文書の例 (メモ帳・Word・Chrome / ターミナル)」と、読めない文書では何が使えないかだけを残す |
 | 検証用の環境変数 (`QUICKLIME_IMPORT_DIR`・`QUICKLIME_LLM_MODEL_DIR`) | docs/development.md | dict-import.md・llm-rerank.md に記載あり。利用者向けからは外し、development.md に一覧として移す |
 

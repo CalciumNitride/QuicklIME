@@ -54,7 +54,7 @@
 
 | 機能 (`KeyFunc`) | 設定キー | 働く状態 | 既定の割当 | 動作 |
 |---|---|---|---|---|
-| `Convert` | `key.convert` | 全状態 | `Convert` | 入力なし: 後置再変換 (選択範囲、無ければキャレット直前のかな。docs/design/conversion-range.md)。run 中・サジェスト選択中: 変換開始。候補選択中: 次候補 |
+| `Convert` | `key.convert` | 全状態 | `Convert` | 入力なし: 後置再変換 (選択範囲、無ければキャレット直前のかな。docs/archive/conversion-range.md)。run 中・サジェスト選択中: 変換開始。候補選択中: 次候補 |
 | `NextCandidate` | `key.next_candidate` | 候補選択中 | `Space` | 次候補 |
 | `PrevCandidate` | `key.prev_candidate` | 候補選択中 | `Shift+Space` | 前候補 |
 | `CommitRun` | `key.commit_run` | run 中・候補選択中・サジェスト選択中 | `NonConvert` | 下記「確定キー」 |
@@ -109,7 +109,7 @@
 | Backspace / Ctrl+H | 1字削除 | 変換を取り消す | 1字削除 (既存どおり) |
 | Tab / Shift+Tab | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 変換を取り消してバーの先頭を選ぶ | 次 / 前の候補 |
 | ↑ / ↓ | 候補バーの選択へ (バーが無ければ run を終えてアプリへ渡す) | 前候補 / 次候補 | 前 / 次の候補 |
-| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | ← / → は変換の範囲の伸縮 (docs/design/conversion-range.md。伸縮しない run・文書では確定してアプリへ渡す)、Shift+← / Shift+→ は確定してアプリへ渡す。`segment_ui` 1 では ← / → で文節の移動、Shift+← / Shift+→ で文節の伸縮 | ← / → は run を終えてアプリへ渡す。横一列のテーマ (`layout row`) では ← / → は前 / 次の候補 (docs/design/basics.md)。run のバー選択中の Shift+← / Shift+→ は選んでいる全体変換の採用範囲を 1 文節縮める / 伸ばす (docs/design/unified-suggest.md の F。文節が 1 つの候補・予測の候補・英字候補では何もせず、キーは食べる) |
+| ← / → / Shift+← / Shift+→ | run を終えてアプリへ渡す | ← / → は変換の範囲の伸縮 (docs/archive/conversion-range.md。伸縮しない run・文書では確定してアプリへ渡す)、Shift+← / Shift+→ は確定してアプリへ渡す。`segment_ui` 1 では ← / → で文節の移動、Shift+← / Shift+→ で文節の伸縮 | ← / → は run を終えてアプリへ渡す。横一列のテーマ (`layout row`) では ← / → は前 / 次の候補 (docs/design/basics.md)。run のバー選択中の Shift+← / Shift+→ は選んでいる全体変換の採用範囲を 1 文節縮める / 伸ばす (docs/design/unified-suggest.md の F。文節が 1 つの候補・予測の候補・英字候補では何もせず、キーは食べる) |
 | PgUp / PgDn | run を終えてアプリへ渡す | 確定してアプリへ渡す (`segment_ui` 1 では先頭 / 末尾の文節へ) | run を終えてアプリへ渡す |
 | Home / End / Delete | run を終えてアプリへ渡す | 確定してアプリへ渡す | run を終えてアプリへ渡す |
 | 1〜9 | 数字を入力 | 確定して数字から新しい run を始める | 選択中の候補を採用し、数字から打ち続ける |

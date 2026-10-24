@@ -12,7 +12,7 @@
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - LLM の右文脈の利用。範囲より後ろの文字列を同音異義語の判別に使う。zenz のプロンプトの形式に右の文脈が無く、
-  効果を実験で確かめる必要がある ([conversion-range.md](design/conversion-range.md))
+  効果を実験で確かめる必要がある ([conversion.md](spec/conversion.md)「変換の対象」)
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
   ([llm-rerank-notes.md](archive/llm-rerank-notes.md))
 - 設定ツールと単語登録ツールのハイコントラスト対応。Slint の fluent スタイルにハイコントラストの配色が無い
@@ -25,7 +25,7 @@
 - アプリ・システムからの再変換の依頼の入口 (TSF の ITfFnReconversion) は見送り。Word の右クリックの再変換や、
   サクラエディタ・秀丸エディタなど IMM32 アプリの再変換コマンド (CUAS 経由) の依頼を受ける入口だが、
   使う場面が無いため。今の後置再変換は、自分で変換キー・F6〜F10 を押したときだけ働く
-  ([selection-reconversion.md](design/selection-reconversion.md))
+  ([conversion.md](spec/conversion.md)「漢字を含む選択の再変換」)
 - 初めて打つ句の予測が、学習した句に押し出されやすい。再生評価 ([eval-sets.md](design/eval-sets.md)) の初出の
   `p` の行で、予測が 9 位以内に入る割合は学習なし 4.0%・学習あり 2.2% (266 行) と下がり、予測の上位 9 件の多くを
   学習した句が占める。全体では学習で予測が上がり (11.6% → 26.6%)、件数も少ないので点数の調整は見送り

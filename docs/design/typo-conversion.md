@@ -116,7 +116,7 @@
 - 候補バーの先頭文節の候補は [unified-suggest.md](unified-suggest.md) の F (採用範囲の縮め) で置き換え。
   補正の候補の採用範囲を縮めて採用したときも、学習を送らない
 - 前文脈 (直前に確定した文節) と LLM の左文脈は、ほかの候補と同じく更新する
-- 採用した文字列の記憶 (docs/design/adopted-reconversion.md) も、ほかの候補と同じく打ったかなを読みとして覚える
+- 採用した文字列の記憶 (docs/archive/adopted-reconversion.md) も、ほかの候補と同じく打ったかなを読みとして覚える
 
 ## 変更対象ファイル
 

@@ -76,7 +76,7 @@
   先頭から取り除かれた閉じた英字区間は忘れる
 - `Raw()`・`Commit()`・`Display()` は今どおり (閉じた英字区間は ASCII 文字のかなとして出る)
 - F6〜F10 は今どおり run 全体を `Raw()` / かなから作る
-- 範囲の伸縮で積む読みの状態 (docs/design/conversion-range.md) は `RomajiComposer` 全体なので、
+- 範囲の伸縮で積む読みの状態 (docs/archive/conversion-range.md) は `RomajiComposer` 全体なので、
   閉じた英字区間の情報も合わせて戻る
 
 採らなかった案: 閉じる専用のキーを設ける案。英字混じりの文を打つたびにキーを挟む必要があり、

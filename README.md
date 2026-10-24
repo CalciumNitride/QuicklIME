@@ -99,6 +99,7 @@ Windows 11（64bit アプリおよび 32bit アプリの両方に対応）
 
 - [開発者向けの手順](docs/development.md) (構成・ビルド・インストーラのビルド・開発版 DLL の切替)
 - [アーキテクチャ](docs/architecture.md)
+- [仕様書の索引](docs/spec/README.md) (機能の領域ごとの今の仕様)
 - [設計書の索引](docs/design/README.md)
 - [ロードマップ](docs/roadmap.md) (未着手の項目と既知の問題)
 - [TSF-エンジン間プロトコル](docs/protocol.md)

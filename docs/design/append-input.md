@@ -116,7 +116,7 @@ Alt+Backspace (元に戻す) として届いてしまう。
 
 ### 追記のみの文書での変換の範囲の伸縮
 
-候補選択中の ←→ による変換の範囲の伸縮 (docs/design/conversion-range.md) は、擬似 Backspace で
+候補選択中の ←→ による変換の範囲の伸縮 (docs/archive/conversion-range.md) は、擬似 Backspace で
 張った composition の中だけで行う。
 
 - 範囲を変えても composition を張り直さず、擬似 Backspace・目印の打鍵も使わない。文書は確定まで

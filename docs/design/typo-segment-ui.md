@@ -54,10 +54,7 @@
 
 ### D. 文節の伸縮
 
-- 文節長を指定した変換 (Shift+←→ で長さを固定した文節) には補正を入れない。指定された区切りを動かせず、
-  短い読みでのしきい値も計測していないため
-- 伸縮した文節より後ろは今も文節長の指定なしの CONVCTX で区切り直すので、A〜C がそのまま効く。
-  伸縮した文節より前の文節は、補正の候補を含めて今の候補のまま残る
+[docs/spec/conversion.md](../spec/conversion.md)「文節 UI (`segment_ui` 1)」の「補正の候補」へ移した
 
 ### E. プロトコル
 
@@ -80,23 +77,11 @@
 
 ### F. TSF 層
 
-- `ConversionSegment` に補正の表記の一覧 (`typoSurfaces`) を持たせる。候補の並びは
-  `InsertRawCandidates`・`SyncPairedSegment`・`PlaceAdoptedCandidate` などで後から変わるので、候補と並行する
-  配列ではなく表記で引く (入力全体の候補の補正の判定が表記で引くのと同じ)
-- `kinds` を付けるのは、文節 UI の変換キー (`BuildConversionSegments` の `segmentUi`) と、伸縮した後ろの
-  区切り直し (`ResizeSegment` の `ConvertSegments`) の CONVSEG・CONVCTX。文節長を固定した変換と、英字を
-  含む入力の 1 文節固定の変換には付けない
-- 候補一覧 (`ShowConversionPanel`) は、今の文節の候補のうち `typoSurfaces` にある表記を補正の候補
-  (`ItemKind::Typo`) として出す。「補正」のタグと `typo` 色は segment_ui 0 の補正の候補と同じ
+[docs/spec/conversion.md](../spec/conversion.md)「文節 UI (`segment_ui` 1)」の「補正の候補」へ移した
 
 ### G. 学習 (TSF 層)
 
-- 補正の表記を選んだ文節の LEARN (文節の学習・文脈学習) は送らない。打ち間違えた読みで学習データを汚さない
-  ため。ほかの文節は今どおり送る。ほかの文節の文脈は今どおり直前の文節の表記 (補正の表記を含む)
-- 補正の表記を選んだ文節が 1 つでもあれば、読み全体の学習 (2 文節以上のときの読み全体 → 確定文字列) と、
-  伸縮の学習 (LEARNSEG・LEARNWORD) を送らない。どちらも打ち間違えた読みを含むため
-- 前文脈 (直前に確定した文節) と採用した文字列の記憶 (adopted-reconversion.md) は、ほかの候補と同じく
-  打ったかなを読みとして更新する
+[docs/spec/conversion.md](../spec/conversion.md)「文節 UI (`segment_ui` 1)」の「補正の候補」へ移した
 
 ## 変更対象ファイル
 

@@ -598,8 +598,7 @@ private:
     // 変換 (KeyFunc::Convert): run 中は変換開始 / 次候補 (previous なら前候補)、
     // run が無ければ入力なしの対象 (ReadIdleTarget) の変換
     HRESULT ConvertKeyDirect(ITfContext* context, bool previous);
-    // 入力なしの変換キー・F6〜F10 の対象 (docs/design/conversion-range.md、
-    // docs/design/adopted-reconversion.md)
+    // 入力なしの変換キー・F6〜F10 の対象 (docs/spec/conversion.md「変換の対象」)
     struct IdleTarget {
         // 対象の文字列 (読みはひらがなに正規化して作る。記憶が対象のときはその表記)
         std::wstring text;
@@ -645,7 +644,7 @@ private:
     // 縮める)。広げられるのは縮めて外したかなを戻すところまで。できないときは何もしない
     HRESULT ResizeConversionRange(ITfContext* context, int delta);
 
-    // ---- 採用した文字列の記憶 (docs/design/adopted-reconversion.md) ----
+    // ---- 採用した文字列の記憶 (docs/spec/conversion.md「採用した文字列の記憶」) ----
     // run が文書に残した出力1件 (候補バーの採用・候補選択の確定・かなのままの run の終了)
     struct AdoptedText {
         std::wstring surface;  // 文書に入れた文字列 (文節の表記の連結)
@@ -849,7 +848,7 @@ private:
     // IME が直前に文書へ入れた文字列 (文書の分類用。照合したら忘れる)
     std::wstring lastInserted_;
 
-    // 変換の範囲の伸縮 (docs/design/conversion-range.md)。昇格したときに始める
+    // 変換の範囲の伸縮 (docs/spec/conversion.md「範囲の伸縮」)。昇格したときに始める
     bool rangeTracked_;                   // 伸縮できる状態か
     // 縮めて外したかな (composition の先頭に残す)。末尾 rangeShift_ 文字が外したかな
     std::wstring rangeBefore_;

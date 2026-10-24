@@ -91,16 +91,7 @@ CONVNBEST を新設する。CONVERT・CONVSEG・CONVCTX はそのまま残す (C
 
 ### 学習
 
-- 入力全体の候補を採用・確定したときは、次の2つを1回の LEARN2 で送る
-  - 候補の文節ごとの (読み, 表記, 直前文節の表記)。今の文節ごとの学習と同じ
-  - 読み全体 → 候補の表記 (文脈表記は空)。候補が1文節なら文節の学習と同じなので送らない
-- 次の前文脈は、採用した候補の最後の文節にする
-- 読み全体の学習は句の学習 (learning_stats.tsv。[learning-score.md](learning-score.md)) に入るので、
-  予測の確定履歴にも載る。一度確定した文が、
-  前方一致で予測候補に出るようになる (許容する。短い読みで同じ文を呼び出せる)
-- 文節 UI (`segment_ui` 1) で2文節以上を確定したときも、読み全体 → 確定文字列を同じく送る。
-  文節を直して確定した結果が、次から N-best の先頭に来るようにするため
-- LEARNSEG・LEARNWORD は文節 UI のときだけ送る (今どおり。文節伸縮でしか起きないため)
+[docs/spec/conversion.md](../spec/conversion.md)「学習」へ移した
 
 ### 候補バー
 
@@ -124,30 +115,11 @@ CONVNBEST を新設する。CONVERT・CONVSEG・CONVCTX はそのまま残す (C
 
 ### 候補選択 (変換キー)
 
-設定 `segment_ui` で切り替える。
-
-#### `segment_ui` 0 (既定)
-
-- 変換キーで、run の確定済みかな全体を1単位にした候補リスト (CONVNBEST の全件) を縦の
-  候補ウィンドウに出す。内部では読み全体の1文節として扱う
-  - 打鍵したローマ字の半角候補は、今の1文節のときと同じく末尾に足す
-  - 英字を含む入力は、今どおり1文節固定の CONVSEG / CONVCTX で変換する
-  - エンジン未接続ならひらがな1候補 (今どおり)
-- 候補ごとに CONVNBEST の文節を覚えておき、確定時の学習に使う
-- 文節の操作は無い。候補選択中の ← / → / Shift+← / Shift+→ / PgUp / PgDn は、
-  Home / End / Delete と同じく「確定してアプリへ渡す」にする
-- F4〜F10 (記号・ユーザ語・文字種変換) は run 全体にかかる (今の1文節のときと同じ)
-- 対記号の同期は1文節なので働かない (不要になる)
-
-#### `segment_ui` 1
-
-- 候補選択は今の文節 UI のまま (CONVSEG / CONVCTX、文節移動・伸縮、LEARNSEG・LEARNWORD)
-- 候補バーは `segment_ui` によらず上の「候補バー」のとおり
+[docs/spec/conversion.md](../spec/conversion.md)「入力全体の候補選択 (`segment_ui` 0)」と「文節 UI (`segment_ui` 1)」へ移した
 
 ### 設定
 
-- `segment_ui` (既定 0) を新設する。TSF 層の ConfigLoader だけが読む (エンジンは無視する)
-- 設定ツールに「文節単位で変換する」チェックボックスを足す
+[docs/spec/conversion.md](../spec/conversion.md)「文節 UI (`segment_ui` 1)」へ移した
 
 ## 変更対象ファイル
 

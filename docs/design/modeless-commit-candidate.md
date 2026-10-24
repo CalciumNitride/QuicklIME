@@ -83,7 +83,7 @@
   積んだ記録と閉じた英字区間の積みは、打鍵数の新しいものから順に戻る
 - 候補バーの採用で run の先頭を取り除いたとき (`RemoveFront`) と、範囲の伸縮で先頭にかなを足したとき
   (`PrependKana`) は、積んだ記録を捨てる (位置がずれるため)。`Clear()` でも捨てる
-- 範囲の伸縮で積む読みの状態 (docs/design/conversion-range.md) は `RomajiComposer` 全体なので、
+- 範囲の伸縮で積む読みの状態 (docs/archive/conversion-range.md) は `RomajiComposer` 全体なので、
   この記録も合わせて戻る
 
 ## 変更対象ファイル
