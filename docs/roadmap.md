@@ -33,6 +33,12 @@
   コードで決めていない ([input.md](spec/input.md)「フォーカス移動」)
 - キー入力が無効な文書で、候補選択中の composition を捨てないことの見直し。捨てるのは run 中だけで、それが意図かどうかが
   残っていない ([input.md](spec/input.md)「キー入力が無効な文書」)
+- 表示ごとの DPI の扱いの違いの見直し。入力パネルとキャレットの印は DPI 96 に固定して拡大せず、入力モードの一時表示は
+  モニタの DPI で、入力モードのアイコンは画面の DC の DPI で拡大する。違えている理由が残っていない
+  ([display.md](spec/display.md)「ウィンドウと描画」)
+- キャレット行の上に出すときの作業領域の上端での止め方の見直し。横一列の候補バーと入力モードの一時表示は上端で止めず、
+  画面の上端近くでは見切れうる。縦積みの候補バーと変換の候補一覧は止めている
+  ([display.md](spec/display.md)「キャレット行の上に出すときの反転」)
 
 ## 見送り・既知の問題
 
@@ -68,7 +74,7 @@
     (OnTestKeyDown と OnTestKeyUp の間に起き、IME からは止められない)
   - 試した対策: OnKeyDown が来ないまま OnTestKeyUp が来たら機能を実行する方式。変換の開始はできても、
     候補選択中の候補送りはできなかった
-  - 入力パネル類の位置は [candidate-position-fallback.md](design/candidate-position-fallback.md) で扱う
+  - 入力パネル類の位置は [display.md](spec/display.md)「入力位置がウィンドウの外を指すとき」で扱う
 - 逆変換で、数字の後の助数詞の複合語の、単位の後ろの部分の読みを誤ることがある (10キロ位 → きろい、
   5パーセント増 → ぱーせんとます)。数字の後の読みの表は語の先頭だけを見る
   ([selection-reconversion.md](design/selection-reconversion.md))
@@ -87,3 +93,6 @@
     学習でも直りにくい
 - 未完成の英字を残して run を終えると (`kyouhak` → Enter)、`きょうはk` が読み = 表記のまま学習される
   (tsf/src/text_service_direct.cpp の確定時の学習)。英字の残った読みは学習しないなどの扱いが要る
+- Windows の透明効果がオフの環境でぼかしのテーマ (`blur on`) と `caret_marker pointer` を使うと、入力パネルのウィンドウを
+  新しく作った最初の描画にだけ尻尾が付かないと読める (ウィンドウを作る前は、ぼかしで作る見込みで尻尾の有無を決めるため)。
+  実機では確かめていない ([display.md](spec/display.md)「ぼかし」)

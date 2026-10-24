@@ -51,7 +51,7 @@
 #### 採用
 
 - 選択と採用の操作は既存のバーと同じ (Tab・↓ などで選び、確定キー・Enter・Space・印字キーで採用。
-  docs/design/candidate-bar.md)
+  docs/archive/candidate-bar.md)
 - 採用は、`composer_` を英字候補を作った複製に置き換え、文書の run の文字列を複製の表示に書き換える
   (読める文書は置換、追記のみの文書は今の英字区間への切替と同じ擬似 Backspace の経路)。
   採用した部分は英字区間 (開いている英字区間) になる
@@ -94,7 +94,7 @@
 | tsf/src/text_service.h, tsf/src/text_service.cpp | `ApplyModelessCommitRule` の呼び出しの削除 (不要になれば関数も)、英字候補の生成 (`composer_` の複製に判定を当てる)、バーの種類 `BarKind` への英字候補の追加、英字候補の採用 |
 | tsf/src/text_service_direct.cpp | 記号キー・Space での run 終了時判定の削除、Backspace 後の判定のやり直し、英字候補の採用時の文書の書き換え |
 | docs/design/modeless.md, docs/design/modeless-detection.md | run 終了時の書き換え (ルール3・6・7 の適用場所、関連するテストケース) を本書の参照に置き換える |
-| docs/design/candidate-bar.md | バーの候補の種類に英字候補を足す (本書の参照) |
+| docs/archive/candidate-bar.md | バーの候補の種類に英字候補を足す (本書の参照) |
 | README.md | モードレス入力の節の run 終了時の判定の説明を英字候補に置き換え、Backspace で判定前に戻る動作を追記 |
 | docs/roadmap.md | 該当項目の追加と完了 |
 

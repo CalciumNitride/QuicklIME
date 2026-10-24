@@ -88,10 +88,10 @@
 
 - docs/design/panel-theme.md: `caret` の「上に出すときはパネルの下端をキャレット行の上に揃える
   (候補が増えると上へ伸びる)」を本書の内容に書き換え、テストケース 7 を合わせる
-- docs/design/conversion-panel.md: 「下に入らなければ上に出す (上に出すときは…)」を本書の内容に書き換え、
+- docs/archive/conversion-panel.md: 「下に入らなければ上に出す (上に出すときは…)」を本書の内容に書き換え、
   テストケース 4 を合わせる
-- docs/design/candidate-bar.md: 「下に入らなければ行の上に出す」に本書への参照を足す
-- docs/design/caret-marker.md: テストケース 10 に、反転した並び (入力行が下) を書き足す
+- docs/archive/candidate-bar.md: 「下に入らなければ行の上に出す」に本書への参照を足す
+- docs/archive/caret-marker.md: テストケース 10 に、反転した並び (入力行が下) を書き足す
 - docs/theme.md: `candidate_position caret` の説明に同じことがあれば合わせる
 - docs/design/README.md の「候補の表示」に本書を 1 行足す
 

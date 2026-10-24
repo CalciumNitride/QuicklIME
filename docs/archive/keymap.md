@@ -30,7 +30,7 @@
 | 入力なし | `idle` | run が無い |
 | run 中 | `run` | run があり、候補選択中でもサジェスト選択中でもない |
 | 候補選択中 | `candidate` | `converting_` (composition に昇格しているかどうかは問わない) |
-| サジェスト選択中 | `suggest` | 候補バー (docs/design/candidate-bar.md) で候補を選んでいる (`barIndex_ >= 0`)。run の無いときに出す読みなしの予測 (docs/archive/next-word-prediction.md) で候補を選んでいるときも含む |
+| サジェスト選択中 | `suggest` | 候補バー (docs/archive/candidate-bar.md) で候補を選んでいる (`barIndex_ >= 0`)。run の無いときに出す読みなしの予測 (docs/archive/next-word-prediction.md) で候補を選んでいるときも含む |
 
 ### 割当の対象外にするキー
 
@@ -125,7 +125,7 @@
   (文節 UI) のときだけ使える
 - 候補選択中の Shift+Tab は Tab と同じ (変換を取り消してバーの先頭を選ぶ)
 - サジェスト選択中の選択の移動では文書を書き換えない。採用の操作と結果は
-  docs/design/candidate-bar.md に定める
+  docs/archive/candidate-bar.md に定める
 - 候補選択中の、割当の無い Ctrl / Alt 併用と Insert は、Home / End / Delete と同じく
   確定してからアプリへ渡す
 - モードレスの英字モード中は、候補選択中の Space も割当より優先して「確定して半角スペース」
@@ -155,7 +155,7 @@
   アプリへ渡すときと同じく文書に残す
 - 候補選択中: 確定する
 - サジェスト選択中: 選んでいる候補を採用する (採用範囲を縮めた全体変換は残りのかなで run を続ける。
-  docs/design/candidate-bar.md、docs/design/unified-suggest.md の F)
+  docs/archive/candidate-bar.md、docs/design/unified-suggest.md の F)
 - 打鍵はアプリへ渡さない。確定アンドゥの記憶は残る
 
 ### 設定ファイル (config.tsv)

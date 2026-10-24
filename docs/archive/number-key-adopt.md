@@ -73,13 +73,13 @@
 
 ### ドキュメント
 
-- docs/design/candidate-bar.md: 選択の「数字 1〜9 は選ぶ」を本書の Ctrl+数字に書き換え、採用の表に Ctrl+数字の行を足す
+- docs/archive/candidate-bar.md: 選択の「数字 1〜9 は選ぶ」を本書の Ctrl+数字に書き換え、採用の表に Ctrl+数字の行を足す
 - docs/archive/next-word-prediction.md: 選択の数字 1〜9 の記述と採用の表
 - docs/archive/keymap.md: 「候補番号の選択は数字キーに固定」を Ctrl+数字キーに。コア操作の表の 1〜9 の行。
   「割当の対象外にするキー」に Ctrl+1〜9 を足す
 - docs/user/ のキー割当の説明に割り当てられないキーの一覧があれば、Ctrl+1〜9 を足す
 - docs/archive/direct-input.md: 印字キーの表の「数字 1〜9 は候補番号の選択」の注記
-- docs/archive/suggest-paging.md・docs/design/conversion-panel.md: 数字キーの対応付けを Ctrl+数字キーに
+- docs/archive/suggest-paging.md・docs/archive/conversion-panel.md: 数字キーの対応付けを Ctrl+数字キーに
   (テストケースの「数字キー 2」も Ctrl+2 で確定する内容に)
 - docs/design/unified-suggest.md: 未決事項の「バーの数字キーでの採用」を消す
 - docs/user/candidate-bar.md・docs/user/input.md・docs/user/theme.md・README.md: 数字キーでの選択の記述を

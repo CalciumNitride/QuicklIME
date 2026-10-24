@@ -47,9 +47,9 @@ input-buffer-modes.md で「composition の中だけ」に置き換わってい�
 | suggest.md | 候補バーと予測 (SUGGEST・ファジィ照合・予測・後続語予測・文節の連なりの統計・ページ送り・採用範囲の縮め) | candidate-bar, unified-suggest, suggest-paging, next-word-prediction, next-word-ngram, basics |
 | learning.md | 学習 (語・句・文脈の句の学習・点数・学習を消す・学習しないアプリ) | learning-score, forget-learning, no-learning-apps, basics |
 | modeless.md | モードレス入力と英字 (判定・英字区間・英字混じりの変換・英字候補・大文字小文字の補正) | modeless, modeless-detection, modeless-commit-candidate, mixed-conversion, english-case |
-| display.md | 表示 (画面の部品の呼び名・入力パネル・テーマ・ぼかし・表示位置・キャレットの印・入力モードのアイコンとポップアップ・言語バー) | suggest-panel, panel-theme, theme-blur, conversion-panel, panel-above-caret, caret-marker, mode-icon, mode-popup, basics |
+| display.md | 表示 (画面の部品の呼び名・入力パネル・テーマ・ぼかし・表示位置と表示位置のフォールバック・キャレットの印・入力モードのアイコンとポップアップ・言語バー) | suggest-panel, panel-theme, theme-blur, conversion-panel, panel-above-caret, caret-marker, mode-icon, mode-popup, candidate-position-fallback, basics |
 | tools.md | 設定ファイルと設定ツール (config.tsv・画面の構成・アプリごとの設定・入力パネルの見本) | slint-gui, config-tabs, app-settings, config-input-display, panel-preview, basics |
-| runtime.md | 実行と配布 (エンジンの自動起動・二重起動の防止・パイプのアクセス権・表示位置のフォールバック・インストーラ・第三者の著作権表示) | engine-autostart, candidate-position-fallback, third-party-notices, basics |
+| runtime.md | 実行と配布 (エンジンの自動起動・二重起動の防止・パイプのアクセス権・インストーラ・第三者の著作権表示) | engine-autostart, third-party-notices, basics |
 
 - 実験の設計書 (experiment-*.md) と、docs の構成の設計書 (docs-reorganization.md・user-docs.md・本書) は
   仕様書へ移さない (archive へ移す時期は「移行の進め方」)。実験の結果で今の仕様の WHY になる数値は、該当する仕様書に要点を書いてリンクする

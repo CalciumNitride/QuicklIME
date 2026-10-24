@@ -45,7 +45,7 @@ direct 方式では、IME が以下をひとまとめにした「run」を1つ�
 | 読み | `composer_` (RomajiComposer)。既存のまま |
 | surface | 現在文書に入っている、この run 由来の文字列 (未完成のローマ字は含まない) |
 | 変換状態 | `segments_` / `selected_` / `segmentIndex_` / `converting_` (既存を流用) |
-| 候補バー | `barItems_` / `barIndex_` (docs/design/candidate-bar.md) |
+| 候補バー | `barItems_` / `barIndex_` (docs/archive/candidate-bar.md) |
 
 run 中は、かなが完成するたびに増えた分をキャレット位置に追記する。読める文書では
 追記の前にキャレット直前が surface と一致するかを照合し、一致しない場合 (キャレット移動・
@@ -65,7 +65,7 @@ run の終了 (= IME が忘れる) の契機:
 run 終了時に行うこと (既存の確定処理と同じ):
 
 - 候補選択結果を表示中なら文節ごとに LEARN を送る (候補バーの採用は、採用した時点で
-  docs/design/candidate-bar.md のとおりに送る)
+  docs/archive/candidate-bar.md のとおりに送る)
 - 文脈補正用の文脈 (`SetCommitContext`) を更新する
 - 確定アンドゥ用に `lastCommitText_` / `lastComposer_` を記憶する
 
@@ -304,7 +304,7 @@ Backspace の擬似打鍵で確定文字列を消してから読みのかなを�
 4. 候補選択中の Enter / Space / Esc / Backspace / 印字キー
 5. run 終了時の LEARN 送信、文脈補正の更新、文節伸縮の学習 (既存の `PrepareConversionCommit`
    / `LearnResizedSegments` を流用)
-6. 候補バー: docs/design/candidate-bar.md
+6. 候補バー: docs/archive/candidate-bar.md
 7. 後置再変換: run なしで変換キー → `GetSelectionTextEditSession` で選択を読み、
    ひらがな・カタカナ・ー のみなら読みとして run を作って変換開始
 8. 手動テスト (下記「段階2」)

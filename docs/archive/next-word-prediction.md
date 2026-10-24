@@ -113,7 +113,7 @@
 | engine/src/bin/quicklime-config.rs | 「確定の後に次の語を予測する」チェックボックス、キー割当の一覧の2機能 |
 | README.md | 読みなしの予測の説明、キー割当、設定 |
 | docs/archive/keymap.md | 機能の表に2機能を足す |
-| docs/design/candidate-bar.md | バーの表示条件に、run なしで出す場合 (本書) を参照する記述を足す |
+| docs/archive/candidate-bar.md | バーの表示条件に、run なしで出す場合 (本書) を参照する記述を足す |
 
 ## 実装手順
 

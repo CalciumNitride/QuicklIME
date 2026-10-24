@@ -43,7 +43,7 @@
 - composition が無いとき (パネル保持入力の run、後続語の予測): 今の `CaretRect` と同じ (選択範囲の矩形 →
   `GetGUIThreadInfo` のシステムキャレット)
 - 矩形が取れないとき、または入力位置がウィンドウの外を指して代わりの位置になったとき
-  (`FallbackIfOutsideWindow`、docs/design/candidate-position-fallback.md) は印を出さない。代わりの位置は
+  (`FallbackIfOutsideWindow`、docs/archive/candidate-position-fallback.md) は印を出さない。代わりの位置は
   キャレットの位置ではなく、印が違う場所を指すため
 - 更新は打鍵ごと・パネルの再描画ごと。スクロールやウィンドウの移動は追わない (パネルと同じ)
 
@@ -65,7 +65,7 @@
 - 描けないときは何も出さない (三角に代えない)。テーマで選んだ見た目と違うものを出さないため。描けないのは:
   - `candidate_position center` (パネルがキャレットから離れている)
   - `style ghost` (尻尾を付ける枠が無い)
-  - ぼかし (テーマの `blur on`、docs/design/theme-blur.md) でパネルを描いているとき (DWM の角丸ウィンドウの外に描けない)
+  - ぼかし (テーマの `blur on`、docs/archive/theme-blur.md) でパネルを描いているとき (DWM の角丸ウィンドウの外に描けない)
   - パネルを出していないとき (`panel_input 0` で候補が無いときなど)
 
 ### triangle (下三角)

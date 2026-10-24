@@ -10,12 +10,13 @@
 
 - [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・変換のタイプミス補正・記号辞書・
   日付時刻の候補・ユーザ辞書と単語登録・
-  設定ファイルと設定ツール・言語バー・エンジンの自動起動・インストーラ) の仕様と理由。
+  設定ファイルと設定ツール・エンジンの自動起動・インストーラ) の仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
   サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
   ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ、
-  キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ移した
+  キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ、画面の部品の呼び名・言語バーは
+  [docs/spec/display.md](../spec/display.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -35,30 +36,21 @@
 
 ## 候補の表示
 
-- [candidate-bar.md](candidate-bar.md): 候補バー。入力中に変換結果と予測候補を横一列に出し、採用時だけ
-  文書を書き換える。見た目・表示位置・入力行は [suggest-panel.md](suggest-panel.md) で置き換え。
-  バーの内容・表示条件・選択・採用・設定・エンジンへの問い合わせは [docs/spec/suggest.md](../spec/suggest.md) へ移した
-- [suggest-panel.md](suggest-panel.md): 入力パネル。候補バーの見た目の刷新 (カプセル)、画面中央への
-  表示、入力行、背景のぼかし。見た目のカスタマイズは [panel-theme.md](panel-theme.md)、縦の候補一覧は
-  [conversion-panel.md](conversion-panel.md)、設定 `panel_blur` は [theme-blur.md](theme-blur.md) で置き換え
+- 候補バー (バーの内容・表示条件・選択・採用・設定・エンジンへの問い合わせ): [docs/spec/suggest.md](../spec/suggest.md)
+  (設計書は下の「archive」の節)
+- 入力パネル (描き方・入力行・変換の候補一覧・表示位置・キャレット行の上に出すときの反転)・ぼかし・キャレットの印・
+  入力モードの一時表示・入力モードのアイコンと言語バー: [docs/spec/display.md](../spec/display.md) (設計書は下の「archive」の節)
 - [panel-theme.md](panel-theme.md): 入力パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
-  テーマファイル)。テーマのキー `blur` は [theme-blur.md](theme-blur.md) で置き換え
+  テーマファイル)。テーマ・縦積み・ゴースト・揃え・読み直しは [docs/spec/display.md](../spec/display.md) へ移した
+  (設定ツールの画面は本書)
 - 読みなしの後続語予測: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - [next-word-ngram.md](next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
   読みなしの後続語予測で学習の後ろに足す。コーパス・文節への分け方・表・生成・エンジンは
   [docs/spec/suggest.md](../spec/suggest.md) へ移した (同梱は本書)
-- [conversion-panel.md](conversion-panel.md): 変換キーの候補一覧を入力パネルで出す (テーマ・表示位置・
-  変換中の入力行)
-- [caret-marker.md](caret-marker.md): 入力中・候補選択中・後続語の予測の表示中に、文書のキャレットの位置を
-  印 (テーマの `caret_marker`。パネルの吹き出しの尻尾か、キャレットの下の三角) で示す
-- [theme-blur.md](theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
-  `capsule-blur` を足す。設定 `panel_blur` を廃止
 - 候補バーのページ送り: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
   予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
   Shift+← / → で縮める。全体変換の補正 (D) と CONVNBEST・RERANK の打鍵を除き [docs/spec/suggest.md](../spec/suggest.md) へ移した
-- [panel-above-caret.md](panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
-  キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない (↑ / ↓ も見た目の方向に動かす)
 
 ## 変換
 
@@ -80,7 +72,7 @@
   前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)。予測の点数と並び (D) は [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す。
   補正の元 (打鍵)、補正の語のコストと Viterbi の状態の数、候補バーの先頭文節は
-  [unified-suggest.md](unified-suggest.md) で置き換え
+  [unified-suggest.md](unified-suggest.md) で置き換え。表示は [docs/spec/display.md](../spec/display.md) へ移した
 - [typo-segment-ui.md](typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
   区切り、打ち間違えた語を含む文節の候補に補正の表記を足す。文節の伸縮・TSF 層・学習は
   [docs/spec/conversion.md](../spec/conversion.md) へ移した
@@ -112,16 +104,13 @@
   置き換え
 - [app-settings.md](app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
   編集欄にする (改行キー・起動時の IME の状態)。画面の部分は [slint-gui.md](slint-gui.md) で置き換え
-- [mode-icon.md](mode-icon.md): タスクバーの入力モードのアイコン (あ・A・入力欄でないときの ×) を、同梱の
-  M PLUS Rounded 1c で透明な背景にテーマの色で描く
-- [mode-popup.md](mode-popup.md): オン/オフの切替時と別の入力欄へのフォーカス移動時に、キャレットの近くに
-  入力モード (あ / A) を約 1 秒出す (設定 `mode_popup`)
 - [config-input-display.md](config-input-display.md): 設定ツールで入力中の読みの表示先 (`input_buffer`・
   `panel_input`) を「入力」タブの 1 つのコンボで選び、入力モード表示のチェックボックスの文言を短くする
 - [slint-gui.md](slint-gui.md): 設定ツールと単語登録ツールの画面を Slint (fluent スタイル) で作り直す。左のナビと
   ページのカード、変えたら即保存、キー割当・アプリの展開カード、結果とエラーの InfoBar
 - [panel-preview.md](panel-preview.md): 設定ツールの「見た目」ページに、選んでいるテーマ・フォント・サイズの
-  入力パネルの見本を、登録されている TSF の DLL の描画で出す
+  入力パネルの見本を、登録されている TSF の DLL の描画で出す。DLL の関数と見本の内容は
+  [docs/spec/display.md](../spec/display.md) へ移した (設定ツールの側は本書)
 
 ## エンジン
 
@@ -131,8 +120,8 @@
 
 ## 互換
 
-- [candidate-position-fallback.md](candidate-position-fallback.md): 入力位置がウィンドウの外を指すアプリ
-  (マビノギなど) で、候補ウィンドウ類をウィンドウ中央に出し、モニタの作業領域に収める
+- 入力位置がウィンドウの外を指すアプリ (マビノギなど) での入力パネルなどの位置: [docs/spec/display.md](../spec/display.md)
+  (設計書は下の「archive」の節)
 
 ## 配布
 
@@ -176,6 +165,24 @@
   Ctrl+1〜9 にする (候補バー・後続語の予測・候補選択中)。[docs/spec/keys.md](../spec/keys.md) へ移した
 - [input-scope.md](../archive/input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンの
   ままキーを食べない (設定 `input_scope_passthrough`)。[docs/spec/input.md](../spec/input.md) へ移した
+- [candidate-bar.md](../archive/candidate-bar.md): 候補バー。入力中に変換結果と予測候補を横一列に出し、採用時だけ
+  文書を書き換える。[docs/spec/suggest.md](../spec/suggest.md) と [docs/spec/display.md](../spec/display.md) へ移した
+- [suggest-panel.md](../archive/suggest-panel.md): 入力パネル。候補バーの見た目の刷新 (カプセル)、画面中央への
+  表示、入力行、背景のぼかし。[docs/spec/display.md](../spec/display.md) へ移した
+- [conversion-panel.md](../archive/conversion-panel.md): 変換キーの候補一覧を入力パネルで出す (テーマ・表示位置・
+  変換中の入力行)。[docs/spec/display.md](../spec/display.md) へ移した
+- [panel-above-caret.md](../archive/panel-above-caret.md): 縦に並ぶ入力パネルの上下を出しうる最大の高さで決め、
+  キャレット行の上に出すときは並びを反転して入力行と各候補の位置を動かさない。[docs/spec/display.md](../spec/display.md) へ移した
+- [caret-marker.md](../archive/caret-marker.md): 文書のキャレットの位置を印 (テーマの `caret_marker`。パネルの吹き出しの
+  尻尾か、キャレットの下の三角) で示す。[docs/spec/display.md](../spec/display.md) へ移した
+- [theme-blur.md](../archive/theme-blur.md): ぼかしをテーマのキー `blur` (`on` / `off`) だけで決め、組み込みテーマ
+  `capsule-blur` を足す。[docs/spec/display.md](../spec/display.md) へ移した
+- [mode-icon.md](../archive/mode-icon.md): タスクバーの入力モードのアイコン (あ・A・入力欄でないときの ×) を、同梱の
+  M PLUS Rounded 1c で透明な背景に描く。[docs/spec/display.md](../spec/display.md) へ移した
+- [mode-popup.md](../archive/mode-popup.md): オン/オフの切替時と別の入力欄へのフォーカス移動時に、キャレットの近くに
+  入力モード (あ / A) を約 1 秒出す (設定 `mode_popup`)。[docs/spec/display.md](../spec/display.md) へ移した
+- [candidate-position-fallback.md](../archive/candidate-position-fallback.md): 入力位置がウィンドウの外を指すアプリ
+  (マビノギなど) で、入力パネルなどをウィンドウ中央に出す。[docs/spec/display.md](../spec/display.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
@@ -190,7 +197,7 @@
 - [experiment-0a-append-input.md](../archive/experiment-0a-append-input.md): 追記型入力の2方式 (F1 / F2)
   の試作と比較。F1 を [append-input.md](../archive/append-input.md) で採用
 - [live-conversion-commit-notes.md](../archive/live-conversion-commit-notes.md): ライブ変換の結果を途中で
-  確定する手段の検討。後続の打鍵で前方の変換が変わる問題は [candidate-bar.md](candidate-bar.md) の採用で扱う
+  確定する手段の検討。後続の打鍵で前方の変換が変わる問題は [docs/spec/suggest.md](../spec/suggest.md)「採用」で扱う
 - [single-unit-conversion-notes.md](../archive/single-unit-conversion-notes.md): 連文節変換をやめ、文節を
   見せない変換にする案の検討
 - [modeless-detection-notes.md](../archive/modeless-detection-notes.md): モードレス入力の英語判定の強化案と

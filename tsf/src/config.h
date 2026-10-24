@@ -90,10 +90,10 @@ struct TsfConfig {
     // モードレス入力 (英語の打鍵を自動で判定して英字のまま入れる。
     // docs/design/modeless.md)
     bool modeless = false;
-    // 入力中に横一列の候補バーを出す (docs/design/candidate-bar.md)
+    // 入力中に横一列の候補バーを出す (docs/spec/suggest.md「表示の条件」)
     bool candidateBar = true;
     // 候補バーを画面中央に出す (設定 candidate_position の center。caret ならキャレット行の下。
-    // docs/design/suggest-panel.md)
+    // docs/spec/display.md「表示位置」)
     bool candidateCenter = false;
     // 候補バーと同じパネルに入力行 (run のかなと未完成ローマ字) を出す (設定 panel_input)
     bool panelInput = false;
@@ -114,7 +114,7 @@ struct TsfConfig {
     // (docs/spec/suggest.md「後続語の予測」)
     bool nextWord = true;
     // オン/オフの切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
-    // (設定 mode_popup。docs/design/mode-popup.md)
+    // (設定 mode_popup。docs/spec/display.md「入力モードの一時表示」)
     bool modePopup = true;
     // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
     // オフなら入力全体の候補から選ぶ (docs/design/nbest.md)

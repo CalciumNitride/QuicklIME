@@ -9,7 +9,7 @@
   候補バーの選択と採用・後続語の予測は [suggest.md](suggest.md)
 - キーの状態別の表と割当の照合は [keys.md](keys.md)。本書は機能の中身を書き、どのキーがどの状態で何をするかは keys.md を見る
 - モードレス入力の判定と英字区間は [modeless.md](../design/modeless.md) ほか、入力パネルの見た目・表示位置・
-  入力モードの一時表示は表示の側 ([suggest-panel.md](../design/suggest-panel.md)・[mode-popup.md](../design/mode-popup.md))、
+  入力モードの一時表示は [display.md](display.md)、
   学習の中身は学習の側 ([basics.md](../design/basics.md)「学習」)
 - 実装は tsf/src/text_service_direct.cpp (run・文書の分類・確定アンドゥ・送り直し)、tsf/src/text_service.cpp
   (キーの入口・フォーカス・IME のオン/オフ・InputScope)、tsf/src/romaji.cpp (ローマ字)、tsf/src/config.cpp (設定)、
@@ -308,7 +308,7 @@ run を終えて文書に入れてからアプリへ渡すキーは、文書に�
 - 設定はアクティブ化の中で、適用より前に読み込む。起動済みのプロセスには、設定を変えても効かない (次に起動したプロセスから)
 - 診断ログ (`debug_log`) には、アクティブ化と最初の文書フォーカスの時点の OPENCLOSE の値と、最初の文書フォーカスから 5 秒間の
   OPENCLOSE の変更を出す。適用した後にシステムが値を書き換えていないかを確かめるため
-- 適用したときに出す入力モードの一時表示は表示の側 ([mode-popup.md](../design/mode-popup.md))
+- 適用したときに出す入力モードの一時表示は [display.md](display.md)「入力モードの一時表示」
 
 ## InputScope の欄
 

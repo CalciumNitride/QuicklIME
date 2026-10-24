@@ -51,7 +51,7 @@
   設定ツールでの表記を新しい画面に合わせる (settings.md の表では `panel_input` を
   「入力中の読み (入力)」の 2 番目の選択肢として説明する)
 - docs/design/README.md: この設計書を 1 行足す
-- 設定ツールの旧文言を引いている設計書 (docs/design/suggest-panel.md・docs/design/mode-popup.md):
+- 設定ツールの旧文言を引いている設計書 (docs/archive/suggest-panel.md・docs/archive/mode-popup.md):
   旧文言を新しい表記に直す
 
 ## 実装手順

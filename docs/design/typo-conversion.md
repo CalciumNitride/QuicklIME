@@ -100,14 +100,7 @@
 
 ### F. 表示 (TSF 層)
 
-- 補正の候補を、候補の種類 (`SuggestPanel::ItemKind`) の新しい種類 `Typo` にする
-- 横一列 (`layout row`) の `pill` / `rounded` では、次の語の予測と同じ形で `typo` 色の縁を付ける
-- 縦積み (`layout column`) の `kind_tag on` では種類のタグ「補正」を出す
-- 変換キーの候補一覧は `kind_tag` を出さない仕様だが、補正の候補にだけは「補正」のタグを出す
-  (縦に積むので縁では目立たず、ほかに見分ける方法が無いため)
-- テーマの色のキーを 2 つ足す。既定は 2 つとも `#E58F8F` (ダーク) / `#B5484A` (ライト)
-  - `typo`: 補正の候補の縁
-  - `tag_typo`: 種類のタグ「補正」の文字の色
+[docs/spec/display.md](../spec/display.md)「候補の描き方」と「変換の候補一覧」へ移した (色の既定値は [docs/user/theme.md](../user/theme.md)「色」)
 
 ### G. 学習 (TSF 層)
 

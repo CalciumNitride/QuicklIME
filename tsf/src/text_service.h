@@ -228,7 +228,7 @@ private:
 
     struct DirectKey;
 
-    // ---- 候補バー (docs/design/candidate-bar.md、docs/design/unified-suggest.md) ----
+    // ---- 候補バー (docs/spec/suggest.md「候補バーの候補」、docs/design/unified-suggest.md) ----
     // 候補の種類
     enum class BarKind {
         Whole,       // 全体変換 (SUGGEST の whole・typo、旧エンジンでは CONVNBEST の上位)
@@ -289,7 +289,7 @@ private:
     // バーの候補を破棄する。入力行を出している run の間は、パネルを入力行だけにして残す
     void ClearBarKeepingInput(ITfContext* context);
 
-    // ---- 入力パネル (docs/design/suggest-panel.md) ----
+    // ---- 入力パネル (docs/spec/display.md「入力パネル」) ----
     // パネルに入力行を出す設定か (candidate_bar 1 かつ、panel_input 1 かテーマの input_row always。
     // パネル保持入力の run は設定によらず出す)
     bool PanelInputActive() const;
@@ -309,7 +309,7 @@ private:
     HRESULT MoveBarSelection(int delta);
     // ↑ / ↓ の打鍵 vk で候補を動かす向き delta (↓ なら +1、↑ なら -1 を渡す) を、候補の順番での
     // 向きに直す。キャレット行の上に反転して出しているパネルでは見た目の方向に合わせて逆にする
-    // (docs/design/panel-above-caret.md)。↑ / ↓ 以外の vk では delta のまま
+    // (docs/spec/display.md「キャレット行の上に出すときの反転」)。↑ / ↓ 以外の vk では delta のまま
     int ArrowOrder(WPARAM vk, int delta) const;
     // Ctrl+1〜9: 今出しているページ内の番号 (0始まり) の候補を確定キーと同じく採用する
     // (run のバーと後続語の予測。未選択でも働く。無ければ何もしない)
@@ -364,7 +364,7 @@ private:
     // where は置き換えたときのデバッグログの見出し
     bool FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
 
-    // ---- キャレットの印 (テーマの caret_marker。docs/design/caret-marker.md) ----
+    // ---- キャレットの印 (テーマの caret_marker。docs/spec/display.md「キャレットの印」) ----
     // 文書のキャレットの矩形。composition があればその末尾 (取れなければ composition の右端)、
     // 無ければ CaretRect。取れないとき・代わりの位置に置き換えたときは false
     bool CaretMarkerRect(ITfContext* context, RECT* rect);
@@ -378,7 +378,7 @@ private:
     // placement に、キャレットの印に合わせた尻尾・三角の指定を入れる
     void ApplyCaretMarker(SuggestPanel::Placement* placement) const;
 
-    // ---- 入力モードの一時表示 (docs/design/mode-popup.md) ----
+    // ---- 入力モードの一時表示 (docs/spec/display.md「入力モードの一時表示」) ----
     // フォーカス中の文書のキャレットの近くに今のオン/オフを一時表示する。設定 mode_popup 0・
     // 入力欄でない・キャレットの矩形が取れない・代わりの位置に置き換えたときは出さない (表示中なら消す)
     void ShowModePopup();
@@ -484,7 +484,7 @@ private:
     HRESULT UpdateConvertingDisplay(ITfContext* context);
     // 現在の選択に基づく確定文字列 (全文節の選択候補の連結)
     std::wstring ConvertedText() const;
-    // 現在文節の候補一覧と変換中の入力行をパネルに出す (docs/design/conversion-panel.md)
+    // 現在文節の候補一覧と変換中の入力行をパネルに出す (docs/spec/display.md「変換の候補一覧」)
     void ShowCandidateWindow(ITfContext* context);
     // 候補一覧を閉じる (F7〜F10)。入力行を出す設定なら入力行だけのパネルを残す
     void HideCandidateList(ITfContext* context);

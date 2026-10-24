@@ -2,7 +2,7 @@
 
 ## 背景と目的
 
-候補バー (docs/design/candidate-bar.md) と読みなしの後続語予測 (docs/archive/next-word-prediction.md)
+候補バー (docs/archive/candidate-bar.md) と読みなしの後続語予測 (docs/archive/next-word-prediction.md)
 により、読みを少し打って候補を採用し、採用後は次の語の予測から選んでいく入力ができるようになった。
 この「単語ごとに候補から選んで進める」入力をスマートフォンの文字入力のような感覚で使えるよう、
 表示を次のように改める。
@@ -46,7 +46,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
 - 不正な値は既定値として扱う (他の設定と同じ)
 - 設定ツールでは、候補バーの設定と同じタブに「候補の表示位置 (キャレットの下 / 画面中央)」を置く。
   `panel_input` は「入力」タブの「入力中の読み」の選択肢「文書と入力パネルの両方に出す」で選ぶ
-  ([config-input-display.md](config-input-display.md))
+  ([config-input-display.md](../design/config-input-display.md))
 - `candidate_bar 0` のときはパネルを出さない (`panel_input 1` でも出さない)。
   未完成ローマ字の小窓は今どおり出す
 
@@ -242,7 +242,7 @@ alpha が失われず、透明な部分は黒くならずにぼかしが透け�
 | tsf/src/config.h, tsf/src/config.cpp | `candidate_position`・`panel_input` (段階2 で `panel_blur`) の読み込み |
 | tsf/CMakeLists.txt | `suggest_panel.cpp` の追加、`d2d1`・`dwrite` のリンク |
 | engine/src/bin/quicklime-config.rs | 設定ツールに 2 項目を追加 (段階2 で `panel_blur` も) |
-| docs/design/candidate-bar.md | 「表示位置と見た目」から本書を参照する |
+| docs/archive/candidate-bar.md | 「表示位置と見た目」から本書を参照する |
 | README.md | 設定の説明があれば 2 項目を追記する (段階2 で `panel_blur` も) |
 
 ## 実装手順

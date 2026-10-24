@@ -107,7 +107,7 @@
 | engine/examples/fuzzy_eval.rs (新規), engine/examples/data/ | F の評価 |
 | docs/protocol.md | SUGGEST、CONVNBEST・RERANK の `<打鍵>` |
 | docs/design/basics.md | 「予測」「タイプミス補正」を本書に合わせる |
-| docs/design/candidate-bar.md | バーの内容・先頭文節・エンジンの節が本書で置き換わることを書く |
+| docs/archive/candidate-bar.md | バーの内容・先頭文節・エンジンの節が本書で置き換わることを書く |
 | docs/archive/keymap.md | バー選択中の Shift+← / → |
 | docs/design/typo-conversion.md | 補正の元を打鍵に、コストと状態の数が本書で置き換わることを書く |
 | docs/theme.md | `typo`・`tag_typo` が予測の補正にも使われること、`tag_partial` の意味 |

@@ -7,7 +7,7 @@ struct IDWriteFontFace;
 struct IDWriteFontFileLoader;
 
 // 入力モードの字 (あ・A・×) を描くフォント。DLL のリソースに入れた M PLUS Rounded 1c Regular の
-// サブセットを読み、読めなければ Yu Gothic UI を使う (docs/design/mode-icon.md)。
+// サブセットを読み、読めなければ Yu Gothic UI を使う (docs/spec/display.md「入力モードのアイコン」)。
 // タスクバーのアイコン (LangBarButton) と入力モードの一時表示 (ModePopup) がそれぞれ持つ
 class IconFont {
 public:

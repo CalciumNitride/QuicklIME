@@ -85,7 +85,7 @@ direct 方式 (docs/archive/direct-input.md) を作ったことで、Space を�
 | 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/archive/experiment-0b-llm.md |
 | 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/archive/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/archive/append-input.md |
-| 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
+| 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/archive/candidate-bar.md |
 | 4 | 入力全体の N-best、文節 UI のオプション化 | エンジン・TSF | docs/design/nbest.md |
 | 5 | LLM による順位補正 | エンジン・TSF | docs/design/llm-rerank.md |
 

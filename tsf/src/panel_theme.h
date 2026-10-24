@@ -49,7 +49,7 @@ enum class SelectionStyle {
     Text,  // 文字だけをアクセント色の太字に
 };
 
-// 文書のキャレットの位置を示す印 (docs/design/caret-marker.md)
+// 文書のキャレットの位置を示す印 (docs/spec/display.md「キャレットの印」)
 enum class CaretMarkerStyle {
     Off,
     Pointer,   // 入力パネルに吹き出しの尻尾を付けてキャレットを指す
@@ -96,7 +96,7 @@ struct PanelTheme {
     float centerWidth = 36.0f;     // 画面中央に出すときのパネルの幅
     float centerWidthRatio = 0.9f; // 画面中央に出すときの幅の上限 (作業領域の幅に対する比率)
     float pointerSize = 0.6f;      // caret_marker pointer の尻尾の高さ (底辺は高さの 2 倍)
-    float triangleSize = 0.5f;     // caret_marker triangle の三角の高さ (底辺は高さの 2 倍)
+    float triangleSize = 0.5f;     // caret_marker triangle の三角の高さ (正三角形)
     float lineWidthPx = 1.0f;      // 外周・区切り線・バッジ・次の語の縁の太さ (px)
     float underlinePx = 2.0f;      // run の文字列・選択中の候補の下線の太さ (px)
     float caretWidthPx = 2.0f;     // 入力行のキャレットの太さ (px)

@@ -4,7 +4,7 @@
 
 入力パネルの背景のぼかし (アクリル) は、設定 `panel_blur` (設定ツールの「候補の背景をぼかす」) と
 テーマのキー `blur` (`allow` / `never`) の両方が許したときだけ掛かる。ぼかしで描くパネルには
-`caret_marker pointer` の尻尾を描けない (docs/design/caret-marker.md) ため、テーマで吹き出しを選んでも
+`caret_marker pointer` の尻尾を描けない (docs/archive/caret-marker.md) ため、テーマで吹き出しを選んでも
 設定次第で吹き出しが消える。
 
 ぼかすかどうかをテーマだけで決め、見た目の組み合わせをテーマの中で完結させる。

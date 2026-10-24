@@ -119,7 +119,7 @@ CONVNBEST を新設する。CONVERT・CONVSEG・CONVCTX はそのまま残す (C
 | engine/src/bin/quicklime-config.rs | 「文節単位で変換する」チェックボックス |
 | docs/protocol.md | CONVNBEST、LEARN2 で読み全体を送ること |
 | docs/archive/keymap.md | コア操作の表 (候補選択中の ← → PgUp PgDn) |
-| docs/design/candidate-bar.md | バーの内容の表と先頭文節の取り方を本書に合わせて書き換える |
+| docs/archive/candidate-bar.md | バーの内容の表と先頭文節の取り方を本書に合わせて書き換える |
 | docs/archive/input-model-v2.md | 段階表の詳細設計に本書を記す (本書の作成時に済ませる) |
 | README.md | 候補選択の説明、`segment_ui`、キー操作 |
 

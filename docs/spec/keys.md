@@ -60,7 +60,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 - `CommitRun` は打鍵をアプリへ渡さない。run を終えたら後続語の予測を出す ([suggest.md](suggest.md)「出すとき・消すとき」)
 - `ConvertSymbol`・`ConvertUser` が入力なしで働かない理由は [conversion.md](conversion.md)「変換の対象」
 - `NextWordNext`・`NextWordPrev` に ↑ / ↓ を割り当てたときは、キャレット行の上に反転して出した入力パネルで向きを入れ替える
-  ([panel-above-caret.md](../design/panel-above-caret.md))
+  ([display.md](display.md)「キャレット行の上に出すときの反転」)
 - `ForgetLearning` は、英字候補・学習でない候補を選んでいるとき・エンジンに接続できないときも打鍵を食べて何もしない。
   アプリへ渡すとキャレットの後ろの文字が消えるため
 - 候補バーと後続語の予測の選択、範囲の伸縮、文節の移動と伸縮、変換の取消、番号での採用・確定は割当の機能にしない。
@@ -201,7 +201,7 @@ key event sink の `OnTestKeyDown` / `OnKeyDown` で、打鍵ごとに次の順�
 - ← / → が範囲の伸縮・文節の移動になる条件と、伸縮できない端でキーを食べることは [conversion.md](conversion.md)「範囲の伸縮」
   「文節 UI (`segment_ui` 1)」
 - キャレット行の上に反転して出した縦積みの入力パネルでは、↑ / ↓ を見た目の向きに合わせて入れ替える
-  ([panel-above-caret.md](../design/panel-above-caret.md))
+  ([display.md](display.md)「キャレット行の上に出すときの反転」)
 - Alt 併用で run を終えない理由は [input.md](input.md)「run の終わり方」
 - 確定キーと候補バーの Ctrl+1〜9 で run を終えたときは、後続語の予測を出す ([suggest.md](suggest.md)「出すとき・消すとき」)
 

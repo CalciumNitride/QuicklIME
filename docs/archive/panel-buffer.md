@@ -4,7 +4,7 @@
 
 直接入力方式 (docs/archive/direct-input.md、docs/archive/append-input.md) は、run のかなを完成した
 時点で文書に追記し、候補バーの採用や変換の確定でその文字列を置き換える。入力パネル
-(docs/design/suggest-panel.md) の入力行は、文書に入っている run の文字列をパネルに重ねて見せているだけである。
+(docs/archive/suggest-panel.md) の入力行は、文書に入っている run の文字列をパネルに重ねて見せているだけである。
 
 入力パネルを画面中央に出し、読みを少し打って候補から選んでいく使い方では、入力中のかなが文書にも
 入る必要はない。むしろ次の点が気になる。
@@ -157,7 +157,7 @@ config.tsv に次の項目を足す。TSF 層が読む。
 | tsf/src/text_service.cpp | 入力行の判定 (`PanelInputActive`・`PanelInputShown`・`PanelInputLine`)、`OnSetFocus` と IME オフでの run の終え方、`OnEndEdit` で run を終える条件 |
 | engine/src/bin/quicklime-config.rs | 「入力」タブのチェックボックスと `input_buffer` の読み書き |
 | README.md | 設定 `input_buffer` と、パネル保持入力でのキー操作の違い |
-| docs/design/suggest-panel.md, docs/design/panel-theme.md | 「パネルだけに持つ設定は別の設計書で扱う」の記述を、本書への参照に書き換える |
+| docs/archive/suggest-panel.md, docs/design/panel-theme.md | 「パネルだけに持つ設定は別の設計書で扱う」の記述を、本書への参照に書き換える |
 | docs/archive/direct-input.md | 方式の節に、パネル保持入力を本書で定めることを書く |
 
 エンジン (Rust の変換部) とプロトコルは変更しない。

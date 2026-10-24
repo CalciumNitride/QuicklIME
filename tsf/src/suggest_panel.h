@@ -18,8 +18,8 @@ struct IDWriteFactory;
 struct IDWriteTextFormat;
 
 // 候補バー (横一列または縦積みの候補) と入力行を出すパネル、変換の候補一覧
-// (docs/design/conversion-panel.md)、および未完成ローマ字の小さな
-// カプセル。見た目は PanelTheme (docs/design/panel-theme.md) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
+// (docs/spec/display.md「変換の候補一覧」)。
+// 見た目は PanelTheme (docs/design/panel-theme.md) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
 // ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
 class SuggestPanel {
@@ -70,7 +70,7 @@ public:
         // 位置の基準 (スクリーン座標)。null は取れなかったことを表す (Center のみで許す)
         const RECT* caret = nullptr;
         int x = 0;  // Caret のときのパネルの左端
-        // キャレットの印 (docs/design/caret-marker.md) の先端の x (文書のキャレットの矩形の左端。
+        // キャレットの印 (docs/spec/display.md「キャレットの印」) の先端の x (文書のキャレットの矩形の左端。
         // スクリーン座標)。pointer のときだけ使う
         int markerX = 0;
         // キャレット行に向いた辺に吹き出しの尻尾を付けて markerX を指す。描けないとき
@@ -155,7 +155,7 @@ public:
     bool Horizontal() const { return theme_.layout == PanelLayout::Row; }
 
     // 縦に並ぶ入力パネルをキャレット行の上に出し、並びを反転している (1 番目の候補がキャレット側の
-    // 下にある) か (docs/design/panel-above-caret.md)。表示していなければ false
+    // 下にある) か (docs/spec/display.md「キャレット行の上に出すときの反転」)。表示していなければ false
     bool Reversed() const
     {
         return hwnd_ != nullptr && columnSide_ == ColumnSide::Above;

@@ -31,7 +31,7 @@
 ### 表示位置と見た目
 
 見た目、画面中央に出す設定 (`candidate_position`)、入力行の表示 (`panel_input`) は
-docs/design/suggest-panel.md による。以下は `candidate_position caret` (既定) のときの位置。
+docs/archive/suggest-panel.md による。以下は `candidate_position caret` (既定) のときの位置。
 
 - キャレット行のすぐ下に出す。下に入らなければ行の上に出す (縦に並ぶパネルの上下の決め方と上に出すときの
   並べ方は [panel-above-caret.md](panel-above-caret.md))
@@ -125,4 +125,4 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 
 ## 未決事項
 
-- 打鍵ごとの往復は [unified-suggest.md](unified-suggest.md) の SUGGEST で 1 回にする (上記「エンジン」)
+- 打鍵ごとの往復は [unified-suggest.md](../design/unified-suggest.md) の SUGGEST で 1 回にする (上記「エンジン」)

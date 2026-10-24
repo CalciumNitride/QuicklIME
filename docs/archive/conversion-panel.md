@@ -3,7 +3,7 @@
 ## 背景と目的
 
 変換キー・F4〜F10 で入る候補選択の縦の候補一覧 (`CandidateWindow`) は、GDI とシステム色で描いた
-四角いウィンドウで、常にキャレット位置に出る。入力パネル (docs/design/suggest-panel.md) と
+四角いウィンドウで、常にキャレット位置に出る。入力パネル (docs/archive/suggest-panel.md) と
 テーマ (docs/design/panel-theme.md) の対象外のため、次の問題がある。
 
 - 候補バーと見た目がそろわない (配色・角丸・影・番号バッジ・選択の強調・ライト/ダーク・ぼかし)
