@@ -785,7 +785,7 @@ fn main() -> Result<(), slint::PlatformError> {
         return Ok(());
     }
 
-    // winit 以外のバックエンドでは HWND を取れない (キーの取り込み・アイコン・ファイル選択に使う)
+    // winit 以外のバックエンドでは HWND を取れない (キーの取り込み・ファイル選択に使う)
     slint::BackendSelector::new().backend_name("winit".into()).select()?;
 
     let window = SettingsWindow::new()?;
@@ -795,9 +795,6 @@ fn main() -> Result<(), slint::PlatformError> {
     connect(&window, &state);
 
     window.show()?;
-    if let Some(hwnd) = win32::window_hwnd(window.window()) {
-        win32::set_window_icon(hwnd);
-    }
     // フォーカスを得たら見本を描き直す (テーマファイルを外のエディタで書き換えた場合に読み直す)。
     // winit のイベントの処理中に画面を変えないよう、イベントループに回してから描く
     let weak = Rc::downgrade(&state);

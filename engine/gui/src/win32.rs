@@ -1,5 +1,5 @@
 // Slint の外で windows-sys を直接使う処理 (キーの取り込み・ファイル選択・実行中のアプリの列挙・
-// フォントの列挙・二重起動の防止・ウィンドウのアイコン)
+// フォントの列挙・二重起動の防止)
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -9,7 +9,6 @@ use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW};
-use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -22,10 +21,10 @@ use windows_sys::Win32::UI::Input::Ime::{IACE_DEFAULT, ImmAssociateContextEx, Im
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows_sys::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    EnumChildWindows, EnumWindows, FindWindowW, GW_OWNER, GetSystemMetrics, GetWindow,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, ICON_BIG, ICON_SMALL,
-    IMAGE_ICON, IsIconic, IsWindowVisible, LR_DEFAULTCOLOR, LoadImageW, SM_CXICON, SM_CXSMICON, SM_CYICON, SM_CYSMICON, SW_RESTORE, SendMessageW,
-    SetForegroundWindow, ShowWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SETICON, WM_SYSCHAR,
+    EnumChildWindows, EnumWindows, FindWindowW, GW_OWNER, GetWindow,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId,
+    IsIconic, IsWindowVisible, SW_RESTORE,
+    SetForegroundWindow, ShowWindow, WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSCHAR,
     WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
@@ -45,27 +44,6 @@ pub fn window_hwnd(window: &slint::Window) -> Option<HWND> {
             _ => None,
         })
         .flatten()
-}
-
-/// exe に埋め込んだアイコン (winresource が ID 1 で入れる) をウィンドウに付ける。
-/// winit はウィンドウクラスにアイコンを登録しないため、付けないと既定のアイコンになる
-pub fn set_window_icon(hwnd: HWND) {
-    unsafe {
-        let instance = GetModuleHandleW(null());
-        for (kind, cx, cy) in [(ICON_BIG, SM_CXICON, SM_CYICON), (ICON_SMALL, SM_CXSMICON, SM_CYSMICON)] {
-            let icon = LoadImageW(
-                instance,
-                1 as *const u16,
-                IMAGE_ICON,
-                GetSystemMetrics(cx),
-                GetSystemMetrics(cy),
-                LR_DEFAULTCOLOR,
-            );
-            if !icon.is_null() {
-                SendMessageW(hwnd, WM_SETICON, kind as usize, icon as LPARAM);
-            }
-        }
-    }
 }
 
 /// ウィンドウを前面に出す (TSF 層から起動されたときに、起動元のアプリの後ろに隠れないように)

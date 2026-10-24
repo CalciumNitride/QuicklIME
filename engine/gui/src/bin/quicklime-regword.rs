@@ -84,7 +84,7 @@ fn main() -> Result<(), slint::PlatformError> {
     let initial_word = args.first().cloned().unwrap_or_default();
     let initial_reading = args.get(1).cloned().unwrap_or_default();
 
-    // winit 以外のバックエンドでは HWND を取れない (アイコン・ファイル選択に使う)
+    // winit 以外のバックエンドでは HWND を取れない (前面に出す・ファイル選択に使う)
     slint::BackendSelector::new().backend_name("winit".into()).select()?;
 
     let window = RegwordWindow::new()?;
@@ -117,10 +117,13 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     window.show()?;
-    if let Some(hwnd) = win32::window_hwnd(window.window()) {
-        win32::set_window_icon(hwnd);
-        win32::bring_to_front(hwnd);
-    }
+    // winit のウィンドウはイベントループが始まってから作られるため、show() の直後には HWND が無い
+    let weak = window.as_weak();
+    Timer::single_shot(Duration::ZERO, move || {
+        if let Some(hwnd) = weak.upgrade().and_then(|window| win32::window_hwnd(window.window())) {
+            win32::bring_to_front(hwnd);
+        }
+    });
     // 単語が引数で埋まっていれば「よみ」から入力を始める
     if initial_word.is_empty() {
         window.invoke_focus_word();
