@@ -7,15 +7,7 @@ azookey [text](https://azookey.com)
 ## 気になった点
 
 # アイデア
-- アプリケーションごとの学習
-- モードレス入力
-- ローマ字テーブル編集を設定ウィンドウから
-- 文脈予測
-- UIカスタマイズ
 
-# エンジン終了
-
-- 停止
 
 ```shell
 Stop-Process -Name quicklime-engine -Force -ErrorAction SilentlyContinue

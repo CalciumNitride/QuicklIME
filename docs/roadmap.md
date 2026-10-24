@@ -9,12 +9,8 @@
   ([unified-suggest.md](design/unified-suggest.md))
 - 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
-- 前文脈つきの予測 (PREDICT・SUGGEST) への文節の連なりの統計の利用。今は統計を読みなしの後続語予測
-  (NEXTWORD) にだけ使う ([next-word-ngram.md](design/next-word-ngram.md))
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
-- run が無いときのキャレット直前のかなの変換を、候補バーの対象にする
-  ([conversion-range.md](design/conversion-range.md))
 - LLM の右文脈の利用。範囲より後ろの文字列を同音異義語の判別に使う。zenz のプロンプトの形式に右の文脈が無く、
   効果を実験で確かめる必要がある ([conversion-range.md](design/conversion-range.md))
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
@@ -41,6 +37,11 @@
 - 前文脈による変換の使い分け (「服を|着る」「紙を|切る」) は見送り。今は前文脈を予測と後続語の予測にだけ使う。
   語の単位の文脈の割引は評価で変換の 1 位の割合を下げ、再生評価の学習ありのモードで 1 位は 93.6% あり、
   残る外れも分類に薄く散らばっているため ([learning-score.md](design/learning-score.md))
+- 前文脈つきの予測 (PREDICT・SUGGEST) への文節の連なりの統計の利用は見送り。今は統計を読みなしの後続語予測
+  (NEXTWORD) にだけ使う。再生評価の学習ありのモードの後ろの `q` の行で、正解の表記が統計の表 (文節の表か
+  バックオフの表) のどこかに入るのは既出 983 行のうち 111 行、初出 280 行のうち 1 行で、伸ばしたい初出の句には
+  順位の付け方によらず効かない。初出の行のうち 110 行は前文脈の自立語がバックオフの表にあっても正解が無く、
+  表の大きさより Wikipedia の書き言葉と打つ文の内容の違いが効いている ([next-word-ngram.md](design/next-word-ngram.md))
 - 短い文節の表記ゆれ (こと / 事、できます / 出来ます) を、読み全体の学習表記の固定で取り違える。同じ読みで両方の表記を
   使うと、決め手が無い。再生評価の学習ありのモードでは、固定した 322 行のうち固定で当てた行が 13 行、外した行が
   12 行とほぼ同数で、度合いや読みの長さでも分かれない ([eval-sets.md](design/eval-sets.md))
