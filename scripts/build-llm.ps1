@@ -5,7 +5,7 @@
 #   - quicklime-llm.exe         CPU 版
 #   - quicklime-llm-vulkan.exe  Vulkan 版 (feature vulkan)
 #
-# llama.cpp のビルドに使う環境 (docs/design/experiment-0b-llm-results.md の再現手順と同じ):
+# llama.cpp のビルドに使う環境 (docs/archive/experiment-0b-llm-results.md の再現手順と同じ):
 #   - LIBCLANG_PATH (bindgen 用の LLVM)、VS 付属の CMake・Ninja、vcvars64 の MSVC 環境
 #   - CMAKE_GENERATOR=Ninja: Visual Studio ジェネレータでは Vulkan のシェーダ生成ツールの
 #     configure・build・install が並行して走り、順序が崩れて失敗するため

@@ -1842,7 +1842,7 @@ pub fn split_path(
     Some(result)
 }
 
-/// 表記の接頭辞の制約つきの Viterbi (docs/design/experiment-0c-llm-gen.md の C)。エンジンは LLM で
+/// 表記の接頭辞の制約つきの Viterbi (docs/archive/experiment-0c-llm-gen.md の C)。エンジンは LLM で
 /// 生成した候補の文節を決めるのに完全一致で使う (docs/design/llm-generate.md)。
 /// 表記の連結が prefix (バイト列) で始まる経路 (exact なら表記が prefix と
 /// 等しい経路) のうち、convert_nbest_rerank の最良経路と同じラティス・コストで最小のものを、N-best と

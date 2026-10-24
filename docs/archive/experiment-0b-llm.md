@@ -80,7 +80,7 @@ CPU はスレッド数 (2 / 4 / 物理コア数) も変えて測る。
 
 ### 出力
 
-計測結果を `docs/design/experiment-0b-llm-results.md` に表で書く。
+計測結果を `docs/archive/experiment-0b-llm-results.md` に表で書く。
 環境 (CPU・GPU・ドライバの版)、llama.cpp の版、モデルとライセンス表記、確認したプロンプトの書式も記す。
 
 ## 変更対象ファイル
@@ -90,7 +90,7 @@ CPU はスレッド数 (2 / 4 / 物理コア数) も変えて測る。
 | engine/Cargo.toml | optional 依存と feature、example の `required-features` |
 | engine/examples/llm_bench.rs | 新規 |
 | engine/examples/data/llm_cases.tsv | 新規 |
-| docs/design/experiment-0b-llm-results.md | 新規 (計測結果) |
+| docs/archive/experiment-0b-llm-results.md | 新規 (計測結果) |
 
 ## 実装手順
 
@@ -99,7 +99,7 @@ CPU はスレッド数 (2 / 4 / 物理コア数) も変えて測る。
 3. 計測の枠組み (反復・中央値・p95・メモリ計測) を作る
 4. Vulkan バックエンドを有効にして同じ計測を行う
 5. テストセットを作り、精度の比較を行う
-6. 結果を docs/design/experiment-0b-llm-results.md にまとめる
+6. 結果を docs/archive/experiment-0b-llm-results.md にまとめる
 
 ## 検証方法
 

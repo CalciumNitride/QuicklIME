@@ -1,7 +1,7 @@
 # 実験 0c: LLM による候補の生成の計測
 
 LLM による候補の生成 ([roadmap](../roadmap.md)) を採るかどうかと、その方式を決めるための計測の仕様。
-並べ替え ([llm-rerank.md](llm-rerank.md)) は N-best の上位 10 件の中でしか順位を直せない。
+並べ替え ([llm-rerank.md](../design/llm-rerank.md)) は N-best の上位 10 件の中でしか順位を直せない。
 生成を足すと、その外にある正解にどれだけ届くかを、遅延・副作用と合わせて測る。
 
 ## 背景と目的
@@ -176,7 +176,7 @@ A 貪欲法の精度と、C の読みから外れない性質を合わせる方�
 | engine/examples/llm_gen_eval.rs (新規) | 計測の example |
 | engine/examples/llm_bench.rs | 共通部分を別ファイルに出す場合だけ (出力は変えない) |
 | engine/Cargo.toml | `[[example]] name = "llm_gen_eval"`、`required-features = ["llm-bench"]` |
-| docs/design/experiment-0c-llm-gen-results.md (新規) | 計測の結果 |
+| docs/archive/experiment-0c-llm-gen-results.md (新規) | 計測の結果 |
 | docs/design/README.md | 実験の節に本書と結果の 2 行 |
 | docs/development.md | 評価の手順に llm_gen_eval のビルドと実行を足す |
 

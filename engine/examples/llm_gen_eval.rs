@@ -1,4 +1,4 @@
-// 実験 0c: LLM による候補の生成の計測 (docs/design/experiment-0c-llm-gen.md)
+// 実験 0c: LLM による候補の生成の計測 (docs/archive/experiment-0c-llm-gen.md)
 //
 // テストセットの各件を、辞書をプロセス内で読み込んだ統計変換 (convert_nbest_rerank) と、プロセス内の
 // llama.cpp で次の方式にかけ、精度・速さ・副作用を標準出力へ Markdown の表で書く。

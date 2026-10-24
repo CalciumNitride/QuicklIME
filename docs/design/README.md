@@ -158,30 +158,28 @@
 - [third-party-notices.md](third-party-notices.md): 配る exe に静的リンクしている Rust の crate の著作権表示と
   許諾文を、インストーラのビルド時に cargo-about で `LICENSE-rust-crates.txt` に生成して同梱する
 
-## 実験
-
-- [experiment-0b-llm.md](experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
-- [experiment-0b-llm-results.md](experiment-0b-llm-results.md): 上の計測の結果
-- [experiment-0c-llm-gen.md](experiment-0c-llm-gen.md): LLM による候補の生成 (自由生成と、統計変換をドラフトにした
-  照合) の精度・速さ・副作用の計測の仕様
-- [experiment-0c-llm-gen-results.md](experiment-0c-llm-gen-results.md): 上の計測の結果
-
 ## ドキュメント
 
-- [docs-reorganization.md](docs-reorganization.md): ドキュメントの構成 (architecture・設計書の索引・
-  basics・roadmap の分担)
-- [user-docs.md](user-docs.md): 利用者向けドキュメントの分割 (README・docs/user/・docs/development.md・
-  設計書の分担と、設定一覧 docs/user/settings.md)
 - [spec-docs.md](spec-docs.md): 仕様書 (docs/spec/) と設計書の分離。仕様書の区分と移行の進め方、新しい変更の流れ
 
 ## archive (docs/archive/)
 
-仕様書へ全部移した設計書と、採らなかった案・検討段階の草案。
+仕様書へ全部移した設計書、実験の記録、置き換わったドキュメントの構成の設計書と、採らなかった案・検討段階の草案。
 
 - [conversion-range.md](../archive/conversion-range.md): run が無いときのキャレット直前のかなの変換と、候補選択中の
   ←→ による変換の範囲の伸縮。[docs/spec/conversion.md](../spec/conversion.md) へ移した
 - [adopted-reconversion.md](../archive/adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む
   部分も変換キーで変換し直す。[docs/spec/conversion.md](../spec/conversion.md) へ移した
+
+- [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
+- [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
+- [experiment-0c-llm-gen.md](../archive/experiment-0c-llm-gen.md): LLM による候補の生成 (自由生成と、統計変換を
+  ドラフトにした照合) の精度・速さ・副作用の計測の仕様
+- [experiment-0c-llm-gen-results.md](../archive/experiment-0c-llm-gen-results.md): 上の計測の結果
+- [docs-reorganization.md](../archive/docs-reorganization.md): ドキュメントの構成 (architecture・設計書の索引・
+  basics・roadmap の分担)。[spec-docs.md](spec-docs.md) に置き換わった
+- [user-docs.md](../archive/user-docs.md): 利用者向けドキュメントの分割 (README・docs/user/・docs/development.md・
+  設計書の分担と、設定一覧 docs/user/settings.md)
 
 - [experiment-0a-append-input.md](../archive/experiment-0a-append-input.md): 追記型入力の2方式 (F1 / F2)
   の試作と比較。F1 を [append-input.md](append-input.md) で採用

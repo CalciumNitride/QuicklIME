@@ -1,6 +1,6 @@
 # 実験 0b: LLM による順位補正の計測結果
 
-仕様は docs/design/experiment-0b-llm.md。計測には engine/examples/llm_bench.rs と
+仕様は docs/archive/experiment-0b-llm.md。計測には engine/examples/llm_bench.rs と
 engine/examples/data/llm_cases.tsv を使った。数値はすべて下記の環境で実際に測った値。
 
 ## 環境

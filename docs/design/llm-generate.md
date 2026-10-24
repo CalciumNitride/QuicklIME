@@ -6,7 +6,7 @@ LLM の並べ替え ([llm-rerank.md](llm-rerank.md)) に、zenz の貪欲法の�
 
 ## 背景と目的
 
-実験 0c ([experiment-0c-llm-gen.md](experiment-0c-llm-gen.md)、結果は [experiment-0c-llm-gen-results.md](experiment-0c-llm-gen-results.md))
+実験 0c ([experiment-0c-llm-gen.md](../archive/experiment-0c-llm-gen.md)、結果は [experiment-0c-llm-gen-results.md](../archive/experiment-0c-llm-gen-results.md))
 で、生成の方式と条件を測った。
 
 - AJIMEE-Bench (197 件) の 1 位は、並べ替えだけで 141 件 (72%)。生成した候補を先頭に置くと、Vulkan + small の貪欲法で

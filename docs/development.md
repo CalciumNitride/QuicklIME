@@ -77,12 +77,12 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv
   cargo run --release --example nbest_eval -- --cases ../references/AJIMEE-Bench/ajimee_cases.tsv --llm cpu
   ```
-- LLM による候補の生成の計測 (実験 0c。[experiment-0c-llm-gen.md](design/experiment-0c-llm-gen.md)):
+- LLM による候補の生成の計測 (実験 0c。[experiment-0c-llm-gen.md](archive/experiment-0c-llm-gen.md)):
   `llm_gen_eval` は辞書と llama.cpp をプロセス内で使い、並べ替えだけ・自由生成 (貪欲法・beam)・統計変換を
   ドラフトにした照合を、テストセットの左文脈つき・学習が空で比べる。エンジンと quicklime-llm は起動しない。
   llama.cpp を含むので、ビルドには quicklime-llm と同じ環境変数 (LIBCLANG_PATH、CMake・Ninja、vcvars64。
   Vulkan 版は VULKAN_SDK・`CMAKE_GENERATOR=Ninja` と、長いパスを避ける `subst` のドライブを `--target-dir` に
-  する) が要る。手順は [experiment-0c-llm-gen-results.md](design/experiment-0c-llm-gen-results.md) の「再現手順」
+  する) が要る。手順は [experiment-0c-llm-gen-results.md](archive/experiment-0c-llm-gen-results.md) の「再現手順」
   ```
   cd engine
   cargo build --release --example llm_gen_eval --features llm-bench

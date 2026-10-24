@@ -1,4 +1,4 @@
-// 実験 0b: zenz 系かな漢字変換モデルによる順位補正の計測 (docs/design/experiment-0b-llm.md)
+// 実験 0b: zenz 系かな漢字変換モデルによる順位補正の計測 (docs/archive/experiment-0b-llm.md)
 //
 // llama.cpp でモデルを読み込み、生成・順位付けの遅延、読み込み時間、メモリ、
 // テストセットでの精度を測って標準出力へ Markdown の表で書く。llama.cpp のログは標準エラーに出る。

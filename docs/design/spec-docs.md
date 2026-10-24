@@ -52,13 +52,28 @@ input-buffer-modes.md で「composition の中だけ」に置き換わってい�
 | runtime.md | 実行と配布 (エンジンの自動起動・二重起動の防止・パイプのアクセス権・表示位置のフォールバック・インストーラ・第三者の著作権表示) | engine-autostart, candidate-position-fallback, third-party-notices, basics |
 
 - 実験の設計書 (experiment-*.md) と、docs の構成の設計書 (docs-reorganization.md・user-docs.md・本書) は
-  仕様書へ移さない。実験の結果で今の仕様の WHY になる数値は、該当する仕様書に要点を書いてリンクする
+  仕様書へ移さない (archive へ移す時期は「移行の進め方」)。実験の結果で今の仕様の WHY になる数値は、該当する仕様書に要点を書いてリンクする
 - 区分に収まらない機能が出てきたら、仕様書を足す前に既存の区分に入るかを先に検討する
 
 ### 移行の進め方
 
-一度に全部は移さない。ある領域の機能に手を入れるとき、または食い違いを見つけたときに、その領域の
-仕様書を作る。
+1 領域ずつ、次の順に仕様書を作る。1 領域を 1 commit にする。置き換えの連鎖が深く、取り違えの起きやすい
+領域を先にする。
+
+| 順 | 仕様書 | 先にする理由 |
+|---|---|---|
+| 1 | conversion.md | 食い違いが見つかった領域 |
+| 2 | suggest.md | 置き換えの連鎖がいちばん深い |
+| 3 | input.md | 入力方式の廃止と置き換えが続いている |
+| 4 | keys.md | 各仕様書から参照される状態別の表。conversion.md などに書いたキーの挙動もここへ移す |
+| 5 | display.md | 表示の置き換えが多い。.claude/CLAUDE.md の「画面の部品の呼び名」の参照先もここで切り替える |
+| 6〜 | engine.md → learning.md → modeless.md → dictionary.md → tools.md → runtime.md | 置き換えが比較的少ない |
+
+- 途中の領域に手を入れる変更が来たときは、順によらずその領域を先に作る
+- 仕様書へ移さない設計書のうち、実験の設計書 (experiment-*.md) と、本書に置き換わった docs の構成の
+  設計書 (docs-reorganization.md・user-docs.md) は、移行の初めに docs/archive/ へ移す
+- 全部の領域を作り終えたら、basics.md と本書を docs/archive/ へ移す。docs/design/README.md は
+  進行中の設計書の索引にし、.claude/CLAUDE.md の移行中の規則を消す
 
 - 仕様書は設計書の写しにしない。コード・docs/user/・後の設計書と照らし、今の挙動を書く。コードを読んでも
   今の挙動が確定できない項目は、推測で書かずに報告する

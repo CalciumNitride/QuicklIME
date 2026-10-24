@@ -73,7 +73,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 - GPU は特定のベンダーに依存させない (CPU と Vulkan。CUDA 専用にはしない)
 - 主な役割は、入力全体の N-best 候補の順位補正とする。結果は候補バーへ非同期に反映し、
   打鍵を止めない
-- 段階5で採用する。計測結果 (docs/design/experiment-0b-llm-results.md) で、遅延・メモリ・
+- 段階5で採用する。計測結果 (docs/archive/experiment-0b-llm-results.md) で、遅延・メモリ・
   精度のいずれも見込みがある構成が確認できた。オプションとし、無効でも従来の統計変換だけで動く
 - 構成は CPU + zenz-v3.2-xsmall と Vulkan + zenz-v3.2-small を設定で選ぶ (docs/design/llm-rerank.md)
 
@@ -82,7 +82,7 @@ direct 方式 (docs/design/direct-input.md) を作ったことで、Space をス
 | 段階 | 内容 | 主な変更層 | 詳細設計 |
 |---|---|---|---|
 | 0a | 実験: 追記型入力 (F1 / F2) の試作と比較 | TSF | docs/archive/experiment-0a-append-input.md |
-| 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/design/experiment-0b-llm.md |
+| 0b | 実験: LLM の遅延・メモリ計測 | エンジン (example のみ) | docs/archive/experiment-0b-llm.md |
 | 1 | キーマップ刷新、Enter の分離、確定キー | TSF・設定ツール | docs/design/keymap.md |
 | 2 | フォールバック改善 (F1 方式)、composition 方式の廃止 | TSF・設定ツール | docs/design/append-input.md |
 | 3 | 候補バー (ライブ変換と予測サジェストの統合) | TSF | docs/design/candidate-bar.md |
