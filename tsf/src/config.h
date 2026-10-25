@@ -126,7 +126,7 @@ struct TsfConfig {
     std::vector<std::wstring> newlineApps = DefaultNewlineApps();
     // 起動時の IME をオン/オフにするアプリ。一覧に無いアプリは自動 (未設定のときだけオン)
     std::vector<ImeStartApp> imeStartApps;
-    // 学習を記録しないアプリの exe 名 (docs/design/no-learning-apps.md)
+    // 学習を記録しないアプリの exe 名 (docs/spec/learning.md「学習しないアプリ」)
     std::vector<std::wstring> noLearningApps;
 
     // 機能ごとのキー割当 (KeyFunc の並び順)

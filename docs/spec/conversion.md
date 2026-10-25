@@ -154,6 +154,8 @@
 - LEARNSEG・LEARNWORD は文節の伸縮 (Shift+← / Shift+→) でしか起きないので、文節 UI のときだけ送る
 - 候補バーの全体変換の採用 (採用範囲を縮めない採用) も、入力全体の候補の確定と同じ学習を送る
 - 学習しないアプリ (`no_learning_apps`) では何も送らない
+- エンジンでの数え方は [learning.md](learning.md)「確定の数え方 (LEARN・LEARN2)」、LEARNSEG・LEARNWORD のどちらを
+  送るかは [learning.md](learning.md)「文節境界と複合語の学習 (LEARNSEG・LEARNWORD)」
 
 ## 入力全体の候補選択 (`segment_ui` 0)
 

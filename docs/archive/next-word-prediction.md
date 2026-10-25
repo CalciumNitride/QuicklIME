@@ -15,7 +15,7 @@
 
 ### 予測の材料
 
-予測の材料と並びは [learning-score.md](../design/learning-score.md) の A・D で置き換え (文脈の句の学習を割引の大きい順に引く)。
+予測の材料と並びは [learning-score.md](learning-score.md) の A・D で置き換え (文脈の句の学習を割引の大きい順に引く)。
 学習の後ろに、日本語版ウィキペディアから数えた文節の連なりの統計を足す ([next-word-ngram.md](../design/next-word-ngram.md))。
 
 - 文脈付きの学習 (`LearningStore` の ctx_map) を文脈キー (直前文節の表記の末尾 16 文字) で引き、

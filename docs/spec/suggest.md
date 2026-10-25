@@ -11,8 +11,7 @@
   [mixed-conversion.md](../design/mixed-conversion.md))
 - 全体変換の候補 (CONVNBEST の N-best と並び・補正の候補・LLM の並べ替えと生成) はエンジンの側
   ([engine.md](engine.md))
-- 学習の割引の式と学習の削除は学習の側 ([learning-score.md](../design/learning-score.md)・
-  [forget-learning.md](../design/forget-learning.md))
+- 学習の割引の式と学習の削除は学習の側 ([learning.md](learning.md))
 - 候補バーと後続語の予測でのキーの働きの一覧は [keys.md](keys.md)「run の無い状態のキー」「run のある状態のキー」。本書は
   働きの中身を書く
 - SUGGEST・PREDICT・NEXTWORD の形式は [docs/protocol.md](../protocol.md)
@@ -126,7 +125,7 @@ C0 は全体変換の通常の最良経路のコスト (経路が無ければ 0)
   接続・文節境界ペナルティ) で求める。学習した文節境界の増減は含めない
 - `PREDICT_BIAS` は、崩していない打ち終えた入力で、先頭が全体変換の最良経路から変わらない値にする。0 では
   「ひく → 低い」のように、長い語の予測が打ち終えた読みの全体変換より上に出る
-- 割引の式と `PHRASE_BASE` などの定数は学習の側 ([learning-score.md](../design/learning-score.md) の B)
+- 割引の式と `PHRASE_BASE` などの定数は学習の側 ([learning.md](learning.md)「使った度合いと割引」)
 
 ### 並べ方
 
@@ -335,7 +334,14 @@ C0 は全体変換の通常の最良経路のコスト (経路が無ければ 0)
 ## 学習の削除の後の候補
 
 候補を選んでいる間の Ctrl+Delete (`key.forget_learning`) は、選んでいる候補の学習を消して候補を作り直す。
-消す組・作り直し・選択の扱いは学習の側 ([forget-learning.md](../design/forget-learning.md))。
+送る組と消す学習は [learning.md](learning.md)「学習の削除 (FORGET)」。
+
+- 消した件数が 1 以上のときだけ作り直す。run のバーは打鍵のときと同じ問い合わせ (SUGGEST。旧エンジンでは
+  CONVNBEST と PREDICT) で引き直し、後続語の予測は NEXTWORD を引き直す。
+  LLM の並べ替えの結果は捨てて依頼し直す (消した学習の候補を含みうるため)
+- 選択は同じ番号に保つ。候補が減って番号が無くなれば末尾を選ぶ。候補が無くなればバーを消す (run のバーで入力行を
+  出しているときは入力行だけ残す)
+- 消した件数が 0 なら表示を変えない
 
 ## 後続語の予測
 

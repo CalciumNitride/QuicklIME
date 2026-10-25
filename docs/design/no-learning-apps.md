@@ -13,29 +13,15 @@ exe 名で並べ、設定ツールの「アプリ」タブ (docs/design/app-sett
 
 ### 止める範囲
 
-- 対象アプリでは、TSF 層が学習のコマンド `LEARN` / `LEARN2` / `LEARNSEG` / `LEARNWORD`
-  (docs/protocol.md) をエンジンへ送らない
-- 既存の学習データは、対象アプリでも候補の並びに使う (全体の `learning=0` と同じ扱い)。
-  記録の停止だけで、変換・予測・後続語予測の結果は対象外のアプリと変わらない
-- 単語登録ツールでの手動登録 (`ADDWORD`) は止めない。人が明示的に行う操作のため
-- 前文脈 (`contextSurface_`、直前に確定した文節) はメモリ上の状態で記録ではないので、これまでどおり
-  更新して後続語予測と文脈補正に使う
+[docs/spec/learning.md](../spec/learning.md)「学習しないアプリ」へ移した
 
 ### 判定する層
 
-- 判定は TSF 層で行う。ホストの exe 名 (`hostExeName_`) を `no_learning_apps` と照合する
-  (大文字小文字を区別しない。`IsNewlineApp()` と同じ方法)
-- エンジン側で判定する案は採らない。エンジンはどのアプリからの要求かを知らないので、
-  プロトコルに exe 名を足す必要がある。TSF 層で送らないようにすればエンジンとプロトコルは変えずに済む
-- 学習の送信箇所は複数あるため、判定は `TextService::IsNoLearningApp()` 1つにまとめ、各送信箇所の
-  手前で使う
+[docs/spec/learning.md](../spec/learning.md)「学習しないアプリ」へ移した
 
 ### 設定ファイル
 
-- キー `no_learning_apps`、値は exe 名のカンマ区切り (`newline_apps` と同じ形式。読み方も
-  `ParseAppList` を共用する)。既定は空 (どのアプリでも学習する)
-- 例: `no_learning_apps\tWindowsTerminal.exe,wezterm-gui.exe`
-- TSF 層の設定の再読込で反映する (ほかのアプリ別設定と同じ)
+[docs/spec/learning.md](../spec/learning.md)「学習しないアプリ」と「設定」へ移した (設定ツールの画面は下記)
 
 ### 設定ツールの「アプリ」タブ
 

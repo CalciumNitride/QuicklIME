@@ -1,4 +1,4 @@
-// 学習 (確定履歴) の記録と永続化 (docs/design/learning-score.md)
+// 学習 (確定履歴) の記録と永続化 (docs/spec/learning.md)
 //
 // 学習は 3 種類で、どれも「使った度合い」(d, 最後に数えたときの確定の通し番号 t) を持つ。
 // - 語の学習 (読み, 表記): 確定した文節を辞書の語に分けたときの自立語。Viterbi の単語コストを下げる
@@ -32,7 +32,7 @@ pub const MIN_BOUNDARY_CHARS: usize = 2;
 /// learning_stats.tsv を書き直すときに捨てる今の度合いの下限
 pub const MIN_KEEP: f64 = 0.05;
 
-/// 度合いと割引の定数 (docs/design/learning-score.md の B)。評価 (examples/learning_eval.rs) で
+/// 度合いと割引の定数 (docs/spec/learning.md「使った度合いと割引」)。評価 (examples/learning_eval.rs) で
 /// 値を振れるよう、ストアごとに持つ
 #[derive(Clone, Copy, Debug)]
 pub struct Weights {
@@ -305,7 +305,7 @@ impl LearningStore {
         }
     }
 
-    /// 確定した文節を数える (docs/design/learning-score.md の A の 2〜4)。words は文節を辞書の語に分けた
+    /// 確定した文節を数える (docs/spec/learning.md「確定の数え方 (LEARN・LEARN2)」の 2〜4)。words は文節を辞書の語に分けた
     /// 自立語 (分けられなければ None)、context は直前の文節の表記 (無ければ空)
     pub fn learn_segment(
         &mut self,
@@ -682,7 +682,7 @@ impl LearningStore {
         results
     }
 
-    /// (読み, 表記) の学習を消す (docs/design/learning-score.md の F)。words は (読み, 表記) を辞書の語に
+    /// (読み, 表記) の学習を消す (docs/spec/learning.md「消すもの」)。words は (読み, 表記) を辞書の語に
     /// 分けた自立語。句の学習の (読み, 表記)、文脈の句の学習の (読み, 表記) (文脈によらず)、語の学習のうち
     /// 分けた自立語を消し、消したら learning_stats.tsv を書き直す。戻り値は消した件数
     pub fn forget(&mut self, reading: &str, surface: &str, words: Option<&[(String, String)]>) -> usize {

@@ -10,7 +10,7 @@
 - キーの状態別の表と割当の照合は [keys.md](keys.md)。本書は機能の中身を書き、どのキーがどの状態で何をするかは keys.md を見る
 - モードレス入力の判定と英字区間は [modeless.md](../design/modeless.md) ほか、入力パネルの見た目・表示位置・
   入力モードの一時表示は [display.md](display.md)、
-  学習の中身は学習の側 ([basics.md](../design/basics.md)「学習」)
+  学習の中身は [learning.md](learning.md)
 - 実装は tsf/src/text_service_direct.cpp (run・文書の分類・確定アンドゥ・送り直し)、tsf/src/text_service.cpp
   (キーの入口・フォーカス・IME のオン/オフ・InputScope)、tsf/src/romaji.cpp (ローマ字)、tsf/src/config.cpp (設定)、
   tsf/src/edit_session.cpp (文書の読み書き)
@@ -145,7 +145,7 @@ run・キーの意味・候補バー・変換・学習・前文脈・モード�
 - 候補バーで選んでいるときは、採用に使うキー ([keys.md](keys.md)「run のある状態のキー」) で採用する ([suggest.md](suggest.md)
   「採用」)。候補を選んでいなければ候補もモードレスの run 終了時の判定も当てない ([suggest.md](suggest.md)「採用せずに run を終えたとき」)
 - 候補選択中の確定は [conversion.md](conversion.md)「確定と取消」
-- 文書に入れて run を終えたときは、学習 (英字を含む読みだけ。学習の側)、前文脈 (run 全体のかなを読み = 表記の前文脈にする)、
+- 文書に入れて run を終えたときは、学習 (英字を含む読みだけ。[learning.md](learning.md)「学習しない確定」)、前文脈 (run 全体のかなを読み = 表記の前文脈にする)、
   採用した文字列の記憶 (末尾のスペースを除く。[conversion.md](conversion.md)「採用した文字列の記憶」)、確定アンドゥの記憶
   (下記「確定アンドゥ」)、LLM の左文脈の履歴を更新する
 - フォーカス移動・アプリによる composition の終了・キー入力が無効な文書では、学習も前文脈も更新しない

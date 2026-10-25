@@ -318,7 +318,7 @@ private:
     HRESULT DeselectBar();
     // サジェスト選択中の ForgetLearning: 選んでいる候補の学習をエンジンから消し、消えたものが
     // あれば候補を作り直して同じ番号 (無ければ末尾) を選ぶ。文書は書き換えない
-    // (docs/design/forget-learning.md)
+    // (docs/spec/learning.md「学習の削除 (FORGET)」)
     HRESULT ForgetBarLearning(ITfContext* context);
     // バーの index の候補を採用する。採用部分 (run を終えるときは残りの読みと suffix も) を
     // 文書に入れ、残りの読みで run を続ける。followKey があれば、採用の後にその打鍵を入れる

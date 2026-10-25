@@ -811,7 +811,7 @@ fn predictions_response(candidates: &[(String, String)]) -> String {
 }
 
 /// LEARN・LEARN2 の組 (読み, 表記, 直前の文節の表記) を学習として数える
-/// (docs/design/learning-score.md の A)。3 組以上で、末尾の組の読みと表記がそれより前の組の連結なら、
+/// (docs/spec/learning.md「確定の数え方 (LEARN・LEARN2)」)。3 組以上で、末尾の組の読みと表記がそれより前の組の連結なら、
 /// TSF 層が 2 文節以上の確定に足した読み全体なので、句の学習だけを数える
 fn learn_entries(entries: &[(&str, &str, &str)], data: &EngineData, now: chrono::NaiveDateTime) {
     let whole = entries.len() >= 3 && {
@@ -1089,7 +1089,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 };
                 // 日付・時刻の動的候補は時間が経つと古くなるため学習しない (LEARN と同様)
                 if !datetime::candidates_at(reading, now).iter().any(|c| c == surface) {
-                    // ラティスへ載せるのは辞書語で経路が作れない読みだけ (コストが高いため)。
+                    // 複合語は高いコストでラティスに載るので、勝つのは辞書語で経路が作れない読みだけ。
                     // 経路が作れる読みは句の学習で候補の上位に来る
                     user.learn_word(reading, surface, &data.functional);
                     let words = convert::split_words(

@@ -1110,7 +1110,7 @@ impl Node {
     }
 }
 
-/// ラティスに当てる学習 (docs/design/learning-score.md の C)
+/// ラティスに当てる学習 (docs/spec/learning.md「学習の効く所」)
 #[derive(Clone, Copy)]
 struct Learned<'a> {
     store: &'a LearningStore,
@@ -1725,7 +1725,7 @@ pub struct SplitWord {
 }
 
 /// 確定した文節 (読み, 表記) を辞書 (システム辞書・ユーザ辞書・インポート辞書) の語に分け、経路の
-/// 自立語の (読み, 表記) を順に返す (docs/design/learning-score.md の A の 1)。経路は `split_path`。
+/// 自立語の (読み, 表記) を順に返す (docs/spec/learning.md「文節を辞書の語に分ける」)。経路は `split_path`。
 /// 経路が無ければ None
 pub fn split_words(
     reading: &str,

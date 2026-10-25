@@ -16,7 +16,7 @@
   ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ、
   キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ、画面の部品の呼び名・言語バーは
   [docs/spec/display.md](../spec/display.md) へ、変換 (Viterbi と文節)・変換のタイプミス補正・日付時刻の候補は
-  [docs/spec/engine.md](../spec/engine.md) へ移した
+  [docs/spec/engine.md](../spec/engine.md) へ、学習は [docs/spec/learning.md](../spec/learning.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -29,10 +29,8 @@
 - [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
   改行の入れ方・対象アプリ・機能は [docs/spec/input.md](../spec/input.md) へ移した (設定ツールの画面は本書)。
   設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
-- [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない
-- [forget-learning.md](forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
-  消す学習の種類とファイルは [learning-score.md](learning-score.md) で置き換え。キー割当は
-  [docs/spec/keys.md](../spec/keys.md) へ移した
+- [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない。止める範囲・
+  判定する層・設定ファイルは [docs/spec/learning.md](../spec/learning.md) へ移した (設定ツールの画面は本書)
 
 ## 候補の表示
 
@@ -63,9 +61,8 @@
   [docs/spec/conversion.md](../spec/conversion.md) (設計書は下の「archive」の節)
 - 漢字を含む選択の再変換と数字の書き方の候補: [docs/spec/conversion.md](../spec/conversion.md)、逆変換と候補の位置は
   [docs/spec/engine.md](../spec/engine.md) (設計書は下の「archive」の節)
-- [learning-score.md](learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
-  語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を
-  前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)。予測の点数と並び (D) は [docs/spec/suggest.md](../spec/suggest.md) へ移した
+- 学習 (語・句・文脈の句の学習と使った度合いの割引・確定の数え方・文節境界と複合語の学習・学習ファイル・学習の削除・
+  学習しないアプリ): [docs/spec/learning.md](../spec/learning.md) (設計書は下の「archive」の節)
 
 ## モードレス入力
 
@@ -192,6 +189,13 @@
   [docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [eval-sets.md](../archive/eval-sets.md): 変換精度の評価セット (AJIMEE-Bench と、実ユーザの learning_stats.tsv の
   再生評価)。[docs/spec/engine.md](../spec/engine.md)「評価セット」へ移した
+- [learning-score.md](../archive/learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
+  語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を
+  前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)。[docs/spec/learning.md](../spec/learning.md)・
+  [docs/spec/engine.md](../spec/engine.md)・[docs/spec/suggest.md](../spec/suggest.md) へ移した
+- [forget-learning.md](../archive/forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
+  [docs/spec/learning.md](../spec/learning.md)・[docs/spec/suggest.md](../spec/suggest.md)・
+  [docs/spec/keys.md](../spec/keys.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
