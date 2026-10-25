@@ -45,6 +45,10 @@
   見ない。ユーザ辞書の語で照合する ASCIISTART とそろっていない ([modeless.md](spec/modeless.md)「英字区間を閉じる」)
 - modeless が無効なときに Shift+英字で入った英字モードを、Backspace で英字区間が空になっても抜けないことの見直し。
   理由が残っていない ([modeless.md](spec/modeless.md)「Backspace」)
+- ラティスに載せる語の読みの長さの上限 (16 文字) がユーザ辞書の名詞系の語 (学習した複合語を含む) にだけ無いことの見直し。
+  理由が残っていない ([dictionary.md](spec/dictionary.md)「語のコスト」)
+- RELOADUSER がユーザ辞書のロックを持ったままインポート辞書の索引を作り直すので、大きいインポート辞書ではその間の変換が
+  止まるおそれがある。計測はしていない ([dictionary.md](spec/dictionary.md)「登録と読み直し」)
 
 ## 見送り・既知の問題
 
@@ -114,9 +118,15 @@
   あるときだけ求めるため ([engine.md](spec/engine.md)「保護の印」)。テストで確かめた
 - 和暦の元号を西暦の年だけで決めるので、2019 年 1〜4 月の日付も「令和元年」になる (engine/src/datetime.rs)。
   今の日付の候補にしか使わないので、実害はほぼない
-- learning_stats.tsv・learning.tsv の読み込みは、UTF-8 として読めない行があるとそこで止まり、後ろの学習を読まない
-  (engine/src/learn.rs `load_stats_from`)。そのあと FORGET などで書き直すと、読めた分だけでファイルが置き換わり、
-  残りの学習を失うおそれがある。コードを読んで見つけたもので、実行しては確かめていない
+- 辞書・学習のファイルに UTF-8 として読めない行があるときの扱い。コードを読んで見つけたもので、実行しては確かめていない
+  - Mozc 辞書か UT 辞書に 1 行でもあると、システム辞書全体が空で起動する (engine/src/dict.rs `load_from` の `line?`)
+  - learning_stats.tsv・learning.tsv・userdict.tsv・learning_word.tsv・インポート辞書のファイルは、そこで読み込みを止め、
+    後ろを黙って読まない (engine/src/learn.rs `load_stats_from`、engine/src/userdict.rs `load_from` など)。学習は、
+    そのあと FORGET などで書き直すと読めた分だけでファイルが置き換わり、残りの学習を失うおそれがある
+- userdict.tsv の先頭の UTF-8 の BOM を除かないので、BOM があると 1 行目の読みに U+FEFF が付く
+  (engine/src/userdict.rs `load_from`。取り込みの側の engine/src/import.rs は除いている)
+- 単語登録ツールを開くとき、選択した文字列の末尾が `\` だと、コマンドラインの引用符の囲みが崩れる
+  (tsf/src/text_service.cpp `LaunchWordRegister`)
 - 直前の確定が英字のときの英字判定 (ルール 6) と、run の無いときの Space を半角にする判定は、確定アンドゥの記憶を見る。
   この記憶はキャレットの移動やクリックでは消えず、キャレットの前の文字列とも照らさないので、別の場所へ移っても英文の
   途中とみなすことがある ([modeless.md](spec/modeless.md)「直前の確定が英字のとき (ルール 6)」)

@@ -14,8 +14,20 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 | `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。全体の構成は [docs/architecture.md](architecture.md)、機能ごとの設計書は [設計書の索引](design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](protocol.md) |
-| `references/` | 参考用の外部リポジトリ (git管理外)。CorvusSKK、SampleIME |
+| `references/` | 外部のリポジトリと取得したデータ (git管理外)。中身は下記「references/ の中身」 |
 | `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド、`fetch-ajimee.ps1`: 評価セット AJIMEE-Bench の取得) |
+
+### references/ の中身
+
+| ディレクトリ | 内容 | 使うもの |
+|---|---|---|
+| `references/mozc/` | Mozc (https://github.com/google/mozc) の sparse checkout。取得の手順は下記「同梱データの取得・生成」 | 開発版のエンジンの辞書ディレクトリ、インストーラの同梱、UT 辞書と後続語の統計の生成、`engine/examples/` の評価 |
+| `references/mozcdic-ut/` | UT 辞書の元データとライセンス文書、生成した `dictionary_ut.txt` (`scripts\fetch-ut-dict.ps1`) | 開発版のエンジン、インストーラの同梱、評価 |
+| `references/jawiki/` | 日本語版ウィキペディアのダンプの分割と `manifest.tsv`、生成した `next_word.tsv` (`scripts\fetch-wiki-ngram.ps1`) | 開発版のエンジン、インストーラの同梱、`learning_eval` |
+| `references/AJIMEE-Bench/` | 評価セットの JSON と変換した `ajimee_cases.tsv` (`scripts\fetch-ajimee.ps1`) | `nbest_eval`・`llm_gen_eval` |
+| `references/wordlist/` | SCOWL (https://github.com/en-wl/wordlist) | `data\english-words.txt` の生成 (手順はファイル先頭のコメント) |
+| `references/corvusskk/` | CorvusSKK (https://github.com/nathancorvussolis/corvusskk) | TSF の実装を読む参考 |
+| `references/Windows-classic-samples/` | Windows-classic-samples (https://github.com/microsoft/Windows-classic-samples) の `Samples/IME` (SampleIME) | TSF の実装を読む参考 |
 
 ## 開発環境
 
@@ -106,8 +118,8 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 ## インストーラのビルド
 
 `installer\build.ps1` を実行すると `installer\output\quicklime-<版>-setup.exe` が生成される
-(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の辞書と
-単漢字辞書 (`git -C references/mozc sparse-checkout add src/data/single_kanji` で取得)、
+(前提: Inno Setup 6 = `winget install -e --id JRSoftware.InnoSetup`、references/mozc の Mozc 辞書・
+連接行列・品詞 ID 表・単漢字辞書・記号辞書と LICENSE (下記「同梱データの取得・生成」の手順で取得)、
 `scripts\fetch-ut-dict.ps1` で生成した UT 辞書 (`references\mozcdic-ut\dictionary_ut.txt`)、
 `scripts\fetch-wiki-ngram.ps1` で生成した後続語の統計 (`references\jawiki\next_word.tsv` と `manifest.tsv`)、
 `scripts\build-llm.ps1` でビルドした LLM の exe、`scripts\fetch-models.ps1` で取得したモデル、
@@ -118,8 +130,25 @@ Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成す�
 
 ## 同梱データの取得・生成
 
+- Mozc のデータは `references\mozc\` に、固定したコミットを sparse checkout で取得する
+  (blob は checkout するパスの分だけ取る)
+  ```
+  git clone --filter=blob:none --no-checkout https://github.com/google/mozc references/mozc
+  git -C references/mozc sparse-checkout set --cone src/data/dictionary_oss src/data/single_kanji src/data/symbol
+  git -C references/mozc checkout 0651fbcae495ff98f6ae17bb59e2bee0e3a79661
+  ```
+  使うファイルは次のもの。インストーラはどれも `dict\` 直下へコピーし、開発版のエンジンは辞書ディレクトリ
+  `references\mozc\src\data\dictionary_oss\` (と、それと並ぶ `single_kanji\`・`symbol\`) から読む
+  ([dictionary.md](spec/dictionary.md)「辞書ディレクトリ」)
+  - Mozc 辞書 (`dict\dictionary00.txt`〜`dictionary09.txt`)、連接行列 (`dict\connection_single_column.txt`)、
+    品詞 ID 表 (`dict\id.def`): `src/data/dictionary_oss/` のもの。UT 辞書と後続語の統計の生成にも使う
+  - 記号辞書 (`dict\symbol.tsv`): `src/data/symbol/symbol.tsv`
+  - Mozc の LICENSE (リポジトリ直下。cone の sparse checkout は直下のファイルを常に含む): インストーラが
+    `LICENSE-mozc.txt` として同梱する
 - 単漢字辞書 (`dict\single_kanji.tsv`) は Mozc の `src/data/single_kanji/` のもので、候補リストの
-  辞書候補の後ろに単漢字を足すのに使う
+  辞書候補の後ろに単漢字を足すほか、逆変換で辞書の語で読めない漢字の読み ([engine.md](spec/engine.md)「逆変換 (REVERSE)」の「格子の語」) と、
+  後続語の統計の生成 (`engine/examples/build_next_word.rs` が本文を逆変換するとき。[suggest.md](spec/suggest.md)
+  「文節への分け方」) に使う
 - UT 辞書 (`dict\dictionary_ut.txt`): `scripts\fetch-ut-dict.ps1` が元データをリビジョン固定で
   `references\mozcdic-ut\` に取得し (サイズと SHA-256 を確かめる)、`engine/examples/build_ut_dict.rs`
   で、Mozc 辞書と重複する語などを除いて生成する
@@ -186,6 +215,6 @@ IME の DLL は全アプリケーションのプロセスにロードされる�
 
 | 環境変数 | 内容 |
 |---|---|
-| `QUICKLIME_IMPORT_DIR` | 取り込んだ辞書の保存先ディレクトリ (既定は `%APPDATA%\QuicklIME\imported\`) を変更する (エンジン・単語登録ツール共通。動作検証時の隔離用)。[dict-import.md](design/dict-import.md) |
+| `QUICKLIME_IMPORT_DIR` | 取り込んだ辞書の保存先ディレクトリ (既定は `%APPDATA%\QuicklIME\imported\`) を変更する (エンジン・単語登録ツール共通。動作検証時の隔離用)。[dictionary.md](spec/dictionary.md)「インポート辞書」 |
 | `QUICKLIME_LLM_MODEL_DIR` | エンジンが LLM のモデルを探すディレクトリ。設定するとほかの場所より先に探す。探す順は [llm-rerank.md](design/llm-rerank.md) |
 | `QUICKLIME_RERANK_MIN_CHARS` | エンジンが並べ替える読みの最小文字数 (0 以上の整数。既定は 9、不正な値なら既定値)。起動時に 1 回だけ読む。計測用。[engine.md](spec/engine.md)「並べ替える依頼」 |

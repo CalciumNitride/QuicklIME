@@ -3,7 +3,7 @@
 # Mozc 向けの追加辞書 mozc-ut (utuhiro78 氏) のうち、同梱しやすいライセンスの 3 つ
 # (SudachiDict 由来の一般語・日本郵便の郵便番号データ由来の地名・人名) と、SudachiDict の
 # ライセンス文書を、リポジトリ直下の references\mozcdic-ut\ (git 管理外) に取得し、
-# サイズと SHA-256 を確かめる。リビジョンは docs/design/dict-expansion.md で決めたものに固定している。
+# サイズと SHA-256 を確かめる。リビジョンは固定している (docs/spec/dictionary.md「取得」)。
 # 取得済みでサイズとハッシュが一致するファイルは取り直さない。
 # 取得後に engine/examples/build_ut_dict.rs で references\mozcdic-ut\dictionary_ut.txt を生成する。
 #

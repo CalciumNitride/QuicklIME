@@ -1,4 +1,4 @@
-// UT 辞書の有無による変換の差分 (docs/design/dict-expansion.md の「検証方法」)
+// UT 辞書の有無による変換の差分 (docs/spec/dictionary.md「変換の差分の確認」)
 //
 // 読みの一覧を、Mozc 辞書だけの辞書と UT 辞書を足した辞書の 2 つで convert_segments にかけ、
 // 第1候補 (文節表記の連結) が変わったものだけを「読み\tUT なし\tUT あり」で標準出力へ書く。

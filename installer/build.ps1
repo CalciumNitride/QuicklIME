@@ -42,7 +42,7 @@ if (-not (Test-Path $mozcLicense)) {
     throw "Mozc の LICENSE がありません: $mozcLicense"
 }
 if (-not (Test-Path $singleKanjiSrc)) {
-    throw "単漢字辞書がありません: $singleKanjiSrc (git -C references/mozc sparse-checkout add src/data/single_kanji で取得してください)"
+    throw "単漢字辞書がありません: $singleKanjiSrc (docs/development.md「同梱データの取得・生成」の手順で references/mozc を取得してください)"
 }
 if (-not (Test-Path $utDict)) {
     throw "UT 辞書がありません: $utDict (scripts\fetch-ut-dict.ps1 で生成してください)"

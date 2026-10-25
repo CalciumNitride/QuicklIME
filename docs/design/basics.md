@@ -10,19 +10,7 @@
 
 ## 辞書
 
-- 同梱辞書は Mozc OSS 辞書 (`dictionary00.txt`〜`09.txt`。書式は `読み\t左文脈ID\t右文脈ID\tコスト\t表記`)。
-  単漢字辞書と UT 辞書による語彙の補強は [dict-expansion.md](dict-expansion.md)
-- 辞書の場所 (engine/src/main.rs `dictionary_dir`) は、環境変数 `QUICKLIME_DICT_DIR` → exe と同じ
-  ディレクトリの `dict\` (インストール先のレイアウト) → 開発レイアウトの
-  `references/mozc/src/data/dictionary_oss` の順に探す。読み込めなければ辞書なしで起動を続ける
-- 検索は fst (有限状態トランスデューサ) の `fst::Map` 1つで行う (engine/src/dict.rs)。読みをキー、
-  エントリ列の位置を値にし、次の3種類を同じ構造で引く
-  - 完全一致 (候補の生成)
-  - 共通接頭辞検索 (Viterbi のラティス構築。入力の各位置から1回の走査で辞書語を列挙する)
-  - 前方一致 (予測)。短い読みで一致範囲が巨大になるのを避けるため、走査は 20,000 読みで打ち切る
-- fst はキーの共通接頭辞・接尾辞を圧縮するため、ハッシュ表と前方一致用の読み配列を別々に持つより
-  メモリが少ない
-- ダブル配列のクレート (yada / crawdad) は前方一致の列挙の API が無く、予測入力に使えないため採らない
+[docs/spec/dictionary.md](../spec/dictionary.md)「辞書の種類」「辞書ディレクトリ」「システム辞書」へ移した
 
 ## 変換 (Viterbi と文節)
 
@@ -46,11 +34,8 @@
 
 ## 記号辞書と記号キー
 
-- 記号辞書は Mozc の symbol.tsv (辞書ディレクトリ直下、無ければ Mozc の配置の `symbol/`)。
-  「やじるし」→「→」のように引く。無ければ記号候補なしで動く
+- 記号辞書は [docs/spec/dictionary.md](../spec/dictionary.md)「記号辞書」へ移した
 - 記号キー・Shift+数字キー・テンキーで run に入る文字は [docs/spec/input.md](../spec/input.md)「印字キー」へ移した
-- 記号辞書を引くときは、読みの全角英数記号を半角にしてから引き直す。記号キーは全角形で run に入るが、
-  symbol.tsv の読みは半角形で載っているため (「（」を変換すると ［ 〔 などが出る)
 - Shift+英字の英字モードは [docs/spec/input.md](../spec/input.md)「印字キー」へ移した
   (モードレス入力での扱いは [モードレス入力](../user/modeless.md) と [docs/spec/modeless.md](../spec/modeless.md)「英字区間」)
 
@@ -84,22 +69,7 @@
 
 ## ユーザ辞書と単語登録ツール
 
-- ユーザ辞書は `%APPDATA%\QuicklIME\userdict.tsv` (`QUICKLIME_USER_DICT_FILE` で変更可)。書式は
-  Mozc のユーザ辞書のエクスポートと同じ `読み\t表記\t品詞[\tコメント]` で、`#` で始まる行はコメント、
-  品詞の列が無い行は短縮よみとする (engine/src/userdict.rs)
-- 品詞は短縮よみと名詞系7種 (名詞・固有名詞・人名・姓・名・地名・組織)。それ以外の品詞の行は読み飛ばす
-  (活用の展開には対応しない)
-  - 短縮よみ: 連接の情報を持たない定型文 (メールアドレスなど)。ラティスには載せず、文節候補の経路表記の
-    直後と予測の先頭に入れる
-  - 名詞系: id.def から文脈 ID を引き、通常の辞書語としてラティスに載せる (文中でも変換される)。
-    単語コストは 3000 (同じ読みの一般語より上に来やすい中位の値。並びは学習で調整される)
-- 登録 (ADDWORD) はファイルへの追記とメモリへの反映を一緒に行い、エンジンの再起動なしに使える。
-  手で編集したファイルは RELOADUSER で読み直す
-- 単語登録ツール quicklime-regword.exe (engine/gui/src/bin/quicklime-regword.rs) は、入力なしの状態の
-  `key.register_word` (既定 Ctrl+F7) か、言語バーのメニューから起動する。選択中の文字列 (1行目だけ) を
-  単語欄の初期値にする (変換できなかった語を選択してそのまま登録する用途)。よみのカタカナはひらがなに直す。
-  エンジンに接続できないときは userdict.tsv へ直接追記し、エンジンの次の起動で反映される
-- 他の IME の辞書の取り込みは [dict-import.md](dict-import.md)
+[docs/spec/dictionary.md](../spec/dictionary.md)「ユーザ辞書」「インポート辞書」「単語登録ツール」へ移した
 
 ## 設定ファイルと設定ツール
 

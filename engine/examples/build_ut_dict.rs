@@ -1,4 +1,4 @@
-// UT 辞書 (dictionary_ut.txt) の生成 (docs/design/dict-expansion.md)
+// UT 辞書 (dictionary_ut.txt) の生成 (docs/spec/dictionary.md「生成」)
 //
 // mozc-ut の元データ (SudachiDict・地名・人名の .bz2) を読み、Mozc 辞書に既にある語・
 // 1 文字や長すぎる表記・ASCII だけの表記・元データ間の重複を除いて、品詞 ID を付けた

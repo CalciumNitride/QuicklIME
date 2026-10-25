@@ -8,15 +8,16 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (辞書・学習・記号辞書・ユーザ辞書と単語登録・
-  設定ファイルと設定ツール・エンジンの自動起動・インストーラ) の仕様と理由。
+- [basics.md](basics.md): 設計書の無い基本機能 (設定ファイルと設定ツール・エンジンの自動起動・インストーラ) の
+  仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
   サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
   ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ、
   キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ、画面の部品の呼び名・言語バーは
   [docs/spec/display.md](../spec/display.md) へ、変換 (Viterbi と文節)・変換のタイプミス補正・日付時刻の候補は
-  [docs/spec/engine.md](../spec/engine.md) へ、学習は [docs/spec/learning.md](../spec/learning.md) へ移した
+  [docs/spec/engine.md](../spec/engine.md) へ、学習は [docs/spec/learning.md](../spec/learning.md) へ、辞書・記号辞書・
+  ユーザ辞書と単語登録ツールは [docs/spec/dictionary.md](../spec/dictionary.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -72,8 +73,12 @@
 
 ## 辞書
 
-- [dict-expansion.md](dict-expansion.md): 辞書の語彙補強 (Mozc の単漢字辞書と、mozc-ut 由来の UT 辞書)
-- [dict-import.md](dict-import.md): 他の IME の辞書テキストの取り込み
+- 辞書 (辞書の種類と置き場所・システム辞書の書式と検索・UT 辞書の取得と生成・単漢字辞書と記号辞書・語のコスト・
+  ユーザ辞書・インポート辞書と他の IME の辞書の取り込み・単語登録ツール): [docs/spec/dictionary.md](../spec/dictionary.md)
+  (設計書は下の「archive」の節)
+- [dict-expansion.md](dict-expansion.md): 辞書の語彙補強 (Mozc の単漢字辞書と、mozc-ut 由来の UT 辞書)。単漢字辞書と
+  UT 辞書の元データ・取得・生成・読み込みは [docs/spec/dictionary.md](../spec/dictionary.md) へ移した (インストーラへの
+  同梱は本書)
 
 ## 設定・ツール
 
@@ -199,6 +204,8 @@
   [docs/spec/engine.md](../spec/engine.md) へ移した
 - [english-case.md](../archive/english-case.md): 英単語の大文字小文字の補正 (`github` → `GitHub`) を候補として出す
   (ASCIIFORM)。[docs/spec/modeless.md](../spec/modeless.md) と [docs/spec/engine.md](../spec/engine.md) へ移した
+- [dict-import.md](../archive/dict-import.md): 他の IME (MS-IME・ATOK・Mozc) の辞書テキストを単語登録ツールで取り込み、
+  インポート辞書としてエンジンで引く。[docs/spec/dictionary.md](../spec/dictionary.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果

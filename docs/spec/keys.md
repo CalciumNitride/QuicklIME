@@ -47,7 +47,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 | `ToFullAscii` | `key.to_full_ascii` | すべて | `F9` | 全角英字変換 (同上) |
 | `ToHalfAscii` | `key.to_half_ascii` | すべて | `F10` | 半角英字変換 (同上) |
 | `UndoCommit` | `key.undo_commit` | 入力なし | `Ctrl+Backspace` | 確定アンドゥ ([input.md](input.md)「確定アンドゥ」) |
-| `RegisterWord` | `key.register_word` | 入力なし | `Ctrl+F7` | 単語登録ツールを起動する ([basics.md](../design/basics.md)「ユーザ辞書と単語登録ツール」) |
+| `RegisterWord` | `key.register_word` | 入力なし | `Ctrl+F7` | 単語登録ツールを起動する ([dictionary.md](dictionary.md)「単語登録ツール」) |
 | `OpenConfig` | `key.open_config` | 入力なし | `Ctrl+F12` | 設定ツールを起動する |
 | `InsertNewline` | `key.insert_newline` | すべて | `Ctrl+J` | 改行キー ([input.md](input.md)「改行キー」)。入力なし: アプリへ Shift+Enter を送る。run 中・run のバーのサジェスト選択中・候補選択中: Enter と同じに run を終える・採用する・確定してから Shift+Enter を送り直す |
 | `NextWordNext` | `key.next_word_next` | 入力なし・サジェスト選択中 | `Ctrl+Down` | 後続語の予測の次の候補を選ぶ (未選択から先頭) |
