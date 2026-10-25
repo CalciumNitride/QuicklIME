@@ -3,7 +3,7 @@
 ## 背景と目的
 
 今の学習は「読みごとに最後に確定した表記を 1 つ」覚え、出来上がった候補の並びでその表記を先頭に移す方式で
-ある ([basics.md](../design/basics.md) の「学習」)。次の点で、予測と候補の統一した並び ([unified-suggest.md](../archive/unified-suggest.md))
+ある ([basics.md](basics.md) の「学習」)。次の点で、予測と候補の統一した並び ([unified-suggest.md](../archive/unified-suggest.md))
 の点数と合わない。
 
 - 何回使ったかを持たない。同じ表記を確定し直してもファイルには書かない

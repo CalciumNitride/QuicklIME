@@ -13,7 +13,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 | `llm/` | LLM による候補の並べ替えの子プロセス (Rust / llama.cpp。エンジンが起動する) |
 | `models/` | LLM のモデル (git管理外。`scripts/fetch-models.ps1` で取得) |
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
-| `docs/` | ドキュメント。全体の構成は [docs/architecture.md](architecture.md)、機能ごとの設計書は [設計書の索引](design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](protocol.md) |
+| `docs/` | ドキュメント。全体の構成は [docs/architecture.md](architecture.md)、機能の領域ごとの今の仕様は [仕様書の索引](spec/README.md)、実装前の設計は [設計書の索引](design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](protocol.md) |
 | `references/` | 外部のリポジトリと取得したデータ (git管理外)。中身は下記「references/ の中身」 |
 | `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド、`fetch-ajimee.ps1`: 評価セット AJIMEE-Bench の取得、`fetch-ut-dict.ps1`: UT 辞書の取得と生成、`fetch-wiki-ngram.ps1`: 日本語版ウィキペディアのダンプの取得と後続語の統計の生成、`subset-icon-font.py`: 入力モードのアイコン用フォントのサブセット化) |
 

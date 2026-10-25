@@ -1,6 +1,6 @@
 # QuicklIME ロードマップ
 
-未着手の項目と、見送り・既知の問題の一覧。実装済みの機能は [設計書の索引](design/README.md)、
+未着手の項目と、見送り・既知の問題の一覧。実装済みの機能は [仕様書の索引](spec/README.md)、
 全体の構成は [architecture.md](architecture.md) にある。
 
 ## 未着手
