@@ -27,7 +27,7 @@ IME がオンかオフかは、タスクバーの入力モードのアイコン 
 ### 中身と見た目
 
 - オンなら「あ」、オフなら「A」の 1 字を、角丸の四角の中に出す
-- 色は今の入力パネルのテーマ ([panel-theme.md](../design/panel-theme.md)) の解決後の値を使う (ライト・ダークに追従)。
+- 色は今の入力パネルのテーマ ([panel-theme.md](panel-theme.md)) の解決後の値を使う (ライト・ダークに追従)。
   背景は `background`、縁は `border` (テーマの `border on` のとき)、文字は `text`。角丸の半径は
   テーマの `panel_radius` を四角の大きさに収まる範囲で使う
 - フォントは、モードのアイコン用に DLL のリソースに同梱した M PLUS Rounded 1c Regular のサブセット
@@ -73,7 +73,7 @@ IME がオンかオフかは、タスクバーの入力モードのアイコン 
 - TSF 層が読む。エンジンは使わない
 - 設定ツールの「表示」タブに、チェックボックス「オン/オフの切り替え時に「あ」「A」を表示する」を足す。
   フォーカス移動時にも出ることはラベルに入れず、利用者向けドキュメントで説明する
-  ([config-input-display.md](../design/config-input-display.md))
+  ([config-input-display.md](config-input-display.md))
 
 採らなかった案:
 

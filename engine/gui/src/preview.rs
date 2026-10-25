@@ -1,4 +1,4 @@
-// 設定ツールの「見た目」ページに出す入力パネルの見本 (docs/design/panel-preview.md)。
+// 設定ツールの「見た目」ページに出す入力パネルの見本 (docs/spec/tools.md「入力パネルの見本」)。
 // アプリが実際に読む TSF の DLL を読み込み、その描画で見本を描かせる
 
 use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_MORE_DATA, ERROR_SUCCESS, GetLastError};

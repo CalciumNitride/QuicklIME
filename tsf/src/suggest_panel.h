@@ -19,7 +19,7 @@ struct IDWriteTextFormat;
 
 // 候補バー (横一列または縦積みの候補) と入力行を出すパネル、変換の候補一覧
 // (docs/spec/display.md「変換の候補一覧」)。
-// 見た目は PanelTheme (docs/design/panel-theme.md) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
+// 見た目は PanelTheme (docs/spec/display.md「テーマ」) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
 // ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
 // フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
 class SuggestPanel {
@@ -138,7 +138,7 @@ public:
     // 未設定ならログの文字列も組み立てない
     void SetLogger(std::function<void(const std::wstring&)> logger) { logger_ = std::move(logger); }
 
-    // ウィンドウを作らずに描く方式にする (設定ツールのプレビュー。docs/design/panel-preview.md)。
+    // ウィンドウを作らずに描く方式にする (設定ツールのプレビュー。docs/spec/display.md「入力パネルの見本の描画」)。
     // 有効なら Show・ShowConversion はウィンドウを出さず、layered window に出すのと同じ画像
     // (影・にじみの余白を含む) を Snapshot に残す。ぼかし (SetBlur) は使わない
     void SetOffscreen(bool enabled) { offscreen_ = enabled; }

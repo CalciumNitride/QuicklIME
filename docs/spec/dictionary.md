@@ -15,9 +15,8 @@
   ([learning.md](learning.md)「複合語の学習」)
 - F4・F5 の候補選択は [conversion.md](conversion.md)「ファンクションキー変換 (F4〜F10)」、単語登録ツールを起動する
   キーの働く状態は [keys.md](keys.md)「機能」
-- 単語登録ツールの画面の部品の配置は設定ツールと同じ設計書にある ([slint-gui.md](../design/slint-gui.md)
-  「単語登録ツールの画面」)。インストーラへの辞書の同梱は [dict-expansion.md](../design/dict-expansion.md)
-  「3. インストーラ (installer\build.ps1)」
+- 単語登録ツールの画面 (部品の配置・InfoBar・Enter と Esc) は [tools.md](tools.md)「単語登録ツールの画面」。
+  インストーラへの辞書の同梱は [dict-expansion.md](../design/dict-expansion.md)「3. インストーラ (installer\build.ps1)」
 - 実装は engine/src/dict.rs (システム辞書・単漢字辞書・記号辞書と fst の検索)、engine/src/userdict.rs (ユーザ辞書と
   インポート辞書)、engine/src/import.rs (他の IME の辞書の取り込み)、engine/src/pos.rs (品詞 ID 表)、
   engine/src/matrix.rs (連接行列)、engine/src/main.rs (辞書の探索と読み込み、ADDWORD・RELOADUSER・CONVUSER・

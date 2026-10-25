@@ -56,7 +56,7 @@ enum class CaretMarkerStyle {
     Triangle,  // キャレットの下端に上向きの三角を出す
 };
 
-// 入力パネルの見た目 (docs/design/panel-theme.md)。ライト・ダークを解決した1組。
+// 入力パネルの見た目 (docs/spec/display.md「テーマ」)。ライト・ダークを解決した1組。
 // 寸法は設定 candidate_font_size (以下 f) に対する比率、Px で終わるものは f によらない画素数
 struct PanelTheme {
     PanelStyle style = PanelStyle::Capsule;

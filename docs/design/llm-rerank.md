@@ -116,10 +116,7 @@
 
 ### 設定
 
-[docs/spec/engine.md](../spec/engine.md)「設定」へ移した (設定ツールの画面は次の 1 項)
-
-- 設定ツールに「AI で候補を並べ替える」チェックボックスと、バックエンドの選択
-  (CPU / GPU (Vulkan)) を足す
+[docs/spec/engine.md](../spec/engine.md)「設定」と [docs/spec/tools.md](../spec/tools.md)「ページと項目」へ移した
 
 ### ビルド
 

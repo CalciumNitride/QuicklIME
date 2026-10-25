@@ -9,7 +9,7 @@
 
 namespace {
 
-// 組み込みのテーマ (docs/design/panel-theme.md「組み込みテーマの値」)。ユーザのテーマファイルと
+// 組み込みのテーマ (docs/spec/display.md「組み込みテーマ」)。ユーザのテーマファイルと
 // 同じ形式で持ち、同じ ApplyThemeText で解釈する。不透明度の AA は、以前の float の値を
 // 255 倍して丸めたもの (描画される 8bit の値が変わらないようにする)
 constexpr wchar_t kCapsuleText[] =

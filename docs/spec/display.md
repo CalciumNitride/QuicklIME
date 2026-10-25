@@ -9,8 +9,8 @@ IME が画面に出すものの仕様。画面の部品の呼び名、入力パ�
 - 候補バーに並べる候補・並び・選択・採用・ページの区切りは [suggest.md](suggest.md)、変換の候補一覧の候補と
   候補選択の操作は [conversion.md](conversion.md)、入力中の読みを出す場所 (`input_buffer`) は
   [input.md](input.md)「入力中の読みの表示 (`input_buffer`)」、キーの働きの一覧は [keys.md](keys.md)
-- 設定ツールの「見た目」ページと見本の表示は設定ツールの側で、今は設計書にある
-  ([panel-preview.md](../design/panel-preview.md)・[panel-theme.md](../design/panel-theme.md)「設定ツール」)
+- 設定ツールの「見た目」ページ (テーマ・フォントの選択肢) と見本の表示は [tools.md](tools.md)「入力パネルのテーマとフォント」
+  「入力パネルの見本」
 - 実装は tsf/src/suggest_panel.cpp (入力パネルの描画と位置)、tsf/src/panel_theme.cpp (テーマの読み込み)、
   tsf/src/caret_marker.cpp (三角)、tsf/src/mode_popup.cpp (入力モードの一時表示)、tsf/src/lang_bar.cpp と
   tsf/src/icon_font.cpp (入力モードのアイコン)、tsf/src/display_attribute.cpp (表示属性)、tsf/src/preview.cpp
@@ -290,8 +290,8 @@ TSF が入力欄と無関係な位置を返すアプリ (マビノギで、モ�
 
 ### 読み直し
 
-- 設定の読み直しの機会 (フォーカスの移動と IME のオン/オフの切替。[basics.md](../design/basics.md)「設定ファイルと
-  設定ツール」) に、選んでいるテーマファイルの有無と更新時刻を確かめる。設定ファイルが変わったとき、テーマ名・
+- 設定の読み直しの機会 (フォーカスの移動と IME のオン/オフの切替。[tools.md](tools.md)「読み込みと反映」) に、
+  選んでいるテーマファイルの有無と更新時刻を確かめる。設定ファイルが変わったとき、テーマ名・
   テーマファイルの有無・更新時刻が変わったときだけ読み直す。打鍵ごとには読まない
 - アプリモード (ライト / ダーク) も、テーマを読み直すときにだけ読む
 - 読み直したら、入力パネルにフォント・テーマ・ぼかしの有無を渡す (上記「出すとき・消すとき」)
@@ -480,8 +480,8 @@ IME のオン/オフの切替時と、別の入力欄へのフォーカス移動
 ## 入力パネルの見本の描画
 
 設定ツールの「見た目」ページの見本のために、DLL は入力パネルを画像に描く関数 `QuicklimePanelPreview` を公開する
-(tsf/src/preview.cpp、tsf/src/exports.def)。設定ツールでの読み込みと表示は設定ツールの側
-([panel-preview.md](../design/panel-preview.md))。
+(tsf/src/preview.cpp、tsf/src/exports.def)。設定ツールでの読み込みと表示は [tools.md](tools.md)
+「入力パネルの見本」。
 
 - 入力パネルの描画 (`SuggestPanel`) をウィンドウを作らずにそのまま使い、layered window に出すのと同じ画像 (影・にじみの
   余白を含む) を、上から下へ並ぶ BGRA (premultiplied alpha) の画素で返す

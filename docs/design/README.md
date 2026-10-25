@@ -8,7 +8,7 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (設定ファイルと設定ツール・エンジンの自動起動・インストーラ) の
+- [basics.md](basics.md): 設計書の無い基本機能 (エンジンの自動起動・インストーラ) の
   仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
@@ -17,7 +17,8 @@
   キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ、画面の部品の呼び名・言語バーは
   [docs/spec/display.md](../spec/display.md) へ、変換 (Viterbi と文節)・変換のタイプミス補正・日付時刻の候補は
   [docs/spec/engine.md](../spec/engine.md) へ、学習は [docs/spec/learning.md](../spec/learning.md) へ、辞書・記号辞書・
-  ユーザ辞書と単語登録ツールは [docs/spec/dictionary.md](../spec/dictionary.md) へ移した
+  ユーザ辞書と単語登録ツールは [docs/spec/dictionary.md](../spec/dictionary.md) へ、設定ファイルと設定ツールは
+  [docs/spec/tools.md](../spec/tools.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -27,11 +28,8 @@
   起動時の状態・InputScope の欄・パスワード欄): [docs/spec/input.md](../spec/input.md) (設計書は下の「archive」の節)
 - キー割当 (状態・機能・割り当てられないキー・割当の照合・状態ごとのキーの働き・数字キーと Ctrl+1〜9・設定ファイルの書式):
   [docs/spec/keys.md](../spec/keys.md) (設計書は下の「archive」の節)
-- [newline-key.md](newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
-  改行の入れ方・対象アプリ・機能は [docs/spec/input.md](../spec/input.md) へ移した (設定ツールの画面は本書)。
-  設定ツールの「アプリ」タブは [app-settings.md](app-settings.md) で置き換え
-- [no-learning-apps.md](no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない。止める範囲・
-  判定する層・設定ファイルは [docs/spec/learning.md](../spec/learning.md) へ移した (設定ツールの画面は本書)
+- 改行キー (既定 Ctrl+J。対象アプリで Shift+Enter を送って改行を入れる): [docs/spec/input.md](../spec/input.md)、
+  設定ツールのアプリのページは [docs/spec/tools.md](../spec/tools.md) (設計書は下の「archive」の節)
 
 ## 候補の表示
 
@@ -39,9 +37,9 @@
   (設計書は下の「archive」の節)
 - 入力パネル (描き方・入力行・変換の候補一覧・表示位置・キャレット行の上に出すときの反転)・ぼかし・キャレットの印・
   入力モードの一時表示・入力モードのアイコンと言語バー: [docs/spec/display.md](../spec/display.md) (設計書は下の「archive」の節)
-- [panel-theme.md](panel-theme.md): 入力パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
-  テーマファイル)。テーマ・縦積み・ゴースト・揃え・読み直しは [docs/spec/display.md](../spec/display.md) へ移した
-  (設定ツールの画面は本書)
+- 入力パネルのテーマ (組み込みのテーマとテーマファイル・縦積み・ゴースト・揃え・読み直し):
+  [docs/spec/display.md](../spec/display.md)、設定ツールでの選択肢は [docs/spec/tools.md](../spec/tools.md)
+  (設計書は下の「archive」の節)
 - 読みなしの後続語予測: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - [next-word-ngram.md](next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
   読みなしの後続語予測で学習の後ろに足す。コーパス・文節への分け方・表・生成・エンジンは
@@ -82,17 +80,9 @@
 
 ## 設定・ツール
 
-- [config-tabs.md](config-tabs.md): 設定ツールのメイン画面のタブ化。画面の部分は [slint-gui.md](slint-gui.md) で
-  置き換え
-- [app-settings.md](app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
-  編集欄にする (改行キー・起動時の IME の状態)。画面の部分は [slint-gui.md](slint-gui.md) で置き換え
-- [config-input-display.md](config-input-display.md): 設定ツールで入力中の読みの表示先 (`input_buffer`・
-  `panel_input`) を「入力」タブの 1 つのコンボで選び、入力モード表示のチェックボックスの文言を短くする
-- [slint-gui.md](slint-gui.md): 設定ツールと単語登録ツールの画面を Slint (fluent スタイル) で作り直す。左のナビと
-  ページのカード、変えたら即保存、キー割当・アプリの展開カード、結果とエラーの InfoBar
-- [panel-preview.md](panel-preview.md): 設定ツールの「見た目」ページに、選んでいるテーマ・フォント・サイズの
-  入力パネルの見本を、登録されている TSF の DLL の描画で出す。DLL の関数と見本の内容は
-  [docs/spec/display.md](../spec/display.md) へ移した (設定ツールの側は本書)
+- 設定ファイルと設定ツール (config.tsv の書式と読み込み・設定ツールの画面と保存・入力中の読みの選択肢・キー割当と
+  アプリのページ・入力パネルの見本の表示・単語登録ツールの画面): [docs/spec/tools.md](../spec/tools.md)
+  (設計書は下の「archive」の節)。入力パネルの見本を描く DLL の関数は [docs/spec/display.md](../spec/display.md)
 
 ## エンジン
 
@@ -142,7 +132,7 @@
 - [ime-start-state.md](../archive/ime-start-state.md): アプリの起動時の IME の状態 (オン・オフ・自動) をアプリごとに
   決める。[docs/spec/input.md](../spec/input.md) へ移した
 - [keymap.md](../archive/keymap.md): キー割当を状態別の表にし、Enter をアプリへ渡すキーに分け、確定キーを設ける。
-  [docs/spec/keys.md](../spec/keys.md) へ移した。設定ツールの画面は [slint-gui.md](slint-gui.md) で置き換え
+  [docs/spec/keys.md](../spec/keys.md) へ移した。設定ツールの画面は [docs/spec/tools.md](../spec/tools.md) へ移した
 - [number-key-adopt.md](../archive/number-key-adopt.md): 数字キーをどの状態でも文字キーと同じに扱い、番号での採用・確定を
   Ctrl+1〜9 にする (候補バー・後続語の予測・候補選択中)。[docs/spec/keys.md](../spec/keys.md) へ移した
 - [input-scope.md](../archive/input-scope.md): 数字・電話番号・メールアドレス・URL などの InputScope の欄では、IME オンの
@@ -206,6 +196,24 @@
   (ASCIIFORM)。[docs/spec/modeless.md](../spec/modeless.md) と [docs/spec/engine.md](../spec/engine.md) へ移した
 - [dict-import.md](../archive/dict-import.md): 他の IME (MS-IME・ATOK・Mozc) の辞書テキストを単語登録ツールで取り込み、
   インポート辞書としてエンジンで引く。[docs/spec/dictionary.md](../spec/dictionary.md) へ移した
+- [newline-key.md](../archive/newline-key.md): 改行キー (既定 Ctrl+J)。対象アプリで Shift+Enter を送って改行を入れる。
+  [docs/spec/input.md](../spec/input.md) と [docs/spec/tools.md](../spec/tools.md) へ移した
+- [no-learning-apps.md](../archive/no-learning-apps.md): 指定したアプリでは確定・採用の結果を学習に記録しない。
+  [docs/spec/learning.md](../spec/learning.md) と [docs/spec/tools.md](../spec/tools.md) へ移した
+- [panel-theme.md](../archive/panel-theme.md): 入力パネルのテーマ (組み込みのカプセル・縦積み・ゴーストと、
+  テーマファイル)。[docs/spec/display.md](../spec/display.md) と [docs/spec/tools.md](../spec/tools.md) へ移した
+- [config-tabs.md](../archive/config-tabs.md): 設定ツールのメイン画面のタブ化 (Win32 の標準コントロールの画面)。
+  [docs/spec/tools.md](../spec/tools.md) へ移した
+- [app-settings.md](../archive/app-settings.md): 設定ツールの「アプリ」タブを、アプリを軸にした1つの一覧とアプリごとの
+  編集欄にする。[docs/spec/tools.md](../spec/tools.md) へ移した
+- [config-input-display.md](../archive/config-input-display.md): 設定ツールで入力中の読みの表示先 (`input_buffer`・
+  `panel_input`) を 1 つのコンボで選び、入力モード表示の文言を短くする。[docs/spec/tools.md](../spec/tools.md) へ移した
+- [slint-gui.md](../archive/slint-gui.md): 設定ツールと単語登録ツールの画面を Slint (fluent スタイル) で作り直す。左のナビと
+  ページのカード、変えたら即保存、キー割当・アプリの展開カード、結果とエラーの InfoBar。
+  [docs/spec/tools.md](../spec/tools.md) へ移した
+- [panel-preview.md](../archive/panel-preview.md): 設定ツールの「見た目」ページに、選んでいるテーマ・フォント・サイズの
+  入力パネルの見本を、登録されている TSF の DLL の描画で出す。[docs/spec/display.md](../spec/display.md) と
+  [docs/spec/tools.md](../spec/tools.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果

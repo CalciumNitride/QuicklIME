@@ -1,4 +1,4 @@
-// アプリごとの設定 (newline_apps・ime_start_apps・no_learning_apps。docs/design/app-settings.md)
+// アプリごとの設定 (newline_apps・ime_start_apps・no_learning_apps。docs/spec/tools.md「アプリのページ」)
 
 /// 改行キーが働くアプリの既定 (設定 newline_apps の行が無いとき。TSF 層と合わせる)
 pub const DEFAULT_NEWLINE_APPS: &str = "Discord.exe,slack.exe,ms-teams.exe,Teams.exe,LINE.exe";

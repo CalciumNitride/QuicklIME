@@ -46,7 +46,7 @@ config.tsv に次の 2 項目を足す。TSF 層が読み、設定ツールで�
 - 不正な値は既定値として扱う (他の設定と同じ)
 - 設定ツールでは、候補バーの設定と同じタブに「候補の表示位置 (キャレットの下 / 画面中央)」を置く。
   `panel_input` は「入力」タブの「入力中の読み」の選択肢「文書と入力パネルの両方に出す」で選ぶ
-  ([config-input-display.md](../design/config-input-display.md))
+  ([config-input-display.md](config-input-display.md))
 - `candidate_bar 0` のときはパネルを出さない (`panel_input 1` でも出さない)。
   未完成ローマ字の小窓は今どおり出す
 

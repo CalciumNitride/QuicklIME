@@ -73,32 +73,7 @@
 
 ## 設定ファイルと設定ツール
 
-- 設定ファイルは `%APPDATA%\QuicklIME\config.tsv` (`QUICKLIME_CONFIG_FILE` で変更可)。`キー\t値` の TSV で、
-  `#` で始まる行はコメント。エンジンと TSF 層が同じファイルを読み、知らないキーは無視し、読めない値は
-  そのキーだけ既定値にする
-- エンジンは起動時と RELOADCONFIG の受信時に読む。TSF 層はフォーカスの切替と IME のオン/オフの切替で
-  ファイルの更新時刻を確かめ、変わっていれば読み直す (アプリの再起動は要らない)。設定ツールで保存して
-  アプリに戻る操作自体がフォーカスの切替なので、実質すぐ反映される
-- 設定ツール quicklime-config.exe (engine/gui/src/bin/quicklime-config.rs) は、値を変えるたびに
-  (300 ms まとめて) 全キーをコメント付きで書き出し、エンジンへ RELOADCONFIG を送る。書き込みの途中を
-  TSF 層・エンジンが読まないよう、一時ファイル (`config.tsv.tmp`) に書いてから置き換える。起動は入力なしの状態の
-  `key.open_config` (既定 Ctrl+F12) か言語バーのメニューから。ページの構成と画面は [slint-gui.md](slint-gui.md)。
-  「詳細」ページで診断ログの出力先 (`debug_log`。空なら出さない) を設定する
-- 機能ページに説明の無い基本の設定を読む側 (値と既定は [設定一覧](../user/settings.md)):
-
-  | キー | 読む側 |
-  |---|---|
-  | `learning` | エンジン |
-  | `suggest` | エンジン |
-  | `typo_correction` | エンジン |
-  | `max_predictions` | エンジン・TSF 層 |
-  | `space` | TSF 層 |
-  | `punctuation` | TSF 層 |
-  | `digits` | TSF 層 |
-  | `candidate_font` / `candidate_font_size` | TSF 層 |
-  | `debug_log` | TSF 層 |
-
-- キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md)「設定ファイルの書式」へ移した
+[docs/spec/tools.md](../spec/tools.md)「設定ファイル」と「設定ツール」へ移した
 
 ## 言語バー
 

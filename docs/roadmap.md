@@ -16,9 +16,9 @@
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
   ([llm-rerank-notes.md](archive/llm-rerank-notes.md))
 - 設定ツールと単語登録ツールのハイコントラスト対応。Slint の fluent スタイルにハイコントラストの配色が無い
-  ([slint-gui.md](design/slint-gui.md))
+  ([tools.md](spec/tools.md)「画面の構成」)
 - 設定ツールと単語登録ツールの背景の Mica。winit の unstable な API と透明ウィンドウの組み合わせが要り
-  壊れやすいため、今は Fluent の単色 ([slint-gui.md](design/slint-gui.md))
+  壊れやすいため、今は Fluent の単色 ([tools.md](spec/tools.md)「画面の構成」)
 - Space・Enter で run を終えたときに後続語の予測を出さないことの見直し。出さない理由が設計書にもコードにも無く、
   確定キーで終えたときとの違いを残すかを決める ([suggest.md](spec/suggest.md)「後続語の予測」)
 - PageUp / PageDown を候補バーのページ送りに使わないことの見直し。run 中は run を終えてアプリへ渡しているが、
@@ -49,6 +49,13 @@
   理由が残っていない ([dictionary.md](spec/dictionary.md)「語のコスト」)
 - RELOADUSER がユーザ辞書のロックを持ったままインポート辞書の索引を作り直すので、大きいインポート辞書ではその間の変換が
   止まるおそれがある。計測はしていない ([dictionary.md](spec/dictionary.md)「登録と読み直し」)
+- 設定ファイルに書き出すコメントの見出し (`# 候補ウィンドウ`。engine/gui/src/config.rs) と、tsf/src/config.h・
+  tsf/src/text_service.cpp のログの文言に残る「候補ウィンドウ」を、[display.md](spec/display.md)「画面の部品の呼び名」の
+  呼び名に直す。コメントは利用者がファイルで目にする
+- 改行キーで送り直すアプリの既定の一覧の exe 名 (ms-teams.exe・Teams.exe・LINE.exe) が、実際のプロセス名と合っているかを
+  実機で確かめる ([input.md](spec/input.md)「改行キー」)
+- ツールを前面に出す方法の見直し。設定ツールの起動では TSF 層が `AllowSetForegroundWindow` を呼び、単語登録ツールの起動では
+  呼ばずにツールが自分で `SetForegroundWindow` する。違えている理由が残っていない ([tools.md](spec/tools.md)「起動」)
 
 ## 見送り・既知の問題
 
@@ -132,3 +139,17 @@
   途中とみなすことがある ([modeless.md](spec/modeless.md)「直前の確定が英字のとき (ルール 6)」)
 - ASCIIFORM (大文字小文字の補正) の応答のキャッシュが、単語登録 (ADDWORD・RELOADUSER) の後も消えない。登録した語の
   正しい表記は、別の文字列を問い合わせるまで反映されない (tsf/src/text_service.cpp の `asciiFormText_`)
+- 設定ツールの二重起動を防ぐ mutex が、パイプ名や `QUICKLIME_CONFIG_FILE` によらず 1 つなので、常用の設定ツールを開いている
+  間に隔離したメモ帳から開くと、常用の設定ファイルを編集しているウィンドウが前面に出る
+  (engine/gui/src/bin/quicklime-config.rs の `MUTEX_NAME`。[tools.md](spec/tools.md)「起動」)
+- 設定ファイルの読み書きのずれ ([tools.md](spec/tools.md)「設定ファイル」「保存」)
+  - 設定ツールは起動時に 1 回だけ設定ファイルを読むので、開いている間に外で書き換えた内容は、次に値を変えたときに上書きされる
+  - 手で編集したエンジン向けの設定 (`learning`・`max_predictions` など) は、エンジンが読み直すまで (起動時と、設定ツールで
+    値を変えたとき) 反映されず、TSF 層とエンジンで `max_predictions` などが食い違う
+  - 先頭の UTF-8 の BOM を除くのは TSF 層だけで、BOM があるとエンジンと設定ツールは 1 行目の設定を読めない
+- 設定ツールのフォントの選択肢に 32 UTF-16 以上の面名が出るが、選んでも黙って値を変えない
+  ([tools.md](spec/tools.md)「入力パネルのテーマとフォント」)
+- 設定ツールのテーマの選択肢を起動時にしか作らないので、開いている間に置いたテーマファイルは出ない
+  ([tools.md](spec/tools.md)「入力パネルのテーマとフォント」)
+- キー割当のページで、キーを足すときは重なりを弾くが、[既定に戻す]・[すべて既定に戻す]・「状態ごとに変える」のオフを経ると
+  重なりを作れる (警告は出る。[tools.md](spec/tools.md)「重なりの検査」)

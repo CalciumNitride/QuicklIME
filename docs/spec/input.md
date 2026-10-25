@@ -60,7 +60,7 @@ run・キーの意味・候補バー・変換・学習・前文脈・モード�
 - 採用の後も run が続くとき、composition の終了と次の開始を 1 つの edit session で行う。別々の session にすると、
   ロックの合間にアプリが確定の処理を進め、Word や CUAS 経由のアプリで次の composition が生き残らない
 - `panel` で入力行を常に出すのは、出さないと入力中の読みがどこにも見えないため
-- 設定ツールでの選び方 (`panel_input` と合わせた 3 つの選択肢) は [入力と変換](../user/input.md#入力中の読みの表示-input_buffer)
+- 設定ツールでの選び方 (`panel_input` と合わせた 3 つの選択肢) は [tools.md](tools.md)「入力中の読み」
 
 ### `panel` を選ぶ理由
 

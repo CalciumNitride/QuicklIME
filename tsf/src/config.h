@@ -103,7 +103,7 @@ struct TsfConfig {
     // 半角英数字を前提にした InputScope の欄 (数字・電話番号・メールアドレス・URL など) では
     // キーを食べない (設定 input_scope_passthrough。docs/spec/input.md「InputScope の欄」)
     bool inputScopePassthrough = true;
-    // 入力パネルのテーマ名 (設定 panel_theme。docs/design/panel-theme.md)
+    // 入力パネルのテーマ名 (設定 panel_theme。docs/spec/display.md「テーマ」)
     std::wstring panelTheme = L"capsule";
     // 候補バーを出す確定済みかなの文字数の下限 (エンジンの PREDICT と同じ設定を読む)
     int minSuggestChars = 2;
@@ -122,7 +122,7 @@ struct TsfConfig {
     // LLM による候補の並べ替え (RERANK) を使う (docs/spec/engine.md「LLM の並べ替え」)。
     // バックエンドの選択 (llm_backend) はエンジンだけが読む
     bool llm = false;
-    // 改行キー (InsertNewline) が働くアプリの exe 名 (docs/design/newline-key.md)
+    // 改行キー (InsertNewline) が働くアプリの exe 名 (docs/spec/input.md「改行キー」)
     std::vector<std::wstring> newlineApps = DefaultNewlineApps();
     // 起動時の IME をオン/オフにするアプリ。一覧に無いアプリは自動 (未設定のときだけオン)
     std::vector<ImeStartApp> imeStartApps;

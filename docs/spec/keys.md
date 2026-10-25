@@ -7,8 +7,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 - 状態ごとの表のセルは働きの要約で、働きの中身は各仕様書にある。run・読みの編集・run の終わり方・送り直し・確定アンドゥ・
   改行キー・IME のオン/オフは [input.md](input.md)、変換キーの候補選択 (変換の対象・範囲の伸縮・文節 UI・確定と取消・F4〜F10) は
   [conversion.md](conversion.md)、候補バーの選択と採用・採用範囲の縮め・後続語の予測は [suggest.md](suggest.md)
-- 設定ツールのキー割当の画面 (機能ごとのカード・キーの取り込み・重なりの検査) は設定ツールの側で、今は設計書にある
-  ([slint-gui.md](../design/slint-gui.md)「キー割当のページ」)
+- 設定ツールのキー割当の画面 (機能ごとのカード・キーの取り込み・重なりの検査) は [tools.md](tools.md)「キー割当のページ」
 - 実装は tsf/src/config.cpp (割当の読み込み・割り当てられるかの判定・照合)、tsf/src/text_service.cpp (`IsKeyEaten`・
   `HandleKey`・`RunKeyFunc`・候補選択中の `HandleKeyConverting`・F10 の `OnPreservedKey`)、tsf/src/text_service_direct.cpp
   (`IsKeyEatenDirect`・`HandleKeyDirect`・`EndRunIfPassthroughKey`・`PanelNumberKey`・`DismissNextWordForKey`)。

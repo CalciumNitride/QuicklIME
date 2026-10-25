@@ -1,4 +1,4 @@
-// 設定ツールの「見た目」ページに出す入力パネルの見本 (docs/design/panel-preview.md)。
+// 設定ツールの「見た目」ページに出す入力パネルの見本 (docs/spec/display.md「入力パネルの見本の描画」)。
 // 設定ツールが LoadLibraryW したこの DLL の QuicklimePanelPreview を呼ぶ
 
 #include <windows.h>
