@@ -3,7 +3,7 @@
 ## 背景と目的
 
 今の学習は「読みごとに最後に確定した表記を 1 つ」覚え、出来上がった候補の並びでその表記を先頭に移す方式で
-ある ([basics.md](basics.md) の「学習」)。次の点で、予測と候補の統一した並び ([unified-suggest.md](unified-suggest.md))
+ある ([basics.md](basics.md) の「学習」)。次の点で、予測と候補の統一した並び ([unified-suggest.md](../archive/unified-suggest.md))
 の点数と合わない。
 
 - 何回使ったかを持たない。同じ表記を確定し直してもファイルには書かない
@@ -119,7 +119,7 @@ q\t<文脈>\t<読み>\t<表記>\t<d>\t<t>
 ### G. 評価 (engine/examples/learning_eval.rs)
 
 - 評価は実ユーザの learning_stats.tsv を入力にする再生評価で行う。入力・測る項目・分け方は
-  [eval-sets.md](eval-sets.md) の B
+  [docs/spec/engine.md](../spec/engine.md)「再生評価」
 - 学習が空のとき CONVNBEST の 1 位が変わらないこと (fuzzy_eval の「先頭変化」0) も確かめる
 
 ### 採らなかった案
@@ -141,7 +141,7 @@ q\t<文脈>\t<読み>\t<表記>\t<d>\t<t>
 | engine/examples/learning_eval.rs (新規) | G の評価 |
 | docs/protocol.md | LEARN・LEARN2・LEARNWORD・FORGET・PREDICT・NEXTWORD の説明 (要求と応答の形式は変えない) |
 | docs/design/basics.md | 「学習」「予測」 |
-| docs/design/unified-suggest.md | E の学習の仮の点数が本書で置き換わることを書く |
+| docs/archive/unified-suggest.md | E の学習の仮の点数が本書で置き換わることを書く |
 | docs/design/forget-learning.md, docs/archive/next-word-prediction.md | 本書で置き換わる所の注記 |
 | docs/design/README.md | 本書の 1 行 |
 | docs/roadmap.md | 「学習の改良」を消す (打ち間違えやすいキーの組の学習は残す) |

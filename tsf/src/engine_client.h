@@ -10,7 +10,7 @@
 struct ConversionSegment {
     std::wstring reading;                  // この文節の読み
     std::vector<std::wstring> candidates;  // 候補リスト (先頭が最良)
-    // 候補のうち補正の表記 (docs/design/typo-segment-ui.md)。候補の並びは後から入れ替わるので
+    // 候補のうち補正の表記 (docs/spec/conversion.md「補正の候補」)。候補の並びは後から入れ替わるので
     // 位置ではなく表記で持つ。選んで確定しても学習を送らない
     std::vector<std::wstring> typoSurfaces;
 };
@@ -20,12 +20,12 @@ struct SentenceCandidate {
     // 文節ごとの (読み, 表記)。確定・採用時の学習に使う
     std::vector<std::pair<std::wstring, std::wstring>> segments;
     std::wstring surface;  // 文節の表記の連結
-    // 1 打の誤りを戻した読みで変換した補正の候補 (docs/design/typo-conversion.md)。
+    // 1 打の誤りを戻した読みで変換した補正の候補 (docs/spec/engine.md「全体変換の補正」)。
     // 採用・確定しても学習を送らない
     bool typo = false;
 };
 
-// SUGGEST の1候補 (docs/design/unified-suggest.md の E)
+// SUGGEST の1候補 (docs/spec/suggest.md「SUGGEST の並び」)
 struct SuggestCandidate {
     enum class Kind {
         Whole,        // 全体変換 (whole)
@@ -86,7 +86,7 @@ public:
                               std::vector<ConversionSegment>* segments);
 
     // かなに対する入力全体の候補を取得する (CONVNBEST)。keys はかなの打鍵
-    // (docs/design/unified-suggest.md の A の書式。空なら送らない)。CONVNBEST を知らない旧エンジンには
+    // (docs/spec/suggest.md「打鍵の受け渡し」の書式。空なら送らない)。CONVNBEST を知らない旧エンジンには
     // CONVCTX / CONVSEG を送り、各文節の先頭候補を連結した1件だけを返す
     bool ConvertNBest(const std::wstring& kana, const ConversionContext& context,
                       const std::wstring& keys, std::vector<SentenceCandidate>* candidates);
@@ -97,7 +97,7 @@ public:
                           std::vector<SentenceCandidate>* candidates);
 
     // 全体変換と予測を 1 つの並びで取得する (SUGGEST。毎打鍵の候補バー用)。keys はかなの打鍵
-    // (docs/design/unified-suggest.md の A の書式)。接続待ちはせず、未接続ならエンジンを起動だけして
+    // (docs/spec/suggest.md「打鍵の受け渡し」の書式)。接続待ちはせず、未接続ならエンジンを起動だけして
     // 即 false を返す。SUGGEST を知らない旧エンジンのときも false で、以後 SuggestUnsupported が
     // true になる (候補ゼロは true で candidates が空)
     bool SuggestLive(const std::wstring& kana, const ConversionContext& context,
@@ -188,7 +188,7 @@ public:
     bool Forget(const std::vector<std::pair<std::wstring, std::wstring>>& pairs, size_t* count);
 
     // 表記 text から読みを推測し、語ごとの (読み, 表記) を表記の順に words に入れる (REVERSE。
-    // docs/design/selection-reconversion.md)。変換キーを食べるかの判定で呼ぶため、エンジンの
+    // docs/spec/conversion.md「漢字を含む選択の再変換」)。変換キーを食べるかの判定で呼ぶため、エンジンの
     // 自動起動・接続待ちはしない。未接続・ERR (読めない文字・逆引きの索引を作っている途中)・
     // REVERSE を知らない旧エンジン・表記の連結が text と食い違う応答のときは false
     bool Reverse(const std::wstring& text,

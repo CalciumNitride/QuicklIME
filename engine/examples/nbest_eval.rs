@@ -1,10 +1,10 @@
-// 入力全体の N-best (CONVNBEST) の計測 (docs/design/nbest.md の「N-best の計測」)
+// 入力全体の N-best (CONVNBEST) の計測 (docs/spec/engine.md「計測の道具」)
 //
 // 同じビルドのエンジン (quicklime-engine.exe) を、学習・ユーザ辞書・インポート辞書・設定を
 // 一時ディレクトリに隔離して起動し、テストセットの読みを前文脈なしで CONVNBEST に送る。
 // 正解が 1 位・上位3件・上位10件に入る割合と、1回の応答時間 (中央値・最大) を
 // 標準出力へ Markdown の表で書く。
-// --llm を付けると、LLM による並べ替え (docs/design/llm-rerank.md) も測る。テストセットの左文脈を
+// --llm を付けると、LLM による並べ替え (docs/spec/engine.md「LLM の並べ替え」) も測る。テストセットの左文脈を
 // RERANK の LLM 文脈に渡し、並べ替え後の正解の順位と、RERANK から DONE までの時間を出す。
 //
 // 使い方:

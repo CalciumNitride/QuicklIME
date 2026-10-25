@@ -1,6 +1,6 @@
 # LLM による候補の生成
 
-LLM の並べ替え ([llm-rerank.md](llm-rerank.md)) に、zenz の貪欲法の生成で作った候補を 1 件足す。
+LLM の並べ替え ([llm-rerank.md](../design/llm-rerank.md)) に、zenz の貪欲法の生成で作った候補を 1 件足す。
 並べ替えは N-best の上位 10 件の中でしか順位を直せず、そこに正解が無い件 (長い読みで 1 か所だけ語の選び方を
 誤った件など) には届かないため。
 
@@ -76,7 +76,7 @@ LLM の並べ替え ([llm-rerank.md](llm-rerank.md)) に、zenz の貪欲法の�
 
 並べ替えた候補の並び (RERANKGET の DONE の候補) に、生成した候補を 1 件入れる。
 
-並べ替えで保護する候補 ([llm-rerank.md](llm-rerank.md) の「並べ替えの規則」) を、理由で 2 つに分ける。
+並べ替えで保護する候補 ([llm-rerank.md](../design/llm-rerank.md) の「並べ替えの規則」) を、理由で 2 つに分ける。
 
 - 利用者の選んだ候補: 読み全体の学習表記、学習で表記が変わった 1-best、ユーザ辞書 (手動登録・インポート辞書・
   学習した複合語) の語を含む候補。利用者が選んだ・登録した表記なので、生成した候補より前に置く
@@ -125,7 +125,7 @@ RERANKGET の DONE を返すときに、生成した候補の文節 (読み, 表
 | engine/src/convert.rs | constrained_path の `#[allow(dead_code)]` を外す |
 | tsf/src/text_service.h, tsf/src/text_service.cpp | `RerankedBarItems` を、全体変換の枠を結果の上位から埋め直す形にする |
 | docs/design/llm-rerank.md | 「役割」の生成しない旨を本書へのリンクに替える。エンジンと quicklime-llm のプロトコルに GENERATE |
-| docs/design/unified-suggest.md | G を本書の「候補バー」に合わせる |
+| docs/archive/unified-suggest.md | G を本書の「候補バー」に合わせる |
 | docs/design/README.md | 本書の 1 行 |
 | docs/roadmap.md | 「LLM による候補の生成」を消し、「補正の候補の LLM での採点」は残す。「全体変換の位置を結果の上位から埋め直す」の項目を消す |
 | docs/architecture.md | LLM の行の役割に生成を足す |

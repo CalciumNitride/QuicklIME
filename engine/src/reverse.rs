@@ -1,4 +1,4 @@
-// 逆変換: 表記から読みを推測する (docs/design/selection-reconversion.md の B)
+// 逆変換: 表記から読みを推測する (docs/spec/engine.md「逆変換 (REVERSE)」)
 //
 // 表記の文字の格子に表記で引いた語を並べ、変換 (convert.rs) と同じ単語コスト・連接コスト・
 // 文節ペナルティで Viterbi をかけ、最小コストの語の列 (読み, 表記) を返す。
@@ -45,7 +45,7 @@ fn is_digit(c: char) -> bool {
     c.is_ascii_digit() || ('０'..='９').contains(&c)
 }
 
-/// 逆変換の対象にする文字 (docs/design/selection-reconversion.md の A)
+/// 逆変換の対象にする文字 (docs/spec/conversion.md「漢字を含む選択の再変換」)
 pub(crate) fn is_allowed(c: char) -> bool {
     is_kana(c) || dict::is_kanji(c) || is_digit(c) || c == '〇' || c == '〆'
 }
@@ -209,7 +209,7 @@ pub fn reverse_words(
 }
 
 /// 数字の直後の助数詞の表記の見出しと、その見出しの数字の後の読み
-/// (docs/design/selection-reconversion.md の B「数字の直後の助数詞の読み」)
+/// (docs/spec/engine.md「数字の直後の助数詞の読み」)
 const COUNTER_READINGS: &[(&str, &[&str])] = &[
     ("日", &["にち"]),
     ("人", &["にん"]),

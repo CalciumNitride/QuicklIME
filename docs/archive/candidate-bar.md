@@ -125,4 +125,4 @@ config.tsv は `QUICKLIME_CONFIG_FILE` で隔離したものを使い、`debug_l
 
 ## 未決事項
 
-- 打鍵ごとの往復は [unified-suggest.md](../design/unified-suggest.md) の SUGGEST で 1 回にする (上記「エンジン」)
+- 打鍵ごとの往復は [unified-suggest.md](unified-suggest.md) の SUGGEST で 1 回にする (上記「エンジン」)

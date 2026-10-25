@@ -228,7 +228,7 @@ private:
 
     struct DirectKey;
 
-    // ---- 候補バー (docs/spec/suggest.md「候補バーの候補」、docs/design/unified-suggest.md) ----
+    // ---- 候補バー (docs/spec/suggest.md「候補バーの候補」、docs/spec/suggest.md「SUGGEST の並び」) ----
     // 候補の種類
     enum class BarKind {
         Whole,       // 全体変換 (SUGGEST の whole・typo、旧エンジンでは CONVNBEST の上位)
@@ -258,7 +258,7 @@ private:
     HRESULT UpdateBar(ITfContext* context);
     // バーの候補を作る読み (区間分割した run は日本語区間、それ以外は確定済みかな全体)
     std::wstring BarReading() const;
-    // BarReading の打鍵 (docs/design/unified-suggest.md の A。区間分割した run は未完成のローマ字を
+    // BarReading の打鍵 (docs/spec/suggest.md「打鍵の受け渡し」。区間分割した run は未完成のローマ字を
     // 付けない)
     std::wstring BarKeys() const;
     // SUGGEST の並びからバーの候補を組み立てる (英字候補を先頭に置く)
@@ -276,7 +276,7 @@ private:
     SuggestPanel::Item BarLabel(const BarCandidate& item, size_t shrink) const;
     // バーの選択を index (負なら未選択) に変える。採用範囲を縮めていた候補は全文節に戻して出し直す
     void SelectBarIndex(int index);
-    // バー選択中の Shift+← / → か (採用範囲の伸縮。docs/design/unified-suggest.md の F)。
+    // バー選択中の Shift+← / → か (採用範囲の伸縮。docs/spec/suggest.md「採用範囲の縮め」)。
     // 選んでいる候補によらず食べる
     bool BarRangeKey(WPARAM wparam) const;
     // 選んでいる全体変換の採用範囲を 1 文節縮める (delta < 0) / 伸ばす (delta > 0)。文節が 1 つの候補・
@@ -383,7 +383,7 @@ private:
     // 入力欄でない・キャレットの矩形が取れない・代わりの位置に置き換えたときは出さない (表示中なら消す)
     void ShowModePopup();
 
-    // ---- LLM による並べ替え (docs/design/llm-rerank.md) ----
+    // ---- LLM による並べ替え (docs/spec/engine.md「LLM の並べ替え」) ----
     // run を始めるときに LLM の左文脈を取る。読める文書は run の前の文字列を読み、それ以外は
     // IME が文書に入れた文字列の履歴を使う (設定 llm が無効なら何もしない)
     void CaptureLlmContext(ITfContext* context);
@@ -459,7 +459,7 @@ private:
     // 文節伸縮で分割を直したまま確定したときの学習をエンジンへ送る
     void LearnResizedSegments();
     // 逆変換から始めた変換で確定した文節 committed の、表記が変わったかを文節ごとに返す
-    // (docs/design/selection-reconversion.md の E)
+    // (docs/spec/conversion.md「漢字を含む選択の再変換」)
     std::vector<bool> ReverseChangedSegments(
         const std::vector<std::pair<std::wstring, std::wstring>>& committed) const;
     // 変換確定の状態後始末 (EndComposition の状態管理部分と同じ):
@@ -611,7 +611,7 @@ private:
         std::vector<std::pair<std::wstring, std::wstring>> words;
     };
     // 選択があれば、選択開始から読み戻して照合できる、ひらがな・カタカナ・ー だけの選択
-    // (後置再変換)、または漢字などを含み逆変換で読める選択 (docs/design/selection-reconversion.md)。
+    // (後置再変換)、または漢字などを含み逆変換で読める選択 (docs/spec/conversion.md「漢字を含む選択の再変換」)。
     // 選択が空なら、読める文書でキャレット直前が有効な記憶で終わり、最新の記憶の
     // 表記がひらがな・ー だけでなければその1件、それ以外はキャレット直前のひらがな・ー の連続。
     // どちらも kMaxReconvertLength 文字まで。対象が無ければ false

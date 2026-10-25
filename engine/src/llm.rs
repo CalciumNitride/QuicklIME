@@ -1,5 +1,5 @@
-// LLM による候補の並べ替え (docs/design/llm-rerank.md) と、Vulkan 版での候補の生成
-// (docs/design/llm-generate.md)
+// LLM による候補の並べ替え (docs/spec/engine.md「LLM の並べ替え」) と、Vulkan 版での候補の生成
+// (docs/spec/engine.md「LLM による候補の生成」)
 //
 // llama.cpp は子プロセス (quicklime-llm.exe / quicklime-llm-vulkan.exe) で動かし、標準入出力の
 // 行プロトコルでやり取りする。子プロセスとのやり取りはエンジン内の専用スレッド (LLM ワーカー)
@@ -19,7 +19,7 @@ use crate::convert::{Context, SentenceCandidate, to_katakana};
 /// 並べ替えの対象にする CONVNBEST の上位件数
 pub const RERANK_TOP: usize = 10;
 /// これより短い読み (かなの文字数) は並べ替えない。短い読みでは並べ替えが 1 位の正解率を下げるため
-/// (しきい値の根拠は docs/design/llm-rerank.md の「並べ替えの規則」)
+/// (しきい値の根拠は docs/spec/engine.md「並べ替える依頼」)
 pub const RERANK_MIN_CHARS: usize = 9;
 /// LLM に渡す左文脈の最大文字数 (zenz の前処理と同じ)
 pub const LLM_CONTEXT_CHARS: usize = 40;

@@ -1,5 +1,5 @@
-// タイプミス補正: 1 打の誤りを戻した読みの生成 (docs/design/typo-conversion.md) と、
-// 打鍵の上でずれを測る照合 (docs/design/unified-suggest.md の A・B)
+// タイプミス補正: 1 打の誤りを戻した読みの生成 (docs/spec/engine.md「補正した読み」) と、
+// 打鍵の上でずれを測る照合 (docs/spec/suggest.md「打鍵の受け渡し」「ずれのモデル」)
 //
 // 打鍵 (TSF 層が送るかな 1 字ごとの打鍵) があればその上で、無ければかなを標準のローマ字に戻した
 // 近似の上で、1 打の誤り (余分・抜け・隣のキー・入れ替え) を戻してから、TSF 層と同じ規則でかなに直す。
@@ -143,7 +143,7 @@ pub fn romaji_to_kana(romaji: &str) -> Option<String> {
 }
 
 /// 計測用 (examples/fuzzy_eval.rs): 打鍵 romaji を TSF 層の RomajiComposer と同じ規則でかなにし、
-/// SUGGEST の打鍵のフィールド (docs/design/unified-suggest.md の A) とともに (かな, フィールド) を返す。
+/// SUGGEST の打鍵のフィールド (docs/spec/suggest.md「打鍵の受け渡し」) とともに (かな, フィールド) を返す。
 /// 末尾の変換できない打鍵は未完成のローマ字として残す (n も ん にしない)。途中でかなにならない打鍵が
 /// あれば None
 #[allow(dead_code)]
@@ -401,7 +401,7 @@ pub enum EditKind {
 }
 
 /// ずれのコスト・許すずれの数・全体変換の補正の候補のしきい値・予測の点数の補正
-/// (docs/design/unified-suggest.md の B・D・E)。計測 (examples/fuzzy_eval.rs) で値を振るため、
+/// (docs/spec/suggest.md「ずれのモデル」「点数」、docs/spec/engine.md「全体変換の補正」)。計測 (examples/fuzzy_eval.rs) で値を振るため、
 /// 定数を 1 つの値にまとめて渡す
 #[derive(Debug, Clone, Copy)]
 pub struct Tuning {
@@ -661,7 +661,7 @@ pub fn key_corrections(kana: &str, keys: &Keys, tuning: &Tuning) -> Vec<Correcti
 const ELEMENT_SEPARATOR: char = '\x1f';
 const PENDING_SEPARATOR: char = '\x1e';
 
-/// かなの打鍵 (docs/design/unified-suggest.md の A)。打鍵の無いかなは標準の綴りで補ってある
+/// かなの打鍵 (docs/spec/suggest.md「打鍵の受け渡し」)。打鍵の無いかなは標準の綴りで補ってある
 pub struct Keys {
     /// 送られたかな
     kana: Vec<char>,
@@ -933,7 +933,7 @@ struct Scratch {
     next: Row,
 }
 
-/// 打鍵と読みの照合 (docs/design/unified-suggest.md の B)。読みのかなの綴りは表の綴りに run の打鍵の
+/// 打鍵と読みの照合 (docs/spec/suggest.md「ずれのモデル」)。読みのかなの綴りは表の綴りに run の打鍵の
 /// 綴りを足した集合で、打鍵の末尾は読みの途中 (かなの綴りの途中) で終わってよい
 pub struct Matcher<'a> {
     keys: &'a Keys,

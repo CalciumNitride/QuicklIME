@@ -10,9 +10,7 @@
   ([modeless-commit-candidate.md](../design/modeless-commit-candidate.md)・[english-case.md](../design/english-case.md)・
   [mixed-conversion.md](../design/mixed-conversion.md))
 - 全体変換の候補 (CONVNBEST の N-best と並び・補正の候補・LLM の並べ替えと生成) はエンジンの側
-  ([nbest.md](../design/nbest.md)・[typo-conversion.md](../design/typo-conversion.md)・
-  [unified-suggest.md](../design/unified-suggest.md) の D・[llm-rerank.md](../design/llm-rerank.md)・
-  [llm-generate.md](../design/llm-generate.md))
+  ([engine.md](engine.md))
 - 学習の割引の式と学習の削除は学習の側 ([learning-score.md](../design/learning-score.md)・
   [forget-learning.md](../design/forget-learning.md))
 - 候補バーと後続語の予測でのキーの働きの一覧は [keys.md](keys.md)「run の無い状態のキー」「run のある状態のキー」。本書は
@@ -136,7 +134,8 @@ C0 は全体変換の通常の最良経路のコスト (経路が無ければ 0)
 2. 残りを s の小さい順に並べる。同じ s なら全体変換を先に、同じ種類の中は元の順
 3. 表記が同じ全体変換と予測は、並びの位置によらず全体変換を残し、位置は 2 つのうち上にする。全体変換は文節を
    持ち、採用範囲の縮めと全体変換の学習が効くため。それ以外の表記の重複は先に来たほうを残す
-4. 通常の最良経路が保護の対象 (学習で表記が変わった・ユーザ辞書の語や英字を含むなど。判定はエンジンの側) なら、
+4. 通常の最良経路が保護の対象 (学習で表記が変わった・ユーザ辞書の語や英字を含むなど。判定はエンジンの側で、
+   学習で表記が変わったかは全体変換の補正の候補があるときだけ求める。[engine.md](engine.md)「保護の印」) なら、
    補正の候補とずれのある予測を、ずれの無い候補のうち s ≤ 0 のものすべての後ろに置く。最良経路の表記が読みの
    かなと同じで並びに入っていなくても同じにする (学習でかなのままの表記を選んだ読みでも、補正をその上に出さないため)
 5. 全体変換の先頭 (読み全体の学習表記が無ければ通常の最良経路) が 10 番目以降になるときは 9 番目に入れる
@@ -187,7 +186,7 @@ C0 は全体変換の通常の最良経路のコスト (経路が無ければ 0)
 - 値は評価 (engine/examples/fuzzy_eval.rs) で決めた。コストを下げると崩した入力の回復は少し上がるが、崩していない
   入力で補正が上位に出る件数が増える。`KEYS_PER_EDIT` を 5 以上にすると途中まで打った崩した語の回復が落ち、
   `MAX_EDITS` 2 は誤り 3 か所の回復が落ちる
-- 同じモデルを全体変換の補正にも使う (エンジンの側。[unified-suggest.md](../design/unified-suggest.md) の D)
+- 同じモデルを全体変換の補正にも使う (エンジンの側。[engine.md](engine.md)「全体変換の補正」)
 - 設定 `typo_correction` 0 では、ずれを 0 にして照合する (完全な前方一致と同じ結果)
 
 ### 予測の照合
@@ -318,8 +317,8 @@ C0 は全体変換の通常の最良経路のコスト (経路が無ければ 0)
 
 - 設定 `llm` 1 のとき、確定済みかなが `min_suggest_chars` 文字以上の読みでバーを作り直すたびに、同じ読み・前文脈・
   打鍵で RERANK を依頼する。結果は 20 ms ごとに RERANKGET で問い合わせ、1 秒を過ぎたら問い合わせをやめる。
-  並べ替えと生成の規則 (9 文字未満の読みは並べ替えないなど) はエンジンの側 ([llm-rerank.md](../design/llm-rerank.md)・
-  [llm-generate.md](../design/llm-generate.md))
+  並べ替えと生成の規則 (9 文字未満の読みは並べ替えないなど) はエンジンの側 ([engine.md](engine.md)「LLM の並べ替え」・
+  [engine.md](engine.md)「LLM による候補の生成」)
 - 結果が届いたら、次をすべて満たすときだけバーを組み直す
   - 依頼が最新 (バーを作り直すたびに依頼し直す)
   - 候補を選んでいない。選んでいる最中に並びを変えると、選んだ候補が動くため

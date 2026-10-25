@@ -81,7 +81,7 @@
 - docs/archive/direct-input.md: 印字キーの表の「数字 1〜9 は候補番号の選択」の注記
 - docs/archive/suggest-paging.md・docs/archive/conversion-panel.md: 数字キーの対応付けを Ctrl+数字キーに
   (テストケースの「数字キー 2」も Ctrl+2 で確定する内容に)
-- docs/design/unified-suggest.md: 未決事項の「バーの数字キーでの採用」を消す
+- docs/archive/unified-suggest.md: 未決事項の「バーの数字キーでの採用」を消す
 - docs/user/candidate-bar.md・docs/user/input.md・docs/user/theme.md・README.md: 数字キーでの選択の記述を
   Ctrl+数字キーでの採用・確定に
 - docs/design/README.md に本書を 1 行足す。docs/roadmap.md から該当項目を消す

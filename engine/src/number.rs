@@ -1,7 +1,7 @@
 // 数字で打った数の別の書き方
 //
 // 「1234」に対して 千二百三十四・一二三四・1,234・１２３４ などの表記を作る。
-// 仕様は docs/design/number-forms.md を参照。
+// 仕様は docs/spec/conversion.md「数字の書き方の候補」と docs/spec/engine.md「数字の書き方の候補の位置」を参照。
 
 /// 書き方の種類の数 (forms の戻り値の長さ)
 pub const FORM_COUNT: usize = 5;

@@ -117,9 +117,9 @@ struct TsfConfig {
     // (設定 mode_popup。docs/spec/display.md「入力モードの一時表示」)
     bool modePopup = true;
     // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
-    // オフなら入力全体の候補から選ぶ (docs/design/nbest.md)
+    // オフなら入力全体の候補から選ぶ (docs/spec/conversion.md「入力全体の候補選択 (`segment_ui` 0)」)
     bool segmentUi = false;
-    // LLM による候補の並べ替え (RERANK) を使う (docs/design/llm-rerank.md)。
+    // LLM による候補の並べ替え (RERANK) を使う (docs/spec/engine.md「LLM の並べ替え」)。
     // バックエンドの選択 (llm_backend) はエンジンだけが読む
     bool llm = false;
     // 改行キー (InsertNewline) が働くアプリの exe 名 (docs/design/newline-key.md)

@@ -3,7 +3,7 @@
 作成日: 2026-10-21
 
 rakukan (https://github.com/fukuyori/rakukan、v0.12.0、コミット `ec09244`) の LLM まわりの調査。
-LLM による候補の生成 ([llm-generate.md](../design/llm-generate.md)) を検討したときの材料。
+LLM による候補の生成 ([llm-generate.md](llm-generate.md)) を検討したときの材料。
 
 ## rakukan の方式の概要
 

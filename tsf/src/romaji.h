@@ -124,7 +124,7 @@ public:
     // 文節単位の英数変換 (F9/F10) 用
     std::wstring RawRange(size_t pos, size_t len) const;
 
-    // エンジンに送る打鍵 (docs/design/unified-suggest.md の A の書式): 確定済みのかなの先頭 count 文字
+    // エンジンに送る打鍵 (docs/spec/suggest.md「打鍵の受け渡し」の書式): 確定済みのかなの先頭 count 文字
     // (UTF-16 単位) の、かな 1 字ごとの打鍵列を \x1f で区切り、\x1e の後ろに withPending なら
     // 未完成のローマ字を付ける。サロゲートペアは 1 字に数える (エンジンは要素の数をかなの文字数と照合する)
     std::wstring KeyField(size_t count, bool withPending) const;

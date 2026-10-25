@@ -82,7 +82,7 @@
 
 - docs/archive/candidate-bar.md: 「合計は最大9件」「収まらない後ろの候補は出さず (ページ送りはしない)」
   「番号 (1〜9)」をページ送りに合わせて書き換え、本書を参照する
-- docs/design/nbest.md: 「合計は最大9件のまま」を書き換える
+- docs/archive/nbest.md: 「合計は最大9件のまま」を書き換える
 - docs/design/panel-theme.md・docs/theme.md: 「最大 9 行。収まらない後ろの候補は出さず、選択もできない」を
   ページ送りに書き換える
 - docs/design/basics.md・docs/protocol.md・README.md: `max_predictions` を候補バーの合計の上限 (9 / 18 / 27 / 36、既定 9) に

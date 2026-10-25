@@ -2,7 +2,7 @@
 //
 // フェーズ4-3: Viterbi の最小コスト経路を品詞情報で文節にまとめ、
 // 文節ごとの候補リストを返す。
-// 入力全体を1単位とした N-best (convert_nbest) は docs/design/nbest.md を参照。
+// 入力全体を1単位とした N-best (convert_nbest) は docs/spec/engine.md「N-best (CONVNBEST)」を参照。
 // 全文一括の候補 (candidates) も互換のため残している。
 
 use std::cmp::Reverse;
@@ -62,9 +62,9 @@ const MAX_NBEST_EXPANSIONS: usize = 3000;
 /// 末尾の1文節の同音異義語だけで N-best の枠が埋まるのを防ぐ
 const MAX_NBEST_PER_CLASS: usize = 4;
 
-/// 文節 UI (CONVSEG・CONVCTX。docs/design/typo-segment-ui.md) の補正の語の単語コストに足す量。
+/// 文節 UI (CONVSEG・CONVCTX。docs/spec/engine.md「文節 UI の補正」) の補正の語の単語コストに足す量。
 /// TYPO_SHOW・TYPO_TOP とともに、打ち間違いの無い文で補正の候補が先頭にも 2 番目にも出ないよう
-/// examples/typo_eval.rs の計測で決めた (docs/design/typo-conversion.md の「計測の結果」)。補正の経路は
+/// examples/typo_eval.rs の計測で決めた (docs/spec/engine.md「値の決め方」)。補正の経路は
 /// どれも補正の語を 1 つだけ通るので、この値は補正の経路どうしの順位を変えず、Δ だけを
 /// TYPO_COST / 文字数 下げる (短い読みほど補正の候補が出にくい)。入力全体の候補 (CONVNBEST) の補正は
 /// 誤りの種類ごとのコスト (typo::Tuning) を使う
@@ -87,7 +87,7 @@ pub struct Segment {
     pub reading: String,
     /// 候補リスト (先頭が最良)
     pub candidates: Vec<String>,
-    /// 候補に足した補正の表記 (docs/design/typo-segment-ui.md)。補正の文節でなければ None
+    /// 候補に足した補正の表記 (docs/spec/engine.md「文節 UI の補正」)。補正の文節でなければ None
     pub typo: Option<String>,
 }
 
@@ -104,13 +104,13 @@ pub struct SentenceCandidate {
     pub segments: Vec<(String, String)>,
     /// LLM の並べ替えで位置を動かさない候補 (読み全体の学習表記、学習で表記が変わった 1-best、
     /// ユーザ辞書の語を含む候補、英字を含む候補、数字の書き方の候補、補正の候補。
-    /// docs/design/llm-rerank.md)
+    /// docs/spec/engine.md「保護の印」)
     pub protected: bool,
     /// 利用者の選んだ候補 (protected のうち、読み全体の学習表記、学習で表記が変わった 1-best、
-    /// ユーザ辞書の語を含む候補)。LLM で生成した候補をこれより前に入れない (docs/design/llm-generate.md)
+    /// ユーザ辞書の語を含む候補)。LLM で生成した候補をこれより前に入れない (docs/spec/engine.md「並びへの入れ方」)
     pub user_chosen: bool,
-    /// 1 打の誤りを戻した読みの語 (補正の語) を通る経路の補正の候補 (docs/design/typo-conversion.md、
-    /// docs/design/unified-suggest.md の D)
+    /// 1 打の誤りを戻した読みの語 (補正の語) を通る経路の補正の候補
+    /// (docs/spec/engine.md「全体変換の補正」)
     pub typo: bool,
 }
 
@@ -189,7 +189,7 @@ pub fn resolve_context_id(
 }
 
 /// かな文字列を文節列へ変換する。ctx は直前に確定した文節 (無ければ None)。
-/// typo なら、補正の最良経路 (docs/design/typo-segment-ui.md) の Δ が TYPO_SHOW 以上のときに
+/// typo なら、補正の最良経路 (docs/spec/engine.md「文節 UI の補正」) の Δ が TYPO_SHOW 以上のときに
 /// その経路で文節を区切り、補正の語を含む文節の候補に補正の表記を 1 件足す
 pub fn convert_segments(
     kana: &str,
@@ -690,7 +690,7 @@ pub fn convert_sentence(
 /// 並び: 読み全体の学習表記 → 学習の割引を当てた 1-best → N-best の残り (コスト順)
 ///       → 1-best の数を書き方ごとにそろえた候補 → 短縮よみ・読み全体の辞書完全一致
 ///       → 単漢字・記号・カタカナ・ひらがな。
-/// typo なら、かなを標準のローマ字に戻した近似で補正の候補 (docs/design/typo-conversion.md) を
+/// typo なら、かなを標準のローマ字に戻した近似で補正の候補 (docs/spec/engine.md「全体変換の補正」) を
 /// 1-best の前か直後に 1 件足す。表記が同じ候補は先勝ちで除く
 #[allow(dead_code)] // エンジン本体は convert_nbest_scored を使う。テストと計測用の example から使う
 pub fn convert_nbest(
@@ -1165,7 +1165,7 @@ pub enum TypoSource<'a> {
 
 impl TypoWords {
     /// 文節 UI (CONVSEG・CONVCTX) の補正。かなを戻した近似で、補正の語を 1 つだけ通し、
-    /// 単語コストに TYPO_COST を足す (docs/design/typo-segment-ui.md)
+    /// 単語コストに TYPO_COST を足す (docs/spec/engine.md「文節 UI の補正」)
     fn segment(kana: &str) -> TypoWords {
         TypoWords {
             corrections: typo::corrections(kana, &typo::TUNING),
@@ -1174,7 +1174,7 @@ impl TypoWords {
         }
     }
 
-    /// 入力全体の候補の補正 (docs/design/unified-suggest.md の D)。補正の語のコストは誤りの種類の
+    /// 入力全体の候補の補正 (docs/spec/engine.md「全体変換の補正」)。補正の語のコストは誤りの種類の
     /// コストで、状態の数は打鍵の数から決めた許すずれの数
     fn sentence(kana: &str, source: TypoSource, tuning: &typo::Tuning) -> Option<TypoWords> {
         let (corrections, keys) = match source {
@@ -1684,7 +1684,7 @@ pub fn typo_gain(
 }
 
 /// 1 語だけの経路を Viterbi と同じ式 (前文脈からの接続・単語コスト・文節境界ペナルティ・文末への接続)
-/// で評価したコスト。予測の語の点数に使う (docs/design/unified-suggest.md の E)
+/// で評価したコスト。予測の語の点数に使う (docs/spec/suggest.md「点数」)
 pub fn word_path_cost(
     left_context_id: u16,
     left_id: u16,
@@ -1843,7 +1843,7 @@ pub fn split_path(
 }
 
 /// 表記の接頭辞の制約つきの Viterbi (docs/archive/experiment-0c-llm-gen.md の C)。エンジンは LLM で
-/// 生成した候補の文節を決めるのに完全一致で使う (docs/design/llm-generate.md)。
+/// 生成した候補の文節を決めるのに完全一致で使う (docs/spec/engine.md「生成した候補の文節」)。
 /// 表記の連結が prefix (バイト列) で始まる経路 (exact なら表記が prefix と
 /// 等しい経路) のうち、convert_nbest_rerank の最良経路と同じラティス・コストで最小のものを、N-best と
 /// 同じ区切りの文節 (読み, 表記) で返す。満たす経路が無ければ None。

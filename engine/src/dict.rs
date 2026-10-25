@@ -103,7 +103,7 @@ pub struct FuzzyPrefix {
     pub edits: usize,
 }
 
-/// 打鍵のファジィ照合の fst の走査 (docs/design/unified-suggest.md の C)。かなの辺をたどりながら
+/// 打鍵のファジィ照合の fst の走査 (docs/spec/suggest.md「予測の照合」)。かなの辺をたどりながら
 /// 綴りと打鍵を DP で照合し、行が空になった (許すずれの数を超えた) 枝を切る
 struct FuzzyWalk<'m, 'k> {
     matcher: &'m typo::Matcher<'k>,
@@ -183,7 +183,7 @@ pub struct SurfaceMatch<'a> {
 }
 
 /// 辞書の逆引きの索引 (表記 → 読みとエントリ)。表記に漢字・々 を含むエントリだけを入れる。
-/// かなだけ・英字だけの表記は読みが表記から決まるので入れない (docs/design/selection-reconversion.md の B)。
+/// かなだけ・英字だけの表記は読みが表記から決まるので入れない (docs/spec/engine.md「逆引きの索引」)。
 /// 辞書と別の構造にしているのは、エンジンの待ち受けを始めてから別スレッドで構築するため。
 /// エントリは位置で持ち表記の文字列を複製しないので、引くときは構築に使った辞書を渡す
 pub struct SurfaceIndex {
@@ -572,7 +572,7 @@ impl Dictionary {
         hits.into_iter().map(|(_, idx, entry)| (readings[idx].clone(), entry)).collect()
     }
 
-    /// 打鍵のファジィ照合 (docs/design/unified-suggest.md の C) で、打鍵を使い切った読みの接頭辞を
+    /// 打鍵のファジィ照合 (docs/spec/suggest.md「予測の照合」) で、打鍵を使い切った読みの接頭辞を
     /// ずれのコストの安い順 (同じコストは接頭辞の辞書順) に limit 件まで返す。接頭辞は辞書の読みの
     /// 接頭辞で、その先の語は predict_prefix_entries で列挙する
     pub fn fuzzy_prefixes(&self, matcher: &typo::Matcher, limit: usize) -> Vec<FuzzyPrefix> {

@@ -198,7 +198,7 @@ bool IsKanaOnly(const std::wstring& text)
 }
 
 // 逆変換で読みを推測する選択の文字だけで構成された空でない文字列: ひらがな・カタカナ・ー・漢字・
-// 々・〇・〆・数字 (docs/design/selection-reconversion.md の A)。サロゲートペアは CJK 拡張漢字の
+// 々・〇・〆・数字 (docs/spec/conversion.md「漢字を含む選択の再変換」)。サロゲートペアは CJK 拡張漢字の
 // ことがあるので通し、漢字かどうかはエンジンが判定する
 bool IsReversibleText(const std::wstring& text)
 {

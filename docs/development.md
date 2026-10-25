@@ -62,7 +62,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 
 ## 変換精度と学習の評価
 
-評価セットの分担と測る項目は [eval-sets.md](design/eval-sets.md) にある。どちらの結果も git に入れない。
+評価セットの分担と測る項目は [engine.md](spec/engine.md)「評価セット」にある。どちらの結果も git に入れない。
 
 - `engine/examples/data/llm_cases.tsv`: N-best と LLM の並べ替えの定数の調整に使う手作りのセット
 - AJIMEE-Bench: 評価だけに使うセット (定数の調整には使わない)。データは CC BY-SA 3.0 のため
@@ -188,4 +188,4 @@ IME の DLL は全アプリケーションのプロセスにロードされる�
 |---|---|
 | `QUICKLIME_IMPORT_DIR` | 取り込んだ辞書の保存先ディレクトリ (既定は `%APPDATA%\QuicklIME\imported\`) を変更する (エンジン・単語登録ツール共通。動作検証時の隔離用)。[dict-import.md](design/dict-import.md) |
 | `QUICKLIME_LLM_MODEL_DIR` | エンジンが LLM のモデルを探すディレクトリ。設定するとほかの場所より先に探す。探す順は [llm-rerank.md](design/llm-rerank.md) |
-| `QUICKLIME_RERANK_MIN_CHARS` | エンジンが並べ替える読みの最小文字数 (0 以上の整数。既定は 9、不正な値なら既定値)。起動時に 1 回だけ読む。計測用。[llm-rerank.md](design/llm-rerank.md) |
+| `QUICKLIME_RERANK_MIN_CHARS` | エンジンが並べ替える読みの最小文字数 (0 以上の整数。既定は 9、不正な値なら既定値)。起動時に 1 回だけ読む。計測用。[engine.md](spec/engine.md)「並べ替える依頼」 |

@@ -92,7 +92,7 @@
 | tsf/src/engine_client.h, tsf/src/engine_client.cpp | `ConversionSegment::typoSurfaces`、`kinds` の送信と `ERR` での送り直し、`\x1d` の種類の解析 |
 | tsf/src/text_service.cpp | 候補一覧の補正の判定、確定時の学習の除外 |
 | docs/protocol.md | CONVSEG・CONVCTX の `kinds` と候補の種類 |
-| docs/design/typo-conversion.md | D の対象と未決事項の文節 UI の項を本書へのリンクにする |
+| docs/archive/typo-conversion.md | D の対象と未決事項の文節 UI の項を本書へのリンクにする |
 | docs/design/README.md | 本書の 1 行 |
 | docs/roadmap.md | 該当項目を消す |
 | README.md | タイプミス補正の説明に文節 UI を足す |

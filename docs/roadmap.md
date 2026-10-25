@@ -6,9 +6,9 @@
 ## 未着手
 
 - 打ち間違えやすいキーの組の学習。補正の候補を選んだ記録から、その人の打ち間違えやすいキーの組を学ぶ
-  ([unified-suggest.md](design/unified-suggest.md))
-- 補正の候補の LLM での採点 ([unified-suggest.md](design/unified-suggest.md))
-- 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](design/unified-suggest.md))
+  ([unified-suggest.md](archive/unified-suggest.md))
+- 補正の候補の LLM での採点 ([unified-suggest.md](archive/unified-suggest.md))
+- 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](archive/unified-suggest.md))
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
   ([modeless-detection.md](design/modeless-detection.md))
 - LLM の右文脈の利用。範囲より後ろの文字列を同音異義語の判別に使う。zenz のプロンプトの形式に右の文脈が無く、
@@ -46,12 +46,12 @@
   サクラエディタ・秀丸エディタなど IMM32 アプリの再変換コマンド (CUAS 経由) の依頼を受ける入口だが、
   使う場面が無いため。今の後置再変換は、自分で変換キー・F6〜F10 を押したときだけ働く
   ([conversion.md](spec/conversion.md)「漢字を含む選択の再変換」)
-- 初めて打つ句の予測が、学習した句に押し出されやすい。再生評価 ([eval-sets.md](design/eval-sets.md)) の初出の
+- 初めて打つ句の予測が、学習した句に押し出されやすい。再生評価 ([engine.md](spec/engine.md)「再生評価」) の初出の
   `p` の行で、予測が 9 位以内に入る割合は学習なし 4.0%・学習あり 2.2% (266 行) と下がり、予測の上位 9 件の多くを
   学習した句が占める。全体では学習で予測が上がり (11.6% → 26.6%)、件数も少ないので点数の調整は見送り
   ([learning-score.md](design/learning-score.md) の D)
 - 同音異義語の学習の割引の上限の例外 (学習の度合いが最も大きい語が勝つようにする) は見送り。再生評価
-  ([eval-sets.md](design/eval-sets.md)) の学習ありのモードで、同音で 1 位を外した行はすべて正解に学習が無く、
+  ([engine.md](spec/engine.md)「再生評価」) の学習ありのモードで、同音で 1 位を外した行はすべて正解に学習が無く、
   例外で直る「どちらも学習あり」「正解の方が多く使われている」の行が 0 行だったため
   ([learning-score.md](design/learning-score.md))
 - 前文脈による変換の使い分け (「服を|着る」「紙を|切る」) は見送り。今は前文脈を予測と後続語の予測にだけ使う。
@@ -64,9 +64,9 @@
   表の大きさより Wikipedia の書き言葉と打つ文の内容の違いが効いている ([next-word-ngram.md](design/next-word-ngram.md))
 - 短い文節の表記ゆれ (こと / 事、できます / 出来ます) を、読み全体の学習表記の固定で取り違える。同じ読みで両方の表記を
   使うと、決め手が無い。再生評価の学習ありのモードでは、固定した 322 行のうち固定で当てた行が 13 行、外した行が
-  12 行とほぼ同数で、度合いや読みの長さでも分かれない ([eval-sets.md](design/eval-sets.md))
+  12 行とほぼ同数で、度合いや読みの長さでも分かれない ([engine.md](spec/engine.md)「再生評価」)
 - ずれのある予測 (候補バーの「補正」の予測) に、UT 辞書の不自然な表記の語 (「おやすまないと → おやスマナイト」)
-  が出ることがある。辞書の質の問題 ([unified-suggest.md](design/unified-suggest.md))
+  が出ることがある。辞書の質の問題 ([unified-suggest.md](archive/unified-suggest.md))
 - マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない (対応は見送り)。回避策は Convert キーを使うこと
   - ゲームは OnTestKeyDown を呼び、IME が食べると答えても OnKeyDown を呼ばない (Ctrl なしのキーでは呼ぶ)。
     key-up では OnTestKeyUp だけが呼ばれ、OnKeyUp は来ない
@@ -77,12 +77,12 @@
   - 入力パネル類の位置は [display.md](spec/display.md)「入力位置がウィンドウの外を指すとき」で扱う
 - 逆変換で、数字の後の助数詞の複合語の、単位の後ろの部分の読みを誤ることがある (10キロ位 → きろい、
   5パーセント増 → ぱーせんとます)。数字の後の読みの表は語の先頭だけを見る
-  ([selection-reconversion.md](design/selection-reconversion.md))
+  ([engine.md](spec/engine.md)「数字の直後の助数詞の読み」)
 - 後続語の予測の統計に逆変換の読み誤り (何の → なにの、一日 → ひといち) が入る。採用するとその読みで学習される
   ([next-word-ngram.md](design/next-word-ngram.md))
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input.md](spec/input.md)「InputScope の欄」)
-- 変換の区切りの誤り。再生評価 ([eval-sets.md](design/eval-sets.md)) の学習が空のモード (8066 行) で、1 位を外した
+- 変換の区切りの誤り。再生評価 ([engine.md](spec/engine.md)「再生評価」) の学習が空のモード (8066 行) で、1 位を外した
   行のうち区切りが 209 行、同じ区間 (区切りは同じで、自立語と付属語の別が違う) が 120 行ある
   - 区切りの中心は、境界の位置のずれ (79 行) と、正解では複数の語の部分を Mozc 辞書の長い 1 語にまとめる誤り (69 行)
   - 区切りの 209 行のうち 79 行は、正解が辞書に無いカタカナ語で、正解の表記を辞書のカタカナの断片に分けたために
@@ -96,3 +96,15 @@
 - Windows の透明効果がオフの環境でぼかしのテーマ (`blur on`) と `caret_marker pointer` を使うと、入力パネルのウィンドウを
   新しく作った最初の描画にだけ尻尾が付かないと読める (ウィンドウを作る前は、ぼかしで作る見込みで尻尾の有無を決めるため)。
   実機では確かめていない ([display.md](spec/display.md)「ぼかし」)
+- 文節 UI の補正の文節で、区間の通常の先頭候補が学習で変わっていても、補正の表記が先頭に来る。区間の候補の先頭は、
+  学習を効かせて解いた経路の表記そのものなので、比べても変化が分からない (engine/src/convert.rs の `typo_segment`)。
+  全体の 1-best が学習で変わったときは保護で 2 番目になるので、補正の文節と通常の 1-best の区切りがずれるときだけ起きる。
+  テストで再現を確かめた (辞書を作り込んだもの。実際の辞書での頻度は未確認)
+- 文節長を指定した変換と文節 UI の補正の文節では、数字の語をまとめないまま文節の候補を作る。「1234えん」で
+  「一234円」「１234円」が出て、「千二百三十四円」「1,234円」と助数詞の入れ替え (「1234縁」) が出ない
+  (engine/src/convert.rs の `convert_segments_fixed`・`typo_segment`。数字をまとめるのは `group_path` だけ)。テストで確かめた
+- SUGGEST で、全体変換の補正の候補が無いと、文節の一部の学習で表記が変わった 1-best を保護しない。ずれのある予測が
+  その 1-best より上に出る (「京」を学習した「きょうは」で「驚愕」が「京は」の上)。学習で表記が変わったかを補正の候補が
+  あるときだけ求めるため ([engine.md](spec/engine.md)「保護の印」)。テストで確かめた
+- 和暦の元号を西暦の年だけで決めるので、2019 年 1〜4 月の日付も「令和元年」になる (engine/src/datetime.rs)。
+  今の日付の候補にしか使わないので、実害はほぼない

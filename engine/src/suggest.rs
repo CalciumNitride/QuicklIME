@@ -1,4 +1,4 @@
-// SUGGEST: 全体変換と予測を 1 つの点数で並べる (docs/design/unified-suggest.md の E)
+// SUGGEST: 全体変換と予測を 1 つの点数で並べる (docs/spec/suggest.md「SUGGEST の並び」)
 //
 // 全体変換は CONVNBEST の並び (打鍵による補正を含む) の先頭から、予測は打鍵のファジィ照合の結果から取り、
 // 点数 s (小さいほど上) の順に並べる。読み全体の学習表記は先頭に固定し、全体変換の通常の最良経路が

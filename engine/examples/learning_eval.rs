@@ -1,4 +1,4 @@
-// 学習の再生評価 (docs/design/eval-sets.md の B)
+// 学習の再生評価 (docs/spec/engine.md「再生評価」)
 //
 // 実ユーザの learning_stats.tsv を入力に、2 つのモードを測る。
 // - 学習が空: すべての p の行 (句の学習) の読みを入力全体の候補 (CONVNBEST。補正なし) にし、行の表記が

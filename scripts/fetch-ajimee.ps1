@@ -2,7 +2,7 @@
 #
 # 変換精度の評価セット AJIMEE-Bench (azooKey) の JWTD_v2/v1/evaluation_items.json を、リポジトリ直下の
 # references\AJIMEE-Bench\ (git 管理外) に取得し、サイズと SHA-256 を確かめてから nbest_eval の形式の
-# ajimee_cases.tsv (左文脈<TAB>読み<TAB>候補<TAB>正解) に変換する。コミットは docs/design/eval-sets.md で
+# ajimee_cases.tsv (左文脈<TAB>読み<TAB>候補<TAB>正解) に変換する。コミットは docs/spec/engine.md「AJIMEE-Bench」で
 # 決めたものに固定している。取得済みでサイズとハッシュが一致するファイルは取り直さない。
 # データは CC BY-SA 3.0 のため、リポジトリにもインストーラにも入れない。
 #

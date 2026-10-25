@@ -1,5 +1,5 @@
 // quicklime-llm: zenz 系かな漢字変換モデルで変換候補の対数尤度を求める子プロセス
-// (docs/design/llm-rerank.md)。エンジン (quicklime-engine) が起動し、標準入出力の行プロトコルで使う。
+// (docs/spec/engine.md「モデルと尤度」)。エンジン (quicklime-engine) が起動し、標準入出力の行プロトコルで使う。
 //
 // 起動: quicklime-llm.exe --model <gguf> --threads <N>
 //   読み込みと試しの推論に成功したら READY、失敗したら ERR\t<メッセージ> を出して終了する

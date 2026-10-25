@@ -6,7 +6,7 @@
 // を検索し、この順に合成して返す。表記の重複は先勝ちで除き、表記が入力かなそのままの候補は出しても意味が無いため除外する。
 // 完全一致で枠が埋まらないときは、タイプミス補正 (かなを標準の綴りに戻した打鍵のファジィ照合) で補充する。
 // SUGGEST の予測 (scored) は短縮よみ・ユーザ辞書の名詞系・句の学習・辞書の語を打鍵のファジィ照合で
-// 常に引き、候補に点数を付ける (docs/design/unified-suggest.md の C・E、docs/design/learning-score.md の D)。
+// 常に引き、候補に点数を付ける (docs/spec/suggest.md「予測の照合」「点数」、docs/design/learning-score.md の D)。
 // NEXTWORD は文脈の句の学習 → 後続語の統計の文節の表 → バックオフの表の順に前文脈で引く
 // (辞書には語の連接の統計が無いため、日本語版ウィキペディアから数えた表を別に持つ。
 // docs/design/next-word-ngram.md)。
@@ -107,7 +107,7 @@ pub struct Prediction {
     /// 候補の完全な読み (辞書の正しい読み)
     pub reading: String,
     pub surface: String,
-    /// 点数 (小さいほど上。docs/design/unified-suggest.md の E)
+    /// 点数 (小さいほど上。docs/spec/suggest.md「点数」)
     pub score: i64,
     /// 照合に使ったずれの数
     pub edits: usize,

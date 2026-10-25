@@ -32,7 +32,7 @@ pub struct Config {
     pub llm_backend: LlmBackend,
 }
 
-/// LLM の推論に使うバックエンド (docs/design/llm-rerank.md)
+/// LLM の推論に使うバックエンド (docs/spec/engine.md「モデルと尤度」)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LlmBackend {
     Cpu,

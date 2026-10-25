@@ -8,15 +8,15 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (辞書・Viterbi・学習・変換のタイプミス補正・記号辞書・
-  日付時刻の候補・ユーザ辞書と単語登録・
+- [basics.md](basics.md): 設計書の無い基本機能 (辞書・学習・記号辞書・ユーザ辞書と単語登録・
   設定ファイルと設定ツール・エンジンの自動起動・インストーラ) の仕様と理由。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
   サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
   ローマ字テーブル・パスワード欄・記号キーと Shift+英字で入る文字は [docs/spec/input.md](../spec/input.md) へ、
   キー割当 (`key.*`) は [docs/spec/keys.md](../spec/keys.md) へ、画面の部品の呼び名・言語バーは
-  [docs/spec/display.md](../spec/display.md) へ移した
+  [docs/spec/display.md](../spec/display.md) へ、変換 (Viterbi と文節)・変換のタイプミス補正・日付時刻の候補は
+  [docs/spec/engine.md](../spec/engine.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -48,36 +48,24 @@
   読みなしの後続語予測で学習の後ろに足す。コーパス・文節への分け方・表・生成・エンジンは
   [docs/spec/suggest.md](../spec/suggest.md) へ移した (同梱は本書)
 - 候補バーのページ送り: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
-- [unified-suggest.md](unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
-  予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
-  Shift+← / → で縮める。全体変換の補正 (D) と CONVNBEST・RERANK の打鍵を除き [docs/spec/suggest.md](../spec/suggest.md) へ移した
+- 打鍵のファジィ照合・SUGGEST の並び・採用範囲の縮め: [docs/spec/suggest.md](../spec/suggest.md)、全体変換の補正は
+  [docs/spec/engine.md](../spec/engine.md) (設計書は下の「archive」の節)
 
 ## 変換
 
-- [nbest.md](nbest.md): 入力全体の N-best。候補バーと変換キーの候補に使い、文節 UI を設定 `segment_ui`
-  のオプションにする。学習・変換キーの候補選択・設定は [docs/spec/conversion.md](../spec/conversion.md) へ、
-  候補バーは [docs/spec/suggest.md](../spec/suggest.md) へ移した
-- [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え
-- [llm-generate.md](llm-generate.md): Vulkan 版で、9 文字以上の読みの並べ替えに LLM の貪欲法で生成した候補を 1 件足し、
-  候補バーの全体変換の枠を並べ替えの結果の上位から埋め直す。候補バーへの反映は [docs/spec/suggest.md](../spec/suggest.md) へ移した
+- 変換エンジン (ラティスと Viterbi・文節の分け方と文節の候補・入力全体の N-best と候補の並び・変換のタイプミス補正・
+  逆変換・数字の書き方の候補の位置・LLM の並べ替えと生成・評価セット): [docs/spec/engine.md](../spec/engine.md)
+  (設計書は下の「archive」の節)
+- [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え。並べ替えの
+  規則・モデルと尤度・左文脈・依頼と結果は [docs/spec/engine.md](../spec/engine.md) へ移した (子プロセスの構成・
+  モデルの配布・子プロセスの起動と監視・ビルドは本書)
 - run が無いときのキャレット直前のかなの変換と範囲の伸縮、採用した文字列の記憶からの再変換:
   [docs/spec/conversion.md](../spec/conversion.md) (設計書は下の「archive」の節)
-- [selection-reconversion.md](selection-reconversion.md): 漢字を含む選択範囲を、エンジンの逆変換 (REVERSE) で
-  推測した読みから変換キー・F6〜F10 で変換し直す。対象・再変換の流れ・学習は
-  [docs/spec/conversion.md](../spec/conversion.md) へ移した (逆変換のエンジン側は本書)
-- [number-forms.md](number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す。
-  対象の数・書き方は [docs/spec/conversion.md](../spec/conversion.md) へ移した (候補の並びは本書)
+- 漢字を含む選択の再変換と数字の書き方の候補: [docs/spec/conversion.md](../spec/conversion.md)、逆変換と候補の位置は
+  [docs/spec/engine.md](../spec/engine.md) (設計書は下の「archive」の節)
 - [learning-score.md](learning-score.md): 学習を使った度合いの点数にする。確定した文節を辞書の語に分けて
   語の学習を Viterbi の単語コストの割引に、句の学習を文節の候補・読み全体の学習表記・予測に、文脈の句の学習を
   前文脈付きの予測と後続語の予測に使う (learning_stats.tsv)。予測の点数と並び (D) は [docs/spec/suggest.md](../spec/suggest.md) へ移した
-- [typo-conversion.md](typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を足す。
-  補正の元 (打鍵)、補正の語のコストと Viterbi の状態の数、候補バーの先頭文節は
-  [unified-suggest.md](unified-suggest.md) で置き換え。表示は [docs/spec/display.md](../spec/display.md) へ移した
-- [typo-segment-ui.md](typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
-  区切り、打ち間違えた語を含む文節の候補に補正の表記を足す。文節の伸縮・TSF 層・学習は
-  [docs/spec/conversion.md](../spec/conversion.md) へ移した
-- [eval-sets.md](eval-sets.md): 変換精度の評価セット。評価専用の AJIMEE-Bench (`scripts/fetch-ajimee.ps1` で取得し、
-  `nbest_eval` で測る) と、実ユーザの learning_stats.tsv を t の順に分けて学習を測る再生評価 (`learning_eval`)
 
 ## モードレス入力
 
@@ -183,6 +171,27 @@
   入力モード (あ / A) を約 1 秒出す (設定 `mode_popup`)。[docs/spec/display.md](../spec/display.md) へ移した
 - [candidate-position-fallback.md](../archive/candidate-position-fallback.md): 入力位置がウィンドウの外を指すアプリ
   (マビノギなど) で、入力パネルなどをウィンドウ中央に出す。[docs/spec/display.md](../spec/display.md) へ移した
+- [nbest.md](../archive/nbest.md): 入力全体の N-best。候補バーと変換キーの候補に使い、文節 UI を設定 `segment_ui`
+  のオプションにする。[docs/spec/engine.md](../spec/engine.md)・[docs/spec/conversion.md](../spec/conversion.md)・
+  [docs/spec/suggest.md](../spec/suggest.md) へ移した
+- [unified-suggest.md](../archive/unified-suggest.md): 打鍵をエンジンに送り、打鍵の上でずれを測るファジィ照合と、全体変換・
+  予測・補正の候補を 1 つの点数で並べる SUGGEST。先頭文節の候補をなくし、選んだ全体変換の採用範囲を
+  Shift+← / → で縮める。[docs/spec/suggest.md](../spec/suggest.md) と [docs/spec/engine.md](../spec/engine.md) へ移した
+- [typo-conversion.md](../archive/typo-conversion.md): 入力全体の候補に、打ち間違いを 1 打直した読みで変換した補正の候補を
+  足す (計測の結果を含む)。[docs/spec/engine.md](../spec/engine.md) と [docs/spec/display.md](../spec/display.md) へ移した
+- [typo-segment-ui.md](../archive/typo-segment-ui.md): 文節 UI (`segment_ui` 1) の変換で、補正の最良経路に沿って文節を
+  区切り、打ち間違えた語を含む文節の候補に補正の表記を足す。[docs/spec/engine.md](../spec/engine.md) と
+  [docs/spec/conversion.md](../spec/conversion.md) へ移した
+- [selection-reconversion.md](../archive/selection-reconversion.md): 漢字を含む選択範囲を、エンジンの逆変換 (REVERSE) で
+  推測した読みから変換キー・F6〜F10 で変換し直す。[docs/spec/conversion.md](../spec/conversion.md) と
+  [docs/spec/engine.md](../spec/engine.md) へ移した
+- [number-forms.md](../archive/number-forms.md): 数字で打った数に、漢数字・桁区切り・万の単位まじり・全角/半角の候補を足す。
+  [docs/spec/conversion.md](../spec/conversion.md) と [docs/spec/engine.md](../spec/engine.md) へ移した
+- [llm-generate.md](../archive/llm-generate.md): Vulkan 版で、9 文字以上の読みの並べ替えに LLM の貪欲法で生成した候補を
+  1 件足し、候補バーの全体変換の枠を並べ替えの結果の上位から埋め直す。[docs/spec/engine.md](../spec/engine.md) と
+  [docs/spec/suggest.md](../spec/suggest.md) へ移した
+- [eval-sets.md](../archive/eval-sets.md): 変換精度の評価セット (AJIMEE-Bench と、実ユーザの learning_stats.tsv の
+  再生評価)。[docs/spec/engine.md](../spec/engine.md)「評価セット」へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
@@ -205,4 +214,4 @@
 - [llm-rerank-notes.md](../archive/llm-rerank-notes.md): Zenzai・mozkey の LLM 補正の調査。並べ替えは
   [llm-rerank.md](llm-rerank.md) で実装し、フィードバック学習は [roadmap](../roadmap.md) の未着手
 - [rakukan-llm-notes.md](../archive/rakukan-llm-notes.md): rakukan の LLM 変換 (生成の前後処理・jinen・運用) の調査。
-  生成は [llm-generate.md](llm-generate.md) で実装
+  生成は [llm-generate.md](../archive/llm-generate.md) で実装

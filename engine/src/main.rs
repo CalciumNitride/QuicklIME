@@ -613,7 +613,7 @@ fn parse_context(field: &str) -> Option<convert::Context> {
 
 /// CONVSEG / CONVCTX 共通の文節変換応答を作る。
 /// lengths_field は文節長 (カンマ区切り、文節伸縮時の境界固定用)、無ければ通常の文節分割。
-/// lengths_field が kinds なら文節長の指定なしで、補正の表記 (docs/design/typo-segment-ui.md) を
+/// lengths_field が kinds なら文節長の指定なしで、補正の表記 (docs/spec/engine.md「文節 UI の補正」) を
 /// 足して種類を付ける。文節長の後ろの kinds は読まない (文節長を指定した変換には補正を入れない)
 fn segments_response(
     kana: &str,

@@ -9,7 +9,7 @@
   3 件 → 予測 → 先頭文節 3 件」の順に組み、確からしさで比べていない。TSF 層には候補のコストが届かないため、
   この層では比べられない
 - 予測のファジィ照合は、かなの編集距離 1 で、前方一致で枠が埋まらないときだけ足す
-  ([basics.md](basics.md) の「タイプミス補正」)。普段は枠が埋まるので働かず、2 か所以上のずれも拾えない
+  ([basics.md](../design/basics.md) の「タイプミス補正」)。普段は枠が埋まるので働かず、2 か所以上のずれも拾えない
 - 打鍵 (ローマ字) は TSF 層でかなにした時点で捨てられ、エンジンはかなを標準のローマ字に戻した近似で
   誤りを戻している ([typo-conversion.md](typo-conversion.md))。`romaji.tsv` を変えた人の綴りや、
   打ちかけのローマ字は扱えない
@@ -109,7 +109,7 @@
 | docs/design/basics.md | 「予測」「タイプミス補正」を本書に合わせる |
 | docs/archive/candidate-bar.md | バーの内容・先頭文節・エンジンの節が本書で置き換わることを書く |
 | docs/archive/keymap.md | バー選択中の Shift+← / → |
-| docs/design/typo-conversion.md | 補正の元を打鍵に、コストと状態の数が本書で置き換わることを書く |
+| docs/archive/typo-conversion.md | 補正の元を打鍵に、コストと状態の数が本書で置き換わることを書く |
 | docs/theme.md | `typo`・`tag_typo` が予測の補正にも使われること、`tag_partial` の意味 |
 | docs/design/README.md | 本書の 1 行 |
 | docs/roadmap.md | 後で検討する項目 (下の「未決事項」) を未着手に足す |

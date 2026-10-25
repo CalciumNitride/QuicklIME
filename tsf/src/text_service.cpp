@@ -3358,7 +3358,7 @@ std::wstring TextService::PrepareConversionCommit()
             typo = it->typo;
         }
     }
-    // 補正の表記を選んだ文節 (docs/design/typo-segment-ui.md)。その文節の学習と、打ち間違えた
+    // 補正の表記を選んだ文節 (docs/spec/conversion.md「補正の候補」)。その文節の学習と、打ち間違えた
     // 読みを含む読み全体の学習・伸縮の学習は送らない
     std::vector<bool> typoSegments;
     if (committed.empty()) {
@@ -3373,7 +3373,7 @@ std::wstring TextService::PrepareConversionCommit()
     const bool typoSegment =
         std::find(typoSegments.begin(), typoSegments.end(), true) != typoSegments.end();
     // 逆変換から始めた変換は、読みが推測のままの文節を学習しないよう、表記が変わった文節だけを
-    // 学習し、読み全体・文節境界・複合語の学習は送らない (docs/design/selection-reconversion.md の E)
+    // 学習し、読み全体・文節境界・複合語の学習は送らない (docs/spec/conversion.md「漢字を含む選択の再変換」)
     const bool reversed = rangeTracked_ && rangeFromReverse_;
     if (!IsNoLearningApp() && !typo) {
         std::vector<LearnEntry> entries = SentenceLearnEntries(committed);

@@ -60,7 +60,7 @@
 | installer/build.ps1 | next_word.tsv と LICENSE-wikipedia.txt の同梱 |
 | docs/protocol.md | NEXTWORD の説明に統計の表を足す |
 | docs/archive/next-word-prediction.md | 予測の材料に本書へのリンクを足す |
-| docs/design/eval-sets.md | NEXTWORD の評価を足す |
+| docs/archive/eval-sets.md | NEXTWORD の評価を足す |
 | docs/development.md | next_word.tsv の生成の手順 |
 | README.md | 読みなしの予測の説明、同梱物とライセンス |
 | docs/design/README.md | 本書の 1 行 |
