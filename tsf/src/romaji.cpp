@@ -597,16 +597,6 @@ void RomajiComposer::Backspace()
     }
 }
 
-bool RomajiComposer::BackspaceRestores() const
-{
-    if (autoSwitches_.empty()) {
-        return false;
-    }
-    RomajiComposer copy = *this;
-    copy.BackspaceStep();
-    return copy.Raw().size() < autoSwitches_.back().rawCount;
-}
-
 void RomajiComposer::BackspaceStep()
 {
     if (!pending_.empty()) {

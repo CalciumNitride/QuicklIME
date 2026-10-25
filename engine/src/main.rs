@@ -409,7 +409,8 @@ fn english_dir() -> Option<PathBuf> {
     Some(project_root.join("data"))
 }
 
-/// 英単語辞書を読み込む。無くても ASCIISTART が常に 0 を返すだけで起動は続ける
+/// 英単語辞書を読み込む。無くても起動は続ける (ASCIISTART はユーザ辞書の英字の語だけで照合し、
+/// 一致が無ければ NONE を返す。ASCIIWORD は前方一致ありを返す)
 fn load_english() -> EnglishDict {
     let Some(dir) = english_dir() else {
         eprintln!("英単語辞書のディレクトリを特定できません。英単語辞書なしで起動します");

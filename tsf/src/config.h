@@ -88,7 +88,7 @@ struct TsfConfig {
     std::wstring candidateFont = L"Yu Gothic UI";  // 候補ウィンドウのフォント名
     int candidateFontSize = 18;    // 候補ウィンドウのフォントの高さ (px)
     // モードレス入力 (英語の打鍵を自動で判定して英字のまま入れる。
-    // docs/design/modeless.md)
+    // docs/spec/modeless.md)
     bool modeless = false;
     // 入力中に横一列の候補バーを出す (docs/spec/suggest.md「表示の条件」)
     bool candidateBar = true;

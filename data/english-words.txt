@@ -1,5 +1,5 @@
 # 英単語辞書 (一般語)。モードレス入力で英字区間の始まりを決める ASCIISTART の照合に使う
-# (docs/design/modeless-detection.md)。1行1語、# で始まる行はコメント
+# (docs/spec/modeless.md「英単語辞書」)。1行1語、# で始まる行はコメント
 #
 # 生成元: SCOWL / English Speller Database (https://github.com/en-wl/wordlist)
 #   コミット 1e5b7d3a72f47a71da5d28686c1dd4b397178485。許諾は LICENSE-SCOWL.txt

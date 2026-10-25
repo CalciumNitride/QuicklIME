@@ -1411,7 +1411,7 @@ fn build_lattice(
         };
         let reading: String = chars[start..end].iter().collect();
         // 英字の連続が正しい表記を持てば、その表記のノードを打ったとおりのノードより安く足す
-        // (打ったとおりの候補はその下に残る。docs/design/english-case.md)
+        // (打ったとおりの候補はその下に残る。docs/spec/modeless.md「大文字小文字の補正」)
         let form = if is_ascii_alpha(chars[start]) {
             user.ascii_form(&reading).filter(|f| *f != reading).map(str::to_string)
         } else {

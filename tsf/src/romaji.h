@@ -21,7 +21,8 @@ public:
 
     // 英字モードに入る (Shift+英字での大文字入力時)。
     // 以降の入力をローマ字変換せずアルファベットのまま続けるための状態で、
-    // Clear() (composition の終了) か、Backspace で英字区間が空になるまで維持される。
+    // Clear() (composition の終了) まで維持される。モードレス入力が有効なときは、Backspace で
+    // 英字区間が空になっても抜ける (無効なら空になっても抜けない)。
     // 打った文字から英字であることが明らかなので、その位置を英字区間の開始位置にする
     // (未変換ローマ字は PushKana と同じ規則で先に日本語区間へ救済する)
     void EnterAsciiMode();
@@ -73,11 +74,11 @@ public:
     // 残り + c が、自動英字判定を止めたローマ字の照合で素通しの英字を出さずに読めること
     bool CanCloseAscii(size_t length, wchar_t c) const;
     // 英字区間を先頭 length 文字で閉じ、残りを自動英字判定を止めて打ち直してから c を通常どおり
-    // Push する (docs/design/mixed-conversion.md)。c で自動英字判定の要求が出ることがあるので、
+    // Push する (docs/spec/modeless.md「英字区間を閉じる」)。c で自動英字判定の要求が出ることがあるので、
     // 呼び出し側は Push と同じく直後に ResolveAscii で決着させる
     void CloseAscii(size_t length, wchar_t c);
     // 開いている英字区間のかなと打鍵列を text に置き換える (大文字小文字の補正の候補。
-    // docs/design/english-case.md)。英字モードでない・text が英字区間と同じ長さでなければ
+    // docs/spec/modeless.md「大文字小文字の補正」)。英字モードでない・text が英字区間と同じ長さでなければ
     // 何もせず false
     bool ReplaceAsciiSection(const std::wstring& text);
     // 閉じた英字区間があるか
@@ -92,8 +93,6 @@ public:
     // 消した後は残った未変換ローマ字に打鍵中の判定をやり直すので、呼び出し側は Push と同じく
     // 直後に ResolveAscii で決着させる
     void Backspace();
-    // Backspace で判定前の日本語の状態に戻るか (文書の英字を IME が書き換える必要がある)
-    bool BackspaceRestores() const;
 
     // 確定済みのかなの先頭 count 文字と、対応する打鍵列を取り除く
     // (候補バーで採用した部分を読みから外す。未変換ローマ字と英字モードは維持し、

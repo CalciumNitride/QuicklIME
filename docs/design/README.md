@@ -66,17 +66,9 @@
 
 ## モードレス入力
 
-- [modeless.md](modeless.md): モードレス入力 (自動英字判定) の基本。run 全体を英字にする遷移と Backspace
-  の扱いは [modeless-detection.md](modeless-detection.md) の区間分割と
-  [modeless-commit-candidate.md](modeless-commit-candidate.md) で置き換え
-- [modeless-detection.md](modeless-detection.md): 判定の強化 (ルール4〜7) と、英単語の部分だけを英字にする
-  英字区間。英字区間を閉じて日本語に戻る動作は [mixed-conversion.md](mixed-conversion.md)、run 終了時の
-  ルール3・6・7 の見せ方は [modeless-commit-candidate.md](modeless-commit-candidate.md)
-- [modeless-commit-candidate.md](modeless-commit-candidate.md): run 終了時の英字判定を書き換えではなく
-  候補バーの英字候補として出す。きっかけの打鍵の Backspace で判定前に戻す
-- [mixed-conversion.md](mixed-conversion.md): 英字混じり文の変換。英字区間を閉じて日本語に戻り、日本語の
-  部分だけを変換する。英単語の大文字小文字の補正は [english-case.md](english-case.md)
-- [english-case.md](english-case.md): 英単語の大文字小文字の補正 (`github` → `GitHub`) を候補として出す
+- モードレス入力と英字 (英字区間・自動英字判定と英単語の始まりの決め方・英単語辞書・英字区間を閉じる動作・
+  Backspace で判定の前に戻る動作・英字候補・英字混じりの読みの変換・大文字小文字の補正):
+  [docs/spec/modeless.md](../spec/modeless.md) (設計書は下の「archive」の節)
 
 ## 辞書
 
@@ -196,6 +188,17 @@
 - [forget-learning.md](../archive/forget-learning.md): 入力パネルで選んでいる候補の学習を Ctrl+Delete で消す。
   [docs/spec/learning.md](../spec/learning.md)・[docs/spec/suggest.md](../spec/suggest.md)・
   [docs/spec/keys.md](../spec/keys.md) へ移した
+- [modeless.md](../archive/modeless.md): モードレス入力 (自動英字判定) の基本。設定 `modeless`・判定のルール 1〜3・
+  英字モード中のキー。[docs/spec/modeless.md](../spec/modeless.md) へ移した
+- [modeless-detection.md](../archive/modeless-detection.md): 判定の強化 (ルール 4〜7) と、英単語の部分だけを英字にする
+  英字区間・英単語辞書・ASCIISTART。[docs/spec/modeless.md](../spec/modeless.md) へ移した
+- [modeless-commit-candidate.md](../archive/modeless-commit-candidate.md): run 終了時の英字判定を書き換えではなく
+  候補バーの英字候補として出す。きっかけの打鍵の Backspace で判定前に戻す。[docs/spec/modeless.md](../spec/modeless.md) へ移した
+- [mixed-conversion.md](../archive/mixed-conversion.md): 英字混じり文の変換。英字区間を閉じて日本語に戻り、日本語の
+  部分だけを変換する (ASCIIWORD・英字の連続の語)。[docs/spec/modeless.md](../spec/modeless.md) と
+  [docs/spec/engine.md](../spec/engine.md) へ移した
+- [english-case.md](../archive/english-case.md): 英単語の大文字小文字の補正 (`github` → `GitHub`) を候補として出す
+  (ASCIIFORM)。[docs/spec/modeless.md](../spec/modeless.md) と [docs/spec/engine.md](../spec/engine.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
@@ -214,7 +217,7 @@
 - [single-unit-conversion-notes.md](../archive/single-unit-conversion-notes.md): 連文節変換をやめ、文節を
   見せない変換にする案の検討
 - [modeless-detection-notes.md](../archive/modeless-detection-notes.md): モードレス入力の英語判定の強化案と
-  Meltype の調査。採った項目は [modeless-detection.md](modeless-detection.md)
+  Meltype の調査。採った項目は [docs/spec/modeless.md](../spec/modeless.md)
 - [llm-rerank-notes.md](../archive/llm-rerank-notes.md): Zenzai・mozkey の LLM 補正の調査。並べ替えは
   [llm-rerank.md](llm-rerank.md) で実装し、フィードバック学習は [roadmap](../roadmap.md) の未着手
 - [rakukan-llm-notes.md](../archive/rakukan-llm-notes.md): rakukan の LLM 変換 (生成の前後処理・jinen・運用) の調査。

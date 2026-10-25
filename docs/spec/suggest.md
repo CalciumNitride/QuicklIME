@@ -6,9 +6,8 @@
 
 - 利用者向けの操作の説明は [候補バーと表示](../user/candidate-bar.md) にある
 - 入力パネルの見た目・表示位置・テーマ・キャレットの印は [display.md](display.md)
-- 英字候補と英字区間の大文字小文字の補正の候補の作り方はモードレス入力の側
-  ([modeless-commit-candidate.md](../design/modeless-commit-candidate.md)・[english-case.md](../design/english-case.md)・
-  [mixed-conversion.md](../design/mixed-conversion.md))
+- 英字候補 (run の終わりの判定の候補と、英字区間の大文字小文字の補正の候補) の作り方と、英字区間のある run の読みは
+  モードレス入力の側 ([modeless.md](modeless.md)「英字候補」「英字混じりの読みの変換」)
 - 全体変換の候補 (CONVNBEST の N-best と並び・補正の候補・LLM の並べ替えと生成) はエンジンの側
   ([engine.md](engine.md))
 - 学習の割引の式と学習の削除は学習の側 ([learning.md](learning.md))

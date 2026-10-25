@@ -1,10 +1,10 @@
-// 英単語辞書と ASCIISTART の照合 (docs/design/modeless-detection.md)
+// 英単語辞書と ASCIISTART の照合 (docs/spec/modeless.md「境界の決め方」)
 //
 // モードレス入力で英字への切替が成立したときに、TSF 層から送られた「かなのかたまりごとの
 // 打鍵列」のどこから英単語が始まるかを、英単語辞書との照合で決める。
 // 一般語 (data/english-words.txt。SCOWL から生成) と固有名詞・技術用語
 // (data/english-names.txt) を読み込む。ユーザ辞書の英字の語は UserDict が持つ。
-// 固有名詞・技術用語は正しい表記も持ち、大文字小文字の補正に使う (docs/design/english-case.md)。
+// 固有名詞・技術用語は正しい表記も持ち、大文字小文字の補正に使う (docs/spec/modeless.md「大文字小文字の補正」)。
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -118,7 +118,7 @@ impl EnglishDict {
     }
 }
 
-/// ASCIIWORD の照合 (docs/design/mixed-conversion.md): text (小文字にして照合する) 全体が
+/// ASCIIWORD の照合 (docs/spec/modeless.md「英字区間を閉じる」): text (小文字にして照合する) 全体が
 /// 英単語の前方一致 (完全一致を含む) か、と、text の先頭部分のうち英単語と完全一致するものの
 /// 長さ (MIN_EXACT_CHARS 以上、昇順) を返す。
 /// 前方一致には ASCIISTART の長さの制限を当てない (英字区間を閉じない根拠にするため)

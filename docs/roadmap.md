@@ -10,7 +10,7 @@
 - 補正の候補の LLM での採点 ([unified-suggest.md](archive/unified-suggest.md))
 - 子音だけ・途中までの省略した打鍵 (`yrsk` → よろしく) の照合 ([unified-suggest.md](archive/unified-suggest.md))
 - モードレス入力の修正の学習。英字区間の境界を F10 / F6 で直したことを次の判定に使う
-  ([modeless-detection.md](design/modeless-detection.md))
+  ([modeless.md](spec/modeless.md)「境界の決め方」)
 - LLM の右文脈の利用。範囲より後ろの文字列を同音異義語の判別に使う。zenz のプロンプトの形式に右の文脈が無く、
   効果を実験で確かめる必要がある ([conversion.md](spec/conversion.md)「変換の対象」)
 - LLM の並べ替えのフィードバック学習。採用・却下を、生の文脈を保存せずに記録して候補コストに反映する
@@ -41,6 +41,10 @@
   ([display.md](spec/display.md)「キャレット行の上に出すときの反転」)
 - 文節境界の学習 (learning_boundary.tsv) を古くする仕組みと消す手段。今は FORGET でも消えず、消すにはファイルを手で
   編集するしかない ([learning.md](spec/learning.md)「文節境界の学習」)
+- 英単語辞書が空のときの ASCIIWORD の扱い。今は常に「前方一致あり」(英字区間を閉じない) を返し、ユーザ辞書の英字の語を
+  見ない。ユーザ辞書の語で照合する ASCIISTART とそろっていない ([modeless.md](spec/modeless.md)「英字区間を閉じる」)
+- modeless が無効なときに Shift+英字で入った英字モードを、Backspace で英字区間が空になっても抜けないことの見直し。
+  理由が残っていない ([modeless.md](spec/modeless.md)「Backspace」)
 
 ## 見送り・既知の問題
 
@@ -113,3 +117,8 @@
 - learning_stats.tsv・learning.tsv の読み込みは、UTF-8 として読めない行があるとそこで止まり、後ろの学習を読まない
   (engine/src/learn.rs `load_stats_from`)。そのあと FORGET などで書き直すと、読めた分だけでファイルが置き換わり、
   残りの学習を失うおそれがある。コードを読んで見つけたもので、実行しては確かめていない
+- 直前の確定が英字のときの英字判定 (ルール 6) と、run の無いときの Space を半角にする判定は、確定アンドゥの記憶を見る。
+  この記憶はキャレットの移動やクリックでは消えず、キャレットの前の文字列とも照らさないので、別の場所へ移っても英文の
+  途中とみなすことがある ([modeless.md](spec/modeless.md)「直前の確定が英字のとき (ルール 6)」)
+- ASCIIFORM (大文字小文字の補正) の応答のキャッシュが、単語登録 (ADDWORD・RELOADUSER) の後も消えない。登録した語の
+  正しい表記は、別の文字列を問い合わせるまで反映されない (tsf/src/text_service.cpp の `asciiFormText_`)

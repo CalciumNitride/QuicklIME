@@ -1,7 +1,7 @@
 # 英単語辞書 (固有名詞・技術用語)。english-words.txt (SCOWL) に無い語を手で選んで足したもの。
-# ASCIISTART の照合に english-words.txt と合わせて使う (docs/design/modeless-detection.md)。
+# ASCIISTART の照合に english-words.txt と合わせて使う (docs/spec/modeless.md「英単語辞書」)。
 # 1行1語、# で始まる行はコメント。語は正しい表記 (GitHub・iPhone など) で書く。照合は小文字にして
-# 行い、表記が小文字だけでない語は大文字小文字の補正に使う (docs/design/english-case.md)。
+# 行い、表記が小文字だけでない語は大文字小文字の補正に使う (docs/spec/modeless.md「大文字小文字の補正」)。
 # 小文字で書いた語は補正しない。SCOWL に既にある語と、Shift で大文字に打つことが
 # 多い略語 (api・html など) は入れない
 Amazon

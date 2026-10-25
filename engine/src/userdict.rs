@@ -108,7 +108,7 @@ pub struct UserDict {
     /// ASCIISTART で英単語辞書と合わせて照合する
     english: Vec<String>,
     /// 大文字を含む登録語の「小文字の形 → 登録した表記」。同じ小文字の形は先に登録したものを持つ
-    /// (大文字小文字の補正。docs/design/english-case.md)
+    /// (大文字小文字の補正。docs/spec/modeless.md「大文字小文字の補正」)
     english_forms: HashMap<String, String>,
     /// 英単語辞書 (english-names.txt) の「小文字の形 → 表記」。変換 (build_lattice) には
     /// 英単語辞書を渡す経路が無いため、起動時に main.rs が写して持たせる

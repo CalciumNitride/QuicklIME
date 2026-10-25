@@ -52,7 +52,7 @@
 - 記号辞書を引くときは、読みの全角英数記号を半角にしてから引き直す。記号キーは全角形で run に入るが、
   symbol.tsv の読みは半角形で載っているため (「（」を変換すると ［ 〔 などが出る)
 - Shift+英字の英字モードは [docs/spec/input.md](../spec/input.md)「印字キー」へ移した
-  (モードレス入力での扱いは [モードレス入力](../user/modeless.md) と [modeless.md](modeless.md))
+  (モードレス入力での扱いは [モードレス入力](../user/modeless.md) と [docs/spec/modeless.md](../spec/modeless.md)「英字区間」)
 
 ## 対記号の両側同期
 

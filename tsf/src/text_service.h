@@ -413,7 +413,7 @@ private:
                                 std::vector<SentenceCandidate>* candidates);
 
     // ---- モードレス入力 (設定 modeless。判定の本体は RomajiComposer) ----
-    // 候補バーの英字候補 (docs/design/modeless-commit-candidate.md): composer_ の複製に run 終了時の
+    // 候補バーの英字候補 (docs/spec/modeless.md「英字候補」): composer_ の複製に run 終了時の
     // 判定 (ルール3・6・7) を当て、英字になればその複製を result に入れて true。composer_ は変えない。
     // ルール3 が英単語辞書に一致しなかったとき (run 全体を英字にする扱い) は候補にしない
     bool BuildAsciiCandidate(RomajiComposer* result);
@@ -425,10 +425,10 @@ private:
     // 入れた直後・run 終了時の判定を適用した直後に呼ぶ
     void ResolveAsciiRequest(RomajiComposer* composer);
     // モードレス入力の英字区間で英小文字 c を打ったとき、英単語辞書の問い合わせ (ASCIIWORD) で
-    // 英字区間を閉じられれば閉じて、c を日本語区間の打鍵として入れる (docs/design/mixed-conversion.md)。
+    // 英字区間を閉じられれば閉じて、c を日本語区間の打鍵として入れる (docs/spec/modeless.md「英字区間を閉じる」)。
     // 閉じなかったら false (c はまだ入れていない)
     bool CloseAsciiSection(wchar_t c);
-    // 英字だけの text の大文字小文字を補正した正しい表記 (ASCIIFORM。docs/design/english-case.md)。
+    // 英字だけの text の大文字小文字を補正した正しい表記 (ASCIIFORM。docs/spec/modeless.md「大文字小文字の補正」)。
     // text と異なる表記があれば form に入れて true。同じ text への応答は覚えておき、
     // text が変わるまで問い合わせ直さない (未接続・エラーは覚えない)
     bool AsciiFormOf(const std::wstring& text, std::wstring* form);

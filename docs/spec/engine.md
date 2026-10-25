@@ -11,8 +11,8 @@ LLM の並べ替えと生成、評価セットを扱う。
   ([learning.md](learning.md))。本書は割引がどこに効くかだけを書く
 - 辞書の構成・語彙の補強・取り込み・ユーザ辞書は辞書の側 ([basics.md](../design/basics.md)「辞書」・
   [dict-expansion.md](../design/dict-expansion.md)・[dict-import.md](../design/dict-import.md))
-- 英字混じりの読みの変換と英単語の大文字小文字の補正はモードレス入力の側
-  ([mixed-conversion.md](../design/mixed-conversion.md)・[english-case.md](../design/english-case.md))
+- 英字混じりの読みの変換と英単語の大文字小文字の補正 (正しい表記の出どころと TSF 層での使い方) はモードレス入力の側
+  ([modeless.md](modeless.md)「英字混じりの読みの変換」「大文字小文字の補正」)
 - LLM の子プロセスの起動・監視・配布は実行と配布の側 ([llm-rerank.md](../design/llm-rerank.md)「プロセス構成」
   「モデルの配布」「プロトコル (エンジン - quicklime-llm)」)
 - 実装は engine/src/convert.rs (ラティス・Viterbi・文節・N-best・補正の語)、engine/src/typo.rs (補正した読み)、
