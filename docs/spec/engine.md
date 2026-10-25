@@ -13,8 +13,8 @@ LLM の並べ替えと生成、評価セットを扱う。
   ([dictionary.md](dictionary.md))
 - 英字混じりの読みの変換と英単語の大文字小文字の補正 (正しい表記の出どころと TSF 層での使い方) はモードレス入力の側
   ([modeless.md](modeless.md)「英字混じりの読みの変換」「大文字小文字の補正」)
-- LLM の子プロセスの起動・監視・配布は実行と配布の側 ([llm-rerank.md](../design/llm-rerank.md)「プロセス構成」
-  「モデルの配布」「プロトコル (エンジン - quicklime-llm)」)
+- LLM の子プロセスの起動・監視・配布は実行と配布の側 ([runtime.md](runtime.md)「LLM の子プロセス」「LLM のモデルの取得」)。
+  エンジンと quicklime-llm の間の行の形式は [docs/protocol.md](../protocol.md) の「エンジン - quicklime-llm 間」
 - 実装は engine/src/convert.rs (ラティス・Viterbi・文節・N-best・補正の語)、engine/src/typo.rs (補正した読み)、
   engine/src/reverse.rs (逆変換)、engine/src/number.rs (数字の書き方)、engine/src/datetime.rs (日付・時刻)、
   engine/src/llm.rs (並べ替えと生成の規則・LLM ワーカー)、llm/src/lib.rs (quicklime-llm の SCORE・GENERATE)、
@@ -462,7 +462,7 @@ zenz 系のかな漢字変換モデル (別プロセス quicklime-llm) で、CON
 | `cpu` (既定) | quicklime-llm.exe | zenz-v3.2-xsmall (Q5_K_M) |
 | `vulkan` | quicklime-llm-vulkan.exe | zenz-v3.2-small (Q5_K_M) |
 
-- Vulkan 版が起動できないときは CPU 版と xsmall で動く (切り替えと起動・監視は実行と配布の側)
+- Vulkan 版が起動できないときは CPU 版と xsmall で動く ([runtime.md](runtime.md)「Vulkan 版から CPU 版への切り替え」)
 - CPU のスレッド数は min(4, 論理コア数)。実験 0b で 4 と 6 の差は小さかった
 - プロンプトは zenz-v3 の書式 (azooKey の ZenzPromptBuilder と同じ): 左文脈があれば U+EE02 と左文脈 (末尾 40 文字)、
   U+EE00 と読み (カタカナ)、U+EE01。半角スペースは U+3000 にし、改行は除く (zenz のトークナイザが扱えないため)
@@ -516,7 +516,7 @@ TSF 層にはスレッドを作らず、エンジンへの要求はどれもす�
 - 結果は接続ごとに最新の 1 件だけ持つ。RERANKGET は、最新の ID でなければ NONE、推論中・順番待ちなら PENDING、
   結果があれば DONE、推論に失敗していれば NONE を返す
 - 1 要求の応答が 2 秒 (`LLM_TIMEOUT_MS`) を超えた依頼は NONE にする (TSF 層は統計の並びのまま)。子プロセスの異常の
-  判定と再起動は実行と配布の側
+  判定と再起動は [runtime.md](runtime.md)「応答待ちと異常」
 
 ### 採らなかった案
 
@@ -688,4 +688,5 @@ learning_stats.tsv は起動時に 1 件 1 行へ書き直されて確定の並�
 | `llm` | 0 | エンジン・TSF 層 | 1 で LLM の並べ替え (Vulkan 版では生成も) を使う。0 では TSF 層が RERANK を送らず、エンジンは子プロセスを起動しない |
 | `llm_backend` | `cpu` | エンジン | `cpu` / `vulkan`。子プロセスとモデルを選ぶ |
 
-- エンジンは起動時と RELOADCONFIG で設定を読む。`llm`・`llm_backend` が変わったときの子プロセスの起動・終了は実行と配布の側
+- エンジンは起動時と RELOADCONFIG で設定を読む。`llm`・`llm_backend` が変わったときの子プロセスの起動・終了は
+  [runtime.md](runtime.md)「起動と終了」

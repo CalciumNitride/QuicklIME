@@ -22,7 +22,7 @@
 #                   他の処理は行わない
 #
 # 前提: cargo (PATH), VS 2022 同梱 cmake, references\mozc の辞書取得済み。
-#       tsf\build が未構成なら初回ビルド時に自動生成される
+#       64bit の tsf\build は構成済みであること (32bit の tsf\build32 は未構成なら自動で構成する)
 #
 # 使用例:
 #   scripts\dev-deploy.ps1                       # エンジンのみ常用環境へ反映

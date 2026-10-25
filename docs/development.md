@@ -15,7 +15,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 | `data/` | 設定ファイルのプリセット (AZIK 風ローマ字テーブルなど) |
 | `docs/` | ドキュメント。全体の構成は [docs/architecture.md](architecture.md)、機能ごとの設計書は [設計書の索引](design/README.md)、未着手の項目と既知の問題は [docs/roadmap.md](roadmap.md)、TSF-エンジン間プロトコルは [docs/protocol.md](protocol.md) |
 | `references/` | 外部のリポジトリと取得したデータ (git管理外)。中身は下記「references/ の中身」 |
-| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド、`fetch-ajimee.ps1`: 評価セット AJIMEE-Bench の取得) |
+| `scripts/` | 開発用スクリプト (`dev-deploy.ps1`: デバッグ反映、`cleanup-old-binaries.ps1`: 旧DLL/exeの掃除、`fetch-models.ps1`: LLM のモデルの取得、`build-llm.ps1`: LLM の子プロセスのビルド、`fetch-ajimee.ps1`: 評価セット AJIMEE-Bench の取得、`fetch-ut-dict.ps1`: UT 辞書の取得と生成、`fetch-wiki-ngram.ps1`: 日本語版ウィキペディアのダンプの取得と後続語の統計の生成、`subset-icon-font.py`: 入力モードのアイコン用フォントのサブセット化) |
 
 ### references/ の中身
 
@@ -126,6 +126,11 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成する cargo-about =
 `cargo install --locked --features cli cargo-about`)。
 
+`installer\build.ps1` は 64bit の `tsf\build` をビルドするだけで構成はしないので、先に上記「ビルド」の
+TSF 層の手順 (`cmake -S tsf -B tsf/build ...`) で構成しておく (32bit の `tsf\build32` は未構成なら自動で構成する)。
+CMake と VC++ ランタイムは Visual Studio 2022 Community の既定のインストール先
+(`C:\Program Files\Microsoft Visual Studio\2022\Community`) から取るので、ほかのエディションや場所では動かない。
+
 同梱物とそのライセンスは [README.md](../README.md) の「同梱物とライセンス」にある。
 
 ## 同梱データの取得・生成
@@ -154,7 +159,7 @@ Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成す�
   で、Mozc 辞書と重複する語などを除いて生成する
 - 後続語の統計 (`dict\next_word.tsv`): 日本語版ウィキペディアの CirrusSearch のダンプから、
   `engine/examples/build_next_word.rs` で文節の連なりの回数を数えて生成する
-  ([next-word-ngram.md](design/next-word-ngram.md))。ダンプの置き場所
+  ([suggest.md](spec/suggest.md)「文節の連なりの統計」)。ダンプの置き場所
   (https://dumps.wikimedia.org/other/cirrus_search_index/) は週ごとに作られ直近 4 週だけが残るので、日付は
   そこで今あるものを選ぶ。1 分割 (約 650MB) の取得に約 30 分、4 分割の生成に約 15 分かかる
   ```
@@ -180,9 +185,9 @@ Rust の crate のライセンス表示 `LICENSE-rust-crates.txt` を生成す�
 
 | コマンド | 動作 |
 |---|---|
-| `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー) |
+| `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
 | `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 (要管理者権限) |
-| `scripts\dev-deploy.ps1 -Dll -Install` | エンジン反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (管理者権限・再起動とも不要) |
+| `scripts\dev-deploy.ps1 -Dll -Install` | エンジン反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (再起動は不要。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
 | `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限) |
 
 DLL の反映方法は用途で使い分ける。
@@ -216,5 +221,5 @@ IME の DLL は全アプリケーションのプロセスにロードされる�
 | 環境変数 | 内容 |
 |---|---|
 | `QUICKLIME_IMPORT_DIR` | 取り込んだ辞書の保存先ディレクトリ (既定は `%APPDATA%\QuicklIME\imported\`) を変更する (エンジン・単語登録ツール共通。動作検証時の隔離用)。[dictionary.md](spec/dictionary.md)「インポート辞書」 |
-| `QUICKLIME_LLM_MODEL_DIR` | エンジンが LLM のモデルを探すディレクトリ。設定するとほかの場所より先に探す。探す順は [llm-rerank.md](design/llm-rerank.md) |
+| `QUICKLIME_LLM_MODEL_DIR` | エンジンが LLM のモデルを探すディレクトリ。設定するとほかの場所より先に探す。探す順は [runtime.md](spec/runtime.md)「exe とモデルの探し方」 |
 | `QUICKLIME_RERANK_MIN_CHARS` | エンジンが並べ替える読みの最小文字数 (0 以上の整数。既定は 9、不正な値なら既定値)。起動時に 1 回だけ読む。計測用。[engine.md](spec/engine.md)「並べ替える依頼」 |

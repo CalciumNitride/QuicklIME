@@ -81,41 +81,11 @@
 
 ## エンジンの自動起動
 
-設計は [engine-autostart.md](engine-autostart.md)。
-
-- TSF 層はアクティブ化 (`ActivateEx`) のときにエンジンのパイプへ接続してみて、開けなければエンジンの exe を
-  探して起動する (コンソールなし)。起動の完了は待たない (tsf/src/engine_client.cpp)。ログオン時は explorer
-  などでも TSF がアクティブ化されるので、ログオンと同時にエンジンが立ち上がる
-- 候補バー・英字判定のように打鍵ごとに呼ぶ問い合わせでも、パイプを開けなければエンジンを起動だけする。
-  接続は待たず、その打鍵の問い合わせは失敗として扱う (打鍵を止めないため)
-- 明示的な変換などの待ってよい問い合わせでは、最後にエンジンを起動できてから 5 秒以内なら新たには起動せず、
-  起動から 5 秒経つまでパイプが開くのを待つ (100 ms ごと)。それ以外なら起動を試みて 5 秒まで待つ。
-  エンジンは辞書を読み終えてからパイプを作り、PC の起動直後は数秒かかるため
-- 起動の試行はどの経路でも 10 秒に1回まで。exe が見つからないなどで起動できなかった試行は待つ対象にしない
-- exe の探索 (`FindExePath`) は DLL と同じディレクトリ → 親ディレクトリ (インストール先の `x86\` の
-  32bit DLL から 64bit の exe を使う) → 開発レイアウトの `engine\target\release\` → `engine\target\debug\`
-  の順。設定ツール・単語登録ツールも同じ探索で起動する
-- エンジンは起動の直後、辞書を読む前に named mutex `Local\quicklime-engine-<パイプ名>` (パイプ名の `\` は
-  `_` に置き換える) を作り、すでにあれば終了する。辞書の読み込み中はパイプが無いので、多くのプロセスから
-  同時に起動されてもパイプへの接続だけでは見分けられないため。パイプ名ごとに分かれるので、
-  `QUICKLIME_PIPE_NAME` で隔離したエンジンは常用のエンジンと並んで動ける
-- あわせて、同じ名前のパイプへ接続できたら既に動いているとみなして終了する
-- 自動起動したエンジンは TSF 層のプロセスの環境変数を引き継ぐ (`QUICKLIME_PIPE_NAME` などの隔離設定が効く)
+[docs/spec/runtime.md](../spec/runtime.md)「エンジンの自動起動」「二重起動の防止」へ移した
 
 ## インストーラ
 
-利用者向けの説明は [README.md](../../README.md) の「インストール」、インストーラのビルドの手順は [development.md](../development.md) にある。Inno Setup (installer/installer.iss) で作り、
-installer/build.ps1 がバイナリ・辞書・ライセンスを集めてから ISCC を呼ぶ。
-
-- 64bit DLL を `%ProgramFiles%\QuicklIME\` に、32bit DLL を `x86\` に置き、それぞれ regserver で登録する
-  (32bit 側は Wow6432Node)。登録の中身は DLL の DllRegisterServer に任せる
-- 更新時は先にエンジン・設定ツール・単語登録ツール・LLM の子プロセスを taskkill で止める。ロード中の DLL は
-  restartreplace で再起動時に置き換える (初回のインストールは未ロードなので再起動は要らない)
-- アンインストールでも `%APPDATA%\QuicklIME\` (設定・ユーザ辞書・学習) には触れない
-- TSF の DLL は CRT を静的リンクする (/MT、tsf/CMakeLists.txt)。DLL は全アプリのプロセスにロードされ、
-  exe を基準にする DLL 探索では DLL の隣に置いた msvcp140.dll などが見つからないため。エンジン・ツールの
-  release ビルドも build.ps1 で crt-static にする。LLM の子プロセスは CRT を動的にリンクし、再頒布可能な
-  DLL を同梱する
+[docs/spec/runtime.md](../spec/runtime.md)「インストーラ」「CRT のリンク」へ移した
 
 ## パスワード欄などキー入力が無効な文書
 

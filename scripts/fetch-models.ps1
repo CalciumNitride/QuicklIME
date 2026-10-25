@@ -1,6 +1,6 @@
 ﻿# QuicklIME LLM モデル取得スクリプト
 #
-# LLM による順位補正 (docs/design/llm-rerank.md) で使う zenz 系モデルを Hugging Face から
+# LLM による順位補正 (docs/spec/runtime.md「LLM のモデルの取得」) で使う zenz 系モデルを Hugging Face から
 # リポジトリ直下の models\ (git 管理外) に取得し、サイズと SHA-256 を確かめる。
 # リビジョンは計測 (docs/archive/experiment-0b-llm-results.md) で使ったものに固定している。
 # 取得済みでサイズとハッシュが一致するファイルは取り直さない。

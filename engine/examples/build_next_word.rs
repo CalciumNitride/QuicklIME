@@ -1,4 +1,4 @@
-// 後続語の予測の統計 (next_word.tsv) の生成 (docs/design/next-word-ngram.md の B〜D)
+// 後続語の予測の統計 (next_word.tsv) の生成 (docs/spec/suggest.md「文節への分け方」「表」「生成」)
 //
 // 日本語版ウィキペディアの CirrusSearch のダンプ (jawiki_content-*.json.bz2) の本文を、逆変換の対象の文字の
 // 連続ごとに区切って逆変換 (src/reverse.rs) し、変換の group_path と同じ規則で文節にまとめ、隣り合う文節の

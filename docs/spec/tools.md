@@ -14,7 +14,7 @@
   [display.md](display.md)「入力パネルの見本の描画」。本書は設定ツールでの選択肢と見本の表示を書く
 - 単語登録ツールの起動・登録・インポートの働きは [dictionary.md](dictionary.md)「単語登録ツール」。本書は画面だけを書く
 - RELOADCONFIG の形式は [docs/protocol.md](../protocol.md)。設定ツール・単語登録ツールの exe の探し方とインストーラは実行と
-  配布の側 ([basics.md](../design/basics.md)「エンジンの自動起動」「インストーラ」)
+  配布の側 ([runtime.md](runtime.md)「exe の探し方」「インストーラ」)
 - 実装は engine/gui/src/config.rs (設定ファイルの読み書き・選択肢)、engine/gui/src/keys.rs (キー割当の表記と検査)、
   engine/gui/src/apps.rs (アプリごとの設定)、engine/gui/src/preview.rs (見本の DLL の呼び出し)、engine/gui/src/win32.rs
   (キーの取り込み・ファイル選択・実行中のアプリとフォントの列挙・二重起動の防止)、engine/gui/src/bin/quicklime-config.rs

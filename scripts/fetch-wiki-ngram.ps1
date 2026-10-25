@@ -2,7 +2,7 @@
 #
 # 日本語版ウィキペディアの CirrusSearch のダンプ (jawiki_content-<日付>-NNNNN.json.bz2) のうち、指定した
 # 分割をリポジトリ直下の references\jawiki\ (git 管理外) に取得し、名前・サイズ・SHA-256 を
-# references\jawiki\manifest.tsv に書く (docs/design/next-word-ngram.md の A と D)。
+# references\jawiki\manifest.tsv に書く (docs/spec/suggest.md「コーパス」「生成」)。
 # ダンプの置き場所は週ごとに作られ直近 4 週だけが残るので、日付は
 # https://dumps.wikimedia.org/other/cirrus_search_index/ で今あるものを選ぶ。
 # 取得済みでサイズが取得元と一致する分割は取り直さない。

@@ -8,8 +8,7 @@
 仕様書を見る。仕様書へ移した節は、設計書の本文を仕様書への 1 行に置き換えてあり、全部移した設計書は
 下の「archive」の節に並べる。仕様書と設計書の分担は [spec-docs.md](spec-docs.md)。
 
-- [basics.md](basics.md): 設計書の無い基本機能 (エンジンの自動起動・インストーラ) の
-  仕様と理由。
+- [basics.md](basics.md): 設計書の無い基本機能の仕様と理由。全部の節を仕様書へ移した。
   数字の書き方の候補・対記号・生ローマ字の候補・ファンクションキー変換は
   [docs/spec/conversion.md](../spec/conversion.md) へ、予測・打鍵のファジィ照合・横並びのテーマでの
   サジェスト選択の ←→ は [docs/spec/suggest.md](../spec/suggest.md) へ、確定アンドゥ・読める文書の判定・
@@ -18,7 +17,7 @@
   [docs/spec/display.md](../spec/display.md) へ、変換 (Viterbi と文節)・変換のタイプミス補正・日付時刻の候補は
   [docs/spec/engine.md](../spec/engine.md) へ、学習は [docs/spec/learning.md](../spec/learning.md) へ、辞書・記号辞書・
   ユーザ辞書と単語登録ツールは [docs/spec/dictionary.md](../spec/dictionary.md) へ、設定ファイルと設定ツールは
-  [docs/spec/tools.md](../spec/tools.md) へ移した
+  [docs/spec/tools.md](../spec/tools.md) へ、エンジンの自動起動・インストーラは [docs/spec/runtime.md](../spec/runtime.md) へ移した
 - [docs/protocol.md](../protocol.md): TSF 層とエンジンの間のプロトコル
 - [docs/user/theme.md](../user/theme.md): 入力パネルのテーマファイルのリファレンス
 
@@ -40,10 +39,8 @@
 - 入力パネルのテーマ (組み込みのテーマとテーマファイル・縦積み・ゴースト・揃え・読み直し):
   [docs/spec/display.md](../spec/display.md)、設定ツールでの選択肢は [docs/spec/tools.md](../spec/tools.md)
   (設計書は下の「archive」の節)
-- 読みなしの後続語予測: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
-- [next-word-ngram.md](next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
-  読みなしの後続語予測で学習の後ろに足す。コーパス・文節への分け方・表・生成・エンジンは
-  [docs/spec/suggest.md](../spec/suggest.md) へ移した (同梱は本書)
+- 読みなしの後続語予測と文節の連なりの統計 (next_word.tsv): [docs/spec/suggest.md](../spec/suggest.md)、統計の同梱は
+  [docs/spec/runtime.md](../spec/runtime.md) (設計書は下の「archive」の節)
 - 候補バーのページ送り: [docs/spec/suggest.md](../spec/suggest.md) (設計書は下の「archive」の節)
 - 打鍵のファジィ照合・SUGGEST の並び・採用範囲の縮め: [docs/spec/suggest.md](../spec/suggest.md)、全体変換の補正は
   [docs/spec/engine.md](../spec/engine.md) (設計書は下の「archive」の節)
@@ -52,10 +49,7 @@
 
 - 変換エンジン (ラティスと Viterbi・文節の分け方と文節の候補・入力全体の N-best と候補の並び・変換のタイプミス補正・
   逆変換・数字の書き方の候補の位置・LLM の並べ替えと生成・評価セット): [docs/spec/engine.md](../spec/engine.md)
-  (設計書は下の「archive」の節)
-- [llm-rerank.md](llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え。並べ替えの
-  規則・モデルと尤度・左文脈・依頼と結果は [docs/spec/engine.md](../spec/engine.md) へ移した (子プロセスの構成・
-  モデルの配布・子プロセスの起動と監視・ビルドは本書)
+  (設計書は下の「archive」の節)。LLM の子プロセスの起動と監視・モデルの配布は [docs/spec/runtime.md](../spec/runtime.md)
 - run が無いときのキャレット直前のかなの変換と範囲の伸縮、採用した文字列の記憶からの再変換:
   [docs/spec/conversion.md](../spec/conversion.md) (設計書は下の「archive」の節)
 - 漢字を含む選択の再変換と数字の書き方の候補: [docs/spec/conversion.md](../spec/conversion.md)、逆変換と候補の位置は
@@ -73,10 +67,7 @@
 
 - 辞書 (辞書の種類と置き場所・システム辞書の書式と検索・UT 辞書の取得と生成・単漢字辞書と記号辞書・語のコスト・
   ユーザ辞書・インポート辞書と他の IME の辞書の取り込み・単語登録ツール): [docs/spec/dictionary.md](../spec/dictionary.md)
-  (設計書は下の「archive」の節)
-- [dict-expansion.md](dict-expansion.md): 辞書の語彙補強 (Mozc の単漢字辞書と、mozc-ut 由来の UT 辞書)。単漢字辞書と
-  UT 辞書の元データ・取得・生成・読み込みは [docs/spec/dictionary.md](../spec/dictionary.md) へ移した (インストーラへの
-  同梱は本書)
+  (設計書は下の「archive」の節)。辞書のインストーラへの同梱は [docs/spec/runtime.md](../spec/runtime.md)
 
 ## 設定・ツール
 
@@ -84,21 +75,16 @@
   アプリのページ・入力パネルの見本の表示・単語登録ツールの画面): [docs/spec/tools.md](../spec/tools.md)
   (設計書は下の「archive」の節)。入力パネルの見本を描く DLL の関数は [docs/spec/display.md](../spec/display.md)
 
-## エンジン
+## 実行と配布
 
-- [engine-autostart.md](engine-autostart.md): エンジンの早期起動。最初の変換より前に起動しておき、起動中の変換は
-  準備ができるまで待つ。named mutex による二重起動の防止。
-  管理者権限で起動しても通常権限のアプリから接続できるパイプのアクセス権
+- 実行と配布 (プロセスの構成・パイプの名前と接続とアクセス権・エンジンの自動起動と exe の探し方・二重起動の防止・
+  LLM の子プロセスの起動と監視・DLL の登録・インストール先の構成とインストーラ・第三者の著作権表示):
+  [docs/spec/runtime.md](../spec/runtime.md) (設計書は下の「archive」の節)
 
 ## 互換
 
 - 入力位置がウィンドウの外を指すアプリ (マビノギなど) での入力パネルなどの位置: [docs/spec/display.md](../spec/display.md)
   (設計書は下の「archive」の節)
-
-## 配布
-
-- [third-party-notices.md](third-party-notices.md): 配る exe に静的リンクしている Rust の crate の著作権表示と
-  許諾文を、インストーラのビルド時に cargo-about で `LICENSE-rust-crates.txt` に生成して同梱する
 
 ## ドキュメント
 
@@ -214,6 +200,19 @@
 - [panel-preview.md](../archive/panel-preview.md): 設定ツールの「見た目」ページに、選んでいるテーマ・フォント・サイズの
   入力パネルの見本を、登録されている TSF の DLL の描画で出す。[docs/spec/display.md](../spec/display.md) と
   [docs/spec/tools.md](../spec/tools.md) へ移した
+- [next-word-ngram.md](../archive/next-word-ngram.md): 日本語版ウィキペディアから数えた文節の連なりの統計 (next_word.tsv) を、
+  読みなしの後続語予測で学習の後ろに足す。[docs/spec/suggest.md](../spec/suggest.md) と
+  [docs/spec/runtime.md](../spec/runtime.md) へ移した
+- [llm-rerank.md](../archive/llm-rerank.md): LLM (zenz 系モデル、別プロセス quicklime-llm) による N-best の並べ替え。
+  [docs/spec/engine.md](../spec/engine.md) と [docs/spec/runtime.md](../spec/runtime.md) へ移した
+- [dict-expansion.md](../archive/dict-expansion.md): 辞書の語彙補強 (Mozc の単漢字辞書と、mozc-ut 由来の UT 辞書)。
+  [docs/spec/dictionary.md](../spec/dictionary.md) と [docs/spec/runtime.md](../spec/runtime.md) へ移した
+- [engine-autostart.md](../archive/engine-autostart.md): エンジンの早期起動。最初の変換より前に起動しておき、起動中の変換は
+  準備ができるまで待つ。named mutex による二重起動の防止。管理者権限で起動しても通常権限のアプリから接続できるパイプの
+  アクセス権。[docs/spec/runtime.md](../spec/runtime.md) へ移した
+- [third-party-notices.md](../archive/third-party-notices.md): 配る exe に静的リンクしている Rust の crate の著作権表示と
+  許諾文を、インストーラのビルド時に cargo-about で `LICENSE-rust-crates.txt` に生成して同梱する。
+  [docs/spec/runtime.md](../spec/runtime.md) へ移した
 
 - [experiment-0b-llm.md](../archive/experiment-0b-llm.md): LLM による順位補正の遅延・メモリ・精度の計測の仕様
 - [experiment-0b-llm-results.md](../archive/experiment-0b-llm-results.md): 上の計測の結果
@@ -234,6 +233,6 @@
 - [modeless-detection-notes.md](../archive/modeless-detection-notes.md): モードレス入力の英語判定の強化案と
   Meltype の調査。採った項目は [docs/spec/modeless.md](../spec/modeless.md)
 - [llm-rerank-notes.md](../archive/llm-rerank-notes.md): Zenzai・mozkey の LLM 補正の調査。並べ替えは
-  [llm-rerank.md](llm-rerank.md) で実装し、フィードバック学習は [roadmap](../roadmap.md) の未着手
+  [llm-rerank.md](../archive/llm-rerank.md) で実装し、フィードバック学習は [roadmap](../roadmap.md) の未着手
 - [rakukan-llm-notes.md](../archive/rakukan-llm-notes.md): rakukan の LLM 変換 (生成の前後処理・jinen・運用) の調査。
   生成は [llm-generate.md](../archive/llm-generate.md) で実装

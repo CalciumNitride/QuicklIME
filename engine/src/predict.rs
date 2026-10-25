@@ -9,7 +9,7 @@
 // 常に引き、候補に点数を付ける (docs/spec/suggest.md「予測の照合」「点数」)。
 // NEXTWORD は文脈の句の学習 → 後続語の統計の文節の表 → バックオフの表の順に前文脈で引く
 // (辞書には語の連接の統計が無いため、日本語版ウィキペディアから数えた表を別に持つ。
-// docs/design/next-word-ngram.md)。
+// docs/spec/suggest.md「文節の連なりの統計」)。
 // 候補の最大数・最小読み文字数・補正の有無は設定 (config.rs) に従う。
 
 use std::collections::HashMap;
@@ -215,7 +215,7 @@ pub fn scored(
     results
 }
 
-/// 後続語の統計の表 (next_word.tsv。docs/design/next-word-ngram.md の C)。
+/// 後続語の統計の表 (next_word.tsv。docs/spec/suggest.md「表」)。
 /// 行は文脈ごとに連続し回数の多い順に並んでいるので、ファイルの本文をそのまま持ち、文脈から行の範囲を引く
 /// (行ごとに文字列を持つと、表の数倍のメモリを使うため)
 pub struct NextWordTable {

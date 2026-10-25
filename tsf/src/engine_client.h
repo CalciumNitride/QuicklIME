@@ -198,8 +198,9 @@ public:
     // (最初の変換より前にエンジンを立ち上げておくため、アクティブ化のときに呼ぶ)
     void StartEngine();
 
-    // 同梱 exe (エンジン・単語登録ツール) のパスを探す。
-    // DLL と同じディレクトリ → 開発レイアウト (engine/target) の順。見つからなければ空
+    // 同梱 exe (エンジン・単語登録ツール・設定ツール) のパスを探す。
+    // DLL と同じディレクトリ → 親ディレクトリ (32bit DLL の x86\ から) → 開発レイアウト
+    // (engine/target の release → debug) の順。見つからなければ空
     static std::wstring FindExePath(const wchar_t* exeName);
 
 private:

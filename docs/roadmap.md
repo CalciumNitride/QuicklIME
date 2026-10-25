@@ -56,6 +56,14 @@
   実機で確かめる ([input.md](spec/input.md)「改行キー」)
 - ツールを前面に出す方法の見直し。設定ツールの起動では TSF 層が `AllowSetForegroundWindow` を呼び、単語登録ツールの起動では
   呼ばずにツールが自分で `SetForegroundWindow` する。違えている理由が残っていない ([tools.md](spec/tools.md)「起動」)
+- インストーラの `CloseApplications=no`・`RestartApplications=no` (installer/installer.iss) の見直し。理由が残っていない
+  ([runtime.md](spec/runtime.md)「インストーラ」)
+- scripts/dev-deploy.ps1 はエンジンを crt-static なしでビルドしてインストール先へコピーする。インストーラのビルド
+  (installer/build.ps1) は crt-static で、そろっていない ([runtime.md](spec/runtime.md)「CRT のリンク」)
+- installer/build.ps1 は LLM の exe があるかだけを確かめ、古い exe があってもそのまま同梱する
+  ([runtime.md](spec/runtime.md)「インストーラのビルド」)
+- 辞書の読み込みを速くする (バイナリキャッシュなど)。エンジンは辞書を読み終えてからパイプを作るので、起動から
+  パイプができるまで約 2 秒かかる ([runtime.md](spec/runtime.md)「起動の間隔と待ち」「採らなかった案」)
 
 ## 見送り・既知の問題
 
@@ -78,7 +86,7 @@
   (NEXTWORD) にだけ使う。再生評価の学習ありのモードの後ろの `q` の行で、正解の表記が統計の表 (文節の表か
   バックオフの表) のどこかに入るのは既出 983 行のうち 111 行、初出 280 行のうち 1 行で、伸ばしたい初出の句には
   順位の付け方によらず効かない。初出の行のうち 110 行は前文脈の自立語がバックオフの表にあっても正解が無く、
-  表の大きさより Wikipedia の書き言葉と打つ文の内容の違いが効いている ([next-word-ngram.md](design/next-word-ngram.md))
+  表の大きさより Wikipedia の書き言葉と打つ文の内容の違いが効いている ([suggest.md](spec/suggest.md)「文節の連なりの統計」)
 - 短い文節の表記ゆれ (こと / 事、できます / 出来ます) を、読み全体の学習表記の固定で取り違える。同じ読みで両方の表記を
   使うと、決め手が無い。再生評価の学習ありのモードでは、固定した 322 行のうち固定で当てた行が 13 行、外した行が
   12 行とほぼ同数で、度合いや読みの長さでも分かれない ([engine.md](spec/engine.md)「再生評価」)
@@ -96,7 +104,7 @@
   5パーセント増 → ぱーせんとます)。数字の後の読みの表は語の先頭だけを見る
   ([engine.md](spec/engine.md)「数字の直後の助数詞の読み」)
 - 後続語の予測の統計に逆変換の読み誤り (何の → なにの、一日 → ひといち) が入る。採用するとその読みで学習される
-  ([next-word-ngram.md](design/next-word-ngram.md))
+  ([suggest.md](spec/suggest.md)「文節への分け方」)
 - InputScope の指定が無い英数字の欄 (`inputmode` の無い認証コード欄など) では IME をオフにする必要がある。
   素通しは InputScope で欄の種類が分かるときだけ ([input.md](spec/input.md)「InputScope の欄」)
 - 変換の区切りの誤り。再生評価 ([engine.md](spec/engine.md)「再生評価」) の学習が空のモード (8066 行) で、1 位を外した
@@ -153,3 +161,11 @@
   ([tools.md](spec/tools.md)「入力パネルのテーマとフォント」)
 - キー割当のページで、キーを足すときは重なりを弾くが、[既定に戻す]・[すべて既定に戻す]・「状態ごとに変える」のオフを経ると
   重なりを作れる (警告は出る。[tools.md](spec/tools.md)「重なりの検査」)
+- 環境変数 `QUICKLIME_PIPE_NAME` が空のとき、TSF 層は既定のパイプ名を使うが、エンジン・設定ツール・単語登録ツールは空の名前の
+  まま使う (tsf/src/engine_client.cpp と engine/src/main.rs の `pipe_name`。[runtime.md](spec/runtime.md)「パイプ名」)
+- 2 人のユーザが同時にサインインしていると、2 人目のエンジンが起動できない可能性がある。二重起動を防ぐ mutex はセッションごと
+  (`Local\`) だが、パイプ名はセッションをまたいで共通で、アクセス権は他のユーザを拒むため。コードからの推測で、確かめていない
+  ([runtime.md](spec/runtime.md)「パイプのアクセス権」「二重起動の防止」)
+- インストーラがエンジンを終了してからファイルをコピーするまでの間に文字を打つと、TSF 層がエンジンを起動し直して exe が
+  ロックされ、置き換えが再起動待ちになる可能性がある。コードからの推測で、確かめていない
+  ([runtime.md](spec/runtime.md)「インストーラ」)

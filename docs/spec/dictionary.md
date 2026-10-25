@@ -16,7 +16,8 @@
 - F4・F5 の候補選択は [conversion.md](conversion.md)「ファンクションキー変換 (F4〜F10)」、単語登録ツールを起動する
   キーの働く状態は [keys.md](keys.md)「機能」
 - 単語登録ツールの画面 (部品の配置・InfoBar・Enter と Esc) は [tools.md](tools.md)「単語登録ツールの画面」。
-  インストーラへの辞書の同梱は [dict-expansion.md](../design/dict-expansion.md)「3. インストーラ (installer\build.ps1)」
+  インストーラへの辞書の同梱とライセンス文書は [runtime.md](runtime.md)「インストール先の構成」「インストーラのビルド」
+  「同梱するライセンス文書」
 - 実装は engine/src/dict.rs (システム辞書・単漢字辞書・記号辞書と fst の検索)、engine/src/userdict.rs (ユーザ辞書と
   インポート辞書)、engine/src/import.rs (他の IME の辞書の取り込み)、engine/src/pos.rs (品詞 ID 表)、
   engine/src/matrix.rs (連接行列)、engine/src/main.rs (辞書の探索と読み込み、ADDWORD・RELOADUSER・CONVUSER・
@@ -340,7 +341,7 @@ quicklime-regword.exe。ユーザ辞書へ 1 語ずつ登録し、他の IME の
 ### 起動
 
 - 入力なしの状態の `key.register_word` (既定 Ctrl+F7) か、言語バーのメニューの「単語登録...」で TSF 層が起動する。
-  exe は設定ツールと同じ探し方で探し、見つからなければ何もしない
+  exe は [runtime.md](runtime.md)「exe の探し方」で探し、見つからなければ何もしない
 - キーで起動したときは、文書の選択の先頭 128 文字のうち 1 行目を単語の欄の初期値にする (変換できなかった語を選択して
   そのまま登録する用途)。引数に渡せない `"` は除く。言語バーから起動したときは選択を見ない
 - 単語の欄が埋まっていれば、よみの欄から入力を始める
