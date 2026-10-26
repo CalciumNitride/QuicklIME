@@ -47,6 +47,8 @@ pub fn window_hwnd(window: &slint::Window) -> Option<HWND> {
 }
 
 /// ウィンドウを前面に出す (TSF 層から起動されたときに、起動元のアプリの後ろに隠れないように)
+// HWND はポインタの形のハンドルで、API は参照外ししない (無効な値はエラーになるだけ)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn bring_to_front(hwnd: HWND) {
     unsafe { SetForegroundWindow(hwnd) };
 }
@@ -261,6 +263,8 @@ thread_local! {
 }
 
 /// hwnd のキー入力の取り込みを始める。押されたキーは handler に渡す (stop_key_capture まで続く)
+// HWND はポインタの形のハンドルで、API は参照外ししない (無効な値はエラーになるだけ)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub fn start_key_capture(hwnd: HWND, handler: impl Fn(CaptureEvent) + 'static) -> bool {
     stop_key_capture();
     unsafe {
