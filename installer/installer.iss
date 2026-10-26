@@ -74,6 +74,12 @@ Source: "{#Staging}\LICENSE-rust-crates.txt"; DestDir: "{app}"; Flags: ignorever
 [Icons]
 Name: "{autoprograms}\QuicklIME 設定"; Filename: "{app}\quicklime-config.exe"
 
+[Run]
+; セットアップを起動した利用者 (昇格していない側) の言語の一覧に QuicklIME を足す。
+; DLL ではなく exe で行うのは、更新時に読み込み中の DLL が再起動まで古いまま残るため。
+; 失敗してもインストールは止めない (終了コードは見ない)
+Filename: "{app}\quicklime-config.exe"; Parameters: "--add-language-list"; Flags: runasoriginaluser waituntilterminated
+
 [Code]
 // 常駐エンジンと各ツールを止める (更新時の exe ロック解除・アンインストール準備)。
 // プロセスが居なくても taskkill は失敗扱いにせず続行する

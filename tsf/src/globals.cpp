@@ -9,6 +9,7 @@
 
 namespace globals {
 
+// kClsid と kProfileGuid は設定ツール (engine/gui/src/win32.rs の LANGUAGE_LIST_PROFILE) にも同じ値がある
 const CLSID kClsid = {
     0xd8fa8028, 0x4371, 0x40e9, {0x8f, 0x49, 0x4e, 0x46, 0x5e, 0xce, 0x9a, 0x41}};
 

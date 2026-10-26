@@ -1,5 +1,5 @@
 // Slint の外で windows-sys を直接使う処理 (キーの取り込み・ファイル選択・実行中のアプリの列挙・
-// フォントの列挙・二重起動の防止)
+// フォントの列挙・二重起動の防止・言語の一覧への追加)
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -7,8 +7,13 @@ use std::ptr::{null, null_mut};
 
 use slint::winit_030::WinitWindowAccessor;
 use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_ALREADY_EXISTS, FreeLibrary, GetLastError, HWND, LPARAM, LRESULT, WPARAM,
+};
 use windows_sys::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW};
+use windows_sys::Win32::System::LibraryLoader::{
+    GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
+};
 use windows_sys::Win32::System::Threading::{
     CreateMutexW, GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
@@ -74,6 +79,38 @@ pub fn acquire_single_instance(mutex_name: &str, title: &str) -> bool {
         }
         false
     }
+}
+
+/// 言語の一覧に足す入力プロファイル ("0x<LANGID>:{CLSID}{プロファイルの GUID}")。
+/// CLSID とプロファイルの GUID は tsf/src/globals.cpp の kClsid・kProfileGuid と同じ値
+const LANGUAGE_LIST_PROFILE: &str =
+    "0x0411:{D8FA8028-4371-40E9-8F49-4E465ECE9A41}{C0730986-A430-4595-8D18-A4103718C6C6}";
+const ILOT_INSTALL: u32 = 0x0000_0000;
+
+/// input.dll の InstallLayoutOrTip
+type InstallLayoutOrTipFn = unsafe extern "system" fn(profile: *const u16, flags: u32) -> i32;
+
+/// 呼び出した利用者の言語の一覧 (日本語のキーボード) に QuicklIME を足す。一覧に日本語が無ければ
+/// 日本語ごと足し、すでに入っていれば変わらない。足せたら true
+pub fn add_to_language_list() -> bool {
+    // input.dll は SDK に import library が無いため、実行時に System32 から読み込む
+    let module = unsafe {
+        LoadLibraryExW(wide("input.dll").as_ptr(), null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32)
+    };
+    if module.is_null() {
+        return false;
+    }
+    let result = match unsafe { GetProcAddress(module, c"InstallLayoutOrTip".as_ptr().cast()) } {
+        Some(function) => {
+            let install = unsafe {
+                std::mem::transmute::<unsafe extern "system" fn() -> isize, InstallLayoutOrTipFn>(function)
+            };
+            unsafe { install(wide(LANGUAGE_LIST_PROFILE).as_ptr(), ILOT_INSTALL) != 0 }
+        }
+        None => false,
+    };
+    unsafe { FreeLibrary(module) };
+    result
 }
 
 /// インストール済みフォントの面名一覧 (縦書き用の @ 始まりは除く)

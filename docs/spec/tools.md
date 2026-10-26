@@ -103,9 +103,15 @@ AppContainer で動くアプリ (スタートメニューの検索欄・UWP ア�
 
 ### 起動
 
-- 引数なしで起動する。入力なしの状態の `key.open_config` (既定 Ctrl+F12、[keys.md](keys.md)「機能」) か、言語バーの
+- 設定の画面は引数なしで起動する。入力なしの状態の `key.open_config` (既定 Ctrl+F12、[keys.md](keys.md)「機能」) か、言語バーの
   メニューの「設定...」([display.md](display.md)「言語バー」) で TSF 層が起動する。TSF 層は起動の前に
   `AllowSetForegroundWindow(ASFW_ANY)` を呼ぶ。IME を持つアプリのプロセスから起動したウィンドウが前面に出られるようにするため
+- 引数 `--add-language-list` があれば画面を出さず、起動した利用者の言語の一覧 (日本語のキーボード) に QuicklIME を足して
+  終わる。インストーラがインストールの後に動かす ([runtime.md](runtime.md)「インストーラ」)。`input.dll` の
+  `InstallLayoutOrTip` を `0x0411:{QuicklIME の CLSID}{プロファイルの GUID}` と `ILOT_INSTALL` で呼ぶ。`input.dll` は
+  SDK に import library が無いので、System32 から読み込んで呼ぶ。CLSID とプロファイルの GUID は TSF 層
+  (tsf/src/globals.cpp) と同じ値を定数で持つ。失敗しても何も出さない。設定の画面を開いていても動くよう、下の二重起動の
+  防止より前に処理する
 - 二重に起動しない。名前付き mutex `QuicklimeConfig` が既にあれば、タイトル「QuicklIME の設定」のウィンドウを探して
   (最小化されていれば元に戻して) 前面に出し、終了する。winit のウィンドウクラス名は自分で決められないので、タイトルで探す。
   mutex の名前はパイプ名や `QUICKLIME_CONFIG_FILE` によらず 1 つ

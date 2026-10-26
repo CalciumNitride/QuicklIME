@@ -4,6 +4,9 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [installer-language-list.md](installer-language-list.md): インストール時に、セットアップを起動した利用者の言語の
+  一覧に QuicklIME を足す (設定ツールの `--add-language-list`)。[docs/spec/runtime.md](../spec/runtime.md)・
+  [docs/spec/tools.md](../spec/tools.md) へ移した
 - [appcontainer.md](appcontainer.md): AppContainer のアプリ (スタートメニューの検索欄など) での入力。パイプと
   設定ファイルの権限、AppContainer からのエンジンとツールの起動、入力パネルなどのウィンドウのオーナー。
   [docs/spec/runtime.md](../spec/runtime.md)・[docs/spec/tools.md](../spec/tools.md)・[docs/spec/display.md](../spec/display.md) へ移した

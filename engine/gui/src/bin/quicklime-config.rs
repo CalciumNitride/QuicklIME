@@ -6,6 +6,8 @@
 // 更新時刻の変化を検知して自動反映する)。
 //
 // 使い方: quicklime-config.exe (引数なし。TSF 層が Ctrl+F12 などで起動する)
+//         quicklime-config.exe --add-language-list
+//         (画面を出さずに、起動した利用者の言語の一覧に QuicklIME を足して終わる。インストーラが使う)
 
 #![windows_subsystem = "windows"]
 
@@ -781,6 +783,13 @@ fn connect(window: &SettingsWindow, state: &Shared) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // 設定の画面を開いていても動くよう、二重起動の防止より前に見る。失敗しても何も出さない
+    // (インストーラは結果を見ず、一覧に出ないときは利用者が手で足す)
+    if std::env::args_os().skip(1).any(|a| a == "--add-language-list") {
+        win32::add_to_language_list();
+        return Ok(());
+    }
+
     if !win32::acquire_single_instance(MUTEX_NAME, WINDOW_TITLE) {
         return Ok(());
     }
