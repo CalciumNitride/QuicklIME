@@ -4,6 +4,9 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [appcontainer.md](appcontainer.md): AppContainer のアプリ (スタートメニューの検索欄など) での入力。パイプと
+  設定ファイルの権限、AppContainer からのエンジンとツールの起動、入力パネルなどのウィンドウのオーナー。
+  [docs/spec/runtime.md](../spec/runtime.md)・[docs/spec/tools.md](../spec/tools.md)・[docs/spec/display.md](../spec/display.md) へ移した
 - [conversion-range.md](conversion-range.md): run が無いときのキャレット直前のかなの変換と、候補選択中の
   ←→ による変換の範囲の伸縮。[docs/spec/conversion.md](../spec/conversion.md) へ移した
 - [adopted-reconversion.md](adopted-reconversion.md): 採用・確定した文字列を読みとともに覚え、漢字を含む

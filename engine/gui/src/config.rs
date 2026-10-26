@@ -378,6 +378,10 @@ impl Config {
         }
         rewrite_file(&path, &self.file_text())
             .map_err(|e| format!("設定ファイルへ書き込めません ({e})"))?;
+        // rename で置き換えたファイルは親のフォルダの ACL になり、エンジンが足した AppContainer の
+        // アプリ向けの読み取りの ACE が消えるため足し直す。足せなくても AppContainer のアプリが
+        // 既定値で動くだけなので無視する
+        let _ = crate::package_acl::grant_app_packages_read(&path);
 
         // エンジンに再読込を伝える。未起動なら何もしない
         // (ファイルが正なので、次のエンジン起動時に読み込まれる)

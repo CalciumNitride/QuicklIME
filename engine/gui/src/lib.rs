@@ -6,6 +6,9 @@ pub mod config;
 #[path = "../../src/import.rs"]
 pub mod import;
 pub mod keys;
+// AppContainer のアプリに設定ファイルの読み取りを許す処理はエンジン本体と共有する
+#[path = "../../src/package_acl.rs"]
+pub mod package_acl;
 pub mod preview;
 pub mod regword;
 pub mod win32;

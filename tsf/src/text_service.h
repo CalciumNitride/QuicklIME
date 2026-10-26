@@ -363,6 +363,10 @@ private:
     // 返すアプリでも候補ウィンドウ等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
     // where は置き換えたときのデバッグログの見出し
     bool FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
+    // 文書のルートウィンドウ。ビューの GetWnd のルート、取れなければ入力を受けているスレッドの
+    // フォーカス (無ければアクティブ) のウィンドウのルート。どちらも無ければ null。
+    // 入力パネル・キャレットの印・入力モードの一時表示のオーナーにも使う
+    static HWND DocumentWindow(ITfContext* context);
 
     // ---- キャレットの印 (テーマの caret_marker。docs/spec/display.md「キャレットの印」) ----
     // 文書のキャレットの矩形。composition があればその末尾 (取れなければ composition の右端)、

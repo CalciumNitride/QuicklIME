@@ -21,7 +21,9 @@ struct IDWriteTextFormat;
 // (docs/spec/display.md「変換の候補一覧」)。
 // 見た目は PanelTheme (docs/spec/display.md「テーマ」) に従う。Direct2D で 32bpp の DIB に描き、UpdateLayeredWindow で画素ごとの不透明度つきで出す。
 // ぼかし (SetBlur) では通常のウィンドウに DWM のアクリルを当て、その上に直接描く。
-// フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する
+// フォーカスを奪わない (WS_EX_NOACTIVATE) 最前面ウィンドウとして表示する。
+// 文書のルートウィンドウをオーナーにする。オーナー無しでは、スタートメニューの検索欄のような immersive の
+// 層のウィンドウの後ろに隠れるため
 class SuggestPanel {
 public:
     // 1 ページに出す候補の最大数 (番号はページ内で 1〜9)
@@ -79,6 +81,9 @@ public:
         // Caret でキャレット行の下に出すとき、キャレットの下端に出す三角 (theme の triangleSize) の
         // 高さの分だけ下げる
         bool belowTriangle = false;
+        // ウィンドウのオーナー (文書のルートウィンドウ。null ならオーナー無し)。作ったときと
+        // 違えば作り直す
+        HWND owner = nullptr;
     };
 
     SuggestPanel();
@@ -186,6 +191,8 @@ private:
         float width;
     };
 
+    // 次に出すウィンドウのオーナーを owner にする。表示中のウィンドウのオーナーと違えば隠す
+    void UseOwner(HWND owner);
     bool EnsureFactories();
     bool EnsureTarget();
     void ReleaseTarget();
@@ -247,6 +254,7 @@ private:
     void LogShow(const wchar_t* kind, const RECT* anchor, bool created, DWORD error) const;
 
     HWND hwnd_;
+    HWND owner_;  // hwnd_ を作ったとき (無ければ次に作るとき) のオーナー
     std::function<void()> timerCallback_;  // StartTimer の callback (空ならタイマーなし)
     std::function<void(const std::wstring&)> logger_;  // 診断ログ (空なら出さない)
     bool destroying_;  // Hide の DestroyWindow 中 (WM_DESTROY の由来の区別に使う)

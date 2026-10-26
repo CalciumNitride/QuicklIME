@@ -29,6 +29,23 @@ const GUID kPreservedKeyF10Guid = {
 
 HINSTANCE dllInstance = nullptr;
 
+bool IsAppContainer()
+{
+    static const bool appContainer = [] {
+        HANDLE token = nullptr;
+        if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+            return false;
+        }
+        DWORD value = 0;
+        DWORD size = 0;
+        const BOOL ok =
+            GetTokenInformation(token, TokenIsAppContainer, &value, sizeof(value), &size);
+        CloseHandle(token);
+        return ok && value != 0;
+    }();
+    return appContainer;
+}
+
 static LONG s_dllRefCount = 0;
 
 void DllAddRef()

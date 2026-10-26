@@ -130,6 +130,27 @@ fn default_path() -> Option<PathBuf> {
     Some(PathBuf::from(appdata).join("QuicklIME").join("config.tsv"))
 }
 
+/// TSF 層が読む設定ファイルとフォルダ (config.tsv・romaji.tsv・themes) のパス。TSF 層
+/// (config.cpp・romaji.cpp・panel_theme.cpp) と同じく、環境変数 QUICKLIME_CONFIG_FILE・
+/// QUICKLIME_ROMAJI_FILE・QUICKLIME_THEME_DIR を %APPDATA%\QuicklIME\ 配下より優先する
+pub fn tsf_read_paths() -> Vec<PathBuf> {
+    let env_or_appdata = |var: &str, name: &str| {
+        if let Ok(path) = std::env::var(var) {
+            return Some(PathBuf::from(path));
+        }
+        let appdata = std::env::var("APPDATA").ok()?;
+        Some(PathBuf::from(appdata).join("QuicklIME").join(name))
+    };
+    [
+        default_path(),
+        env_or_appdata("QUICKLIME_ROMAJI_FILE", "romaji.tsv"),
+        env_or_appdata("QUICKLIME_THEME_DIR", "themes"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

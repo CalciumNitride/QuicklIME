@@ -447,7 +447,8 @@ void SetEllipsisTrimming(IDWriteFactory* factory, IDWriteTextFormat* format)
 // ---- SuggestPanel ----
 
 SuggestPanel::SuggestPanel()
-    : hwnd_(nullptr), destroying_(false), d2dFactory_(nullptr), dwriteFactory_(nullptr),
+    : hwnd_(nullptr), owner_(nullptr), destroying_(false), d2dFactory_(nullptr),
+      dwriteFactory_(nullptr),
       target_(nullptr), hwndTarget_(nullptr), drawTarget_(nullptr), brush_(nullptr),
       dotStroke_(nullptr), textFormat_(nullptr), boldFormat_(nullptr), inputFormat_(nullptr),
       badgeFormat_(nullptr), labelFormat_(nullptr), tagFormat_(nullptr), fontSize_(18),
@@ -683,6 +684,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         Hide();
         return 0;
     }
+    UseOwner(placement.owner);
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const bool column = theme_.layout == PanelLayout::Column;
     const bool ghost = theme_.style == PanelStyle::Ghost;
@@ -1105,6 +1107,7 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         Hide();
         return 0;
     }
+    UseOwner(placement.owner);
     const Metrics m = ComputeMetrics(theme_, fontSize_);
     const bool ghost = theme_.style == PanelStyle::Ghost;
     const bool centerAlign = theme_.align == PanelAlign::Center;
@@ -1359,7 +1362,7 @@ bool SuggestPanel::Render(const wchar_t* kind, const RECT* anchor)
             hwnd_ = CreateWindowExW(
                 WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
                 kWindowClassName, L"", WS_POPUP, bodyX_ - margin_, windowY, windowWidth,
-                windowHeight, nullptr, nullptr, globals::dllInstance, this);
+                windowHeight, owner_, nullptr, globals::dllInstance, this);
             if (hwnd_ == nullptr) {
                 createError = GetLastError();
             } else {
@@ -1510,7 +1513,7 @@ bool SuggestPanel::CreateBlurWindow(const wchar_t* kind)
     // 作成中に届く WM_ERASEBKGND・WM_PAINT をぼかしの方式として扱うため、先に立てる
     blurActive_ = true;
     hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kWindowClassName,
-                            L"", WS_POPUP, bodyX_, bodyY_, bodyWidth_, bodyHeight_, nullptr,
+                            L"", WS_POPUP, bodyX_, bodyY_, bodyWidth_, bodyHeight_, owner_,
                             nullptr, globals::dllInstance, this);
     if (hwnd_ == nullptr) {
         blurActive_ = false;
@@ -2304,6 +2307,18 @@ void SuggestPanel::Hide()
     tail_ = TailSide::None;
 }
 
+void SuggestPanel::UseOwner(HWND owner)
+{
+    if (owner == owner_) {
+        return;
+    }
+    // 作った後にオーナーを付け替える公式の方法は無いため、作ったウィンドウを使い回さずに作り直す
+    if (hwnd_ != nullptr) {
+        Hide();
+    }
+    owner_ = owner;
+}
+
 LRESULT CALLBACK SuggestPanel::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
     if (msg == WM_NCCREATE) {
@@ -2321,6 +2336,15 @@ LRESULT CALLBACK SuggestPanel::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARA
             swprintf_s(text, L"WM_DESTROY を受信 hwnd=%p (%s)", static_cast<void*>(hwnd),
                        self->destroying_ ? L"Hide による破棄" : L"外部からの破棄");
             self->logger_(text);
+        }
+        if (self != nullptr && self->hwnd_ == hwnd) {
+            self->hwnd_ = nullptr;
+            if (!self->destroying_) {
+                // オーナーと一緒に OS が破棄したときも、Hide した後と同じ状態にして次の表示で作り直す。
+                // ぼかしの描画先はこのウィンドウに結び付いているので先に手放す
+                self->ReleaseHwndTarget();
+                self->Hide();
+            }
         }
         break;
     case WM_MOUSEACTIVATE:

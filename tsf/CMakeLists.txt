@@ -37,3 +37,10 @@ target_compile_features(quicklime_tsf PRIVATE cxx_std_20)
 target_compile_definitions(quicklime_tsf PRIVATE UNICODE _UNICODE)
 target_compile_options(quicklime_tsf PRIVATE /W4 /utf-8 /EHsc)
 target_link_libraries(quicklime_tsf PRIVATE d2d1 dwrite dwmapi)
+
+# AppContainer のアプリ (スタートメニューの検索欄など) が開発版の DLL を読み込めるようにする。
+# インストール版は Program Files から同じ 2 つ (ALL APPLICATION PACKAGES と
+# ALL RESTRICTED APPLICATION PACKAGES) の読み取りと実行を継承する
+add_custom_command(TARGET quicklime_tsf POST_BUILD
+    COMMAND icacls "$<SHELL_PATH:$<TARGET_FILE:quicklime_tsf>>" /grant "*S-1-15-2-1:RX" "*S-1-15-2-2:RX"
+    VERBATIM)

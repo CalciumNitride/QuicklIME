@@ -17,8 +17,9 @@ QuicklIME のプロセスの起動と配布物の仕様。プロセスの構成�
   [modeless.md](modeless.md)「英単語辞書」、後続語の統計は [suggest.md](suggest.md)「エンジンでの読み込み」。
   本書はインストール先にどのファイルを置くかを書く
 - 実装は tsf/src/engine_client.cpp (パイプへの接続・エンジンの自動起動・exe の探し方)、tsf/src/text_service.cpp
-  (`ActivateEx` での起動、`LaunchWordRegister`・`LaunchConfigTool`)、tsf/src/registry.cpp と tsf/src/dll_main.cpp
-  (DLL の登録)、engine/src/main.rs (パイプの待ち受け・二重起動の防止・パイプのアクセス権)、engine/src/llm.rs
+  (`ActivateEx` での起動、`LaunchWordRegister`・`LaunchConfigTool`)、tsf/src/globals.cpp (自分のプロセスが AppContainer か)、
+  tsf/src/registry.cpp と tsf/src/dll_main.cpp (DLL の登録)、tsf/CMakeLists.txt (開発版の DLL のファイルの権限)、
+  engine/src/main.rs (パイプの待ち受け・二重起動の防止・パイプのアクセス権・AppContainer のクライアントの判定)、engine/src/llm.rs
   (LLM の子プロセスの起動と監視)、llm/src/lib.rs (quicklime-llm)、installer/installer.iss (インストーラ)、
   installer/build.ps1 (インストーラのビルド)、installer/about.toml と installer/about.hbs (Rust の crate の表示)、
   scripts/fetch-models.ps1 (モデルの取得)、scripts/build-llm.ps1 (LLM の exe のビルド)
@@ -67,25 +68,47 @@ QuicklIME のプロセスの起動と配布物の仕様。プロセスの構成�
 
 管理者として動くアプリ (管理者で起動したターミナルなど) の TSF 層がエンジンを起動すると、エンジンも管理者権限で動く。
 セキュリティ記述子を指定しないと、昇格した token の既定の DACL と High の整合性レベルでパイプができ、通常権限のアプリが
-読み書きで開けない。そのため、エンジンはどの権限で起動されても次の記述子を付けてパイプを作る。
+読み書きで開けない。また、AppContainer で動くアプリ (スタートメニューの検索欄の SearchHost.exe・UWP アプリなど) の TSF 層は、
+AppContainer の ACE と Low 以下の整合性ラベルが無いパイプを開けない。そのため、エンジンはどの権限で起動されても次の記述子を
+付けてパイプを作る。
 
 ```
-D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<現在のユーザの SID>)S:(ML;;NW;;;ME)
+D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;<現在のユーザの SID>)(A;;GA;;;AC)S:(ML;;NW;;;LW)
 ```
 
-- DACL は SYSTEM・Administrators・現在のユーザだけに許す。パイプ名はセッションをまたいで共通なので、ほかのユーザには
-  開かない。昇格した token もユーザの SID は同じなので、管理者のアプリと通常権限のアプリの両方から接続できる
+- DACL は SYSTEM・Administrators・現在のユーザと、ALL APPLICATION PACKAGES (`AC`) に許す。パイプ名はセッションをまたいで
+  共通なので、ほかのユーザには開かない。昇格した token もユーザの SID は同じなので、管理者のアプリと通常権限のアプリの
+  両方から接続できる
+- AppContainer のアクセスチェックは、ユーザとグループの判定と AppContainer の判定の両方を通る必要がある。DACL のユーザは
+  現在のユーザの SID だけなので、ほかのユーザの AppContainer のプロセスは開けない
 - 現在のユーザを表す SDDL の別名は無いので、プロセスの token のユーザの SID を文字列にして埋め込む
-- 整合性ラベルは Medium にする。ラベルの無いオブジェクトは Medium として扱われるので、通常権限で起動したときの挙動は
-  変わらない。自分の整合性レベル以下へ下げるのに特権は要らない
+- 整合性ラベルは Low にする。AppContainer のプロセスの整合性レベルは Low のため。AppContainer ではない Low の整合性レベルの
+  プロセスも、同じユーザなら開ける。自分の整合性レベル以下へ下げるのに特権は要らない
+- 受け入れるリスク: 同じユーザのサンドボックス化されたアプリが、予測などで学習の内容を引き出し、学習を書き込み・消し、
+  LLM の並べ替えで負荷をかけられる。AppContainer に開かないとスタートメニューの検索欄で変換できないので受け入れる。
+  CorvusSKK も同じ記述子 (`(A;;GA;;;AC)` と `S:(ML;;NW;;;LW)`) でパイプを作る
 - SID や記述子を作れなかったときは、標準エラーに出して既定の記述子でパイプを作る (エンジンが起動しないよりよい)
 - 通常権限のプロセスが管理者のエンジンに要求を送れるが、要求が触るのはユーザのプロファイルの辞書・学習・設定 (通常権限で
   直接書き換えられるもの) だけで、LLM の exe はエンジンの exe の場所から引く。利用者が指定できる実行パスは無いので、
   権限の昇格にはならない
 
+### AppContainer のクライアントに許さない要求
+
+- エンジンは接続を受けたときに 1 回、クライアントのプロセスが AppContainer かを調べ、その接続のあいだ覚えておく。
+  パイプのクライアントの PID から `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)`・`OpenProcessToken(TOKEN_QUERY)`・
+  `GetTokenInformation(TokenIsAppContainer)` で調べる
+- 調べられなかったとき (プロセスやトークンを開けないなど) は、AppContainer ではないものとして扱う。通常権限のエンジンは
+  管理者として動くクライアントのトークンを開けないので、拒否する側に倒すと管理者で起動したツールが使えなくなる。同じ
+  ユーザの AppContainer のプロセスのトークンは、通常権限のエンジンからも開ける
+- AppContainer のクライアントからの ADDWORD・RELOADUSER・RELOADCONFIG は処理せず、ERR を返す ([docs/protocol.md](../protocol.md))。
+  どれも単語登録ツール・設定ツール用で、TSF 層は送らない
+- 予測・変換・学習 (LEARN 系・FORGET を含む) は TSF 層が使うので許す
+
 ## エンジンの自動起動
 
 TSF 層は、エンジンのパイプを開けないときにエンジンを起動する。スタートアップへの登録はしない。
+
+- AppContainer で動くアプリの TSF 層は、エンジンを起動しない (下記「AppContainer のアプリ」)
 
 ### 起動する問い合わせ
 
@@ -120,6 +143,18 @@ TSF 層は、エンジンのパイプを開けないときにエンジンを起�
   隔離したデータで動く
 - 作業ディレクトリもアプリのプロセスのものを引き継ぐ。環境変数に相対パスを書くと、エンジンでは起動したアプリの
   作業ディレクトリから解決される
+
+### AppContainer のアプリ
+
+- TSF 層は、自分のプロセスが AppContainer か (`GetTokenInformation(TokenIsAppContainer)`) を最初に要るときに 1 回だけ調べて
+  覚える。調べられなかったときは AppContainer ではないものとして扱う
+- AppContainer では、パイプを開いてみるだけでエンジンを起動しない。上記「起動する問い合わせ」の起動する問い合わせも
+  起動せず、待つ問い合わせも待たずに失敗する
+- AppContainer の中から `CreateProcess` したエンジンは同じ AppContainer で動き、辞書や学習・設定のファイルを読み書き
+  できないため。ログオン時に explorer の TSF 層がエンジンを起動するので、ふつうはもう動いている。動いていなければ、
+  エンジンにつながらないときのフォールバック (ひらがな 1 候補) で動く
+- 同じ理由で、単語登録ツール・設定ツールも起動しない (`TextService::LaunchWordRegister`・`LaunchConfigTool` が何もしない。
+  設定ツールは [tools.md](tools.md)「起動」)
 
 ### exe の探し方
 
@@ -228,6 +263,15 @@ llama.cpp はエンジンの中ではなく別のプロセス (quicklime-llm) �
   インストール版の更新」
 - DLL は読み込まれたらプロセスから外さない (`DllCanUnloadNow` が常に `S_FALSE`)。登録したウィンドウクラスを解除せず
   タイマーも使うので、外した後に届いたメッセージでアプリが落ちうるため
+
+### DLL のファイルの権限
+
+AppContainer で動くアプリが DLL を読み込むには、DLL のファイルに AppContainer 向けの読み取りと実行の ACE が要る。
+
+- 開発版の DLL は、ビルドの後に `icacls <DLL> /grant *S-1-15-2-1:RX *S-1-15-2-2:RX` で、ALL APPLICATION PACKAGES と
+  ALL RESTRICTED APPLICATION PACKAGES に読み取りと実行を許す (tsf/CMakeLists.txt の POST_BUILD。32bit 版のビルドも同じ)
+- インストール版は、Program Files から同じ 2 つの ACE を継承するので、インストーラでは何もしない。
+  `scripts\dev-deploy.ps1 -Dll -Install` のコピーも新しいファイルを作るので、コピー先の継承で付く
 
 ## 配布物
 
@@ -375,8 +419,10 @@ llama.cpp を含む)。MIT・BSD・Unicode-3.0・BSL-1.0 などは、バイナ�
     別に設けると、プロトコルと TSF 層の両方に手が入る
   - 辞書の読み込みを速くする (バイナリのキャッシュなど): 効果は大きいが大がかりなので、別の課題にした
 - パイプのアクセス権
-  - 整合性ラベルを Low にする: Low の整合性レベルのプロセスや AppContainer のアプリにまで開き、管理者のエンジンの問題を
-    直すという目的を超える
+  - AppContainer に開かない (`AC` の ACE を付けず、整合性ラベルを Medium にする): スタートメニューの検索欄などの
+    AppContainer のアプリで変換できない
+  - AppContainer のクライアントにも全部の要求を許す: 拒否する ADDWORD・RELOADUSER・RELOADCONFIG は TSF 層が使わないので、
+    許しても得るものが無い
   - DACL に対話ユーザ (`IU`) や認証済みユーザ (`AU`) を使う: 同じ PC のほかのユーザにも開く
 - Rust の crate の表示
   - 生成物をリポジトリに入れる: ビルドにツールが要らないが、依存を更新するたびに作り直す必要があり、古くなりうる

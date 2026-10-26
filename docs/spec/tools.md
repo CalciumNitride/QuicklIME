@@ -20,7 +20,9 @@
   (キーの取り込み・ファイル選択・実行中のアプリとフォントの列挙・二重起動の防止)、engine/gui/src/bin/quicklime-config.rs
   (設定ツールの画面の状態と保存)、engine/gui/ui/ (画面)、engine/gui/src/bin/quicklime-regword.rs と
   engine/gui/ui/regword.slint (単語登録ツールの画面)。読む側は engine/src/config.rs (エンジン)、tsf/src/config.cpp
-  (TSF 層)、tsf/src/text_service.cpp `RefreshConfig` (TSF 層の読み直しの機会)
+  (TSF 層)、tsf/src/text_service.cpp `RefreshConfig` (TSF 層の読み直しの機会)。AppContainer のアプリ向けの読み取りの ACE を
+  足す処理は engine/src/package_acl.rs (設定ツールは `#[path]` で共有する) で、エンジンは engine/src/main.rs
+  `spawn_grant_app_packages_read` から呼ぶ
 
 ## 設定ファイル
 
@@ -73,6 +75,30 @@
 - エンジンは RELOADCONFIG を受けないと読み直さない。設定ツールは書くたびに RELOADCONFIG を送る (下記「保存」)
 - ファイルが無い・開けないときは既定値で動く
 
+### AppContainer のアプリから読むための権限
+
+AppContainer で動くアプリ (スタートメニューの検索欄・UWP アプリなど) の TSF 層は、`%APPDATA%\QuicklIME\` のファイルを
+そのままでは読めず、既定値で動く。そこで、TSF 層が読む設定のファイルとフォルダに、ALL APPLICATION PACKAGES
+(S-1-15-2-1) の読み取り (FILE_GENERIC_READ) の ACE を足す。
+
+- 対象は config.tsv・ローマ字テーブル (romaji.tsv。[input.md](input.md)「ローマ字テーブル」)・テーマのフォルダ (themes。
+  [display.md](display.md)「テーマ」)。パスは TSF 層と同じ規則で求める (`QUICKLIME_CONFIG_FILE`・`QUICKLIME_ROMAJI_FILE`・
+  `QUICKLIME_THEME_DIR` を `%APPDATA%\QuicklIME\` 配下より優先)
+- 今の DACL に足す (置き換えない)。同じ ACE がすでにあれば何もしない。DACL が NULL (誰にでも許す) なら何もしない
+- テーマのフォルダの ACE は中のファイルとフォルダに継承させる (OI|CI)。今ある中身にも継承させ、中のファイルを置き換えても
+  継承で付く
+- 学習 (learning*.tsv)・ユーザ辞書 (userdict.tsv)・インポート辞書 (imported) には付けない。入力の履歴を UWP アプリに
+  丸ごと読ませないため
+- `%APPDATA%\QuicklIME\` のフォルダ自体には付けない。AppContainer のトークンも走査のチェックを省く特権
+  (SeChangeNotifyPrivilege) を持つので、ファイルをフルパスで開ける
+- 足すのは次の 2 か所。どちらも失敗しても動作を続ける (エンジンは標準エラーに出し、設定ツールは無視する)。AppContainer の
+  アプリで既定値になるだけのため
+  - エンジンの起動時。辞書の読み込みを待たせないよう別のスレッドで足す。無いパスは飛ばす
+  - 設定ツールが config.tsv を書いた後 (下記「保存」)。一時ファイルからの置き換えで、置き換えたファイルは親のフォルダから
+    継承した ACL になり、足した ACE が消えるため
+- 手で編集したエディタがファイルを置き換えた場合や、romaji.tsv・themes を新しく作った場合は、次にエンジンが起動するまで
+  AppContainer のアプリでは既定値で動く
+
 ## 設定ツール
 
 ### 起動
@@ -87,6 +113,9 @@
 - 起動時に設定ファイルを一度だけ読む。開いている間に外で書き換えた内容は読み直さず、次に値を変えたときに設定ツールの
   値で上書きされる
 - 起動時は「変換」のページを出す。最後に開いたページは覚えない
+- AppContainer で動くアプリ (スタートメニューの検索欄など) の TSF 層は、`key.open_config` でも言語バーのメニューでも設定ツールを
+  起動しない。AppContainer の中から起動したツールは同じ AppContainer で動き、設定を保存できないため
+  ([runtime.md](runtime.md)「AppContainer のアプリ」)
 
 ### 画面の構成
 
@@ -116,6 +145,8 @@
   読まないため。TSF 層は削除の共有を許さずに読むので、読んでいる瞬間は置き換えが失敗しうる。20 ms おきに 5 回までやり直す
 - ディレクトリが無ければ作る。書けなければ、ウィンドウ上部に「設定を保存できませんでした」の InfoBar (エラー。閉じる
   ボタンなし) を出し、次に書けたら消す
+- 書いた後に、config.tsv へ AppContainer のアプリ向けの読み取りの ACE を足す (上記「AppContainer のアプリから読むための
+  権限」)。失敗しても知らせない
 - RELOADCONFIG はパイプを開いて送るだけで、エンジンを起動しない。開けない・応答を読めないときは何もしない
   (ファイルが正なので、エンジンの次の起動で読まれる)
 
@@ -339,3 +370,13 @@
     同梱する必要がある
   - Win32 の標準コントロールのまま見た目を直す: 標準コントロールのダークモード対応が不完全で、Fluent には寄り切らない
 - 入力パネルの見本を設定ツールの側で描く: [display.md](display.md)「入力パネルの見本の描画」
+- AppContainer のアプリから設定のファイルを読ませる方法
+  - `%APPDATA%\QuicklIME\` に継承する ACE を付ける: 確実で単純だが、学習やユーザ辞書 (入力の履歴) もどの UWP アプリ
+    からでも読めるようになる
+  - TSF 層がパイプでエンジンから設定を受け取る: ファイルの権限には触れないが、プロトコルの追加と TSF 層の読み込みの経路の
+    分岐が要り、大がかり
+  - 何もせず既定値で動かす: キー割当・ローマ字テーブル・テーマの変更がスタートメニューの検索欄では効かない
+  - CorvusSKK のように、保護された DACL で丸ごと置き換える: 利用者が付けた権限を消してしまう
+- AppContainer のアプリから開いた設定ツール・単語登録ツールを、エンジンに起動させる (CorvusSKK の設定ツールの起動と同じ):
+  どこからでも開けるが、プロトコルの追加と、UWP アプリからエンジンにプロセスを起動させられる経路ができる。スタートメニューの
+  検索欄でツールを開く必要はまずない

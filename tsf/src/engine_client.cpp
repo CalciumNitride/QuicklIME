@@ -130,6 +130,12 @@ std::wstring EngineClient::FindExePath(const wchar_t* exeName)
 
 bool EngineClient::TryLaunchEngine()
 {
+    // AppContainer の中から起動したエンジンは同じ AppContainer で動き、辞書や学習のファイルを
+    // 読み書きできない。ふつうはログオン時に explorer の TSF 層が起動したエンジンが動いている。
+    // false なので EnsureConnected も起動を待たずに失敗する
+    if (globals::IsAppContainer()) {
+        return false;
+    }
     // 直前に起動を試みたばかりなら何もしない (起動失敗の連打防止)
     const ULONGLONG now = GetTickCount64();
     if (lastLaunchTick_ != 0 && now - lastLaunchTick_ < kLaunchCooldownMs) {

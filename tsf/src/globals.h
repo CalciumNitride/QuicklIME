@@ -40,6 +40,10 @@ inline constexpr wchar_t kDescription[] = L"QuicklIME";
 // DLL のインスタンスハンドル (DllMain で設定)
 extern HINSTANCE dllInstance;
 
+// 自分のプロセスが AppContainer で動いているか (最初の呼び出しで調べて覚える)。
+// 調べられなければ false
+bool IsAppContainer();
+
 // DLL のアンロード可否判定用の参照カウント
 void DllAddRef();
 void DllRelease();

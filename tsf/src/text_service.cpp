@@ -1434,7 +1434,7 @@ void TextService::ShowModePopup()
     // フォーカス移動の直後でアプリがまだキャレットを置いていないときも、待たずに出さない
     if (CaretRect(context, &caret, nullptr, &replaced) && !replaced) {
         modePopup_.Show(caret, IsKeyboardOpen(), panelTheme_.Get(),
-                        config_.Get().candidateFontSize);
+                        config_.Get().candidateFontSize, DocumentWindow(context));
     } else {
         modePopup_.Hide();
     }
@@ -2876,6 +2876,17 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
                                                        : SuggestPanel::Position::Caret;
     placement.caret = caret;
     placement.x = barX_;
+    // 並べ替えの結果や選択の変更での出し直しは文書を受け取らないため、フォーカス中の文書から求める
+    ITfContext* context = nullptr;
+    ITfDocumentMgr* docMgr = nullptr;
+    if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) && docMgr != nullptr) {
+        docMgr->GetTop(&context);
+        docMgr->Release();
+    }
+    placement.owner = DocumentWindow(context);
+    if (context != nullptr) {
+        context->Release();
+    }
     ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
@@ -3591,6 +3602,10 @@ HRESULT TextService::RestartComposition(ITfContext* context, const std::wstring&
 
 HRESULT TextService::LaunchWordRegister(ITfContext* context)
 {
+    // AppContainer の中から起動したツールは同じ AppContainer で動き、ユーザ辞書へ登録できない
+    if (globals::IsAppContainer()) {
+        return S_OK;
+    }
     // 選択テキストを単語欄の初期値として渡す (変換できなかった語を選択して登録する用途)
     std::wstring selection;
     if (context != nullptr) {
@@ -3626,6 +3641,10 @@ HRESULT TextService::LaunchWordRegister(ITfContext* context)
 
 HRESULT TextService::LaunchConfigTool()
 {
+    // AppContainer の中から起動したツールは同じ AppContainer で動き、設定を保存できない
+    if (globals::IsAppContainer()) {
+        return S_OK;
+    }
     const std::wstring exePath = EngineClient::FindExePath(L"quicklime-config.exe");
     if (exePath.empty()) {
         return S_OK; // ツールが見つからない場合は何もしない
@@ -3765,6 +3784,7 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
                                                        : SuggestPanel::Position::Caret;
     placement.caret = &anchor;
     placement.x = anchor.left;
+    placement.owner = DocumentWindow(context);
     ApplyCaretMarker(&placement);
     SuggestPanel::InputLine input;
     const bool hasInput = ConversionInputLine(&input);

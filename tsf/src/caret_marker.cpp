@@ -42,7 +42,8 @@ bool EnsureWindowClass()
 
 } // namespace
 
-CaretMarker::CaretMarker() : hwnd_(nullptr), factory_(nullptr), target_(nullptr), brush_(nullptr)
+CaretMarker::CaretMarker()
+    : hwnd_(nullptr), owner_(nullptr), factory_(nullptr), target_(nullptr), brush_(nullptr)
 {
 }
 
@@ -87,7 +88,7 @@ void CaretMarker::ReleaseTarget()
     SafeRelease(&target_);
 }
 
-bool CaretMarker::Show(const RECT& caret, int height, const PanelColor& color)
+bool CaretMarker::Show(const RECT& caret, int height, const PanelColor& color, HWND owner)
 {
     if (height < 1 || !EnsureWindowClass() || !EnsureTarget()) {
         Hide();
@@ -153,11 +154,19 @@ bool CaretMarker::Show(const RECT& caret, int height, const PanelColor& color)
     if (SUCCEEDED(hr)) {
         const int x = static_cast<int>(caret.left) - halfWidth - kPad;
         const int y = static_cast<int>(caret.bottom);
+        // 作った後にオーナーを付け替える公式の方法は無いため作り直す
+        if (hwnd_ != nullptr && owner != owner_) {
+            Hide();
+        }
         if (hwnd_ == nullptr) {
             hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
                                         WS_EX_LAYERED | WS_EX_TRANSPARENT,
                                     kWindowClassName, L"", WS_POPUP, x, y, windowWidth,
-                                    windowHeight, nullptr, nullptr, globals::dllInstance, nullptr);
+                                    windowHeight, owner, nullptr, globals::dllInstance, nullptr);
+            if (hwnd_ != nullptr) {
+                owner_ = owner;
+                SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+            }
         }
         if (hwnd_ != nullptr) {
             POINT destination = {x, y};
@@ -202,6 +211,14 @@ LRESULT CALLBACK CaretMarker::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
 {
     if (msg == WM_MOUSEACTIVATE) {
         return MA_NOACTIVATE;
+    }
+    if (msg == WM_DESTROY) {
+        // オーナーと一緒に OS が破棄したときも、無効になったハンドルを使わず次の表示で作り直す
+        auto* marker = reinterpret_cast<CaretMarker*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (marker != nullptr && marker->hwnd_ == hwnd) {
+            marker->hwnd_ = nullptr;
+        }
+        return 0;
     }
     return DefWindowProcW(hwnd, msg, wparam, lparam);
 }

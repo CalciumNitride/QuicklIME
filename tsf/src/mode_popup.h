@@ -12,7 +12,7 @@ struct ID2D1SolidColorBrush;
 // 入力モードの一時表示 (docs/spec/display.md「入力モードの一時表示」)。キャレット行のすぐ下 (作業領域の下端から
 // はみ出すときは上) に「あ」/「A」を角丸の四角で出し、1 秒で消す。入力パネル・キャレットの印とは
 // 別の小さな layered window で、フォーカスを奪わず (WS_EX_NOACTIVATE)、クリックは下のアプリへ通す
-// (WS_EX_TRANSPARENT)
+// (WS_EX_TRANSPARENT)。入力パネルと同じ理由で文書のルートウィンドウをオーナーにする
 class ModePopup {
 public:
     ModePopup();
@@ -22,8 +22,9 @@ public:
 
     // caret の矩形を基準に、open なら「あ」、そうでなければ「A」を theme の色で出す (表示中なら
     // 出し直して 1 秒を数え直す)。fontSize は設定 candidate_font_size (角丸の半径に使う)。
-    // 描けなければ隠して false
-    bool Show(const RECT& caret, bool open, const PanelTheme& theme, int fontSize);
+    // owner はウィンドウのオーナー (文書のルートウィンドウ。null ならオーナー無し) で、表示中の
+    // ウィンドウを作ったときと違えば作り直す。描けなければ隠して false
+    bool Show(const RECT& caret, bool open, const PanelTheme& theme, int fontSize, HWND owner);
     void Hide();
 
     // ウィンドウクラス登録から参照するため public にしている
@@ -34,6 +35,7 @@ private:
     void ReleaseTarget();
 
     HWND hwnd_;
+    HWND owner_;  // hwnd_ を作ったときのオーナー
     ID2D1Factory* factory_;
     ID2D1DCRenderTarget* target_;
     ID2D1SolidColorBrush* brush_;

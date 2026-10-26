@@ -59,7 +59,10 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   cmake -S tsf -B tsf/build -G "Visual Studio 17 2022" -A x64
   cmake --build tsf/build --config Debug
   ```
-  成果物: `tsf/build/Debug/QuicklIME.dll`
+  成果物: `tsf/build/Debug/QuicklIME.dll`。ビルドの後に `icacls` で ALL APPLICATION PACKAGES (S-1-15-2-1) と
+  ALL RESTRICTED APPLICATION PACKAGES (S-1-15-2-2) に読み取りと実行を許す (tsf/CMakeLists.txt の POST_BUILD)。
+  スタートメニューの検索欄などの AppContainer のアプリが開発版の DLL を読み込めるようにするため
+  ([runtime.md](spec/runtime.md)「DLL のファイルの権限」)
 - LLM の子プロセス: `scripts\fetch-models.ps1` でモデルを `models\` に取得し (サイズと
   SHA-256 を確かめる)、`scripts\build-llm.ps1` で CPU 版 `quicklime-llm.exe` と Vulkan 版
   `quicklime-llm-vulkan.exe` を release ビルドする (成果物は `llm\target\release\`)。
@@ -215,6 +218,22 @@ regsvr32 /u tsf\build\Debug\QuicklIME.dll   # 解除
 
 IME の DLL は全アプリケーションのプロセスにロードされる。開発版の動作確認は
 テスト用アプリで行い、Microsoft IME へいつでも切り替えられる状態を維持すること。
+
+### スタートメニューの検索欄 (AppContainer のアプリ) で試す
+
+検索欄を表示する SearchHost.exe は自分で起動するプロセスではないので、環境変数での隔離が効かず、常用のエンジンと
+実データにつながる。壊れたときは Win+Space で Microsoft IME に切り替え、`taskkill /IM SearchHost.exe /F` で検索欄を
+作り直す (自動で起動し直す)。
+
+1. `tasklist | grep quicklime` で古いエンジンを終了し、新しいエンジンを起動する (パイプの記述子はエンジンが作るため)
+2. `scripts\dev-deploy.ps1 -Dll` で開発版に切り替え、`taskkill /IM SearchHost.exe /F` で検索欄を作り直す
+3. `tasklist /M QuicklIME.dll /FI "IMAGENAME eq SearchHost.exe"` で、SearchHost に DLL が読み込まれたことを確かめてから
+   検索欄で入力する
+
+- AppContainer の TSF 層はエンジンを起動しない ([runtime.md](spec/runtime.md)「AppContainer のアプリ」)。エンジンが
+  動いていなければ、メモ帳などで入力して起動しておく
+- 設定のファイルの読み取りの権限は `icacls %APPDATA%\QuicklIME\config.tsv` で確かめる
+  (`ALL APPLICATION PACKAGES:(R)` があること。[tools.md](spec/tools.md)「AppContainer のアプリから読むための権限」)
 
 ## 検証用の環境変数
 

@@ -522,7 +522,7 @@
 ```
 要求:   ADDWORD\t<読み>\t<表記>\t<品詞>\n
 成功:   OK\n
-失敗:   ERR\t<メッセージ>\n   (引数不足・読みか表記が空・未対応の品詞・登録済み)
+失敗:   ERR\t<メッセージ>\n   (引数不足・読みか表記が空・未対応の品詞・登録済み・AppContainer のクライアント)
 ```
 
 - ユーザ辞書ファイル (userdict.tsv) へ「読み\t表記\t品詞」を追記し、
@@ -533,12 +533,15 @@
 - 同じ (読み, 表記) の登録済みエントリがあればエラーを返す。重複は短縮よみどうし・名詞系どうし
   (品詞が違っても名詞系なら同じ扱い) でだけ見るので、同じ (読み, 表記) を短縮よみと名詞系の両方で
   登録できる。学習した複合語 (learning_word.tsv) とインポート辞書の語は重複の判定に含めない
+- AppContainer のプロセスからの接続では登録せず、`ERR\tAppContainer のアプリからは使えません\n` を返す
+  ([spec/runtime.md](spec/runtime.md)「AppContainer のクライアントに許さない要求」。RELOADUSER・RELOADCONFIG も同じ)
 
 ### RELOADUSER: ユーザ辞書の再読込
 
 ```
 要求:   RELOADUSER\n
 成功:   OK\n
+失敗:   ERR\tAppContainer のアプリからは使えません\n   (AppContainer のクライアント)
 ```
 
 - userdict.tsv と、学習した複合語 (learning_word.tsv)、インポート辞書 (%APPDATA%\QuicklIME\imported\*.tsv。
@@ -551,6 +554,7 @@
 ```
 要求:   RELOADCONFIG\n
 成功:   OK\n
+失敗:   ERR\tAppContainer のアプリからは使えません\n   (AppContainer のクライアント)
 ```
 
 - config.tsv (%APPDATA%\QuicklIME\config.tsv、QUICKLIME_CONFIG_FILE で上書き可)

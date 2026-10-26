@@ -75,7 +75,8 @@ D2D1_COLOR_F ToD2D(const PanelColor& color)
 
 } // namespace
 
-ModePopup::ModePopup() : hwnd_(nullptr), factory_(nullptr), target_(nullptr), brush_(nullptr)
+ModePopup::ModePopup()
+    : hwnd_(nullptr), owner_(nullptr), factory_(nullptr), target_(nullptr), brush_(nullptr)
 {
 }
 
@@ -122,7 +123,8 @@ void ModePopup::ReleaseTarget()
     SafeRelease(&target_);
 }
 
-bool ModePopup::Show(const RECT& caret, bool open, const PanelTheme& theme, int fontSize)
+bool ModePopup::Show(const RECT& caret, bool open, const PanelTheme& theme, int fontSize,
+                     HWND owner)
 {
     IDWriteFontFace* face = font_.Face();
     if (face == nullptr || !EnsureWindowClass() || !EnsureTarget()) {
@@ -214,12 +216,17 @@ bool ModePopup::Show(const RECT& caret, bool open, const PanelTheme& theme, int 
 
     bool updated = false;
     if (SUCCEEDED(hr)) {
+        // 作った後にオーナーを付け替える公式の方法は無いため作り直す
+        if (hwnd_ != nullptr && owner != owner_) {
+            Hide();
+        }
         if (hwnd_ == nullptr) {
             hwnd_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW |
                                         WS_EX_LAYERED | WS_EX_TRANSPARENT,
-                                    kWindowClassName, L"", WS_POPUP, x, y, side, side, nullptr,
+                                    kWindowClassName, L"", WS_POPUP, x, y, side, side, owner,
                                     nullptr, globals::dllInstance, nullptr);
             if (hwnd_ != nullptr) {
+                owner_ = owner;
                 SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
             }
         }
@@ -269,6 +276,14 @@ LRESULT CALLBACK ModePopup::WndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM l
 {
     if (msg == WM_MOUSEACTIVATE) {
         return MA_NOACTIVATE;
+    }
+    if (msg == WM_DESTROY) {
+        // オーナーと一緒に OS が破棄したときも、無効になったハンドルを使わず次の表示で作り直す
+        auto* popup = reinterpret_cast<ModePopup*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (popup != nullptr && popup->hwnd_ == hwnd) {
+            popup->hwnd_ = nullptr;
+        }
+        return 0;
     }
     if (msg == WM_TIMER && wparam == kHideTimerId) {
         auto* popup = reinterpret_cast<ModePopup*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));

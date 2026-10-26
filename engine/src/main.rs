@@ -16,6 +16,7 @@ mod learn;
 mod llm;
 mod matrix;
 mod number;
+mod package_acl;
 mod pos;
 mod predict;
 mod reverse;
@@ -30,7 +31,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::Instant;
 
-use interprocess::local_socket::traits::{ListenerExt, Stream as _};
+use interprocess::local_socket::traits::{ListenerExt, Stream as _, StreamCommon as _};
 use interprocess::local_socket::{GenericNamespaced, ListenerOptions, Stream, ToNsName};
 use interprocess::os::windows::local_socket::ListenerOptionsExt;
 
@@ -100,10 +101,12 @@ fn acquire_engine_mutex(pipe: &str) -> bool {
 }
 
 /// パイプのセキュリティ記述子の SDDL。管理者で起動されたエンジンのパイプにも通常権限のアプリが
-/// 接続できるよう、DACL を SYSTEM・Administrators・現在のユーザに限り、整合性ラベルを Medium にする。
-/// 現在のユーザを表す SDDL の別名は無いので SID を埋め込む
+/// 接続できるよう、DACL を SYSTEM・Administrators・現在のユーザに限る。AppContainer のアプリ
+/// (スタートメニューの検索欄など) の TSF 層も開けるよう、ALL APPLICATION PACKAGES (AC) を足して
+/// 整合性ラベルを Low にする。AppContainer のアクセスチェックはユーザの判定も通る必要があるので、
+/// ほかのユーザの AppContainer のプロセスは開けない。現在のユーザを表す SDDL の別名は無いので SID を埋め込む
 fn pipe_sddl(user_sid: &str) -> String {
-    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user_sid})S:(ML;;NW;;;ME)")
+    format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{user_sid})(A;;GA;;;AC)S:(ML;;NW;;;LW)")
 }
 
 /// 現在のプロセスの token のユーザの SID を文字列 (`S-1-...`) で返す。
@@ -144,6 +147,40 @@ fn current_user_sid() -> std::io::Result<String> {
     }
 }
 
+/// プロセス pid が AppContainer で動いているか。判定できなければ false。通常権限のエンジンは
+/// 管理者で動くクライアントのトークンを開けないので、拒否する側に倒すと管理者で起動したツールが
+/// 使えなくなる (同じユーザの AppContainer のプロセスのトークンは開ける)
+fn is_app_container_process(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::{GetTokenInformation, TOKEN_QUERY, TokenIsAppContainer};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if process.is_null() {
+            return false;
+        }
+        let mut token: HANDLE = std::ptr::null_mut();
+        let opened = OpenProcessToken(process, TOKEN_QUERY, &mut token) != 0;
+        CloseHandle(process);
+        if !opened {
+            return false;
+        }
+        let mut value = 0u32;
+        let mut size = 0u32;
+        let ok = GetTokenInformation(
+            token,
+            TokenIsAppContainer,
+            (&raw mut value).cast(),
+            size_of::<u32>() as u32,
+            &mut size,
+        ) != 0;
+        CloseHandle(token);
+        ok && value != 0
+    }
+}
+
 /// パイプに付けるセキュリティ記述子 (pipe_sddl) を作る
 fn pipe_security_descriptor()
 -> std::io::Result<interprocess::os::windows::security_descriptor::SecurityDescriptor> {
@@ -167,6 +204,8 @@ fn main() -> std::io::Result<()> {
         eprintln!("既にエンジンが起動しているため終了します");
         return Ok(());
     }
+
+    spawn_grant_app_packages_read();
 
     // ユーザ辞書の品詞名解決に品詞ID表を使うため、先に読み込んでおく
     let functional = load_functional_ids();
@@ -220,6 +259,25 @@ fn main() -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// AppContainer で動く TSF 層が設定ファイルを読めるよう、config.tsv・romaji.tsv・themes に
+/// ALL APPLICATION PACKAGES の読み取りの ACE を足す。学習やユーザ辞書 (入力の履歴) には足さない。
+/// 足せなくても AppContainer のアプリが既定値で動くだけなので、エラーを出して続ける
+fn spawn_grant_app_packages_read() -> thread::JoinHandle<()> {
+    thread::spawn(|| {
+        for path in config::tsf_read_paths() {
+            if !path.exists() {
+                continue;
+            }
+            if let Err(e) = package_acl::grant_app_packages_read(&path) {
+                eprintln!(
+                    "AppContainer のアプリに読み取りを許せませんでした ({e}) [{}]",
+                    path.display()
+                );
+            }
+        }
+    })
 }
 
 /// 辞書の逆引きの索引を別スレッドで作り、data.surface_index に入れる
@@ -466,6 +524,8 @@ fn load_functional_ids() -> FunctionalIds {
 /// 接続ごとの状態 (RERANK の依頼 ID は接続ごとに振る)
 struct Session {
     conn: u64,
+    /// クライアントが AppContainer のプロセスか (is_app_container_process)
+    app_container: bool,
     /// 最後に受け付けた RERANK の ID
     last_id: u64,
     /// 最後に受け付けた RERANK の要求に kinds があったか (RERANKGET の DONE の候補に種類を付けるか)
@@ -475,15 +535,22 @@ struct Session {
 impl Session {
     fn new() -> Self {
         static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
-        Session { conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed), last_id: 0, last_kinds: false }
+        Session {
+            conn: NEXT_CONN.fetch_add(1, Ordering::Relaxed),
+            app_container: false,
+            last_id: 0,
+            last_kinds: false,
+        }
     }
 }
 
 /// 1つのクライアント接続を処理する。切断されるまで要求に応答し続ける
 fn handle_client(stream: Stream, data: &EngineData) {
+    let app_container =
+        stream.peer_creds().ok().and_then(|creds| creds.pid()).is_some_and(is_app_container_process);
     let (recv, mut send) = stream.split();
     let reader = BufReader::new(recv);
-    let mut session = Session::new();
+    let mut session = Session { app_container, ..Session::new() };
 
     for line in reader.lines() {
         let Ok(line) = line else {
@@ -500,7 +567,13 @@ fn handle_client(stream: Stream, data: &EngineData) {
 /// 接続ごとの状態を使う要求 (RERANK・RERANKGET) を処理し、それ以外は handle_request に回す
 fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
     let mut fields = line.split('\t');
-    match fields.next() {
+    let command = fields.next();
+    // 単語登録ツール・設定ツール用の要求で、TSF 層は送らない。サンドボックス化されたアプリに
+    // ユーザ辞書や設定の読み直しをさせない
+    if session.app_container && matches!(command, Some("ADDWORD" | "RELOADUSER" | "RELOADCONFIG")) {
+        return "ERR\tAppContainer のアプリからは使えません\n".to_string();
+    }
+    match command {
         Some("RERANK") => {
             // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : LLM による
             // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む)・読みが短いときは ID 0 (並べ替えをしない)
@@ -1293,10 +1366,50 @@ mod tests {
     }
 
     #[test]
-    fn pipe_sddl_contains_user_sid_and_medium_label() {
+    fn pipe_sddl_contains_user_sid_app_packages_and_low_label() {
         let sddl = pipe_sddl("S-1-5-21-1-2-3-1001");
         assert!(sddl.contains("(A;;GA;;;S-1-5-21-1-2-3-1001)"));
-        assert!(sddl.ends_with("S:(ML;;NW;;;ME)"));
+        assert!(sddl.contains("(A;;GA;;;AC)"));
+        assert!(sddl.ends_with("S:(ML;;NW;;;LW)"));
+    }
+
+    #[test]
+    fn 自分のプロセスと開けないプロセスはappcontainerではない() {
+        assert!(!is_app_container_process(std::process::id()));
+        // PID 0 (System Idle Process) は開けない
+        assert!(!is_app_container_process(0));
+    }
+
+    #[test]
+    fn appcontainerのクライアントには単語登録と再読込を許さない() {
+        let data = sample_data();
+        data.config.lock().unwrap().learning = false;
+        let mut session = Session { app_container: true, ..Session::new() };
+        let denied = "ERR\tAppContainer のアプリからは使えません\n";
+        assert_eq!(handle_line("ADDWORD\tかんべ\t神戸\t姓", &data, &mut session), denied);
+        assert_eq!(handle_line("RELOADUSER", &data, &mut session), denied);
+        assert_eq!(handle_line("RELOADCONFIG", &data, &mut session), denied);
+        // ユーザ辞書も設定も変わらない
+        let response = handle_line("CONVSEG\tかんべは", &data, &mut session);
+        assert!(!response.contains("神戸"), "登録されている: {response}");
+        assert!(!data.config.lock().unwrap().learning);
+        // TSF 層が使う要求はそのまま処理する
+        assert_eq!(handle_line("LEARN\tきょうは\x1f今日は", &data, &mut session), "OK\n");
+        let suggest = handle_line("SUGGEST\t\tはれ\tha\x1fre", &data, &mut session);
+        assert!(suggest.starts_with("OK"), "{suggest}");
+        assert_eq!(suggest, handle_request("SUGGEST\t\tはれ\tha\x1fre", &data));
+    }
+
+    #[test]
+    fn 通常のクライアントには単語登録と再読込を許す() {
+        let data = sample_data();
+        let mut session = Session::new();
+        assert!(!session.app_container);
+        assert_eq!(handle_line("ADDWORD\tかんべ\t神戸\t姓", &data, &mut session), "OK\n");
+        let response = handle_line("CONVSEG\tかんべは", &data, &mut session);
+        assert!(response.contains("神戸は"), "神戸は が候補に無い: {response}");
+        assert_eq!(handle_line("RELOADUSER", &data, &mut session), "OK\n");
+        assert_eq!(handle_line("RELOADCONFIG", &data, &mut session), "OK\n");
     }
 
     #[test]

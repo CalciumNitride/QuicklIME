@@ -1942,8 +1942,7 @@ bool TextService::CaretRect(ITfContext* context, RECT* rect, const wchar_t** sou
     return succeeded;
 }
 
-bool TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
-                                          const wchar_t* where) const
+HWND TextService::DocumentWindow(ITfContext* context)
 {
     HWND root = nullptr;
     if (context != nullptr) {
@@ -1968,6 +1967,13 @@ bool TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
             }
         }
     }
+    return root;
+}
+
+bool TextService::FallbackIfOutsideWindow(ITfContext* context, RECT* rect,
+                                          const wchar_t* where) const
+{
+    const HWND root = DocumentWindow(context);
     RECT rootRect = {};
     if (root == nullptr || !GetWindowRect(root, &rootRect)) {
         return false;
@@ -2025,7 +2031,7 @@ void TextService::UpdateCaretMarker(ITfContext* context)
     }
     const int height = static_cast<int>(
         std::lround(theme.triangleSize * static_cast<float>(config_.Get().candidateFontSize)));
-    if (caretMarker_.Show(markerCaret_, height, theme.caretMarkerColor)) {
+    if (caretMarker_.Show(markerCaret_, height, theme.caretMarkerColor, DocumentWindow(context))) {
         modePopup_.Hide();
     }
 }
