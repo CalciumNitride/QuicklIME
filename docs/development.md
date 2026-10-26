@@ -21,7 +21,9 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
 
 | ディレクトリ | 内容 | 使うもの |
 |---|---|---|
-| `references/mozc/` | Mozc (https://github.com/google/mozc) の sparse checkout。取得の手順は下記「同梱データの取得・生成」 | 開発版のエンジンの辞書ディレクトリ、インストーラの同梱、UT 辞書と後続語の統計の生成、`engine/examples/` の評価 |
+| `references/mozc/` | Mozc (https://github.com/google/mozc) の sparse checkout。取得の手順は下記「同梱データの取得・生成」 | 開発版のエンジンの辞書ディレクトリ、インストーラの同梱、UT 辞書と後続語の統計の生成、`engine/examples/` の評価。`src` 全体に広げたときは、変換・予測・学習 (`src/converter`・`src/prediction`・`src/rewriter`・`src/storage`) と TSF の実装 (`src/win32/tip`) を読む参考 |
+| `references/mozkey/` | Mozkey (https://github.com/koyasi777/mozkey)。ライブ変換やローカルの Zenz による補正などを足した Mozc の fork | Mozc との差分から、ライブ変換・LLM による補正・学習の改善の作りを読む参考 |
+| `references/AzooKeyKanaKanjiConverter/` | AzooKeyKanaKanjiConverter (https://github.com/azooKey/AzooKeyKanaKanjiConverter)。Swift のかな漢字変換エンジン | 辞書による変換とニューラル変換 (Zenzai) の組み合わせ方を読む参考 |
 | `references/mozcdic-ut/` | UT 辞書の元データとライセンス文書、生成した `dictionary_ut.txt` (`scripts\fetch-ut-dict.ps1`) | 開発版のエンジン、インストーラの同梱、評価 |
 | `references/jawiki/` | 日本語版ウィキペディアのダンプの分割と `manifest.tsv`、生成した `next_word.tsv` (`scripts\fetch-wiki-ngram.ps1`) | 開発版のエンジン、インストーラの同梱、`learning_eval` |
 | `references/AJIMEE-Bench/` | 評価セットの JSON と変換した `ajimee_cases.tsv` (`scripts\fetch-ajimee.ps1`) | `nbest_eval`・`llm_gen_eval` |
@@ -145,6 +147,8 @@ CMake と VC++ ランタイムは Visual Studio 2022 Community の既定のイ�
   git -C references/mozc sparse-checkout set --cone src/data/dictionary_oss src/data/single_kanji src/data/symbol
   git -C references/mozc checkout 0651fbcae495ff98f6ae17bb59e2bee0e3a79661
   ```
+  変換器や TSF の実装も読むときは、同じコミットのまま `git -C references/mozc sparse-checkout add src` で
+  `src` 全体に広げる
   使うファイルは次のもの。インストーラはどれも `dict\` 直下へコピーし、開発版のエンジンは辞書ディレクトリ
   `references\mozc\src\data\dictionary_oss\` (と、それと並ぶ `single_kanji\`・`symbol\`) から読む
   ([dictionary.md](spec/dictionary.md)「辞書ディレクトリ」)
