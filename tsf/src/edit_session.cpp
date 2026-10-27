@@ -747,7 +747,6 @@ bool IsHalfwidthInputScope(const std::vector<InputScope>& scopes)
         case IS_TELEPHONE_LOCALNUMBER:
         case IS_EMAIL_SMTPEMAILADDRESS:
         case IS_EMAIL_USERNAME:
-        case IS_URL:
         case IS_ALPHANUMERIC_HALFWIDTH:
         case IS_PASSWORD:
         case IS_NUMERIC_PASSWORD:

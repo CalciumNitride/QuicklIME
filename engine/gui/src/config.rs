@@ -74,7 +74,7 @@ pub struct Config {
     pub modeless: bool,
     /// 入力中の読みを文書に書かずパネルだけに持つ (input_buffer の panel。それ以外は composition)
     pub panel_buffer: bool,
-    /// 数字・電話番号・メールアドレス・URL などの入力欄 (InputScope で判定) ではキーを食べない
+    /// 数字・電話番号・メールアドレスなどの入力欄 (InputScope で判定) ではキーを食べない
     pub input_scope_passthrough: bool,
     pub candidate_bar: bool,
     pub next_word: bool,

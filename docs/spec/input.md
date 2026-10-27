@@ -358,12 +358,14 @@ IME を通った文字は全角になったり composition になったりして
 |---|---|
 | 数字 | `IS_DIGITS`・`IS_NUMBER` (`IS_NUMBER_FULLWIDTH` は対象外) |
 | 電話番号 | `IS_TELEPHONE_FULLTELEPHONENUMBER`・`IS_TELEPHONE_COUNTRYCODE`・`IS_TELEPHONE_AREACODE`・`IS_TELEPHONE_LOCALNUMBER` |
-| メール・URL | `IS_EMAIL_SMTPEMAILADDRESS`・`IS_EMAIL_USERNAME`・`IS_URL` |
+| メール | `IS_EMAIL_SMTPEMAILADDRESS`・`IS_EMAIL_USERNAME` |
 | 半角英数 | `IS_ALPHANUMERIC_HALFWIDTH` |
 | パスワード・PIN | `IS_PASSWORD`・`IS_NUMERIC_PASSWORD`・`IS_NUMERIC_PIN`・`IS_ALPHANUMERIC_PIN`・`IS_ALPHANUMERIC_PIN_SET` |
 
 - フォーカス中の文書の InputScope の一覧に、上のどれかが含まれていれば対象にする
 - `IS_PRIVATE` は対象にしない。シークレットウィンドウでは通常の欄にも付くため。`IS_SEARCH`・`IS_DEFAULT` などだけの欄も対象外
+- `IS_URL` は対象にしない。ブラウザのアドレスバー (Firefox など) が `IS_URL` を申告し、アドレスバーは検索語も打つ欄であるため。
+  ページ内の `type="url"` の欄も日本語入力を使う (モードレス入力が有効なら英字はそのまま入る)
 - Chromium は HTML の欄を次の InputScope にする (ui/base/ime/win/tsf_input_scope.cc): `inputmode="numeric"` → `IS_DIGITS`、
   `type="number"`・`inputmode="decimal"` → `IS_NUMBER`、`tel` → `IS_TELEPHONE_FULLTELEPHONENUMBER`、`email` →
   `IS_EMAIL_SMTPEMAILADDRESS`、`url` → `IS_URL`、`search` → `IS_SEARCH`、`type="password"` → `IS_PRIVATE`
@@ -388,7 +390,7 @@ IME を通った文字は全角になったり composition になったりして
 
 - 対象の欄で IME のモードを半角英数に切り替え、言語バーにも出す (MS-IME に近い): QuicklIME には入力モードが無く (オン/オフ
   だけ)、オフにすると欄を出たときに戻す処理が要る。キーを食べないだけで目的を果たせる
-- 数字系だけを対象にする: メールアドレス・URL の欄でも、かなに化けて IME をオフにする手間が残る
+- 数字系だけを対象にする: メールアドレスの欄でも、かなに化けて IME をオフにする手間が残る
 - InputScope の指定が無い英数字の欄 (`inputmode` なしの認証コード欄) を推測で見分ける: 判断の材料が無く、誤ると通常の欄で
   日本語が打てなくなる。IME をオフにして入力してもらう ([roadmap.md](../roadmap.md) の見送り・既知の問題)
 

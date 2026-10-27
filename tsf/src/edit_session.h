@@ -263,7 +263,7 @@ struct FocusInputScope {
     std::vector<InputScope> scopes;
 };
 
-// 半角英数字を前提にした InputScope (数字・電話番号・メールアドレス・URL・半角英数・
+// 半角英数字を前提にした InputScope (数字・電話番号・メールアドレス・半角英数・
 // パスワード・PIN) を含むか。IS_PRIVATE はシークレットウィンドウの通常の欄にも付くため含めない
 bool IsHalfwidthInputScope(const std::vector<InputScope>& scopes);
 
