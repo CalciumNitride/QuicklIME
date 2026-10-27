@@ -156,6 +156,9 @@ public:
     // 表示中かどうか (Hide 済み・未表示なら false)
     bool Visible() const { return hwnd_ != nullptr; }
 
+    // hwnd が表示中のパネルのウィンドウか
+    bool OwnsWindow(HWND hwnd) const { return hwnd != nullptr && hwnd == hwnd_; }
+
     // テーマが候補を横一列に並べるか (変換の候補一覧はこれによらず縦積み)
     bool Horizontal() const { return theme_.layout == PanelLayout::Row; }
 

@@ -8,6 +8,8 @@ export component CandidateBarPage inherits SettingsPage {
     in-out property <bool> candidate-bar;
     in-out property <bool> suggest;
     in-out property <bool> next-word;
+    in property <[string]> next-word-timeout-choices;
+    in-out property <int> next-word-timeout-index;
     in property <[string]> max-predictions-choices;
     in-out property <int> max-predictions-index;
     in property <[string]> min-suggest-chars-choices;
@@ -50,6 +52,19 @@ export component CandidateBarPage inherits SettingsPage {
             checked <=> root.next-word;
             accessible-label: "確定の後に次の語を予測する";
             toggled => {
+                root.changed();
+            }
+        }
+    }
+
+    Card {
+        title: "次の語の予測を消すまでの時間";
+
+        ComboBox {
+            model: root.next-word-timeout-choices;
+            current-index <=> root.next-word-timeout-index;
+            accessible-label: "次の語の予測を消すまでの時間";
+            selected => {
                 root.changed();
             }
         }

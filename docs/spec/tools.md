@@ -55,6 +55,7 @@
 | `input_scope_passthrough` | TSF 層 | [input.md](input.md)「InputScope の欄」 |
 | `candidate_bar` | TSF 層 | [suggest.md](suggest.md)「設定」・[display.md](display.md)「設定」・[modeless.md](modeless.md)「設定」 |
 | `next_word` | TSF 層 | [suggest.md](suggest.md)「後続語の予測」 |
+| `next_word_timeout` | TSF 層 | [suggest.md](suggest.md)「出すとき・消すとき」・[suggest.md](suggest.md)「設定」 |
 | `panel_theme`・`candidate_position`・`panel_input`・`mode_popup`・`candidate_font`・`candidate_font_size` | TSF 層 | [display.md](display.md)「設定」 |
 | `key.*` | TSF 層 | [keys.md](keys.md)「設定ファイルの書式」 |
 | `newline_apps` | TSF 層 | [input.md](input.md)「改行キー」 |
@@ -170,7 +171,7 @@ AppContainer で動くアプリ (スタートメニューの検索欄・UWP ア�
 | ページ | 項目 (設定キー) |
 |---|---|
 | 変換 | 学習する (`learning`)、タイプミス補正 (`typo_correction`)、文節単位で変換する (`segment_ui`)、AI で候補を並べ替える (`llm`。展開カードの見出しの Switch。展開すると実行環境 `llm_backend`) |
-| 候補バー | 候補バーを表示する (`candidate_bar`)、入力中に予測を表示する (`suggest`)、確定の後に次の語を予測する (`next_word`)、件数 (`max_predictions`)、表示を始める文字数 (`min_suggest_chars`)、表示位置 (`candidate_position`) |
+| 候補バー | 候補バーを表示する (`candidate_bar`)、入力中に予測を表示する (`suggest`)、確定の後に次の語を予測する (`next_word`)、次の語の予測を消すまでの時間 (`next_word_timeout`)、件数 (`max_predictions`)、表示を始める文字数 (`min_suggest_chars`)、表示位置 (`candidate_position`) |
 | 入力 | 入力中の読み (`input_buffer`・`panel_input`)、スペース (`space`)、句読点 (`punctuation`)、数字 (`digits`)、モードレス入力 (`modeless`)、数字やメールアドレスの欄では日本語入力を使わない (`input_scope_passthrough`) |
 | 見た目 | 入力パネルのテーマ (`panel_theme`。横に [テーマのフォルダを開く])、フォント (`candidate_font`)、サイズ (`candidate_font_size`)、オン/オフの切り替え時に「あ」「A」を表示する (`mode_popup`)、プレビュー (下記「入力パネルの見本」) |
 | キー割当 | 下記「キー割当のページ」 |

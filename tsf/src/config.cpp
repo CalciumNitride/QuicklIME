@@ -477,6 +477,17 @@ void ApplyLine(const std::wstring& key, const std::wstring& value, TsfConfig& co
         config.maxPredictions = (n + 8) / 9 * 9;
     } else if (key == L"next_word") {
         ParseBool(value, config.nextWord);
+    } else if (key == L"next_word_timeout") {
+        // 設定ツール (config.rs) と同じく、選択肢の次に大きい値へ切り上げて 60 を上限にする
+        static const int kChoices[] = {0, 3, 5, 10, 30, 60};
+        int n = config.nextWordTimeout;
+        ParseClamped(value, 0, 60, n);
+        for (const int choice : kChoices) {
+            if (choice >= n) {
+                config.nextWordTimeout = choice;
+                break;
+            }
+        }
     } else if (key == L"mode_popup") {
         ParseBool(value, config.modePopup);
     } else if (key == L"segment_ui") {

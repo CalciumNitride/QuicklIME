@@ -1494,6 +1494,7 @@ void TextService::ShowNextWordBar(ITfContext* context)
     }
     DebugLog(L"後続語の予測を表示: " + std::to_wstring(barItems_.size()) + L" 件 (前文脈 " +
              contextSurface_ + L")");
+    StartNextWordTimer();
 }
 
 void TextService::ShowNextWordAfterCommit(ITfContext* context)
@@ -1554,6 +1555,8 @@ HRESULT TextService::MoveNextWordSelection(int delta)
     if (!nextWordBar_ || barItems_.empty()) {
         return S_OK;
     }
+    // 選んでいる間は時間で消さない
+    StopNextWordTimer();
     if (delta < 0 && barIndex_ < 0) {
         barIndex_ = static_cast<int>(barItems_.size()) - 1;
         suggestPanel_.SetSelection(static_cast<size_t>(barIndex_));

@@ -31,6 +31,9 @@ pub const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
 
 /// 予測の件数 (max_predictions) の選択肢
 pub const MAX_PRED_ITEMS: [u32; 4] = [9, 18, 27, 36];
+/// 後続語の予測を消すまでの秒数 (next_word_timeout の値, 表示名)。0 は時間で消さない
+pub const NEXT_WORD_TIMEOUTS: [(u32, &str); 6] =
+    [(0, "消さない"), (3, "3 秒"), (5, "5 秒"), (10, "10 秒"), (30, "30 秒"), (60, "60 秒")];
 /// 予測を表示し始める文字数 (min_suggest_chars) の範囲
 pub const MIN_SUGGEST_CHARS_RANGE: std::ops::RangeInclusive<u32> = 1..=5;
 /// 入力パネルのフォントサイズ (candidate_font_size) の範囲
@@ -39,6 +42,17 @@ pub const FONT_SIZE_RANGE: std::ops::RangeInclusive<u32> = 10..=40;
 /// max_predictions を 9 の倍数へ切り上げて [9, 36] に丸める (エンジンの config.rs と同じ規則)
 pub fn round_max_predictions(n: u32) -> u32 {
     n.clamp(9, 36).div_ceil(9) * 9
+}
+
+/// next_word_timeout を選択肢の次に大きい値へ切り上げ、最大の選択肢を超える値はその値にする
+/// (TSF 層の config.cpp と同じ規則)
+pub fn round_next_word_timeout(n: u32) -> u32 {
+    let max = NEXT_WORD_TIMEOUTS[NEXT_WORD_TIMEOUTS.len() - 1].0;
+    NEXT_WORD_TIMEOUTS
+        .iter()
+        .map(|(seconds, _)| *seconds)
+        .find(|&seconds| seconds >= n)
+        .unwrap_or(max)
 }
 
 /// candidate_font に書ける面名か (LOGFONT の面名は 32 要素 (終端込み) に収まる必要がある)
@@ -64,6 +78,8 @@ pub struct Config {
     pub input_scope_passthrough: bool,
     pub candidate_bar: bool,
     pub next_word: bool,
+    /// 後続語の予測を選ばないまま消すまでの秒数 (NEXT_WORD_TIMEOUTS のどれか。0 は消さない)
+    pub next_word_timeout: u32,
     /// 入力パネルのテーマ名 (組み込みのテーマか、テーマフォルダの <名前>.tsv)
     pub panel_theme: String,
     /// 候補の表示位置 ("caret" / "center")
@@ -105,6 +121,7 @@ impl Default for Config {
             input_scope_passthrough: true,
             candidate_bar: true,
             next_word: true,
+            next_word_timeout: 5,
             panel_theme: BUILTIN_THEMES[0].0.to_string(),
             candidate_position: "caret".to_string(),
             panel_input: false,
@@ -301,6 +318,11 @@ impl Config {
             "input_scope_passthrough" => parse_bool(&mut self.input_scope_passthrough),
             "candidate_bar" => parse_bool(&mut self.candidate_bar),
             "next_word" => parse_bool(&mut self.next_word),
+            "next_word_timeout" => {
+                if let Ok(n) = value.parse::<u32>() {
+                    self.next_word_timeout = round_next_word_timeout(n);
+                }
+            }
             "panel_theme" => {
                 if !value.is_empty() {
                     self.panel_theme = value.to_string();
@@ -419,6 +441,7 @@ impl Config {
         text.push_str("\n# 候補ウィンドウ\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
         text.push_str(&format!("next_word\t{}\n", self.next_word as u32));
+        text.push_str(&format!("next_word_timeout\t{}\n", self.next_word_timeout));
         text.push_str(&format!("panel_theme\t{}\n", self.panel_theme));
         text.push_str(&format!("candidate_position\t{}\n", self.candidate_position));
         text.push_str(&format!("panel_input\t{}\n", self.panel_input as u32));
@@ -523,6 +546,29 @@ mod tests {
         config.apply("key.next_word_next@run", "Ctrl+N");
         assert_eq!(config.keys[next].overrides[3], Some(vec![key("Ctrl+N")]));
         assert_eq!(config.keys[next].overrides[1], None);
+    }
+
+    #[test]
+    fn reads_next_word_timeout() {
+        let mut config = Config::default();
+        assert_eq!(config.next_word_timeout, 5);
+        config.apply("next_word_timeout", "0");
+        assert_eq!(config.next_word_timeout, 0);
+        config.apply("next_word_timeout", "30");
+        assert_eq!(config.next_word_timeout, 30);
+        // 選択肢に無い値は次に大きい選択肢へ切り上げ、60 を超える値は 60
+        config.apply("next_word_timeout", "7");
+        assert_eq!(config.next_word_timeout, 10);
+        config.apply("next_word_timeout", "1");
+        assert_eq!(config.next_word_timeout, 3);
+        config.apply("next_word_timeout", "61");
+        assert_eq!(config.next_word_timeout, 60);
+        // 数でない値は読み飛ばす
+        config.apply("next_word_timeout", "abc");
+        assert_eq!(config.next_word_timeout, 60);
+        config.apply("next_word_timeout", "-1");
+        assert_eq!(config.next_word_timeout, 60);
+        assert!(config.file_text().contains("next_word_timeout\t60\n"));
     }
 
     #[test]

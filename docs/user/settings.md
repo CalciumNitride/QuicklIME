@@ -31,6 +31,7 @@ QuicklIME の設定は、設定ツール（`Ctrl + F12`、またはタスクバ�
 | `input_scope_passthrough` | 数字やメールアドレスの欄では日本語入力を使わない (入力) | `0` / `1`（`1` にすると半角専用欄で自動的に直接入力になります） | `1` | [入力と変換 (input_scope_passthrough)](input.md#数字メールアドレスなどの入力欄-input_scope_passthrough) |
 | `candidate_bar` | 候補バーを表示する (候補バー) | `0` / `1`（`0` にすると候補バーを表示しません） | `1` | [候補バー](candidate-bar.md) |
 | `next_word` | 確定の後に次の語を予測する (候補バー) | `0` / `1`（`0` にすると確定後の次の語の予測を表示しません） | `1` | [次の語の予測](candidate-bar.md#次の語の予測) |
+| `next_word_timeout` | 次の語の予測を消すまでの時間 (候補バー) | `0` (消さない) / `3` / `5` / `10` / `30` / `60`（次の語の予測を選ばないまま、この秒数がたったら消します。ほかの値は次に大きい値に切り上げ、`60` より大きい値は `60` として扱います） | `5` | [次の語の予測](candidate-bar.md#次の語の予測) |
 | `panel_theme` | 入力パネルのテーマ (見た目) | `capsule` / `capsule-column` / `capsule-blur` / `ghost`、またはカスタムテーマ名 | `capsule` | [候補バー](candidate-bar.md)・[入力パネルのテーマ](theme.md) |
 | `candidate_position` | 表示位置 (候補バー) | `caret` (キャレットの下) / `center` (画面中央) | `caret` | [候補バー](candidate-bar.md) |
 | `panel_input` | 入力中の読み (入力) の「文書と入力パネルの両方に出す」 | `0` / `1`（`1` にすると入力パネル上部に入力行を表示します。`input_buffer panel` のときは効きません） | `0` | [候補バー](candidate-bar.md)・[入力と変換 (input_buffer)](input.md#入力中の読みの表示-input_buffer) |

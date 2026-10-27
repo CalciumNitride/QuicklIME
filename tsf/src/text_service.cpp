@@ -390,6 +390,51 @@ LONGLONG s_firstFocusTick = 0;
 // 最初の文書フォーカスから OPENCLOSE の変更を診断ログに出す時間
 constexpr ULONGLONG kImeStartLogMs = 5 * 1000;
 
+// このスレッドの TextService。マウスフックとスレッドのタイマーの手続きは引数で this を受け取れない
+thread_local TextService* t_textService = nullptr;
+
+// 入力パネルの外で入力を終えるマウスのボタンの押下 (ダブルクリック・非クライアント領域を含む) の
+// 診断ログ用の名前。押下でなければ nullptr
+const wchar_t* MouseButtonDownName(WPARAM msg)
+{
+    switch (msg) {
+    case WM_LBUTTONDOWN:
+        return L"WM_LBUTTONDOWN";
+    case WM_LBUTTONDBLCLK:
+        return L"WM_LBUTTONDBLCLK";
+    case WM_RBUTTONDOWN:
+        return L"WM_RBUTTONDOWN";
+    case WM_RBUTTONDBLCLK:
+        return L"WM_RBUTTONDBLCLK";
+    case WM_MBUTTONDOWN:
+        return L"WM_MBUTTONDOWN";
+    case WM_MBUTTONDBLCLK:
+        return L"WM_MBUTTONDBLCLK";
+    case WM_XBUTTONDOWN:
+        return L"WM_XBUTTONDOWN";
+    case WM_XBUTTONDBLCLK:
+        return L"WM_XBUTTONDBLCLK";
+    case WM_NCLBUTTONDOWN:
+        return L"WM_NCLBUTTONDOWN";
+    case WM_NCLBUTTONDBLCLK:
+        return L"WM_NCLBUTTONDBLCLK";
+    case WM_NCRBUTTONDOWN:
+        return L"WM_NCRBUTTONDOWN";
+    case WM_NCRBUTTONDBLCLK:
+        return L"WM_NCRBUTTONDBLCLK";
+    case WM_NCMBUTTONDOWN:
+        return L"WM_NCMBUTTONDOWN";
+    case WM_NCMBUTTONDBLCLK:
+        return L"WM_NCMBUTTONDBLCLK";
+    case WM_NCXBUTTONDOWN:
+        return L"WM_NCXBUTTONDOWN";
+    case WM_NCXBUTTONDBLCLK:
+        return L"WM_NCXBUTTONDBLCLK";
+    default:
+        return nullptr;
+    }
+}
+
 } // namespace
 
 TextService::TextService()
@@ -410,6 +455,8 @@ TextService::TextService()
       barCaret_{},
       barCaretValid_(false),
       nextWordBar_(false),
+      nextWordTimer_(0),
+      mouseHook_(nullptr),
       markerCaret_{},
       markerCaretValid_(false),
       rerankId_(0),
@@ -508,6 +555,7 @@ STDMETHODIMP TextService::ActivateEx(ITfThreadMgr* threadMgr, TfClientId clientI
     threadMgr_ = threadMgr;
     threadMgr_->AddRef();
     clientId_ = clientId;
+    t_textService = this;
 
     // 未確定文字列の表示属性 GUID を atom に変換しておく
     ITfCategoryMgr* categoryMgr = nullptr;
@@ -618,6 +666,11 @@ STDMETHODIMP TextService::Deactivate()
     UpdateTextEditSink(nullptr);
     ClearConversion();
     ClearBar();
+    RemoveMouseHook();
+    StopNextWordTimer();
+    if (t_textService == this) {
+        t_textService = nullptr;
+    }
     caretMarker_.Hide();
     markerCaretValid_ = false;
     modePopup_.Hide();
@@ -884,6 +937,8 @@ void TextService::RefreshConfig()
         suggestPanel_.SetBlur(theme.blur);
         suggestPanel_.SetFont(config.candidateFont, config.candidateFontSize);
         suggestPanel_.SetTheme(theme);
+        // テーマとぼかしの変更はパネルを隠すことがある
+        SyncMouseHook();
     }
     // 自動英字判定の有効/無効はコンポーザが持つ。Clear() でも維持されるフラグなので
     // 設定を読む機会ごとに渡し直すだけでよい
@@ -1443,6 +1498,32 @@ void TextService::ShowModePopup()
     }
 }
 
+void TextService::CommitInputAndForget()
+{
+    ITfContext* context = nullptr;
+    ITfDocumentMgr* docMgr = nullptr;
+    if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) && docMgr != nullptr) {
+        docMgr->GetTop(&context);
+        docMgr->Release();
+    }
+    if (InRun()) {
+        // 読みを捨てずに、見えているとおり (未完成のローマ字を含む) に文書へ入れて終える
+        CommitRunText(context, composer_.Display());
+    }
+    if (Composing() && context != nullptr) {
+        CommitComposition(context);
+    }
+    if (nextWordBar_) {
+        ClearBar();
+    }
+    // 文脈と記憶は、ここで確定した文字列まで含めて捨てる
+    ClearContext();
+    adopted_.clear();
+    if (context != nullptr) {
+        context->Release();
+    }
+}
+
 void TextService::DiscardRunWhileDisabled()
 {
     if (nextWordBar_) {
@@ -1466,49 +1547,14 @@ STDMETHODIMP TextService::OnChange(REFGUID rguid)
     // IMEオン/オフの切替も設定ファイルの変更を拾う機会にする
     RefreshConfig();
     // オフの間にキャレットが動かされる可能性があるため、次にオンに戻ったときの
-    // 誤った文脈補正を避けるためオフになった時点で文脈を破棄する
-    // (run もオフの時点で忘れる)
+    // 誤った文脈補正を避けるためオフになった時点で文脈を破棄する (run もオフの時点で忘れる)。
+    // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったときは、候補選択中の
+    // 文字列もここで確定する。自前の preserved key 経由では確定済み
     if (!IsKeyboardOpen()) {
-        if (InRun()) {
-            // 読みを捨てずに、見えているとおり (未完成のローマ字を含む) に文書へ入れて終える
-            ITfContext* context = nullptr;
-            ITfDocumentMgr* docMgr = nullptr;
-            if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) &&
-                docMgr != nullptr) {
-                docMgr->GetTop(&context);
-                docMgr->Release();
-            }
-            CommitRunText(context, composer_.Display());
-            if (context != nullptr) {
-                context->Release();
-            }
-        }
-        if (nextWordBar_) {
-            ClearBar();
-        }
-        ClearContext();
+        CommitInputAndForget();
     }
     if (langBarButton_ != nullptr) {
         langBarButton_->NotifyUpdate();
-    }
-    // 外部要因 (言語バーのクリックやアプリからの切替) でオフになったら、
-    // 候補選択中の文字列を確定して後始末する。自前の preserved key 経由では
-    // 確定済みなのでここでは何も起きない
-    if (!IsKeyboardOpen() && Composing()) {
-        ITfDocumentMgr* docMgr = nullptr;
-        if (threadMgr_ != nullptr && SUCCEEDED(threadMgr_->GetFocus(&docMgr)) &&
-            docMgr != nullptr) {
-            ITfContext* context = nullptr;
-            if (SUCCEEDED(docMgr->GetTop(&context)) && context != nullptr) {
-                CommitComposition(context);
-                context->Release();
-            }
-            docMgr->Release();
-        }
-    }
-    // 採用した文字列の記憶は、オフの時点で確定した文字列まで含めて捨てる
-    if (!IsKeyboardOpen()) {
-        adopted_.clear();
     }
     // 起動時の IME の状態 (ime_start_apps) を適用する前の変化 (ActivateEx の既定のオンや、システムに
     // よる書き換え) では出さない。適用前の状態を一瞬出してから切り替わって見えるため
@@ -2891,7 +2937,10 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
     modePopup_.Hide();
-    return suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
+    const size_t shown =
+        suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
+    SyncMouseHook();
+    return shown;
 }
 
 void TextService::RefreshRunPanel(ITfContext* context)
@@ -2919,6 +2968,101 @@ void TextService::RefreshRunPanel(ITfContext* context)
         barLabels_.clear();
         barIndex_ = -1;
     }
+}
+
+void TextService::SyncMouseHook()
+{
+    if (!suggestPanel_.Visible()) {
+        RemoveMouseHook();
+        return;
+    }
+    if (mouseHook_ != nullptr) {
+        return;
+    }
+    mouseHook_ = SetWindowsHookExW(WH_MOUSE, MouseHookProc, nullptr, GetCurrentThreadId());
+    if (mouseHook_ == nullptr) {
+        DebugLog(L"マウスフックを付けられない error=" + std::to_wstring(GetLastError()));
+    }
+}
+
+void TextService::RemoveMouseHook()
+{
+    if (mouseHook_ != nullptr) {
+        UnhookWindowsHookEx(mouseHook_);
+        mouseHook_ = nullptr;
+    }
+}
+
+LRESULT CALLBACK TextService::MouseHookProc(int code, WPARAM wparam, LPARAM lparam)
+{
+    TextService* service = t_textService;
+    if (code == HC_ACTION && service != nullptr && MouseButtonDownName(wparam) != nullptr) {
+        const auto* info = reinterpret_cast<const MOUSEHOOKSTRUCT*>(lparam);
+        service->OnMouseButtonDown(static_cast<UINT>(wparam), info->hwnd);
+    }
+    return CallNextHookEx(nullptr, code, wparam, lparam);
+}
+
+void TextService::OnMouseButtonDown(UINT msg, HWND target)
+{
+    // オーナーと一緒に OS が破棄したときなど、パネルは知らせずに消えることがある
+    if (!suggestPanel_.Visible()) {
+        SyncMouseHook();
+        return;
+    }
+    if (suggestPanel_.OwnsWindow(target)) {
+        return;
+    }
+    const wchar_t* state = InRun()        ? L"run"
+                           : Composing()  ? L"候補選択中"
+                           : nextWordBar_ ? L"後続語の予測"
+                                          : L"その他";
+    DebugLog(std::wstring(L"入力パネルの外のマウスの押下で入力を終える: ") + state + L" " +
+             MouseButtonDownName(msg));
+    CommitInputAndForget();
+    HideCaretMarkerOutsidePeriod();
+}
+
+void TextService::StartNextWordTimer()
+{
+    StopNextWordTimer();
+    const int seconds = config_.Get().nextWordTimeout;
+    if (seconds <= 0) {
+        return;
+    }
+    nextWordTimer_ = SetTimer(nullptr, 0, static_cast<UINT>(seconds) * 1000, NextWordTimerProc);
+}
+
+void TextService::StopNextWordTimer()
+{
+    if (nextWordTimer_ != 0) {
+        KillTimer(nullptr, nextWordTimer_);
+        nextWordTimer_ = 0;
+    }
+}
+
+void CALLBACK TextService::NextWordTimerProc(HWND hwnd, UINT msg, UINT_PTR id, DWORD time)
+{
+    UNREFERENCED_PARAMETER(hwnd);
+    UNREFERENCED_PARAMETER(msg);
+    UNREFERENCED_PARAMETER(time);
+    TextService* service = t_textService;
+    if (service == nullptr || service->nextWordTimer_ != id) {
+        KillTimer(nullptr, id);
+        return;
+    }
+    service->OnNextWordTimer();
+}
+
+void TextService::OnNextWordTimer()
+{
+    StopNextWordTimer();
+    if (!nextWordBar_ || barIndex_ >= 0) {
+        return;
+    }
+    DebugLog(L"時間で後続語の予測を消す");
+    ClearBar();
+    HideCaretMarkerOutsidePeriod();
 }
 
 void TextService::ClearBarKeepingInput(ITfContext* context)
@@ -3208,6 +3352,7 @@ void TextService::ClearBar()
 {
     ResetBarState();
     suggestPanel_.Hide();
+    SyncMouseHook();
 }
 
 void TextService::ResetBarState()
@@ -3218,6 +3363,7 @@ void TextService::ResetBarState()
     barIndex_ = -1;
     barShrink_ = 0;
     nextWordBar_ = false;
+    StopNextWordTimer();
     barBuilt_.clear();
     barHasAscii_ = false;
     barAscii_.Clear();
@@ -3765,6 +3911,7 @@ void TextService::HideCandidateList(ITfContext* context)
     if (!PanelInputActive()) {
         UpdateCaretMarker(context);
         suggestPanel_.Hide();
+        SyncMouseHook();
         return;
     }
     ShowConversionPanel(context, false);
@@ -3811,6 +3958,7 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
     modePopup_.Hide();
     const size_t pageSize = suggestPanel_.ShowConversion(
         placement, candidates, typo, selected_[segmentIndex_], hasInput ? &input : nullptr);
+    SyncMouseHook();
     if (pageSize > 0) {
         conversionPageSize_ = pageSize;
     }

@@ -113,6 +113,9 @@ struct TsfConfig {
     // 確定キーで run を終えた後に、読みなしの後続語予測を候補バーに出す
     // (docs/spec/suggest.md「後続語の予測」)
     bool nextWord = true;
+    // 後続語の予測を選ばないまま消すまでの秒数 (設定 next_word_timeout。0 / 3 / 5 / 10 / 30 / 60。
+    // 0 は時間で消さない。docs/spec/suggest.md「後続語の予測」)
+    int nextWordTimeout = 5;
     // オン/オフの切替時とフォーカス移動時に、キャレットの近くに入力モードを一時表示する
     // (設定 mode_popup。docs/spec/display.md「入力モードの一時表示」)
     bool modePopup = true;

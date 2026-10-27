@@ -29,7 +29,7 @@ use quicklime_gui::apps::{
 };
 use quicklime_gui::config::{
     CANDIDATE_POSITIONS, Config, FONT_SIZE_RANGE, INPUT_BUFFERS, LLM_BACKENDS, MAX_PRED_ITEMS,
-    MIN_SUGGEST_CHARS_RANGE, PUNCT_ITEMS, apply_input_buffer_choice, default_debug_log_path,
+    MIN_SUGGEST_CHARS_RANGE, NEXT_WORD_TIMEOUTS, PUNCT_ITEMS, apply_input_buffer_choice, default_debug_log_path,
     input_buffer_choice, theme_choices, theme_dir, user_theme_names,
 };
 use quicklime_gui::keys::{
@@ -165,6 +165,13 @@ impl State {
         window.set_candidate_bar(c.candidate_bar);
         window.set_suggest(c.suggest);
         window.set_next_word(c.next_word);
+        window.set_next_word_timeout_choices(string_model(
+            NEXT_WORD_TIMEOUTS.iter().map(|(_, label)| label),
+        ));
+        window.set_next_word_timeout_index(index_of(
+            NEXT_WORD_TIMEOUTS.iter().map(|(seconds, _)| *seconds),
+            c.next_word_timeout,
+        ) as i32);
         window.set_max_predictions_choices(string_model(MAX_PRED_ITEMS.iter().map(u32::to_string)));
         window.set_max_predictions_index(index_of(MAX_PRED_ITEMS, c.max_predictions) as i32);
         window.set_min_suggest_chars_choices(string_model(MIN_SUGGEST_CHARS_RANGE.map(|n| n.to_string())));
@@ -226,6 +233,9 @@ impl State {
         c.candidate_bar = window.get_candidate_bar();
         c.suggest = window.get_suggest();
         c.next_word = window.get_next_word();
+        if let Some((seconds, _)) = NEXT_WORD_TIMEOUTS.get(index(window.get_next_word_timeout_index())) {
+            c.next_word_timeout = *seconds;
+        }
         if let Some(&n) = MAX_PRED_ITEMS.get(index(window.get_max_predictions_index())) {
             c.max_predictions = n;
         }

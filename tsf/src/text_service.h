@@ -304,6 +304,18 @@ private:
                      size_t selection);
     // 表示中の候補と今の入力行でパネルを出し直す (入力行を出している run の間に呼ぶ)
     void RefreshRunPanel(ITfContext* context);
+    // パネルを出している間だけ、このスレッドに限ったマウスフックを付ける。パネルの表示・非表示を
+    // 変えうる処理の後に呼ぶ (docs/spec/input.md「入力パネルの外のマウスの押下」)
+    void SyncMouseHook();
+    void RemoveMouseHook();
+    // マウスフックの手続き。スレッドの TextService に押下を渡し、操作は食べずにアプリへ渡す
+    static LRESULT CALLBACK MouseHookProc(int code, WPARAM wparam, LPARAM lparam);
+    // マウスのボタンの押下 msg (押した先 target)。入力パネルの外なら入力を終える
+    void OnMouseButtonDown(UINT msg, HWND target);
+    // 入力を見えているとおりに終える (run は読みのまま文書に入れ、候補選択中は今の選択で確定する)。
+    // 後続語の予測を消し、前文脈・LLM の左文脈の履歴・採用した文字列の記憶を捨てる。IME オフと
+    // 入力パネルの外のマウスの押下で使う
+    void CommitInputAndForget();
     // バーの選択を動かす (+1: 未選択→先頭→...→末尾→先頭、-1: 先頭でさらに↑は解除)。
     // 文書は書き換えない
     HRESULT MoveBarSelection(int delta);
@@ -348,6 +360,14 @@ private:
     void DismissNextWordForKey(WPARAM wparam);
     // 後続語の予測の選択を動かす (未選択から delta > 0 で先頭、delta < 0 で末尾を選ぶ)
     HRESULT MoveNextWordSelection(int delta);
+    // 後続語の予測を出した時点から、設定 next_word_timeout の秒数で予測を消すタイマーを始める
+    // (0 なら始めない)。選んだとき・予測を消したときに止める
+    void StartNextWordTimer();
+    void StopNextWordTimer();
+    // スレッドのタイマーの手続き。スレッドの TextService の OnNextWordTimer を呼ぶ
+    static void CALLBACK NextWordTimerProc(HWND hwnd, UINT msg, UINT_PTR id, DWORD time);
+    // 予測を出していて選んでいなければ消す
+    void OnNextWordTimer();
     // 選択中の後続語の予測を、suffix を付けてキャレット位置に追記する (既存の文字列は書き換えない)。
     // 確定キー (CommitKey) なら続けて次の語の予測を出し、followKey があればその打鍵で run を始める
     HRESULT AdoptNextWord(ITfContext* context, BarAdopt mode, const std::wstring& suffix,
@@ -807,6 +827,8 @@ private:
     std::wstring asciiForm_;
     // 表示中のバーが run の無いときに出した後続語の予測か (候補は barItems_ に予測候補として持つ)
     bool nextWordBar_;
+    UINT_PTR nextWordTimer_;  // 後続語の予測を消すスレッドのタイマー (0 なら無し)
+    HHOOK mouseHook_;         // 入力パネルを出している間のマウスフック (無ければ nullptr)
 
     // キャレットの印。最後に取った文書のキャレットの矩形を、並べ替えの結果でバーを組み直すとき
     // (タイマーからは文書の矩形を取らない) にも使う

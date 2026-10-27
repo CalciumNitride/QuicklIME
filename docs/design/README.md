@@ -17,7 +17,7 @@
 
 ## 進行中の設計書
 
-今は無い。
+- [mouse-click-panel.md](mouse-click-panel.md): 入力パネルの外のマウス操作で入力を終える・後続語の予測を時間で消す
 
 ## archive
 
