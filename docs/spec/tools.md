@@ -217,6 +217,13 @@ AppContainer で動くアプリ (スタートメニューの検索欄・UWP ア�
 - フォントの選択肢は、インストールされているフォントの面名 (全 charset。縦書き用の `@` で始まる面名は除く) を、大文字小文字を
   区別しない名前順に並べる。今の設定値が列挙に無ければ足す (テーマと同じ理由)。31 文字を超える面名は、選んでも設定値を
   変えない (`candidate_font` に書けないため。[display.md](display.md)「設定」)
+- 入力パネル (DirectWrite) で描けないビットマップ・ベクタのフォント (`System`・`Terminal`・`MS Sans Serif`・`Modern` など)
+  は選択肢から外す。列挙のコールバックの `font_type` に `TRUETYPE_FONTTYPE` が立つか、`NEWTEXTMETRICW` の `ntmFlags` に
+  `NTM_PS_OPENTYPE` か `NTM_TT_OPENTYPE` が立つ面名だけを残す (engine/gui/src/win32.rs `font_families`)。CFF の OpenType
+  (UD 新ゴ・源ノ角ゴシック Code など) は `TRUETYPE_FONTTYPE` が立たず `DEVICE_FONTTYPE` で列挙されるため `ntmFlags` で拾う。
+  コールバックの第 2 引数はビットマップフォントでも `NEWTEXTMETRICEXW` を先頭に持つ構造体を指すので、どの種類でも読める
+- 選択肢を DirectWrite のファミリ名で作る方法は採らない。太さ違いの面名 (UD 新ゴ L など) を選べなくなり、`candidate_font`
+  に保存してある GDI の面名とも合わなくなるため
 
 ### 診断ログ
 

@@ -10,7 +10,10 @@ use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandl
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, FreeLibrary, GetLastError, HWND, LPARAM, LRESULT, WPARAM,
 };
-use windows_sys::Win32::Graphics::Gdi::{EnumFontFamiliesExW, GetDC, LOGFONTW, ReleaseDC, TEXTMETRICW};
+use windows_sys::Win32::Graphics::Gdi::{
+    EnumFontFamiliesExW, GetDC, LOGFONTW, NEWTEXTMETRICW, NTM_PS_OPENTYPE, NTM_TT_OPENTYPE, ReleaseDC,
+    TEXTMETRICW, TRUETYPE_FONTTYPE,
+};
 use windows_sys::Win32::System::LibraryLoader::{
     GetProcAddress, LOAD_LIBRARY_SEARCH_SYSTEM32, LoadLibraryExW,
 };
@@ -113,14 +116,21 @@ pub fn add_to_language_list() -> bool {
     result
 }
 
-/// インストール済みフォントの面名一覧 (縦書き用の @ 始まりは除く)
+/// インストール済みフォントの面名一覧 (縦書き用の @ 始まりと、ビットマップ・ベクタのフォントは除く)
 pub fn font_families() -> Vec<String> {
     unsafe extern "system" fn enum_proc(
         lf: *const LOGFONTW,
-        _tm: *const TEXTMETRICW,
-        _font_type: u32,
+        tm: *const TEXTMETRICW,
+        font_type: u32,
         lparam: LPARAM,
     ) -> i32 {
+        // ビットマップ・ベクタのフォントは入力パネル (DirectWrite) で描けない。CFF の OpenType は
+        // TRUETYPE_FONTTYPE が立たないため ntmFlags で拾う。tm はどの種類のフォントでも
+        // NEWTEXTMETRICW を先頭に持つ構造体を指す
+        let ntm_flags = unsafe { (*(tm as *const NEWTEXTMETRICW)).ntmFlags };
+        if font_type & TRUETYPE_FONTTYPE == 0 && ntm_flags & (NTM_PS_OPENTYPE | NTM_TT_OPENTYPE) == 0 {
+            return 1;
+        }
         let fonts = unsafe { &mut *(lparam as *mut Vec<String>) };
         let face = unsafe { &(*lf).lfFaceName };
         let len = face.iter().position(|&c| c == 0).unwrap_or(face.len());

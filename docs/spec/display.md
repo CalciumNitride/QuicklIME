@@ -55,7 +55,18 @@ IME が画面に出すものの仕様。画面の部品の呼び名、入力パ�
   スレッドからしか触らないため
 - DPI は 96 に固定し、DIP を px として扱う (DPI による拡大はしない)。寸法は設定 `candidate_font_size`
   (以下 f) に比例させる (テーマの寸法のキーは f に対する比率)
-- フォントは設定 `candidate_font` をシステムのフォントから DirectWrite で使い、見つからなければ Yu Gothic UI
+- フォントは設定 `candidate_font` (GDI の面名) を次の順に DirectWrite のフォントへ解決する
+  (tsf/src/suggest_panel.cpp `ResolveFont`)。GDI は太さや幅の違うフォントを別の面名 (`Yu Gothic UI Semibold`・
+  `Noto Sans JP Thin` など) で列挙するが、DirectWrite ではそれらが 1 つのファミリの中の太さ・幅の違いになるため
+  1. システムのフォントコレクションの `FindFamilyName` で見つかれば、そのファミリを標準の太さ・幅・斜体なしで使う
+  2. 見つからなければ、`EnumFontFamiliesExW` にその面名を指定して (`DEFAULT_CHARSET`) `LOGFONTW` を得る (斜体でない
+     ものを優先し、なければ最初のもの)。それを `IDWriteGdiInterop::CreateFontFromLOGFONT` に渡して得たフォントの
+     ファミリ名 (en-us があればそれ、なければ先頭) と太さ・幅・斜体を使う
+  3. どちらでも得られなければ Yu Gothic UI を標準の太さで使う
+  - 書式 (候補・入力行・番号・ラベル・タグ) はすべて解決したファミリ名と太さ・幅・斜体で作る。選択中の候補の太字の
+    書式だけは太さを Bold に固定する (幅と斜体は解決したもの)
+  - 面名だけを入れた `LOGFONTW` (太さは標準) は渡さない。`Noto Sans JP Thin` などが「太さ 700 + 太字の合成」の
+    別のフォントに解決されるため、列挙で得たそのフォント自身の太さ入りの `LOGFONTW` を渡す
 - 影はパネルの外側に余白 (影の広がり + 下へのずらしの切り上げ) を取り、少しずつ広げた角丸矩形を外側から
   `shadow_steps` 枚重ねて近似する。1 枚の不透明度は、全部が重なるパネルの縁で `shadow` の不透明度になるように
   決める。`ID2D1DCRenderTarget` ではブラーのエフェクトが使えないため

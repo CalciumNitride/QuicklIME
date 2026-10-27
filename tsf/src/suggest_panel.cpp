@@ -400,6 +400,13 @@ float OffsetTailHeight(float tailHeight, float outset)
     return tailHeight + outset * 0.41421356f;
 }
 
+struct ResolvedFont {
+    std::wstring family;
+    DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL;
+    DWRITE_FONT_STRETCH stretch = DWRITE_FONT_STRETCH_NORMAL;
+    DWRITE_FONT_STYLE style = DWRITE_FONT_STYLE_NORMAL;
+};
+
 bool FontExists(IDWriteFactory* factory, const std::wstring& face)
 {
     IDWriteFontCollection* fonts = nullptr;
@@ -413,15 +420,110 @@ bool FontExists(IDWriteFactory* factory, const std::wstring& face)
     return found;
 }
 
-IDWriteTextFormat* CreateFormat(IDWriteFactory* factory, const std::wstring& face, float size,
-                                DWRITE_TEXT_ALIGNMENT alignment,
-                                DWRITE_FONT_WEIGHT weight = DWRITE_FONT_WEIGHT_NORMAL)
+struct FaceSearch {
+    LOGFONTW font;
+    bool found;
+};
+
+int CALLBACK CollectFace(const LOGFONTW* font, const TEXTMETRICW*, DWORD, LPARAM param)
+{
+    FaceSearch* search = reinterpret_cast<FaceSearch*>(param);
+    if (!search->found || font->lfItalic == 0) {
+        search->font = *font;
+        search->found = true;
+    }
+    return font->lfItalic == 0 ? 0 : 1;
+}
+
+// 面名だけを入れた LOGFONTW (太さは標準) を CreateFontFromLOGFONT に渡すと、Thin などの面名が
+// 「太さ 700 + 太字の合成」の別のフォントに解決されることがある。列挙で得た、そのフォント自身の
+// 太さ入りの LOGFONTW を渡す
+bool FindGdiFont(const std::wstring& face, LOGFONTW* font)
+{
+    if (face.empty() || face.size() >= LF_FACESIZE) {
+        return false;
+    }
+    LOGFONTW query = {};
+    query.lfCharSet = DEFAULT_CHARSET;
+    wcscpy_s(query.lfFaceName, face.c_str());
+    HDC screen = GetDC(nullptr);
+    if (screen == nullptr) {
+        return false;
+    }
+    FaceSearch search = {};
+    EnumFontFamiliesExW(screen, &query, CollectFace, reinterpret_cast<LPARAM>(&search), 0);
+    ReleaseDC(nullptr, screen);
+    if (search.found) {
+        *font = search.font;
+    }
+    return search.found;
+}
+
+// GDI は太さや幅の違うフォントを別の面名で列挙するが、DirectWrite ではそれらは 1 つのファミリの
+// 中の太さ・幅の違いになり、FindFamilyName では見つからない
+bool ResolveGdiFont(IDWriteFactory* factory, const std::wstring& face, ResolvedFont* resolved)
+{
+    LOGFONTW logFont = {};
+    if (!FindGdiFont(face, &logFont)) {
+        return false;
+    }
+    IDWriteGdiInterop* interop = nullptr;
+    IDWriteFont* font = nullptr;
+    IDWriteFontFamily* family = nullptr;
+    IDWriteLocalizedStrings* names = nullptr;
+    bool ok = SUCCEEDED(factory->GetGdiInterop(&interop)) &&
+              SUCCEEDED(interop->CreateFontFromLOGFONT(&logFont, &font)) &&
+              SUCCEEDED(font->GetFontFamily(&family)) &&
+              SUCCEEDED(family->GetFamilyNames(&names)) && names->GetCount() > 0;
+    if (ok) {
+        UINT32 index = 0;
+        BOOL exists = FALSE;
+        if (FAILED(names->FindLocaleName(L"en-us", &index, &exists)) || !exists) {
+            index = 0;
+        }
+        UINT32 length = 0;
+        ok = SUCCEEDED(names->GetStringLength(index, &length));
+        if (ok) {
+            std::wstring name(length + 1, L'\0');
+            ok = SUCCEEDED(names->GetString(index, name.data(), length + 1));
+            if (ok) {
+                name.resize(length);
+                resolved->family = name;
+                resolved->weight = font->GetWeight();
+                resolved->stretch = font->GetStretch();
+                resolved->style = font->GetStyle();
+            }
+        }
+    }
+    SafeRelease(&names);
+    SafeRelease(&family);
+    SafeRelease(&font);
+    SafeRelease(&interop);
+    return ok;
+}
+
+ResolvedFont ResolveFont(IDWriteFactory* factory, const std::wstring& face)
+{
+    ResolvedFont resolved;
+    if (FontExists(factory, face)) {
+        resolved.family = face;
+        return resolved;
+    }
+    if (ResolveGdiFont(factory, face, &resolved)) {
+        return resolved;
+    }
+    resolved.family = kFallbackFont;
+    return resolved;
+}
+
+IDWriteTextFormat* CreateFormat(IDWriteFactory* factory, const ResolvedFont& font, float size,
+                                DWRITE_TEXT_ALIGNMENT alignment, DWRITE_FONT_WEIGHT weight)
 {
     IDWriteTextFormat* format = nullptr;
     // テーマで文字の高さの比率を 0 にできるが、DirectWrite は 0 の大きさを受け付けない
-    if (FAILED(factory->CreateTextFormat(face.c_str(), nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-                                         DWRITE_FONT_STRETCH_NORMAL, (std::max)(size, 1.0f),
-                                         L"ja-jp", &format))) {
+    if (FAILED(factory->CreateTextFormat(font.family.c_str(), nullptr, weight, font.style,
+                                         font.stretch, (std::max)(size, 1.0f), L"ja-jp",
+                                         &format))) {
         return nullptr;
     }
     format->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
@@ -598,22 +700,22 @@ void SuggestPanel::SetFont(const std::wstring& face, int height)
     if (!EnsureFactories()) {
         return;
     }
-    const std::wstring actual = FontExists(dwriteFactory_, face) ? face : kFallbackFont;
+    const ResolvedFont font = ResolveFont(dwriteFactory_, face);
     const float f = static_cast<float>(height);
     const float inputSize =
         theme_.style == PanelStyle::Ghost ? theme_.ghostTextSize : theme_.inputTextSize;
     IDWriteTextFormat* text =
-        CreateFormat(dwriteFactory_, actual, f, DWRITE_TEXT_ALIGNMENT_LEADING);
-    IDWriteTextFormat* bold = CreateFormat(dwriteFactory_, actual, f,
+        CreateFormat(dwriteFactory_, font, f, DWRITE_TEXT_ALIGNMENT_LEADING, font.weight);
+    IDWriteTextFormat* bold = CreateFormat(dwriteFactory_, font, f,
                                            DWRITE_TEXT_ALIGNMENT_LEADING, DWRITE_FONT_WEIGHT_BOLD);
-    IDWriteTextFormat* input =
-        CreateFormat(dwriteFactory_, actual, inputSize * f, DWRITE_TEXT_ALIGNMENT_LEADING);
-    IDWriteTextFormat* badge = CreateFormat(dwriteFactory_, actual, theme_.badgeTextSize * f,
-                                            DWRITE_TEXT_ALIGNMENT_CENTER);
-    IDWriteTextFormat* label = CreateFormat(dwriteFactory_, actual, theme_.labelTextSize * f,
-                                            DWRITE_TEXT_ALIGNMENT_LEADING);
-    IDWriteTextFormat* tag = CreateFormat(dwriteFactory_, actual, theme_.tagTextSize * f,
-                                          DWRITE_TEXT_ALIGNMENT_CENTER);
+    IDWriteTextFormat* input = CreateFormat(dwriteFactory_, font, inputSize * f,
+                                            DWRITE_TEXT_ALIGNMENT_LEADING, font.weight);
+    IDWriteTextFormat* badge = CreateFormat(dwriteFactory_, font, theme_.badgeTextSize * f,
+                                            DWRITE_TEXT_ALIGNMENT_CENTER, font.weight);
+    IDWriteTextFormat* label = CreateFormat(dwriteFactory_, font, theme_.labelTextSize * f,
+                                            DWRITE_TEXT_ALIGNMENT_LEADING, font.weight);
+    IDWriteTextFormat* tag = CreateFormat(dwriteFactory_, font, theme_.tagTextSize * f,
+                                          DWRITE_TEXT_ALIGNMENT_CENTER, font.weight);
     if (text == nullptr || bold == nullptr || input == nullptr || badge == nullptr ||
         label == nullptr || tag == nullptr) {
         SafeRelease(&text);

@@ -4,6 +4,9 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [panel-font-gdi-name.md](panel-font-gdi-name.md): 入力パネルのフォントを GDI の面名 (太さ違いの面名を含む) から
+  DirectWrite のフォントへ解決し、設定ツールの選択肢からビットマップ・ベクタのフォントを外す。
+  [docs/spec/display.md](../spec/display.md)・[docs/spec/tools.md](../spec/tools.md) へ移した
 - [installer-language-list.md](installer-language-list.md): インストール時に、セットアップを起動した利用者の言語の
   一覧に QuicklIME を足す (設定ツールの `--add-language-list`)。[docs/spec/runtime.md](../spec/runtime.md)・
   [docs/spec/tools.md](../spec/tools.md) へ移した
