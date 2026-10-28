@@ -16,11 +16,12 @@ pub const IN_INPUT: u8 = IN_RUN | IN_CANDIDATE | IN_SUGGEST;
 
 /// キー割当の機能一覧: (設定キー名, 表示名, 働く状態, 既定の割当)。
 /// 並び・働く状態・既定は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
-pub const KEY_ITEMS: [(&str, &str, u8, &str); 18] = [
+pub const KEY_ITEMS: [(&str, &str, u8, &str); 19] = [
     ("key.convert", "変換", IN_IDLE | IN_INPUT, "Convert"),
     ("key.next_candidate", "次候補", IN_CANDIDATE, "Space"),
     ("key.prev_candidate", "前候補", IN_CANDIDATE, "Shift+Space"),
     ("key.commit_run", "確定", IN_INPUT, "NonConvert"),
+    ("key.convert_name", "人名変換", IN_INPUT, "F3"),
     ("key.convert_symbol", "記号・日付変換", IN_INPUT, "F4"),
     ("key.convert_user", "ユーザ語変換", IN_INPUT, "F5"),
     ("key.to_hiragana", "ひらがな変換", IN_IDLE | IN_INPUT, "F6"),
@@ -399,16 +400,16 @@ mod tests {
         assert_eq!(find_key_conflict(&assigns), None);
         // 働く状態が重ならなければ重なりではない (Ctrl+F7 は単語登録 = 入力なし のみ、
         // 記号・日付変換は入力なしでは働かない)
-        assigns[4].keys = vec![key("F4"), key("Ctrl+F7")];
+        assigns[5].keys = vec![key("F4"), key("Ctrl+F7")];
         assert_eq!(find_key_conflict(&assigns), None);
         // カタカナ変換は入力なしでも働くので、単語登録と重なる
-        assigns[4].keys = vec![key("F4")];
-        assigns[7].keys = vec![key("F7"), key("Ctrl+F7")];
+        assigns[5].keys = vec![key("F4")];
+        assigns[8].keys = vec![key("F7"), key("Ctrl+F7")];
         let conflict = find_key_conflict(&assigns).unwrap();
         assert!(conflict.contains("入力なし") && conflict.contains("単語登録"), "{conflict}");
-        assigns[7].keys = vec![key("F7")];
+        assigns[8].keys = vec![key("F7")];
         // 候補選択中だけ Space を記号変換にも割り当てる
-        assigns[4].overrides[2] = Some(vec![key("Space")]);
+        assigns[5].overrides[2] = Some(vec![key("Space")]);
         let conflict = find_key_conflict(&assigns).unwrap();
         assert!(conflict.contains("候補選択中") && conflict.contains("次候補"), "{conflict}");
         // 次候補の候補選択中を上書きで外せば解消する
@@ -420,18 +421,18 @@ mod tests {
     fn detects_conflict_before_adding() {
         let assigns = default_key_assigns();
         // 記号・日付変換に Ctrl+F7 を足しても、単語登録 (入力なしのみ) とは重ならない
-        assert_eq!(find_conflict_for_key(&assigns, 4, &working_states(4), &key("Ctrl+F7")), None);
+        assert_eq!(find_conflict_for_key(&assigns, 5, &working_states(5), &key("Ctrl+F7")), None);
         // カタカナ変換は入力なしでも働くので重なる
         assert_eq!(
-            find_conflict_for_key(&assigns, 7, &working_states(7), &key("Ctrl+F7")).as_deref(),
+            find_conflict_for_key(&assigns, 8, &working_states(8), &key("Ctrl+F7")).as_deref(),
             Some("Ctrl+F7: 入力なし で「単語登録」に割り当てられています")
         );
         // 状態を絞れば重ならない
-        assert_eq!(find_conflict_for_key(&assigns, 7, &[1], &key("Ctrl+F7")), None);
+        assert_eq!(find_conflict_for_key(&assigns, 8, &[1], &key("Ctrl+F7")), None);
         // 自分自身とは重ならない
-        assert_eq!(find_conflict_for_key(&assigns, 7, &working_states(7), &key("F7")), None);
+        assert_eq!(find_conflict_for_key(&assigns, 8, &working_states(8), &key("F7")), None);
         assert_eq!(working_states(1), [2]);
-        assert_eq!(working_states(15), [0, 3]);
+        assert_eq!(working_states(16), [0, 3]);
     }
 
     #[test]

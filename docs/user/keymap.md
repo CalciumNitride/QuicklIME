@@ -21,6 +21,7 @@
 | 次候補 | `key.next_candidate` | 候補選択中 | `Space` |
 | 前候補 | `key.prev_candidate` | 候補選択中 | `Shift+Space` |
 | 確定 | `key.commit_run` | 入力中・候補選択中・予測選択中 | `NonConvert` (無変換) |
+| 人名変換 | `key.convert_name` | 同上 | `F3` |
 | 記号・日付変換 | `key.convert_symbol` | 同上 | `F4` |
 | ユーザー語変換 | `key.convert_user` | 同上 | `F5` |
 | ひらがな変換 | `key.to_hiragana` | 全状態 | `F6` |

@@ -1,7 +1,7 @@
 // 品詞ID表 (Mozc の id.def) の読み込み
 //
 // フォーマット: "<ID> <品詞情報 (カンマ区切り)>" が1行ずつ。
-// 文節区切りの「付属語 (助詞・助動詞・接尾語) かどうか」の判定と、
+// 文節区切りの「付属語 (助詞・助動詞・接尾語) かどうか」の判定、人名の判定と、
 // ユーザ辞書の品詞名 → 文脈ID の解決 (find_id) に使う。
 
 use std::fs::File;
@@ -12,9 +12,10 @@ use std::path::Path;
 /// id.def が無い・引けないときの未知語ノードとユーザ登録語のフォールバック
 pub const DEFAULT_NOUN_ID: u16 = 1851;
 
-/// 品詞ID表。付属語判定とユーザ辞書の品詞名解決に使う
+/// 品詞ID表。付属語判定・人名の判定とユーザ辞書の品詞名解決に使う
 pub struct FunctionalIds {
     is_functional: Vec<bool>,
+    is_person_name: Vec<bool>,
     /// ID → 品詞パス (id.def の2列目)。未定義IDは空文字列
     names: Vec<String>,
 }
@@ -22,7 +23,7 @@ pub struct FunctionalIds {
 impl FunctionalIds {
     /// 空 (すべて自立語扱い。id.def が無い場合のフォールバック)
     pub fn empty() -> Self {
-        FunctionalIds { is_functional: Vec::new(), names: Vec::new() }
+        FunctionalIds { is_functional: Vec::new(), is_person_name: Vec::new(), names: Vec::new() }
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
@@ -31,6 +32,7 @@ impl FunctionalIds {
 
     pub fn load_from(reader: impl BufRead) -> io::Result<Self> {
         let mut is_functional = Vec::new();
+        let mut is_person_name = Vec::new();
         let mut names = Vec::new();
         for line in reader.lines() {
             let line = line?;
@@ -47,12 +49,15 @@ impl FunctionalIds {
                 || pos.split(',').nth(1) == Some("接尾");
             if id >= is_functional.len() {
                 is_functional.resize(id + 1, false);
+                is_person_name.resize(id + 1, false);
                 names.resize(id + 1, String::new());
             }
             is_functional[id] = functional;
+            // ID の数値は id.def ごとに違う (テスト用の表など) ので、品詞名から求める
+            is_person_name[id] = pos.starts_with("名詞,固有名詞,人名,");
             names[id] = pos.to_string();
         }
-        Ok(FunctionalIds { is_functional, names })
+        Ok(FunctionalIds { is_functional, is_person_name, names })
     }
 
     /// この品詞IDの単語を前の文節にまとめるべきか
@@ -63,6 +68,11 @@ impl FunctionalIds {
     /// この品詞IDが助数詞 (名詞,接尾,助数詞) か
     pub fn is_counter(&self, id: u16) -> bool {
         self.names.get(id as usize).is_some_and(|n| n.starts_with("名詞,接尾,助数詞"))
+    }
+
+    /// この品詞IDが人名 (名詞,固有名詞,人名,*) か。id.def が無ければ常に false
+    pub fn is_person_name(&self, id: u16) -> bool {
+        self.is_person_name.get(id as usize).copied().unwrap_or(false)
     }
 
     /// 品詞パスが prefix で始まる最初のIDを返す (ユーザ辞書の品詞名解決用)。
@@ -110,5 +120,23 @@ mod tests {
         assert_eq!(ids.find_id("名詞,固有名詞,人名,姓"), Some(1917));
         assert_eq!(ids.find_id("動詞"), None);
         assert_eq!(FunctionalIds::empty().find_id("名詞,一般"), None);
+    }
+
+    #[test]
+    fn 人名の品詞のidが人名になる() {
+        let data = "1851 名詞,一般,*,*,*,*,*\n\
+                    1921 名詞,固有名詞,人名,一般,*,*,*\n\
+                    1922 名詞,固有名詞,人名,名,*,*,*\n\
+                    1923 名詞,固有名詞,人名,姓,*,*,*\n\
+                    1999 名詞,接尾,人名,*,*,*,*\n\
+                    2040 名詞,接尾可能,人名,*,*,*,*\n";
+        let ids = FunctionalIds::load_from(data.as_bytes()).unwrap();
+        assert!(ids.is_person_name(1921));
+        assert!(ids.is_person_name(1922));
+        assert!(ids.is_person_name(1923));
+        assert!(!ids.is_person_name(1851));
+        assert!(!ids.is_person_name(1999));
+        assert!(!ids.is_person_name(2040));
+        assert!(!FunctionalIds::empty().is_person_name(1922));
     }
 }

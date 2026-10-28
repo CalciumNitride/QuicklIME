@@ -856,11 +856,11 @@ input_buffer	panel
         config.apply("key.convert", "Convert,Ctrl+Space");
         assert_eq!(config.keys[1].overrides[2], Some(Vec::new()));
         assert_eq!(config.keys[3].overrides[2], Some(vec![key("Ctrl+Enter")]));
-        assert_eq!(config.keys[11].overrides[1], None);
-        assert_eq!(config.keys[7], KeyAssign { keys: vec![key("F7")], overrides: Default::default() });
+        assert_eq!(config.keys[12].overrides[1], None);
+        assert_eq!(config.keys[8], KeyAssign { keys: vec![key("F7")], overrides: Default::default() });
         // F6〜F10 は入力なしでも働くので上書きでき、F4・F5 は入力なしでは働かない
-        assert_eq!(config.keys[6].overrides[0], Some(vec![key("Ctrl+K")]));
-        assert_eq!(config.keys[4].overrides[0], None);
+        assert_eq!(config.keys[7].overrides[0], Some(vec![key("Ctrl+K")]));
+        assert_eq!(config.keys[5].overrides[0], None);
         assert_eq!(config.keys[0].keys, vec![key("Convert"), key("Ctrl+Space")]);
     }
 }

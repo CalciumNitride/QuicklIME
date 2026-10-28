@@ -1036,6 +1036,37 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
             _ => "ERR\tかなが空です\n".to_string(),
         },
+        Some("CONVNAME") => match fields.next() {
+            // 人名変換 (F3 用): 読みに完全一致する人名 (ユーザ辞書の名詞系 → インポート辞書の名詞系
+            // → システム辞書のコスト順) のみを返す。変換の候補で抑えた人名も含める。該当なしは候補ゼロの OK
+            Some(kana) if !kana.is_empty() => {
+                let user = data.user.lock().expect("user lock");
+                let is_name = |id: u16| data.functional.is_person_name(id);
+                let mut system: Vec<&dict::Entry> =
+                    data.dictionary.lookup(kana).iter().filter(|e| is_name(e.left_id)).collect();
+                system.sort_by_key(|e| e.cost);
+                let words = user.lookup_words(kana).into_iter().map(|w| (w.left_id, w.surface.as_str()));
+                let imported =
+                    user.imported_words(kana).into_iter().map(|e| (e.left_id, e.surface.as_str()));
+                let surfaces = words
+                    .chain(imported)
+                    .filter(|&(id, _)| is_name(id))
+                    .map(|(_, surface)| surface)
+                    .chain(system.into_iter().map(|e| e.surface.as_str()));
+                let mut candidates: Vec<&str> = Vec::new();
+                for surface in surfaces {
+                    if !candidates.contains(&surface) {
+                        candidates.push(surface);
+                    }
+                }
+                if candidates.is_empty() {
+                    "OK\n".to_string()
+                } else {
+                    format!("OK\t{}\n", candidates.join("\t"))
+                }
+            }
+            _ => "ERR\tかなが空です\n".to_string(),
+        },
         Some("PREDICT") => match fields.next() {
             // 予測入力: 読みの前方一致でユーザ辞書・履歴・辞書から候補を返す。
             // PREDICT\t<かな>[\t<文脈読み>\x1f<文脈表記>] : 前文脈があれば、その後に確定した語を上位に寄せる。
@@ -1959,6 +1990,55 @@ mod tests {
         );
         // 短縮よみ → 手動登録の名詞系 → インポート辞書の名詞系。手動登録と同じ語は1回だけ
         assert_eq!(handle_request("CONVUSER\tきょう", &data), "OK\t(^^)\t匡\t杏\n");
+    }
+
+    /// 「せいこう」に人名 5 件 (名 id 11・姓 id 12) と一般名詞 2 件 (id 1) を置いた辞書。
+    /// 品詞表にはユーザ辞書の品詞「人名」の解決先 (id 13) も置く
+    fn name_data() -> EngineData {
+        let mut data = sample_data();
+        let mut dictionary = Dictionary::empty();
+        dictionary
+            .load_from(
+                "せいこう\t11\t11\t2000\t静香\nせいこう\t11\t11\t2100\t正孝\n\
+                 せいこう\t12\t12\t2200\t正幸\nせいこう\t11\t11\t2300\t正康\n\
+                 せいこう\t11\t11\t2400\t成晃\nせいこう\t1\t1\t5000\t正孔\n\
+                 せいこう\t1\t1\t5100\t精工\n"
+                    .as_bytes(),
+            )
+            .unwrap();
+        dictionary.finalize();
+        data.dictionary = dictionary;
+        data.functional = FunctionalIds::load_from(
+            "1 名詞,一般\n2 助詞,係助詞\n11 名詞,固有名詞,人名,名\n12 名詞,固有名詞,人名,姓\n\
+             13 名詞,固有名詞,人名,一般\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        data
+    }
+
+    #[test]
+    fn convname要求に人名だけを返す() {
+        let data = name_data();
+        load_user(&data, "せいこう\t匡\t名\nせいこう\t精工社\t組織\nせいこう\t正孝\t姓\n");
+        data.user.lock().unwrap().load_imported_from(
+            ["せいこう\t杏\t人名\nせいこう\t成功\t名詞\n".as_bytes()],
+            &data.functional,
+        );
+        // ユーザ辞書の人名 → インポート辞書の人名 → システム辞書の人名 (コスト順、変換で抑えた人名も含む)。
+        // 人名でない語は出さず、先に入った表記 (正孝) は入れない
+        assert_eq!(
+            handle_request("CONVNAME\tせいこう", &data),
+            "OK\t匡\t正孝\t杏\t静香\t正幸\t正康\t成晃\n"
+        );
+    }
+
+    #[test]
+    fn convnameに人名の無い読みは候補ゼロのokで空の読みはエラー() {
+        let data = name_data();
+        assert_eq!(handle_request("CONVNAME\tきょう", &data), "OK\n");
+        assert!(handle_request("CONVNAME\t", &data).starts_with("ERR\t"));
+        assert!(handle_request("CONVNAME", &data).starts_with("ERR\t"));
     }
 
     #[test]

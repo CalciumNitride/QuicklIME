@@ -5,7 +5,7 @@
 単語登録ツールを扱う。
 
 - 利用者向けの操作の説明は [辞書とローマ字](../user/dictionary.md) にある
-- ADDWORD・RELOADUSER・CONVUSER・CONVSYM の形式は [docs/protocol.md](../protocol.md)
+- ADDWORD・RELOADUSER・CONVUSER・CONVSYM・CONVNAME の形式は [docs/protocol.md](../protocol.md)
 - 辞書の語を変換・予測の中でどう使うか (ラティス・文節の候補・入力全体の候補の並び・予測の並び) は
   [engine.md](engine.md)「ラティスの語」「文節の候補 (CONVSEG・CONVCTX)」「候補の並び」と
   [suggest.md](suggest.md)「予測」「旧エンジンとの互換」。本書は辞書の中身と、どの辞書がどの候補に入るかを書く
@@ -13,7 +13,7 @@
   ([modeless.md](modeless.md)「英単語辞書」「大文字小文字の補正」)、後続語の統計 (next_word.tsv) は候補バーの側
   ([suggest.md](suggest.md)「文節の連なりの統計」)、学習した複合語 (learning_word.tsv) は学習の側
   ([learning.md](learning.md)「複合語の学習」)
-- F4・F5 の候補選択は [conversion.md](conversion.md)「ファンクションキー変換 (F4〜F10)」、単語登録ツールを起動する
+- F3〜F5 の候補選択は [conversion.md](conversion.md)「ファンクションキー変換 (F3〜F10)」、単語登録ツールを起動する
   キーの働く状態は [keys.md](keys.md)「機能」
 - 単語登録ツールの画面 (部品の配置・InfoBar・Enter と Esc) は [tools.md](tools.md)「単語登録ツールの画面」。
   インストーラへの辞書の同梱とライセンス文書は [runtime.md](runtime.md)「インストール先の構成」「インストーラのビルド」
@@ -21,7 +21,7 @@
 - 実装は engine/src/dict.rs (システム辞書・単漢字辞書・記号辞書と fst の検索)、engine/src/userdict.rs (ユーザ辞書と
   インポート辞書)、engine/src/import.rs (他の IME の辞書の取り込み)、engine/src/pos.rs (品詞 ID 表)、
   engine/src/matrix.rs (連接行列)、engine/src/main.rs (辞書の探索と読み込み、ADDWORD・RELOADUSER・CONVUSER・
-  CONVSYM の受付)、engine/gui/src/regword.rs と engine/gui/src/bin/quicklime-regword.rs (単語登録ツール)、
+  CONVSYM・CONVNAME の受付)、engine/gui/src/regword.rs と engine/gui/src/bin/quicklime-regword.rs (単語登録ツール)、
   tsf/src/text_service.cpp (`LaunchWordRegister`)、engine/examples/build_ut_dict.rs と scripts/fetch-ut-dict.ps1
   (UT 辞書の生成と取得)
 
@@ -97,9 +97,15 @@
 ### 連接行列と品詞 ID 表
 
 - 連接行列 (`connection_single_column.txt`) が無いか読めなければ、連接コストを 0 にして動く
-- 品詞 ID 表 (`id.def`) は、付属語の判定 ([engine.md](engine.md)「コスト」) と、ユーザ辞書・インポート辞書の品詞名から
-  文脈 ID を引くのに使う。無いか読めなければ、どの語も自立語として扱い (1 語が 1 文節になる)、ユーザ辞書・インポート辞書の
-  語は一般名詞の ID (1851) にする
+- 品詞 ID 表 (`id.def`) は、付属語の判定 ([engine.md](engine.md)「コスト」)・人名の判定と、ユーザ辞書・インポート辞書の
+  品詞名から文脈 ID を引くのに使う。無いか読めなければ、どの語も自立語として扱い (1 語が 1 文節になる)、人名を判定せず、
+  ユーザ辞書・インポート辞書の語は一般名詞の ID (1851) にする
+- 人名は、品詞名が `名詞,固有名詞,人名,` で始まる ID (Mozc では人名一般・名・姓) を左文脈 ID に持つ語。ID の数値は
+  固定せず、品詞 ID 表を読んだときに品詞名から求める (表ごとに ID が違うため)。システム辞書の人名を変換・予測の候補で
+  抑えるのと ([engine.md](engine.md)「文節の候補 (CONVSEG・CONVCTX)」、[suggest.md](suggest.md)「予測」)、人名変換
+  (F3) の CONVNAME で人名を集めるのに使う
+- F3 の CONVNAME は、読みに完全一致する人名を、ユーザ辞書の名詞系の語 (記載順) → インポート辞書の名詞系の語 (記載順) →
+  システム辞書 (コスト順。変換の候補で抑えた人名も含む) の順に、同じ表記を除いて返す
 
 ## UT 辞書
 

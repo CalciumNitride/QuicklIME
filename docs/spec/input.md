@@ -44,7 +44,7 @@ run・キーの意味・候補バー・変換・学習・前文脈・モード�
 | 入力パネルの入力行 | 設定 `panel_input` 1 かテーマの `input_row always` のとき (`candidate_bar` 1 のときだけ) | 常に出す。`candidate_bar` 0 でも入力行だけの入力パネルを出す |
 | 採用・確定で文書に入れる | composition をその文字列で終える | キャレット位置に挿入する (選択があれば置き換える) |
 | 採用の後も run が続く (採用範囲を縮めた採用・採用に続く打鍵) | 採用した部分で composition を終え、同じ edit session で次の composition を張る | 採用した部分を挿入し、残りを入力行に残す |
-| 変換キー・F4〜F10 | run の composition をそのまま候補選択に使う | キャレット位置に空の composition を張る。張れなければ変換せずに run を続ける |
+| 変換キー・F3〜F10 | run の composition をそのまま候補選択に使う | キャレット位置に空の composition を張る。張れなければ変換せずに run を続ける |
 | 変換の取消 | composition を読みの表示に戻し、run の composition として続ける | composition を空で終え、読みを入力行に戻す |
 | クリック・キャレット移動 | アプリが composition を終えたら、アプリが残した文字列のまま run を終える (学習しない)。終えなければ run を続ける | run を続け、採用・確定した時点のキャレット位置に入れる |
 | 入力パネルの位置の基準 | composition の矩形 | 選択範囲の矩形 (取れなければシステムキャレット) |

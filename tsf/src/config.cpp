@@ -94,6 +94,7 @@ const wchar_t* const kKeyFuncNames[kKeyFuncCount] = {
     L"key.next_candidate",
     L"key.prev_candidate",
     L"key.commit_run",
+    L"key.convert_name",
     L"key.convert_symbol",
     L"key.convert_user",
     L"key.to_hiragana",
@@ -569,8 +570,8 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
     case KeyFunc::None:
         return false;
     default:
-        // CommitRun と記号変換・ユーザ語変換。F4・F5 を入力なしで働かせると、キャレットが
-        // かなの直後にあるだけでブラウザの再読み込みなどを奪うため
+        // CommitRun と人名変換・記号変換・ユーザ語変換。F3〜F5 を入力なしで働かせると、キャレットが
+        // かなの直後にあるだけでブラウザの検索・再読み込みなどを奪うため
         return state != KeyState::Idle;
     }
 }
@@ -585,6 +586,7 @@ std::array<KeyAssignment, kKeyFuncCount> TsfConfig::DefaultKeyAssignments()
     set(KeyFunc::NextCandidate, {false, false, false, VK_SPACE});
     set(KeyFunc::PrevCandidate, {false, false, true, VK_SPACE});
     set(KeyFunc::CommitRun, {false, false, false, VK_NONCONVERT});
+    set(KeyFunc::ConvertName, {false, false, false, VK_F3});
     set(KeyFunc::ConvertSymbol, {false, false, false, VK_F4});
     set(KeyFunc::ConvertUser, {false, false, false, VK_F5});
     set(KeyFunc::ToHiragana, {false, false, false, VK_F6});

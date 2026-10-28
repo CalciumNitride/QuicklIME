@@ -64,6 +64,8 @@ struct Item {
     score: i64,
     /// 同じ点数のときの順 (全体変換 0、予測 1)
     rank: u8,
+    /// システム辞書の人名の予測か
+    name: bool,
 }
 
 /// かな kana (打鍵は keys) の SUGGEST の並びを返す。ctx は直前に確定した文節
@@ -129,6 +131,7 @@ pub fn suggest(
             suggestion: Suggestion { kind, segments: candidate.segments.clone() },
             score,
             rank: 0,
+            name: false,
         };
         if nbest.learned && i == 0 {
             pinned = Some(item);
@@ -149,12 +152,15 @@ pub fn suggest(
                 - c0
                 + tuning.predict_bias
         };
-        for p in predict::scored(kana, &matcher, context, dict, user, learning, cfg, &word_score, c0) {
+        let predictions =
+            predict::scored(kana, &matcher, context, dict, user, learning, cfg, &word_score, c0, functional);
+        for p in predictions {
             let kind = if p.edits > 0 { Kind::PredictTypo } else { Kind::Predict };
             items.push(Item {
                 suggestion: Suggestion { kind, segments: vec![(p.reading, p.surface)] },
                 score: p.score,
                 rank: 1,
+                name: p.name,
             });
         }
     }
@@ -171,6 +177,7 @@ pub fn suggest(
             // 下にあっても全体変換を残す。位置は上の予測のもの
             Some(i) if is_whole(item.suggestion.kind) && !is_whole(list[i].suggestion.kind) => {
                 list[i].suggestion = item.suggestion;
+                list[i].name = false;
             }
             Some(_) => {}
         }
@@ -194,6 +201,23 @@ pub fn suggest(
             list = kept;
         }
     }
+
+    // 短い読みでは名の人名の予測が 1 ページ目を埋めるので、システム辞書の人名は点数の小さい
+    // MAX_NAME_CANDIDATES 件だけを残し、残りは最後に回す (変換の候補と同じ抑え方)
+    let mut names = 0;
+    let (mut kept, mut moved): (Vec<Item>, Vec<Item>) = (Vec::new(), Vec::new());
+    for item in list {
+        if item.name {
+            names += 1;
+            if names > convert::MAX_NAME_CANDIDATES {
+                moved.push(item);
+                continue;
+            }
+        }
+        kept.push(item);
+    }
+    kept.extend(moved);
+    let list = kept;
     let mut list: Vec<Suggestion> = list.into_iter().map(|item| item.suggestion).collect();
 
     if let Some(h) = head.as_ref().and_then(|head| list.iter().position(|s| s.surface() == *head)) {
@@ -268,6 +292,36 @@ mod tests {
 
     fn surfaces(list: &[Suggestion]) -> Vec<String> {
         list.iter().map(Suggestion::surface).collect()
+    }
+
+    #[test]
+    fn システム辞書の人名の予測は3件だけが点数の位置に出る() {
+        // 人名 5 件 (名 id 11・姓 id 12。低コスト) と一般名詞 2 件 (高コスト)
+        let dict = dict_from(
+            "せいこう\t11\t11\t2000\t静香\n\
+             せいこう\t11\t11\t2100\t正孝\n\
+             せいこう\t12\t12\t2200\t正幸\n\
+             せいこう\t11\t11\t2300\t正康\n\
+             せいこう\t11\t11\t2400\t成晃\n\
+             せいこう\t1\t1\t5000\t正孔\n\
+             せいこう\t1\t1\t5100\t精工\n",
+        );
+        let functional = FunctionalIds::load_from(
+            "1 名詞,一般\n2 助詞,係助詞\n11 名詞,固有名詞,人名,名\n12 名詞,固有名詞,人名,姓\n".as_bytes(),
+        )
+        .unwrap();
+        // 補正の全体変換 (せいこう → 静香) が予測と同じ表記で出ないよう、補正を切る
+        let cfg = Config { max_predictions: 18, typo_correction: false, ..Config::default() };
+        let keys = Keys::parse("せいこ", "se\x1fi\x1fko").unwrap();
+        let got = suggest(
+            "せいこ", None, &keys, &dict, &UserDict::empty(), &ConnectionMatrix::empty(), &functional,
+            &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        let predictions: Vec<String> =
+            got.iter().filter(|s| s.kind == Kind::Predict).map(Suggestion::surface).collect();
+        assert_eq!(predictions, ["静香", "正孝", "正幸", "正孔", "精工", "正康", "成晃"], "{got:?}");
+        // 回した人名は並びの最後
+        assert_eq!(surfaces(&got[got.len() - 2..]), ["正康", "成晃"]);
     }
 
     #[test]

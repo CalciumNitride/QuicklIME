@@ -19,7 +19,11 @@ use crate::userdict::UserDict;
 /// 辞書由来の候補の最大数 (文全体・文節共通)。
 /// かなの同音異義語は多い (例:「きょう」は約50語) ため、ある程度大きくしておく。
 /// TSF 側の候補ウィンドウはページ表示で対応する
-const MAX_DICT_CANDIDATES: usize = 24;
+const MAX_DICT_CANDIDATES: usize = 40;
+
+/// 読み全体に完全一致する辞書の語のうち、システム辞書の人名をコストの位置に残す数
+/// (docs/spec/engine.md「文節の候補 (CONVSEG・CONVCTX)」)。残りは人名以外の語の後ろへ回す
+pub(crate) const MAX_NAME_CANDIDATES: usize = 3;
 
 /// 辞書引きする読みの最大文字数 (ラティス構築時)
 pub(crate) const MAX_READING_CHARS: usize = 16;
@@ -241,7 +245,7 @@ pub fn convert_segments(
             });
             typo_segment(group, top, left_id, dict, user, matrix, functional, learning)
         } else {
-            segment_from_group(group, dict, user, learning)
+            segment_from_group(group, dict, user, functional, learning)
         };
         segments.push(segment);
         start = end;
@@ -276,7 +280,7 @@ fn typo_segment(
             }]
         });
     let raw: String = words.iter().map(|w| w.surface.as_str()).collect();
-    let mut segment = segment_from_group(&words, dict, user, learning);
+    let mut segment = segment_from_group(&words, dict, user, functional, learning);
     if !segment.candidates.contains(&corrected) {
         let position = if top && segment.candidates[0] == raw { 0 } else { 1 };
         segment.candidates.insert(position, corrected.clone());
@@ -346,7 +350,7 @@ fn segments_from_path(
 ) -> Vec<Segment> {
     group_path(path, functional)
         .iter()
-        .map(|group| segment_from_group(group, dict, user, learning))
+        .map(|group| segment_from_group(group, dict, user, functional, learning))
         .collect()
 }
 
@@ -488,7 +492,7 @@ pub fn convert_segments_fixed(
                     right_id: DEFAULT_NOUN_ID,
                 }]
             });
-        let segment = segment_from_group(&group, dict, user, learning);
+        let segment = segment_from_group(&group, dict, user, functional, learning);
         let next_ctx = Context {
             reading: segment.reading.clone(),
             surface: segment.candidates[0].clone(),
@@ -500,21 +504,50 @@ pub fn convert_segments_fixed(
 }
 
 /// 読みに完全一致する候補を (コスト, 表記) で集める。
-/// システム辞書・ユーザ登録の名詞系単語・インポート辞書をまとめてコスト昇順に並べる
+/// システム辞書・ユーザ登録の名詞系単語・インポート辞書をまとめてコスト昇順に並べ、システム辞書の人名は
+/// コストの小さい MAX_NAME_CANDIDATES 件だけをその位置に残し、残りを人名以外の語の後ろへ (コスト順で) 回す。
+/// 短い読みでは名の人名が上位を埋め、一般名詞が MAX_DICT_CANDIDATES の枠から押し出されるため。
+/// ユーザ辞書・インポート辞書の人名は利用者が入れた語なので抑えない
 fn exact_candidates<'a>(
     reading: &str,
     dict: &'a Dictionary,
     user: &'a UserDict,
+    functional: &FunctionalIds,
 ) -> Vec<(i16, &'a str)> {
-    let mut hits: Vec<(i16, &str)> = dict
+    // (コスト, 表記, システム辞書の人名か)
+    let mut hits: Vec<(i16, &str, bool)> = dict
         .lookup(reading)
         .iter()
-        .map(|e| (e.cost, e.surface.as_str()))
-        .chain(user.lookup_words(reading).into_iter().map(|w| (w.cost, w.surface.as_str())))
-        .chain(user.imported_words(reading).into_iter().map(|e| (e.cost, e.surface.as_str())))
+        .map(|e| (e.cost, e.surface.as_str(), functional.is_person_name(e.left_id)))
+        .chain(user.lookup_words(reading).into_iter().map(|w| (w.cost, w.surface.as_str(), false)))
+        .chain(user.imported_words(reading).into_iter().map(|e| (e.cost, e.surface.as_str(), false)))
         .collect();
-    hits.sort_by_key(|(cost, _)| *cost);
-    hits
+    hits.sort_by_key(|(cost, _, _)| *cost);
+
+    // 読みと同じ表記と、先に出た表記と同じ表記は候補にならない (呼び出し側で除く) ので数えない。
+    // 数えると「せいこう」の名のひらがな表記などで、出る人名が 3 件より少なくなる。
+    // 回した人名と同じ表記の人名 (名と姓の両方にある表記) は、元の位置に出ないよう一緒に回す
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut moved_names: HashSet<&str> = HashSet::new();
+    let mut names = 0;
+    let mut kept: Vec<(i16, &str)> = Vec::with_capacity(hits.len());
+    let mut moved: Vec<(i16, &str)> = Vec::new();
+    for (cost, surface, name) in hits {
+        let first = seen.insert(surface);
+        if name && first && surface != reading {
+            names += 1;
+            if names > MAX_NAME_CANDIDATES {
+                moved_names.insert(surface);
+            }
+        }
+        if name && moved_names.contains(surface) {
+            moved.push((cost, surface));
+        } else {
+            kept.push((cost, surface));
+        }
+    }
+    kept.extend(moved);
+    kept
 }
 
 /// 単語列 (1文節分) から候補リスト付きの Segment を作る。
@@ -527,6 +560,7 @@ fn segment_from_group(
     group: &[PathWord],
     dict: &Dictionary,
     user: &UserDict,
+    functional: &FunctionalIds,
     learning: &LearningStore,
 ) -> Segment {
     let reading: String = group.iter().map(|w| w.reading.as_str()).collect();
@@ -547,7 +581,7 @@ fn segment_from_group(
     }
 
     // 読み全体の完全一致候補 (「した」→ 下 など)
-    for (_, surface) in exact_candidates(&reading, dict, user) {
+    for (_, surface) in exact_candidates(&reading, dict, user, functional) {
         if result.len() >= MAX_DICT_CANDIDATES {
             break;
         }
@@ -559,7 +593,7 @@ fn segment_from_group(
     // 先頭の自立語を入れ替えた候補 (例: 今日+は -> 京は, 教は...)。
     // 読みと同じ表記 (ひらがなのまま) は末尾で必ず追加するのでここでは除く
     let rest: String = group[1..].iter().map(|w| w.surface.as_str()).collect();
-    for (_, surface) in exact_candidates(&group[0].reading, dict, user) {
+    for (_, surface) in exact_candidates(&group[0].reading, dict, user, functional) {
         if result.len() >= MAX_DICT_CANDIDATES {
             break;
         }
@@ -574,7 +608,7 @@ fn segment_from_group(
     // 入れ替えた候補を積む (「10次」しか出ず「10時」が選べなくなるのを防ぐ)
     if group.len() >= 2 && is_number_run(&group[0].reading) {
         let tail_reading: String = group[1..].iter().map(|w| w.reading.as_str()).collect();
-        for (_, surface) in exact_candidates(&tail_reading, dict, user) {
+        for (_, surface) in exact_candidates(&tail_reading, dict, user, functional) {
             if result.len() >= MAX_DICT_CANDIDATES {
                 break;
             }
@@ -644,7 +678,7 @@ pub fn candidates(
     }
 
     // 読み全体の完全一致候補をコスト順に (同じ表記は除く)
-    for (_, surface) in exact_candidates(kana, dict, user) {
+    for (_, surface) in exact_candidates(kana, dict, user, functional) {
         if result.len() >= MAX_DICT_CANDIDATES + 1 {
             break;
         }
@@ -886,7 +920,7 @@ fn nbest_with(
     // 縦の候補リストで、読みそのものの別表記を選べるようにする (CONVERT の並びと同じ)
     let mut dict_count = 0;
     let shortcuts = user.lookup_shortcuts(kana).into_iter().map(|surface| (surface, true));
-    let exact = exact_candidates(kana, dict, user)
+    let exact = exact_candidates(kana, dict, user, functional)
         .into_iter()
         .map(|(_, surface)| (surface, is_user_word(kana, surface, user)));
     for (surface, from_user) in shortcuts.chain(exact) {
@@ -3921,5 +3955,90 @@ mod tests {
         let kana = "きのうはあめがふった";
         assert_eq!(constrained_surface(&dict, kana, "今日".as_bytes(), false), None);
         assert_eq!(constrained_surface(&dict, kana, "昨日は雨が降ったよ".as_bytes(), false), None);
+    }
+
+    /// 人名 5 件 (名 id 11・姓 id 12。低コスト) と一般名詞 2 件 (高コスト) が同じ読みの辞書。
+    /// 読みと同じ表記の名と、一般名詞の間のコストに姓としても載る名 (成晃) も置く
+    fn name_dict() -> Dictionary {
+        dict_from(
+            "せいこう\t11\t11\t2000\t静香\n\
+             せいこう\t11\t11\t2050\tせいこう\n\
+             せいこう\t11\t11\t2100\t正孝\n\
+             せいこう\t12\t12\t2200\t正幸\n\
+             せいこう\t11\t11\t2300\t正康\n\
+             せいこう\t11\t11\t2400\t成晃\n\
+             せいこう\t1\t1\t5000\t正孔\n\
+             せいこう\t12\t12\t5050\t成晃\n\
+             せいこう\t1\t1\t5100\t精工\n",
+        )
+    }
+
+    fn name_functional() -> FunctionalIds {
+        let data = "1 名詞,一般\n\
+                    2 助詞,係助詞\n\
+                    11 名詞,固有名詞,人名,名\n\
+                    12 名詞,固有名詞,人名,姓\n";
+        FunctionalIds::load_from(data.as_bytes()).unwrap()
+    }
+
+    fn name_segment(user: &UserDict, functional: &FunctionalIds) -> Vec<String> {
+        let segments = convert_segments(
+            "せいこう",
+            None,
+            &name_dict(),
+            user,
+            &ConnectionMatrix::empty(),
+            functional,
+            &LearningStore::in_memory(),
+            false,
+        );
+        assert_eq!(segments.len(), 1);
+        segments[0].candidates.clone()
+    }
+
+    #[test]
+    fn システム辞書の人名は3件だけがコストの位置に残り残りは一般名詞の後ろに回る() {
+        // 読みと同じ表記の名 (せいこう) は候補にならないので 3 件に数えない
+        assert_eq!(
+            name_segment(&no_user(), &name_functional()),
+            ["静香", "正孝", "正幸", "正孔", "精工", "正康", "成晃", "セイコウ", "せいこう"]
+        );
+    }
+
+    #[test]
+    fn 入力全体の候補の読み全体の完全一致も人名を抑える() {
+        let got = surfaces_of(&convert_nbest(
+            "せいこう",
+            None,
+            &name_dict(),
+            &no_user(),
+            &ConnectionMatrix::empty(),
+            &name_functional(),
+            &LearningStore::in_memory(),
+            false,
+        ));
+        // 先頭 5 件は経路 (N-best) の候補で並びに手を入れない。続く読み全体の完全一致の部分では、
+        // 経路の候補に無い人名 (成晃) が一般名詞の後ろに回る
+        assert_eq!(got, ["静香", "せいこう", "正孝", "正幸", "正康", "正孔", "精工", "成晃", "セイコウ"]);
+    }
+
+    #[test]
+    fn ユーザ辞書の人名は抑えずコストの位置に出る() {
+        let functional = name_functional();
+        let mut user = UserDict::empty();
+        user.load_from("せいこう\t匡\t名\nせいこう\t杏\t姓\n".as_bytes(), &functional);
+        // ユーザ辞書の語のコスト (3000) は残した人名と一般名詞の間。人名の 4・5 件目に当たるが抑えない
+        assert_eq!(
+            name_segment(&user, &functional),
+            ["静香", "正孝", "正幸", "匡", "杏", "正孔", "精工", "正康", "成晃", "セイコウ", "せいこう"]
+        );
+    }
+
+    #[test]
+    fn 品詞表が無ければ人名を抑えない() {
+        assert_eq!(
+            name_segment(&no_user(), &FunctionalIds::empty()),
+            ["静香", "正孝", "正幸", "正康", "成晃", "正孔", "精工", "セイコウ", "せいこう"]
+        );
     }
 }

@@ -4,6 +4,10 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [name-candidates.md](name-candidates.md): 変換の候補と予測でシステム辞書の人名を 3 件に抑え、辞書の候補の枠を
+  40 件に広げる。人名だけを出す人名変換 (F3) を足す。[docs/spec/engine.md](../spec/engine.md)・
+  [docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/conversion.md](../spec/conversion.md)・
+  [docs/spec/keys.md](../spec/keys.md)・[docs/spec/dictionary.md](../spec/dictionary.md) へ移した
 - [panel-font-gdi-name.md](panel-font-gdi-name.md): 入力パネルのフォントを GDI の面名 (太さ違いの面名を含む) から
   DirectWrite のフォントへ解決し、設定ツールの選択肢からビットマップ・ベクタのフォントを外す。
   [docs/spec/display.md](../spec/display.md)・[docs/spec/tools.md](../spec/tools.md) へ移した

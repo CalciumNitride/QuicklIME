@@ -40,7 +40,7 @@
 |---|---|
 | [input.md](input.md) | 入力方式 (run・`input_buffer`・読める文書の判定・確定と取消・確定アンドゥ・改行キー・ローマ字テーブル・InputScope・パスワード欄・起動時の IME の状態) |
 | [keys.md](keys.md) | キー割当 (状態・機能・割当の照合・状態別のコア操作の表・設定ファイルの書式) |
-| [conversion.md](conversion.md) | 変換キーの候補選択 (変換の対象・`segment_ui`・範囲の伸縮・文節 UI・後置再変換・採用した文字列の記憶・F4〜F10・数字の書き方・生ローマ字・対記号) |
+| [conversion.md](conversion.md) | 変換キーの候補選択 (変換の対象・`segment_ui`・範囲の伸縮・文節 UI・後置再変換・採用した文字列の記憶・F3〜F10・数字の書き方・生ローマ字・対記号) |
 | [engine.md](engine.md) | 変換エンジン (Viterbi・文節の分け方・N-best・タイプミス補正・逆変換・LLM の並べ替えと生成・評価セット) |
 | [dictionary.md](dictionary.md) | 辞書 (システム辞書・語彙補強・取り込み・ユーザ辞書・単語登録ツール) |
 | [suggest.md](suggest.md) | 候補バーと予測 (SUGGEST・ファジィ照合・予測・後続語予測・文節の連なりの統計・ページ送り・採用範囲の縮め) |

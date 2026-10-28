@@ -163,7 +163,7 @@ private:
     // 候補選択中 (run を昇格した composition) のキー処理
     HRESULT HandleKeyConverting(ITfContext* context, WPARAM wparam);
 
-    // 文字種変換・記号変換・ユーザ語変換 (既定 F4-F10) を実行する。それ以外の機能は何もしない
+    // 文字種変換・人名変換・記号変換・ユーザ語変換 (既定 F3-F10) を実行する。それ以外の機能は何もしない
     HRESULT ApplyFunctionKey(ITfContext* context, KeyFunc func);
 
     // 同期 edit session の実行 (session の所有権を受け取り、実行後に解放する)
@@ -210,10 +210,17 @@ private:
     // 元のまま → 先頭大文字 → 全部大文字 (→ 全部小文字) と循環する。
     // 候補ウィンドウは表示しない
     HRESULT DirectConvert(ITfContext* context, ConversionForm form);
+    // F3: 現在文節 (未変換なら全文) を人名の候補のみで変換する
+    HRESULT ConvertToNames(ITfContext* context);
     // F4: 現在文節 (未変換なら全文) を特殊変換 (記号辞書 + 日付・時刻) の候補のみで変換する
     HRESULT ConvertToSymbols(ITfContext* context);
     // F5: 現在文節 (未変換なら全文) を短縮よみ (ユーザ辞書) の候補のみで変換する
     HRESULT ConvertToShortcuts(ITfContext* context);
+    // F3〜F5 の共通の流れ: 現在文節 (未変換なら全文) の読みで fetch が返す候補のみで変換する。
+    // 候補が無い (またはエンジン不調) なら何もせず、同じ候補を表示中なら次候補へ送る
+    HRESULT ConvertToEngineList(
+        ITfContext* context,
+        bool (EngineClient::*fetch)(const std::wstring&, std::vector<std::wstring>*));
     // 未変換なら全文を1文節とした変換状態を作る (直接変換の下準備)
     void EnsureConversionState();
     // index の文節の選択候補がかっこ・クオートなどの対記号なら、
@@ -764,7 +771,7 @@ private:
     HRESULT SpaceAppend(ITfContext* context, bool shifted);
     // 食べずにアプリへ渡すキー (Enter・矢印など) の前に、見えているとおりの読みで run を終える
     void EndAppendRunForPassthroughKey(ITfContext* context);
-    // 変換キー・F4〜F10: composition 入力は run の composition で、パネル保持入力は空の
+    // 変換キー・F3〜F10: composition 入力は run の composition で、パネル保持入力は空の
     // composition を張って候補選択に入る
     HRESULT BeginAppendConversion(ITfContext* context, KeyFunc func);
     // 食べなかったキーの後処理 (改行・送信をアプリへ渡したら LLM の履歴を捨てる)

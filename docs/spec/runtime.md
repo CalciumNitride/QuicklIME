@@ -115,7 +115,7 @@ TSF 層は、エンジンのパイプを開けないときにエンジンを起�
 | 起動の仕方 | 問い合わせ |
 |---|---|
 | 開けなければ起動だけする (起動を待たず、その問い合わせは失敗) | アクティブ化 (`ActivateEx`)、SUGGEST、打鍵ごとの CONVNBEST、ASCIISTART・ASCIIWORD・ASCIIFORM、RERANK、PREDICT・NEXTWORD |
-| 開けなければ起動して待つ | CONVSEG・CONVCTX、変換キーなどの CONVNBEST、CONVSYM、CONVUSER、学習 (LEARN・LEARN2・LEARNSEG・LEARNWORD) |
+| 開けなければ起動して待つ | CONVSEG・CONVCTX、変換キーなどの CONVNBEST、CONVSYM、CONVUSER、CONVNAME、学習 (LEARN・LEARN2・LEARNSEG・LEARNWORD) |
 | 起動しない (開いてみるだけ) | REVERSE、FORGET、RERANKGET (接続済みのときだけ送る) |
 
 - アクティブ化で起動しておくのは、最初の変換より前にエンジンを立ち上げておくため。ログオン時は explorer などのプロセスでも

@@ -159,6 +159,11 @@ public:
     // 通信に成功すれば true (候補が1つも無い場合も true で candidates は空)
     bool ConvertShortcuts(const std::wstring& kana, std::vector<std::wstring>* candidates);
 
+    // 読みに対する人名の候補のみを取得する (CONVNAME、F3 の人名変換用)。
+    // 通信に成功すれば true (候補が1つも無い場合も true で candidates は空。CONVNAME を
+    // 知らない旧エンジンには false)
+    bool ConvertNames(const std::wstring& kana, std::vector<std::wstring>* candidates);
+
     // 文節ごとの確定結果をエンジンに記録する (LEARN / 文脈があれば LEARN2)。
     // 失敗しても確定処理には影響させない
     bool Learn(const std::vector<LearnEntry>& entries);

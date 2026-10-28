@@ -20,6 +20,7 @@ use std::path::Path;
 use crate::config::Config;
 use crate::dict::Dictionary;
 use crate::learn::{self, LearningStore};
+use crate::pos::FunctionalIds;
 use crate::typo;
 use crate::userdict::UserDict;
 
@@ -111,6 +112,8 @@ pub struct Prediction {
     pub score: i64,
     /// 照合に使ったずれの数
     pub edits: usize,
+    /// システム辞書の人名か (同じ表記をほかの語からも引いたときは false)。SUGGEST の並びで件数を抑える
+    pub name: bool,
 }
 
 /// 打鍵のファジィ照合 matcher で予測の候補を集め、点数を付けて返す (SUGGEST の予測)。
@@ -132,20 +135,31 @@ pub fn scored(
     cfg: &Config,
     word_score: &dyn Fn(&str, &str, u16, u16, i16) -> i64,
     c0: i64,
+    functional: &FunctionalIds,
 ) -> Vec<Prediction> {
     let max = cfg.max_predictions;
     let mut results: Vec<Prediction> = Vec::new();
     // 表記 → results の位置
     let mut index: HashMap<String, usize> = HashMap::new();
-    let mut push = |reading: &str, surface: &str, score: i64, edits: usize| {
+    let mut push = |reading: &str, surface: &str, score: i64, edits: usize, name: bool| {
         if surface == kana {
             return;
         }
-        let prediction =
-            Prediction { reading: reading.to_string(), surface: surface.to_string(), score, edits };
+        let prediction = Prediction {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            score,
+            edits,
+            name,
+        };
         match index.get(surface) {
-            Some(&i) if score < results[i].score => results[i] = prediction,
-            Some(_) => {}
+            Some(&i) => {
+                let name = name && results[i].name;
+                if score < results[i].score {
+                    results[i] = prediction;
+                }
+                results[i].name = name;
+            }
             None => {
                 index.insert(surface.to_string(), results.len());
                 results.push(prediction);
@@ -154,12 +168,12 @@ pub fn scored(
     };
     // 短縮よみの点数は仮の値 (通常の最良経路のすぐ上)
     for (reading, surface, cost, edits) in user.shortcut_fuzzy(matcher, max) {
-        push(reading, surface, -1 + i64::from(cost), edits);
+        push(reading, surface, -1 + i64::from(cost), edits, false);
     }
     for (word, cost, edits) in user.word_fuzzy(matcher, max) {
         let score = word_score(&word.reading, &word.surface, word.left_id, word.right_id, word.cost)
             + i64::from(cost);
-        push(&word.reading, &word.surface, score, edits);
+        push(&word.reading, &word.surface, score, edits, false);
     }
     let base = learning.phrase_base() - c0;
     let mut phrases: Vec<(i64, &str, &str, usize)> = learning
@@ -182,35 +196,31 @@ pub fn scored(
     phrases.sort_by_key(|&(score, _, _, _)| score);
     phrases.truncate(max);
     for (score, reading, surface, edits) in phrases {
-        push(reading, surface, score, edits);
+        push(reading, surface, score, edits, false);
     }
     // 同じ語は複数の位置から引けるので、点数の安いほうを残す
-    let mut hits: Vec<(i64, String, String, usize)> = Vec::new();
+    let mut hits: Vec<(i64, String, String, usize, bool)> = Vec::new();
     let positions = dict.fuzzy_prefixes(matcher, MAX_FUZZY_PREFIXES);
     for position in &positions {
         for (reading, entry) in dict.predict_prefix_entries(&position.prefix, max * 2 + 1) {
             let score = word_score(&reading, &entry.surface, entry.left_id, entry.right_id, entry.cost)
                 + i64::from(position.cost);
-            hits.push((score, reading, entry.surface.clone(), position.edits));
+            let name = functional.is_person_name(entry.left_id);
+            hits.push((score, reading, entry.surface.clone(), position.edits, name));
         }
     }
     for position in user.imported_fuzzy_prefixes(matcher, MAX_FUZZY_PREFIXES) {
         for (reading, entry) in user.imported_prefix_entries(&position.prefix, max * 2 + 1) {
             let score = word_score(&reading, &entry.surface, entry.left_id, entry.right_id, entry.cost)
                 + i64::from(position.cost);
-            hits.push((score, reading, entry.surface.clone(), position.edits));
+            hits.push((score, reading, entry.surface.clone(), position.edits, false));
         }
     }
     // 安定ソートなので同じ点数は同梱辞書が先
-    hits.sort_by_key(|(score, _, _, _)| *score);
-    let mut seen: Vec<(String, String)> = Vec::new();
-    for (score, reading, surface, edits) in hits {
-        let key = (reading, surface);
-        if seen.contains(&key) {
-            continue;
-        }
-        push(&key.0, &key.1, score, edits);
-        seen.push(key);
+    hits.sort_by_key(|(score, _, _, _, _)| *score);
+    // 同じ表記の 2 件目以降は点数で置き換わらず、人名かの印だけを合わせる
+    for (score, reading, surface, edits, name) in hits {
+        push(&reading, &surface, score, edits, name);
     }
     results
 }
@@ -623,7 +633,8 @@ mod tests {
         let matcher = typo::Matcher::new(&keys, 0, &typo::TUNING);
         let word_score = |_: &str, _: &str, _: u16, _: u16, cost: i16| i64::from(cost);
         let run = |context: Option<&str>| {
-            scored("きょう", &matcher, context, &sample_dict(), &no_user(), &learning, &cfg(), &word_score, 0)
+            let functional = FunctionalIds::empty();
+            scored("きょう", &matcher, context, &sample_dict(), &no_user(), &learning, &cfg(), &word_score, 0, &functional)
         };
         // PHRASE_BASE − 句の学習の割引 0 − 文脈の句の学習の割引 2500 − c0 0
         let expected = crate::learn::WEIGHTS.phrase_base - 2500;
@@ -732,8 +743,9 @@ mod tests {
         let word_score = |reading: &str, surface: &str, _: u16, _: u16, cost: i16| {
             i64::from(cost) - learning.word_bonus(reading, surface) - c0
         };
+        let functional = FunctionalIds::empty();
         let mut got: Vec<(String, String, i64)> =
-            scored(kana, &matcher, context, &sample_dict(), &no_user(), learning, &cfg(), &word_score, c0)
+            scored(kana, &matcher, context, &sample_dict(), &no_user(), learning, &cfg(), &word_score, c0, &functional)
                 .into_iter()
                 .map(|p| (p.reading, p.surface, p.score))
                 .collect();

@@ -5,7 +5,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 
 - 利用者向けの説明は [キー割当](../user/keymap.md) と [入力と変換](../user/input.md#キー操作) にある
 - 状態ごとの表のセルは働きの要約で、働きの中身は各仕様書にある。run・読みの編集・run の終わり方・送り直し・確定アンドゥ・
-  改行キー・IME のオン/オフは [input.md](input.md)、変換キーの候補選択 (変換の対象・範囲の伸縮・文節 UI・確定と取消・F4〜F10) は
+  改行キー・IME のオン/オフは [input.md](input.md)、変換キーの候補選択 (変換の対象・範囲の伸縮・文節 UI・確定と取消・F3〜F10) は
   [conversion.md](conversion.md)、候補バーの選択と採用・採用範囲の縮め・後続語の予測は [suggest.md](suggest.md)
 - 設定ツールのキー割当の画面 (機能ごとのカード・キーの取り込み・重なりの検査) は [tools.md](tools.md)「キー割当のページ」
 - 実装は tsf/src/config.cpp (割当の読み込み・割り当てられるかの判定・照合)、tsf/src/text_service.cpp (`IsKeyEaten`・
@@ -21,7 +21,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 |---|---|---|
 | 入力なし | `idle` | run が無い。後続語の予測を出していて選んでいないときを含む |
 | run 中 | `run` | run があり、候補選択中でもサジェスト選択中でもない |
-| 候補選択中 | `candidate` | 変換キー・F4〜F10 で変換の候補を選んでいる |
+| 候補選択中 | `candidate` | 変換キー・F3〜F10 で変換の候補を選んでいる |
 | サジェスト選択中 | `suggest` | 候補バーで候補を選んでいる。run の無いときに出す後続語の予測で候補を選んでいるときを含む |
 
 - 設定上の名前は状態別の上書き (下記「設定ファイルの書式」) に使う
@@ -38,7 +38,8 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 | `NextCandidate` | `key.next_candidate` | 候補選択中 | `Space` | 次候補 |
 | `PrevCandidate` | `key.prev_candidate` | 候補選択中 | `Shift+Space` | 前候補 |
 | `CommitRun` | `key.commit_run` | 入力なし以外 | `NonConvert` (無変換) | 確定キー。run 中: 見えているとおりに run を終える ([input.md](input.md)「run の終わり方」)。サジェスト選択中: 選んでいる候補を採用する ([suggest.md](suggest.md)「採用」「選択と採用」)。候補選択中: 確定する ([conversion.md](conversion.md)「確定と取消」) |
-| `ConvertSymbol` | `key.convert_symbol` | 入力なし以外 | `F4` | 記号・日付変換 ([conversion.md](conversion.md)「ファンクションキー変換 (F4〜F10)」) |
+| `ConvertName` | `key.convert_name` | 入力なし以外 | `F3` | 人名変換 ([conversion.md](conversion.md)「ファンクションキー変換 (F3〜F10)」) |
+| `ConvertSymbol` | `key.convert_symbol` | 入力なし以外 | `F4` | 記号・日付変換 (同上) |
 | `ConvertUser` | `key.convert_user` | 入力なし以外 | `F5` | ユーザ語変換 (同上) |
 | `ToHiragana` | `key.to_hiragana` | すべて | `F6` | ひらがな変換 (同上。入力なしの対象は `Convert` と同じ) |
 | `ToKatakana` | `key.to_katakana` | すべて | `F7` | カタカナ変換 (同上) |
@@ -57,7 +58,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 - `Convert` の割当は、Shift を足した打鍵にも一致する。候補選択中は Shift を足すと前候補になり、ほかの状態では Shift の有無で
   働きは変わらない
 - `CommitRun` は打鍵をアプリへ渡さない。run を終えたら後続語の予測を出す ([suggest.md](suggest.md)「出すとき・消すとき」)
-- `ConvertSymbol`・`ConvertUser` が入力なしで働かない理由は [conversion.md](conversion.md)「変換の対象」
+- `ConvertName`・`ConvertSymbol`・`ConvertUser` が入力なしで働かない理由は [conversion.md](conversion.md)「変換の対象」
 - `NextWordNext`・`NextWordPrev` に ↑ / ↓ を割り当てたときは、キャレット行の上に反転して出した入力パネルで向きを入れ替える
   ([display.md](display.md)「キャレット行の上に出すときの反転」)
 - `ForgetLearning` は、英字候補・学習でない候補を選んでいるとき・エンジンに接続できないときも打鍵を食べて何もしない。
@@ -151,7 +152,7 @@ key event sink の `OnTestKeyDown` / `OnKeyDown` で、打鍵ごとに次の順�
 | `NextWordNext`・`NextWordPrev` (Ctrl+↓・Ctrl+↑) | 後続語の予測を出していれば先頭 / 末尾を選ぶ。出していなければアプリへ渡す | 次 / 前の候補を選ぶ |
 | `ForgetLearning` (Ctrl+Delete) | 働かない (アプリへ渡す) | 選んでいる予測の学習を消す |
 | 変換キー・F6〜F10 | 入力なしの対象があれば変換する ([conversion.md](conversion.md)「変換の対象」)。無ければアプリへ渡す | 予測を消す |
-| F4・F5 | 働かない (アプリへ渡す) | 予測を消す |
+| F3〜F5 | 働かない (アプリへ渡す) | 予測を消す |
 | `UndoCommit` (Ctrl+Backspace) | 確定アンドゥ。働かないときはアプリへ渡す | 予測を消す |
 | `RegisterWord`・`OpenConfig` (Ctrl+F7・Ctrl+F12) | ツールを起動する | 予測を消す |
 | 改行キー (Ctrl+J) | 対象のアプリなら Shift+Enter を送る。対象外ならアプリへ渡す | 予測を消す |
@@ -182,7 +183,7 @@ key event sink の `OnTestKeyDown` / `OnKeyDown` で、打鍵ごとに次の順�
 | Home・End・Delete・Insert | run を終えて渡す | run を終えて渡す | 確定して渡す |
 | Ctrl+1〜9 | 候補バーがあれば、その番号の候補を採用する。無ければ run を終えて渡す | その番号の候補を採用する | その番号の候補で確定する |
 | 変換キー | 変換を始める | 変換を始める | 次候補 (Shift+変換キーは前候補) |
-| F4〜F10 | その変換を始める | その変換を始める | 今の候補選択にかける ([conversion.md](conversion.md)「ファンクションキー変換 (F4〜F10)」) |
+| F3〜F10 | その変換を始める | その変換を始める | 今の候補選択にかける ([conversion.md](conversion.md)「ファンクションキー変換 (F3〜F10)」) |
 | `ForgetLearning` (Ctrl+Delete) | run を終えて渡す | 選んでいる候補の学習を消す | 確定して渡す |
 | 改行キー (Ctrl+J。対象のアプリ) | 見えているとおりに run を終え、Shift+Enter を送る | 採用して run を終え、Shift+Enter を送る | 確定し、Shift+Enter を送る |
 | 割当の無い Ctrl 併用 (入力なしの機能・後続語の予測の選択の割当、対象外のアプリの改行キーを含む) | run を終えて渡す | run を終えて渡す | 確定して渡す |

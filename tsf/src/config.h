@@ -13,6 +13,7 @@ enum class KeyFunc {
     NextCandidate,   // 次候補 (既定 Space)
     PrevCandidate,   // 前候補 (既定 Shift+Space)
     CommitRun,       // 確定 (既定 無変換キー)
+    ConvertName,     // 人名変換 (既定 F3)
     ConvertSymbol,   // 記号・日付変換 (既定 F4)
     ConvertUser,     // ユーザ登録語変換 (既定 F5)
     ToHiragana,      // ひらがな変換 (既定 F6)

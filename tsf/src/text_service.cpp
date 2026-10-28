@@ -1954,7 +1954,7 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match, WPAR
     case KeyFunc::None:
         return S_OK;
     default:
-        // 文字種変換・記号変換・ユーザ語変換は変換状態に入るキーなので、run 中は
+        // 文字種変換・人名変換・記号変換・ユーザ語変換は変換状態に入るキーなので、run 中は
         // composition に昇格してから適用する
         if (Composing() || converting_) {
             return ApplyFunctionKey(context, match.func);
@@ -2098,14 +2098,17 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
 
 HRESULT TextService::ApplyFunctionKey(ITfContext* context, KeyFunc func)
 {
-    // 範囲を変えたときは F6〜F10 なら同じ文字種変換を、記号変換・ユーザ語変換の後は
+    // 範囲を変えたときは F6〜F10 なら同じ文字種変換を、人名変換・記号変換・ユーザ語変換の後は
     // 通常の変換をやり直す
     if (func >= KeyFunc::ToHiragana && func <= KeyFunc::ToHalfAscii) {
         rangeFunc_ = func;
-    } else if (func == KeyFunc::ConvertSymbol || func == KeyFunc::ConvertUser) {
+    } else if (func == KeyFunc::ConvertName || func == KeyFunc::ConvertSymbol ||
+               func == KeyFunc::ConvertUser) {
         rangeFunc_ = KeyFunc::Convert;
     }
     switch (func) {
+    case KeyFunc::ConvertName:
+        return ConvertToNames(context);
     case KeyFunc::ConvertSymbol:
         return ConvertToSymbols(context);
     case KeyFunc::ConvertUser:
@@ -2425,7 +2428,7 @@ HRESULT TextService::ResizeSegment(ITfContext* context, int delta)
     return hr;
 }
 
-// ---- ファンクションキー変換 (F4, F6-F10) ----
+// ---- ファンクションキー変換 (F3〜F10) ----
 
 void TextService::EnsureConversionState()
 {
@@ -2547,56 +2550,45 @@ HRESULT TextService::DirectConvert(ITfContext* context, ConversionForm form)
     return hr;
 }
 
+HRESULT TextService::ConvertToNames(ITfContext* context)
+{
+    // CONVNAME を知らない旧エンジンは ERR を返すので、候補が無い読みと同じく何もしない
+    return ConvertToEngineList(context, &EngineClient::ConvertNames);
+}
+
 HRESULT TextService::ConvertToSymbols(ITfContext* context)
 {
-    if (!Composing() && !InRun()) {
-        return E_UNEXPECTED;
-    }
-    const std::wstring reading =
-        converting_ ? segments_[segmentIndex_].reading : composer_.Commit();
-
-    std::vector<std::wstring> symbols;
-    if (!engine_.ConvertSymbols(reading, &symbols) || symbols.empty()) {
-        return S_OK; // 特殊変換の候補が無い読み (またはエンジン不調) なら何もしない
-    }
-
-    EnsureConversionState();
-
-    // 既にこの文節を特殊変換の候補のみで表示中なら、F4 の連打は ↓ と同じく次候補へ送る
-    auto& candidates = segments_[segmentIndex_].candidates;
-    if (candidates == symbols) {
-        return CycleCandidate(context, +1);
-    }
-    candidates = std::move(symbols);
-    selected_[segmentIndex_] = 0;
-    SyncPairedSegment(segmentIndex_);
-
-    HRESULT hr = UpdateConvertingDisplay(context);
-    ShowCandidateWindow(context);
-    return hr;
+    return ConvertToEngineList(context, &EngineClient::ConvertSymbols);
 }
 
 HRESULT TextService::ConvertToShortcuts(ITfContext* context)
 {
+    return ConvertToEngineList(context, &EngineClient::ConvertShortcuts);
+}
+
+HRESULT TextService::ConvertToEngineList(
+    ITfContext* context,
+    bool (EngineClient::*fetch)(const std::wstring&, std::vector<std::wstring>*))
+{
     if (!Composing() && !InRun()) {
         return E_UNEXPECTED;
     }
     const std::wstring reading =
         converting_ ? segments_[segmentIndex_].reading : composer_.Commit();
 
-    std::vector<std::wstring> shortcuts;
-    if (!engine_.ConvertShortcuts(reading, &shortcuts) || shortcuts.empty()) {
-        return S_OK; // 短縮よみが無い読み (またはエンジン不調) なら何もしない
+    std::vector<std::wstring> list;
+    if (!(engine_.*fetch)(reading, &list) || list.empty()) {
+        return S_OK; // 候補が無い読み (またはエンジン不調) なら何もしない
     }
 
     EnsureConversionState();
 
-    // 既にこの文節を短縮よみの候補のみで表示中なら、F5 の連打は ↓ と同じく次候補へ送る
+    // 既にこの文節を同じ候補のみで表示中なら、同じキーの連打は ↓ と同じく次候補へ送る
     auto& candidates = segments_[segmentIndex_].candidates;
-    if (candidates == shortcuts) {
+    if (candidates == list) {
         return CycleCandidate(context, +1);
     }
-    candidates = std::move(shortcuts);
+    candidates = std::move(list);
     selected_[segmentIndex_] = 0;
     SyncPairedSegment(segmentIndex_);
 
