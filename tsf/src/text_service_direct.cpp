@@ -1371,6 +1371,11 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
         ClearContext();
         return E_FAIL;
     }
+    if (followKey != nullptr) {
+        // 続く打鍵の run の始めの分類に、今入れた文字列を使わない。CUAS 経由の文書は
+        // 同じ打鍵の中なら確定した文字列も読み戻せてしまい、読める文書と誤って判定する
+        lastInserted_.clear();
+    }
     if (restart && rest.Empty()) {
         // 採用で run は終わるが、続く打鍵の run は張り直した composition で始める
         // (FinishBarAdoption の DropRun に composition を終えさせない)
@@ -1591,6 +1596,8 @@ HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
     lastCommitText_ = text;
     lastComposer_ = composer;
     if (followKey != nullptr) {
+        // AdoptBarItem と同じく、同じ打鍵で入れた文字列は分類に使わない
+        lastInserted_.clear();
         return TypeAppend(context, *followKey);
     }
     if (mode == BarAdopt::CommitKey) {
