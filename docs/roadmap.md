@@ -40,7 +40,11 @@
   画面の上端近くでは見切れうる。縦積みの候補バーと変換の候補一覧は止めている
   ([display.md](spec/display.md)「キャレット行の上に出すときの反転」)
 - 文節境界の学習 (learning_boundary.tsv) を古くする仕組みと消す手段。今は FORGET でも消えず、消すにはファイルを手で
-  編集するしかない ([learning.md](spec/learning.md)「文節境界の学習」)
+  編集するしかない ([learning.md](spec/learning.md)「文節境界の学習」)。学習なしの変換でも同じ境界で切れる読みを
+  要らない学習として消す案がある ([roman-ime-notes.md](roman-ime-notes.md))
+- 単語登録ツールのよみの初期値。選択した文字列が、採用した文字列の記憶 ([conversion.md](spec/conversion.md)
+  「採用した文字列の記憶」) か確定アンドゥの記憶にあれば、その読みを渡す。今は TSF 層がよみを渡さない
+  ([dictionary.md](spec/dictionary.md)「単語登録ツール」、[roman-ime-notes.md](roman-ime-notes.md))
 - 英単語辞書が空のときの ASCIIWORD の扱い。今は常に「前方一致あり」(英字区間を閉じない) を返し、ユーザ辞書の英字の語を
   見ない。ユーザ辞書の語で照合する ASCIISTART とそろっていない ([modeless.md](spec/modeless.md)「英字区間を閉じる」)
 - modeless が無効なときに Shift+英字で入った英字モードを、Backspace で英字区間が空になっても抜けないことの見直し。
@@ -90,6 +94,9 @@
 - 短い文節の表記ゆれ (こと / 事、できます / 出来ます) を、読み全体の学習表記の固定で取り違える。同じ読みで両方の表記を
   使うと、決め手が無い。再生評価の学習ありのモードでは、固定した 322 行のうち固定で当てた行が 13 行、外した行が
   12 行とほぼ同数で、度合いや読みの長さでも分かれない ([engine.md](spec/engine.md)「再生評価」)
+- 打ちかけの読みで、補正の候補が候補バーの先頭に出ることがある (打ち間違いの無い文を 1 打ずつ打った途中の状態の 2%。
+  fuzzy_eval)。末尾の 1 文字は補正で変えないが、末尾から 2〜3 文字目を直す補正が残る (すみま → 隙間、きま → 今)
+  ([engine.md](spec/engine.md)「タイプミス補正」、[typo-tail.md](archive/typo-tail.md))
 - ずれのある予測 (候補バーの「補正」の予測) に、UT 辞書の不自然な表記の語 (「おやすまないと → おやスマナイト」)
   が出ることがある。辞書の質の問題 ([unified-suggest.md](archive/unified-suggest.md))
 - マビノギで Ctrl 併用のキー割当 (Ctrl+Space の変換など) が効かない (対応は見送り)。回避策は Convert キーを使うこと

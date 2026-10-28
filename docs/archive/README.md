@@ -4,6 +4,8 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [typo-tail.md](typo-tail.md): 補正で読みの末尾 1 文字を変えず、打ちかけの読みで補正が候補バーの先頭に出るのを
+  減らす。[docs/spec/engine.md](../spec/engine.md)・[docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [name-candidates.md](name-candidates.md): 変換の候補と予測でシステム辞書の人名を 3 件に抑え、辞書の候補の枠を
   40 件に広げる。人名だけを出す人名変換 (F3) を足す。[docs/spec/engine.md](../spec/engine.md)・
   [docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/conversion.md](../spec/conversion.md)・

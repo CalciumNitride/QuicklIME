@@ -420,6 +420,11 @@ pub struct Tuning {
     /// 辞書の語・ユーザ辞書の名詞系の語の予測の点数に足す量。打ち終えた読みの経路は、長い語の予測より
     /// 安く出やすいため
     pub predict_bias: i64,
+    /// 全体変換の補正で変えない読みの末尾の文字数。打ちかけの読みの末尾は打っている途中のかななので、
+    /// 補正すると打っている語を崩した候補が出るため
+    pub tail_chars: usize,
+    /// 予測の照合で誤りを認めない末尾のかなのかたまりの数 (未完成のローマ字は 1 以上なら常に含む)
+    pub predict_tail: usize,
 }
 
 pub const TUNING: Tuning = Tuning {
@@ -432,6 +437,8 @@ pub const TUNING: Tuning = Tuning {
     typo_show: -50.0,
     typo_top: 0.0,
     predict_bias: 2000,
+    tail_chars: 1,
+    predict_tail: 0,
 };
 
 impl Tuning {
@@ -510,17 +517,19 @@ fn is_kana(c: char) -> bool {
 /// 補正した読みを集める。同じ読みは 1 件にし、コストは安いほうにする
 struct CorrectionSet<'a> {
     chars: &'a [char],
+    /// 変えない読みの末尾の文字数
+    tail_chars: usize,
     index: HashMap<String, usize>,
     result: Vec<Correction>,
 }
 
 impl<'a> CorrectionSet<'a> {
-    fn new(chars: &'a [char]) -> Self {
-        CorrectionSet { chars, index: HashMap::new(), result: Vec::new() }
+    fn new(chars: &'a [char], tail_chars: usize) -> Self {
+        CorrectionSet { chars, tail_chars, index: HashMap::new(), result: Vec::new() }
     }
 
     /// かなの連続 chars[run_start..run_end] を fixed に置き換えた読みを足す。元と同じ読み・
-    /// 先頭のかなが変わる読みは足さない
+    /// 先頭のかなが変わる読み・末尾 tail_chars 文字が変わる読み (末尾に字を足す読みも含む) は足さない
     fn push(&mut self, run_start: usize, run_end: usize, fixed: &[char], cost: i32) {
         let chars = self.chars;
         let n = chars.len();
@@ -546,6 +555,9 @@ impl<'a> CorrectionSet<'a> {
             .zip(full[prefix..].iter().rev())
             .take_while(|(a, b)| a == b)
             .count();
+        if suffix < self.tail_chars {
+            return;
+        }
         self.index.insert(reading.clone(), self.result.len());
         self.result.push(Correction {
             reading,
@@ -573,7 +585,7 @@ pub fn corrections(kana: &str, tuning: &Tuning) -> Vec<Correction> {
     if n < MIN_TYPO_CHARS {
         return Vec::new();
     }
-    let mut set = CorrectionSet::new(&chars);
+    let mut set = CorrectionSet::new(&chars, tuning.tail_chars);
     let mut run_start = 0;
     while run_start < n {
         if !is_kana(chars[run_start]) {
@@ -619,7 +631,7 @@ pub fn key_corrections(kana: &str, keys: &Keys, tuning: &Tuning) -> Vec<Correcti
     if n < MIN_TYPO_CHARS || chars != keys.kana {
         return Vec::new();
     }
-    let mut set = CorrectionSet::new(&chars);
+    let mut set = CorrectionSet::new(&chars, tuning.tail_chars);
     let clusters = keys.clusters();
     let all_kana = |&(s, e): &(usize, usize)| chars[s..e].iter().all(|&c| is_kana(c));
     let mut c = 0;
@@ -766,6 +778,16 @@ impl Keys {
     /// 先頭のかなのかたまりの打鍵の数 (ここまでの打鍵には誤りを認めない)
     fn first_len(&self) -> usize {
         self.clusters().first().map_or(0, |&(_, end)| self.starts[end])
+    }
+
+    /// 末尾 count 個のかなのかたまりの打鍵の始まり (ここから後ろの打鍵と未完成のローマ字には誤りを
+    /// 認めない)。count が 0 なら打鍵の数
+    fn tail_start(&self, count: usize) -> usize {
+        if count == 0 {
+            return self.keys.len();
+        }
+        let clusters = self.clusters();
+        clusters.len().checked_sub(count).map_or(0, |c| self.starts[clusters[c].0])
     }
 
     /// かなのかたまり (要素が空でないかなと、それに続く要素が空のかな) の [始まり, 終わり) の並び
@@ -941,6 +963,8 @@ pub struct Matcher<'a> {
     k: usize,
     /// 先頭のかなのかたまりの打鍵の数
     l0: usize,
+    /// 末尾の誤りを認めない打鍵の始まり
+    tail: usize,
     /// 隣のキー・余分・抜け・入れ替えのコスト
     costs: [i32; 4],
     /// 綴りを引くかなのかたまりの最大の文字数
@@ -968,6 +992,7 @@ impl<'a> Matcher<'a> {
             keys,
             k: edits,
             l0: keys.first_len(),
+            tail: keys.tail_start(tuning.predict_tail),
             costs: [tuning.edit_adjacent, tuning.edit_extra, tuning.edit_missing, tuning.edit_swap],
             max_token,
             adjacent,
@@ -1016,7 +1041,7 @@ impl<'a> Matcher<'a> {
         }
         let bound = self.bound.get();
         let mut j = row.lo.max(self.l0);
-        while j < t && j <= row.hi {
+        while j < t.min(self.tail) && j <= row.hi {
             for e in 0..self.k {
                 let c = row.v[self.at(j, e)];
                 if c == INF {
@@ -1061,14 +1086,14 @@ impl<'a> Matcher<'a> {
                     if j < t {
                         if keys[j] == a {
                             relax(next, j + 1, e, c, false);
-                        } else if j >= self.l0 && e < k && self.is_adjacent(keys[j], a) {
+                        } else if j >= self.l0 && j < self.tail && e < k && self.is_adjacent(keys[j], a) {
                             relax(next, j + 1, e + 1, c + self.costs[0], false);
                         }
-                        if j + 1 < t && j >= self.l0 && e < k && keys[j + 1] == a && keys[j] != a {
+                        if j + 1 < t.min(self.tail) && j >= self.l0 && e < k && keys[j + 1] == a && keys[j] != a {
                             relax(next, j, e + 1, c + self.costs[3], true);
                         }
                     }
-                    if j >= self.l0 && e < k {
+                    if j >= self.l0 && j <= self.tail && e < k {
                         relax(next, j, e + 1, c + self.costs[2], false);
                     }
                 }
@@ -1336,7 +1361,9 @@ mod tests {
     #[test]
     fn ありがとうの各誤りから元の読みを作る() {
         // 余分な 1 打 (arigaatou・arrigatou)、抜けた 1 打 (arigatu・arigaou)、
-        // 隣のキー (arigayou・arigatiu)、入れ替え (arigaotu) をかなにしたもの
+        // 隣のキー (arigayou・arigatiu)、入れ替え (arigaotu) をかなにしたもの。末尾のかなを直すものを含むので末尾を保護しない
+        let untail = Tuning { tail_chars: 0, ..TUNING };
+        let readings = |kana: &str| -> Vec<String> { corrections(kana, &untail).into_iter().map(|c| c.reading).collect() };
         for typed in ["ありがあとう", "あっりがとう", "ありがつ", "ありがおう", "ありがよう", "ありがちう", "ありがおつ"] {
             assert!(
                 readings(typed).contains(&"ありがとう".to_string()),
@@ -1352,6 +1379,33 @@ mod tests {
         assert!(readings("ありがとう").iter().all(|r| r.starts_with('あ')));
         // sarigatou の余分な s を消すと ありがとう になるが、先頭のかなが変わるので作らない
         assert!(!readings("さりがとう").contains(&"ありがとう".to_string()));
+    }
+
+    #[test]
+    fn 末尾の保護の文字数の分だけ末尾のかなは変えない() {
+        let untail = Tuning { tail_chars: 0, ..TUNING };
+        let tail = Tuning { tail_chars: 1, ..TUNING };
+        let readings = |kana: &str| -> Vec<String> { corrections(kana, &untail).into_iter().map(|c| c.reading).collect() };
+        let tailed = |kana: &str| -> Vec<String> { corrections(kana, &tail).into_iter().map(|c| c.reading).collect() };
+        // 末尾のかなを消す (arigatouu の余分な u)
+        assert!(readings("ありがとうう").contains(&"ありがとう".to_string()));
+        assert!(!tailed("ありがとうう").contains(&"ありがとう".to_string()));
+        // 末尾のかなを変える (arigatoi の i を隣の u に戻す)
+        assert!(readings("ありがとい").contains(&"ありがとう".to_string()));
+        assert!(!tailed("ありがとい").contains(&"ありがとう".to_string()));
+        // 末尾に字を足す (sukosio に抜けた u を足す)
+        assert!(readings("すこしお").contains(&"すこしおう".to_string()));
+        assert!(!tailed("すこしお").contains(&"すこしおう".to_string()));
+        assert!(corrections("すこしお", &tail).iter().all(|c| c.typed_end < 4 && c.reading.ends_with('お')));
+        // 末尾より前は直す
+        assert!(tailed("ありがあとう").contains(&"ありがとう".to_string()));
+        // 打鍵による補正にも効く
+        let field = "onegiasimasu";
+        let keys = Keys::parse("おねぎあします", field).unwrap();
+        assert!(key_corrections("おねぎあします", &keys, &tail).iter().any(|c| c.reading == "おねがいします"));
+        let keys = Keys::parse("ありがとい", "arigatoi").unwrap();
+        assert!(key_corrections("ありがとい", &keys, &untail).iter().any(|c| c.reading == "ありがとう"));
+        assert!(!key_corrections("ありがとい", &keys, &tail).iter().any(|c| c.reading == "ありがとう"));
     }
 
     #[test]
@@ -1422,7 +1476,8 @@ mod tests {
         assert!(matched("かれー", "ka\x1fre\x1f-", "かれー").is_some_and(|(_, e)| e == 0));
         // 打鍵から作る補正も独自の綴りでかなに直す (標準の表だけでは lr がかなにならず、補正を作れない)
         let keys = Keys::parse("かれーらいす", "ka\x1flr\x1f-\x1fra\x1fi\x1fsu").unwrap();
-        let all = key_corrections("かれーらいす", &keys, &TUNING);
+        // 期待する補正は末尾のかなを変えるので末尾を保護しない
+        let all = key_corrections("かれーらいす", &keys, &Tuning { tail_chars: 0, ..TUNING });
         assert!(all.iter().any(|c| c.reading == "かれーらいず"), "{all:?}");
     }
 
@@ -1448,6 +1503,23 @@ mod tests {
         assert_eq!(matched("ぬこう", "nu\x1fko\x1fu", "にこう"), None);
         // 2 字目からは直す (u を隣の i に戻す)
         assert_eq!(matched("にこう", "ni\x1fko\x1fu", "にこい"), Some((TUNING.edit_adjacent, 1)));
+    }
+
+    #[test]
+    fn 末尾の保護のかたまりの数の分だけ末尾のかなの打鍵の誤りは照合しない() {
+        let tail = Tuning { predict_tail: 1, ..TUNING };
+        let tailed = |kana: &str, field: &str, reading: &str| {
+            let keys = Keys::parse(kana, field).unwrap();
+            Matcher::new(&keys, tail.allowed_edits(keys.len()), &tail).match_reading(reading)
+        };
+        // 末尾のかなの打鍵 (nikou の u を隣の i に戻す)
+        assert_eq!(matched("にこう", "nikou", "にこい"), Some((TUNING.edit_adjacent, 1)));
+        assert_eq!(tailed("にこう", "nikou", "にこい"), None);
+        // 未完成のローマ字 (arigay の y を隣の t に戻す)
+        assert_eq!(matched("ありが", "arigay", "ありがとう"), Some((TUNING.edit_adjacent, 1)));
+        assert_eq!(tailed("ありが", "arigay", "ありがとう"), None);
+        // 末尾より前は照合する (r の抜け)
+        assert_eq!(tailed("あいがとう", "aigatou", "ありがとう"), Some((TUNING.edit_missing, 1)));
     }
 
     #[test]

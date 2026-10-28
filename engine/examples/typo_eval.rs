@@ -9,6 +9,10 @@
 // 3. convert_nbest の応答時間 (中央値・最大) を補正なしと比べる
 // 4. 文節 UI の変換 (convert_segments。kinds 付きの CONVSEG) の応答時間を補正なしと比べる
 //    (docs/spec/engine.md「文節 UI の補正」)
+// 5. 通常の最良経路のコスト / かなの文字数 の分布を、打ち間違いの無い文・打ち間違いのある文・
+//    打ち間違いの無い文の読みを途中で切ったもの (かなの先頭 3 文字以上・全体未満のすべての長さ) で
+//    比べる。あわせて、1 文字あたりのコストが G 以上のときだけ先頭にする Δ の下限を TYPO_TOP から
+//    T に下げたときの、補正の候補が先頭になる件数を 1 と同じ数え方で出す
 // 正しい文は、打ち間違いの無い読みの補正なしの 1-best の表記とする。
 // 学習・ユーザ辞書は空 (メモリ上のみ) で、前文脈は使わない。エンジンは lib を持たないため、
 // 変換に使うモジュールをソースごと取り込む (ut_diff と同じ方式)。結果は Markdown で標準出力へ書く。
@@ -178,6 +182,8 @@ fn inject(romaji: &[u8], head: usize, kind: usize, rng: &mut Rng) -> Option<Vec<
 /// 読みの補正の結果 (補正の最良経路の差、文字数、補正の表記)
 struct Sample {
     gain: Option<(i64, String)>,
+    /// 通常の最良経路のコスト
+    normal: Option<i64>,
     chars: usize,
 }
 
@@ -209,9 +215,13 @@ fn main() -> BoxResult<()> {
     let nbest = |kana: &str, typo: bool| {
         convert::convert_nbest(kana, None, &dictionary, &user, &matrix, &functional, &learning, typo)
     };
-    let sample = |kana: &str| Sample {
-        gain: convert::typo_gain(kana, &dictionary, &user, &matrix, &functional, &learning),
-        chars: kana.chars().count(),
+    let sample = |kana: &str| {
+        let result = convert::typo_gain(kana, &dictionary, &user, &matrix, &functional, &learning);
+        Sample {
+            normal: result.as_ref().map(|(normal, _)| *normal),
+            gain: result.and_then(|(_, gain)| gain),
+            chars: kana.chars().count(),
+        }
     };
 
     let short = readings.iter().filter(|r| r.chars().count() < typo::MIN_TYPO_CHARS).count();
@@ -250,12 +260,26 @@ fn main() -> BoxResult<()> {
         }
     }
 
+    // 打ち間違いの無い文の読みを途中で切ったもの (打ちかけの読み)
+    let mut cut: Vec<(String, Sample)> = Vec::new();
+    for (reading, _, _) in &clean {
+        let chars: Vec<char> = reading.chars().collect();
+        for len in typo::MIN_TYPO_CHARS..chars.len() {
+            let prefix: String = chars[..len].iter().collect();
+            if !cut.iter().any(|(r, _)| *r == prefix) {
+                let s = sample(&prefix);
+                cut.push((prefix, s));
+            }
+        }
+    }
+
     println!("## テストセット\n");
     println!("- 打ち間違いの無い文: {} 件 (3 文字未満の読み {short} 件は除いた)", clean.len());
     println!("- 打ち間違いのある文: {} 件 (作れなかった {skipped} 件は除いた)", typos.len());
     for (kind, name) in ERROR_KINDS.iter().enumerate() {
         println!("  - {name}: {} 件", typos.iter().filter(|t| t.kind == kind).count());
     }
+    println!("- 打ち間違いの無い文の読みを途中で切ったもの: {} 件", cut.len());
 
     // 1 文字あたりの差の分布 (TYPO_COST を含めない)
     let per_char = |s: &Sample, cost: i64| s.gain.as_ref().map(|(g, _)| (g - cost) as f64 / s.chars as f64);
@@ -355,6 +379,110 @@ fn main() -> BoxResult<()> {
                 );
             }
         }
+    }
+
+    // 通常の最良経路の 1 文字あたりのコストの分布
+    let cost_per_char = |s: &Sample| s.normal.map(|n| n as f64 / s.chars as f64);
+    let distribution = |samples: &[&Sample]| -> Vec<f64> {
+        let mut v: Vec<f64> = samples.iter().filter_map(|s| cost_per_char(s)).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        v
+    };
+    let clean_samples: Vec<&Sample> = clean.iter().map(|(_, _, s)| s).collect();
+    let typo_samples: Vec<&Sample> = typos.iter().map(|t| &t.sample).collect();
+    let cut_samples: Vec<&Sample> = cut.iter().map(|(_, s)| s).collect();
+    println!("\n## 通常の最良経路のコスト / かなの文字数 の分布\n");
+    println!("途中 = 打ち間違いの無い文の読みを途中で切ったもの (かなの先頭 3 文字以上・全体未満)。通常の経路が無い読みは数えない\n");
+    println!("| 群 | 件数 | 最小 | p10 | p25 | 中央値 | p75 | p90 | 最大 |");
+    println!("|---|---|---|---|---|---|---|---|---|");
+    let mut groups: Vec<(String, Vec<&Sample>)> = vec![("打ち間違いの無い文".to_string(), clean_samples.clone())];
+    for (kind, name) in ERROR_KINDS.iter().enumerate() {
+        let samples = typos.iter().filter(|t| t.kind == kind).map(|t| &t.sample).collect();
+        groups.push((format!("打ち間違いのある文 ({name})"), samples));
+    }
+    groups.push(("打ち間違いのある文 (計)".to_string(), typo_samples.clone()));
+    groups.push(("途中".to_string(), cut_samples.clone()));
+    for (name, samples) in &groups {
+        let v = distribution(samples);
+        let at = |q: f64| {
+            if v.is_empty() {
+                "-".to_string()
+            } else {
+                format!("{:.0}", v[((v.len() as f64 - 1.0) * q).round() as usize])
+            }
+        };
+        println!(
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} |",
+            v.len(),
+            at(0.0),
+            at(0.1),
+            at(0.25),
+            at(0.5),
+            at(0.75),
+            at(0.9),
+            at(1.0)
+        );
+    }
+    println!("\n## 1 文字あたりのコストが G 以上の割合\n");
+    println!("| G | 打ち間違いの無い文 | 打ち間違いのある文 (計) | 途中 |");
+    println!("|---|---|---|---|");
+    let at_least = |samples: &[&Sample], g: f64| {
+        let v = distribution(samples);
+        let n = v.iter().filter(|c| **c >= g).count();
+        format!("{n}/{} ({:.0}%)", v.len(), 100.0 * n as f64 / v.len().max(1) as f64)
+    };
+    for g in (1500..=3500).step_by(250) {
+        let g = g as f64;
+        println!(
+            "| {g} | {} | {} | {} |",
+            at_least(&clean_samples, g),
+            at_least(&typo_samples, g),
+            at_least(&cut_samples, g)
+        );
+    }
+
+    // 足切り: 1 文字あたりのコストが G 以上のときだけ、先頭にする Δ の下限を TYPO_TOP から T に下げる
+    let cost = i64::from(convert::TYPO_COST);
+    let show = convert::TYPO_SHOW;
+    let is_top = |s: &Sample, gate: Option<(f64, f64)>| {
+        let Some(d) = per_char(s, cost) else { return false };
+        let top = match gate {
+            Some((g, t)) if cost_per_char(s).is_some_and(|c| c >= g) => t,
+            _ => convert::TYPO_TOP,
+        };
+        d >= show && d >= top
+    };
+    println!("\n## 1 文字あたりのコストによる足切りのシミュレーション\n");
+    println!(
+        "TYPO_COST {cost}、TYPO_SHOW {show}。通常の経路の 1 文字あたりのコストが G 以上のときだけ、先頭にする Δ の下限を TYPO_TOP ({}) から T に下げる。",
+        convert::TYPO_TOP
+    );
+    println!("無し: 先頭 = 打ち間違いの無い文で補正の候補が先頭になった件数、途中: 先頭 = 途中で切った読みで同じ件数、");
+    println!("有り: 正先頭 = 打ち間違いのある文で正しい文で先頭になった割合、有り: 誤先頭 = 正しくない文で先頭になった件数。");
+    println!("先頭の行は足切りなしの今の値\n");
+    println!("| G | T | 無し: 先頭 | 途中: 先頭 | 有り: 正先頭 | 有り: 誤先頭 |");
+    println!("|---|---|---|---|---|---|");
+    let mut gates: Vec<Option<(f64, f64)>> = vec![None];
+    for g in [1750.0f64, 2000.0, 2250.0, 2500.0, 2750.0, 3000.0] {
+        for t in [-50.0f64, -100.0, -150.0, -200.0, -300.0] {
+            gates.push(Some((g, t)));
+        }
+    }
+    for gate in gates {
+        let clean_top = clean_samples.iter().filter(|s| is_top(s, gate)).count();
+        let cut_top = cut_samples.iter().filter(|s| is_top(s, gate)).count();
+        let mut ok_top = 0;
+        let mut bad_top = 0;
+        for t in &typos {
+            if !is_top(&t.sample, gate) {
+                continue;
+            }
+            let right = t.sample.gain.as_ref().is_some_and(|(_, s)| *s == t.target);
+            ok_top += usize::from(right);
+            bad_top += usize::from(!right);
+        }
+        let (g, t) = gate.map_or(("-".to_string(), convert::TYPO_TOP.to_string()), |(g, t)| (g.to_string(), t.to_string()));
+        println!("| {g} | {t} | {clean_top} | {cut_top} | {:.0}% | {bad_top} |", 100.0 * ok_top as f64 / total);
     }
 
     // 今の定数での convert_nbest の結果

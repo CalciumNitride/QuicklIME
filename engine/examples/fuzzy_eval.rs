@@ -5,6 +5,9 @@
 //   入れた打鍵 (先頭のかなの打鍵は崩さない)
 // - 途中までの入力: 文の打鍵の先頭から 50%・75% (崩さないものと、その範囲に誤りを 1 か所入れたもの)。
 //   語 (文の 1-best の文節の先頭の、3 文字以上の読みの辞書の語) の打鍵の先頭から 50%・75% も同じく作る
+// - 打ちかけの入力: 崩さない文の打鍵を先頭から 1 打ずつ増やした途中の状態のうち、確定済みのかなが
+//   MIN_TYPO_CHARS 文字以上のもの (最後の 1 打まで打った状態は除く)。候補バーは 1 打ごとに SUGGEST を
+//   引くので、打ちかけの読みで補正の候補・ずれのある予測が誤って上位に出ないかを数える
 // 打鍵は TSF 層の RomajiComposer と同じ規則でかなと打鍵のフィールドにする (typo::compose)。
 // 正解は、崩さない読みを補正なしで変換した 1-best の表記 (examples/typo_eval.rs と同じ)。
 // 途中までの文の正解は、1-best の文節のうち打った読みを覆うところまでの表記 (打った所が文節の途中なら
@@ -21,7 +24,8 @@
 //   --config <設定>   調整値の組 (カンマ区切りの key=value)。複数指定でき、指定ごとに 1 行の結果を出す。
 //                     無ければ既定値 (typo::TUNING) だけ。key は adj・extra・miss・swap (EDIT_*)・
 //                     edit (EDIT_* をすべて同じ値に)・kpe (KEYS_PER_EDIT)・max (MAX_EDITS)・
-//                     show (TYPO_SHOW)・top (TYPO_TOP)・bias (PREDICT_BIAS)
+//                     show (TYPO_SHOW)・top (TYPO_TOP)・bias (PREDICT_BIAS)・tail (全体変換の補正で
+//                     変えない読みの末尾の文字数)・ptail (予測の照合で誤りを認めない末尾のかなのかたまりの数)
 //   --timing          既定値で、文の打鍵を 1 打ずつ打ったときの SUGGEST の処理時間 (中央値・p95) も測る
 //   --detail          既定値 (または最初の --config) で、崩さない入力で先頭が変わった例などを出す
 //   --dict <dir>      Mozc 辞書のディレクトリ (既定は references/mozc/src/data/dictionary_oss)
@@ -140,6 +144,8 @@ fn parse_tuning(spec: &str) -> BoxResult<Tuning> {
             "show" => t.typo_show = value.parse()?,
             "top" => t.typo_top = value.parse()?,
             "bias" => t.predict_bias = value.parse()?,
+            "tail" => t.tail_chars = value.parse()?,
+            "ptail" => t.predict_tail = value.parse()?,
             other => return Err(format!("不明な key: {other}").into()),
         }
     }
@@ -288,6 +294,8 @@ struct Inputs {
     partial: [Vec<Input>; 4],
     /// 途中までの語 (同じ並び)
     words: [Vec<Input>; 4],
+    /// 打ちかけの入力 (打鍵, 入力)。正解はその文の正解
+    typing: Vec<(String, Input)>,
 }
 
 /// 途中までの打鍵 prefix の正解: 打った読み (未完成のローマ字が残れば次の 1 字まで) を覆う文節までの表記
@@ -368,6 +376,7 @@ fn main() -> BoxResult<()> {
         crushed: Vec::new(),
         partial: Default::default(),
         words: Default::default(),
+        typing: Vec::new(),
     };
     let mut skipped = 0;
     let mut word_list: Vec<(String, String)> = Vec::new();
@@ -386,6 +395,13 @@ fn main() -> BoxResult<()> {
                 }
                 None => skipped += 1,
             }
+        }
+        for n in 1..s.romaji.len() {
+            let Some((kana, field)) = typo::compose(&s.romaji[..n]) else { continue };
+            if kana.chars().count() < typo::MIN_TYPO_CHARS {
+                continue;
+            }
+            inputs.typing.push((s.romaji[..n].to_string(), Input { kana, field, target: s.target.clone() }));
         }
         let made = partials(&s.romaji, s.head, |p| partial_target(p, &s.segments), seed ^ 0x55);
         for (i, input) in made.into_iter().enumerate() {
@@ -439,6 +455,7 @@ fn main() -> BoxResult<()> {
         println!("- 途中までの文 ({name}): {} 件、語 ({name}): {} 件", inputs.partial[i].len(), inputs.words[i].len());
     }
     println!("- 語: {} 語", word_list.len());
+    println!("- 打ちかけの入力: {} 件", inputs.typing.len());
 
     let run = |input: &Input, tuning: &Tuning| -> (Vec<suggest::Suggestion>, f64) {
         let keys = Keys::parse(&input.kana, &input.field).expect("打鍵のフィールド");
@@ -459,12 +476,13 @@ fn main() -> BoxResult<()> {
     println!("先頭変化 = 崩さない打ち終えた入力で SUGGEST の先頭が CONVNBEST (打鍵つき。表記が読みのかなと同じ候補と、書き換えの候補を除く) の先頭と変わった件数。");
     println!("崩し 1/3/9 = 崩した打ち終えた入力で正解が 1 位・3 位以内・9 位以内の割合 (誤り 1〜3 か所の合計)。");
     println!("誤補正 = 崩さない打ち終えた入力で、補正の候補かずれのある予測が 3 位以内に出た件数 / 先頭に出た件数。");
+    println!("途中誤補正 = 打ちかけの入力 (崩さない文の打鍵を 1 打ずつ増やした途中の状態で、確定済みのかなが {} 文字以上のもの) で、補正の候補かずれのある予測が 3 位以内に出た件数 / 先頭に出た件数 (割合の母数は打ちかけの入力の数)。", typo::MIN_TYPO_CHARS);
     println!("補正=正解 = 崩した打ち終えた入力で、CONVNBEST (打鍵つき) の補正の候補が正解になった割合。");
     println!("括弧内は打鍵を使わずかなを戻した近似 (打鍵の無い CONVNBEST) の同じ割合 (コスト・状態の数・しきい値は同じ調整値)。");
     println!("文・語 = 途中までの入力で正解が 9 位以内の割合 (50%/75%、崩さない | 崩した)。");
     println!("時間 = SUGGEST 1 回 (この表の入力すべて) の中央値 / p95 (ms)\n");
-    println!("| 調整値 | 先頭変化 | 誤補正 | 崩し 1 | 崩し 3 | 崩し 9 | 崩し 3 (誤り 1/2/3) | 補正=正解 (誤り 1/2/3) (近似) | 文 崩さない | 文 崩した | 語 崩さない | 語 崩した | 時間 |");
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("| 調整値 | 先頭変化 | 誤補正 | 途中誤補正 | 崩し 1 | 崩し 3 | 崩し 9 | 崩し 3 (誤り 1/2/3) | 補正=正解 (誤り 1/2/3) (近似) | 文 崩さない | 文 崩した | 語 崩さない | 語 崩した | 時間 |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     let mut details: Vec<String> = Vec::new();
     for (ci, spec) in args.configs.iter().enumerate() {
         let tuning = parse_tuning(spec)?;
@@ -479,6 +497,18 @@ fn main() -> BoxResult<()> {
             let is_typo = |s: &suggest::Suggestion| matches!(s.kind, suggest::Kind::Typo | suggest::Kind::PredictTypo);
             false_shown += usize::from(list.iter().take(3).any(is_typo));
             false_top += usize::from(list.first().is_some_and(is_typo));
+            if ci == 0 && args.detail {
+                if let Some((p, s)) = list.iter().take(3).enumerate().find(|(_, s)| is_typo(s)) {
+                    details.push(format!(
+                        "- 崩さない入力で補正が {} 位: {} → {} [{}] 正解 {}",
+                        p + 1,
+                        input.kana,
+                        s.surface(),
+                        s.kind.name(),
+                        input.target
+                    ));
+                }
+            }
             let keys = Keys::parse(&input.kana, &input.field).unwrap();
             let source = convert::TypoSource::Keys(&keys);
             let nbest = convert::convert_nbest_scored(
@@ -565,9 +595,33 @@ fn main() -> BoxResult<()> {
         let total = inputs.crushed.len();
         let median = percentile(&mut times, 0.5);
         let p95 = percentile(&mut times, 0.95);
+        // 時間の列は既存の入力だけで測るので、打ちかけの入力の時間は数えない
+        let mut typing_shown = 0;
+        let mut typing_top = 0;
+        let mut typing_listed = 0;
+        for (typed, input) in &inputs.typing {
+            let (list, _) = run(input, &tuning);
+            let is_typo = |s: &suggest::Suggestion| matches!(s.kind, suggest::Kind::Typo | suggest::Kind::PredictTypo);
+            typing_shown += usize::from(list.iter().take(3).any(is_typo));
+            let Some(first) = list.first().filter(|s| is_typo(s)) else { continue };
+            typing_top += 1;
+            if ci == 0 && args.detail && typing_listed < 40 {
+                typing_listed += 1;
+                details.push(format!(
+                    "- 打ちかけで補正が先頭: 打鍵 {typed} かな {} 先頭 {} [{}] 正解 {}",
+                    input.kana,
+                    first.surface(),
+                    first.kind.name(),
+                    input.target
+                ));
+            }
+        }
+        let typing_total = inputs.typing.len();
         println!(
-            "| {} | {changed} | {false_shown}/{false_top} | {} | {} | {} | {}/{}/{} | {}/{}/{} ({}/{}/{}) | {}/{} | {}/{} | {}/{} | {}/{} | {median:.2} / {p95:.2} |",
+            "| {} | {changed} | {false_shown}/{false_top} | 3位内 {typing_shown} ({}) / 先頭 {typing_top} ({}) | {} | {} | {} | {}/{}/{} | {}/{}/{} ({}/{}/{}) | {}/{} | {}/{} | {}/{} | {}/{} | {median:.2} / {p95:.2} |",
             if spec.is_empty() { "既定" } else { spec },
+            pct(typing_shown, typing_total),
+            pct(typing_top, typing_total),
             pct(within[0], total),
             pct(within[1], total),
             pct(within[2], total),

@@ -72,14 +72,14 @@ const MAX_NBEST_PER_CLASS: usize = 4;
 /// どれも補正の語を 1 つだけ通るので、この値は補正の経路どうしの順位を変えず、Δ だけを
 /// TYPO_COST / 文字数 下げる (短い読みほど補正の候補が出にくい)。入力全体の候補 (CONVNBEST) の補正は
 /// 誤りの種類ごとのコスト (typo::Tuning) を使う
-const TYPO_COST: i32 = 4000;
+pub const TYPO_COST: i32 = 4000;
 
 /// 文節 UI の補正の Δ (通常の最良経路と補正の最良経路のコストの差を、打ったかなの文字数で
 /// 割った値) の、補正の文節を出す下限
-const TYPO_SHOW: f64 = -50.0;
+pub const TYPO_SHOW: f64 = -50.0;
 
 /// 文節 UI の補正の表記を先頭に置く Δ の下限
-const TYPO_TOP: f64 = 0.0;
+pub const TYPO_TOP: f64 = 0.0;
 
 /// 補正の語を、打ったかなの区間ごとに入れる上限の語数。補正した読みは数が多く、短い語
 /// (1 文字の助詞など) が同じ区間に積み重なってラティスが膨らむため
@@ -1696,9 +1696,9 @@ fn typo_route(
     (delta >= TYPO_SHOW).then_some((delta, indices))
 }
 
-/// 計測用 (examples/typo_eval.rs): 補正の語を 1 つだけ通す文節 UI の補正で、補正の最良経路の、
-/// 通常の最良経路とのコストの差 (通常 − 補正。TYPO_COST を含めない) と表記。補正の語を通る経路が
-/// 無ければ None
+/// 計測用 (examples/typo_eval.rs): 補正の語を 1 つだけ通す文節 UI の補正で、通常の最良経路の
+/// コストと、補正の最良経路の、通常の最良経路とのコストの差 (通常 − 補正。TYPO_COST を含めない) と
+/// 表記。補正の語を通る経路が無ければ補正の結果は None。通常の経路も無ければ None
 #[allow(dead_code)]
 pub fn typo_gain(
     kana: &str,
@@ -1707,14 +1707,17 @@ pub fn typo_gain(
     matrix: &ConnectionMatrix,
     functional: &FunctionalIds,
     learning: &LearningStore,
-) -> Option<(i64, String)> {
+) -> Option<(i64, Option<(i64, String)>)> {
     let typo = TypoWords::segment(kana);
     let learned = Learned::full(learning);
     let lattice =
         build_lattice(kana, dict, user, matrix, functional, 0, Some(learned), Some(&typo))?;
-    let (gain, segments, _) = typo_best(&lattice, matrix, functional)?;
-    let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect();
-    Some((gain + i64::from(TYPO_COST), surface))
+    let (normal, _) = best_end(&lattice, matrix, 0)?;
+    let gain = typo_best(&lattice, matrix, functional).map(|(gain, segments, _)| {
+        let surface = segments.iter().map(|(_, surface)| surface.as_str()).collect();
+        (gain + i64::from(TYPO_COST), surface)
+    });
+    Some((normal, gain))
 }
 
 /// 1 語だけの経路を Viterbi と同じ式 (前文脈からの接続・単語コスト・文節境界ペナルティ・文末への接続)
