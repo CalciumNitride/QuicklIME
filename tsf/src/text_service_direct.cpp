@@ -1339,13 +1339,14 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     adoption.readingLength = readingLength;
     adoption.adoptedLength = surface.size();
     adoption.endRun = mode == BarAdopt::End || (mode == BarAdopt::CommitKey && !partial);
-    // 予測は未完成のローマ字も含めて照合しているので、採用したら未完成のローマ字は捨てる
-    adoption.dropPending = prediction;
-    // 文書に入れるのは採用部分だけ。run を終えるときは残りの読み (予測以外は未完成のローマ字を
-    // 含む) と suffix も続けて入れる
+    // バーはどの候補が未完成のローマ字まで使ったかを示さないので、全体変換でも捨てる。
+    // 区間分割した run の英字区間と、範囲を縮めた採用の残りのかなは残す
+    adoption.dropPending = prediction || (!partial && !SplitAsciiRun());
+    // 文書に入れるのは採用部分だけ。run を終えるときは残りの読みと suffix も続けて入れる
     adoption.written = surface;
     if (adoption.endRun) {
-        const std::wstring rest = prediction ? composer_.ConfirmedKana() : composer_.Display();
+        const std::wstring rest =
+            adoption.dropPending ? composer_.ConfirmedKana() : composer_.Display();
         adoption.written += rest.substr((std::min)(readingLength, rest.size())) + suffix;
     }
     adoption.before = composer_;
@@ -1358,7 +1359,7 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
     RomajiComposer rest = composer_;
     rest.RemoveFront(readingLength);
     if (adoption_.dropPending) {
-        // 予測は区間分割していない run にだけ出すので、読みを外した残りは未完成のローマ字だけ
+        // 区間分割していない run で全体を採用したので、読みを外した残りは未完成のローマ字だけ
         rest.Clear();
     }
     const bool restart = runComposition_ != nullptr && !adoption_.endRun &&
