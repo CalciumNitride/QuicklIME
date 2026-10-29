@@ -1402,6 +1402,8 @@ HRESULT TextService::AdoptAsciiCandidate(ITfContext* context, BarAdopt mode,
     const bool endRun = mode != BarAdopt::Continue;
     composer_ = barAscii_;
     ClearBar();
+    // 文書にはまだ入れないが、候補バーの採用なのでほかの採用と同じく段階を戻す
+    ResetFuzzyLevel();
     std::wstring text = composer_.Commit();
     if (endRun) {
         text += suffix;
@@ -1419,6 +1421,8 @@ HRESULT TextService::AdoptAsciiCandidate(ITfContext* context, BarAdopt mode,
 
 void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
 {
+    // 続く run のバー (ここでの UpdateBar と、続く打鍵の TypeAppend) を戻した段階で引く
+    ResetFuzzyLevel();
     if (!IsNoLearningApp()) {
         engine_.Learn(adoption_.learn);
     }
@@ -1580,6 +1584,7 @@ HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
     }
     const BarCandidate item = barItems_[static_cast<size_t>(barIndex_)];
     ClearBar();
+    ResetFuzzyLevel();
     const std::wstring text = item.surface + suffix;
     DebugLog(L"後続語の予測を採用: " + text);
     if (FAILED(InsertText(context, text))) {
@@ -1815,6 +1820,7 @@ HRESULT TextService::TypeAppend(ITfContext* context, const DirectKey& key)
 void TextService::BeginRunMode()
 {
     runMode_ = config_.Get().panelBuffer ? RunMode::Panel : RunMode::Composition;
+    ResetFuzzyLevel();
     if (runMode_ == RunMode::Panel && runComposition_ != nullptr) {
         // 採用に続く打鍵のために張り直した composition は、方式が変わったら使わない
         EndRunComposition(L"");

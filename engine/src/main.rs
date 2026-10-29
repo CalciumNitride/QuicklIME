@@ -575,18 +575,18 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
     }
     match command {
         Some("RERANK") => {
-            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : LLM による
+            // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>[\t<段階>]]] : LLM による
             // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む)・読みが短いときは ID 0 (並べ替えをしない)
             let llm_context = fields.next().unwrap_or("");
             let ctx = fields.next().and_then(parse_context);
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
             };
-            let (kinds, keys) = match parse_kinds_and_keys(&mut fields, kana) {
+            let cfg = *data.config.lock().expect("config lock");
+            let (kinds, keys, level) = match parse_kinds_and_keys(&mut fields, kana, cfg.fuzzy_level) {
                 Ok(parsed) => parsed,
                 Err(e) => return format!("ERR\t{e}\n"),
             };
-            let cfg = *data.config.lock().expect("config lock");
             if !cfg.llm || kana.chars().count() < data.rerank_min_chars {
                 return "OK\t0\n".to_string();
             }
@@ -601,8 +601,8 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
                     &data.matrix,
                     &data.functional,
                     &learning,
-                    typo_source(cfg.typo_correction, keys.as_ref()),
-                    &typo::TUNING,
+                    typo_source(level, keys.as_ref()),
+                    &typo::TUNING.at_level(level),
                 )
                 .candidates
             };
@@ -699,7 +699,8 @@ fn segments_response(
         Some(KINDS_FIELD) => (None, true),
         other => (other, false),
     };
-    let typo = kinds && data.config.lock().expect("config lock").typo_correction;
+    // 文節 UI は要求の段階を受け取らず、標準の段階で補正の有無だけを決める
+    let typo = kinds && data.config.lock().expect("config lock").fuzzy_level >= 0;
     let user = data.user.lock().expect("user lock");
     let learning = data.learning.lock().expect("learning lock");
     let segments = if let Some(lengths_field) = lengths_field {
@@ -758,22 +759,41 @@ const KIND_SEPARATOR: char = '\x1d';
 /// CONVNBEST・RERANK・CONVSEG・CONVCTX の要求の末尾に付けると、応答の候補に種類が付く
 const KINDS_FIELD: &str = "kinds";
 
-/// CONVNBEST・RERANK の要求の、かなの後ろの kinds と、その後ろの省略できる打鍵のフィールドを読む。
-/// 打鍵の要素の数がかなの文字数と合わなければ Err
+/// CONVNBEST・RERANK の要求の、かなの後ろの kinds と、その後ろの省略できる打鍵と段階のフィールドを読む。
+/// 打鍵のフィールドが空なら打鍵なし。段階が無ければ default。打鍵の要素の数がかなの文字数と合わないか、
+/// 段階が不正なら Err
 fn parse_kinds_and_keys<'a>(
     fields: &mut impl Iterator<Item = &'a str>,
     kana: &str,
-) -> Result<(bool, Option<typo::Keys>), String> {
+    default: i8,
+) -> Result<(bool, Option<typo::Keys>, i8), String> {
     if fields.next() != Some(KINDS_FIELD) {
-        return Ok((false, None));
+        return Ok((false, None, default));
     }
-    let keys = fields.next().map(|field| typo::Keys::parse(kana, field)).transpose()?;
-    Ok((true, keys))
+    let keys = fields
+        .next()
+        .filter(|field| !field.is_empty())
+        .map(|field| typo::Keys::parse(kana, field))
+        .transpose()?;
+    let level = parse_level(fields.next(), default)?;
+    Ok((true, keys, level))
 }
 
-/// 入力全体の候補の補正の元。打鍵が無ければかなを戻した近似
-fn typo_source(typo: bool, keys: Option<&typo::Keys>) -> convert::TypoSource<'_> {
-    match (typo, keys) {
+/// 要求の段階のフィールド。無ければ default、-1〜3 の整数でなければ Err
+fn parse_level(field: Option<&str>, default: i8) -> Result<i8, String> {
+    let Some(field) = field else {
+        return Ok(default);
+    };
+    field
+        .parse::<i8>()
+        .ok()
+        .filter(|level| (typo::MIN_LEVEL..=typo::MAX_LEVEL).contains(level))
+        .ok_or_else(|| format!("段階が不正です: {field}"))
+}
+
+/// 入力全体の候補の補正の元。段階 −1 なら補正しない。打鍵が無ければかなを戻した近似
+fn typo_source(level: i8, keys: Option<&typo::Keys>) -> convert::TypoSource<'_> {
+    match (level >= 0, keys) {
         (false, _) => convert::TypoSource::Off,
         (true, Some(keys)) => convert::TypoSource::Keys(keys),
         (true, None) => convert::TypoSource::Kana,
@@ -781,15 +801,16 @@ fn typo_source(typo: bool, keys: Option<&typo::Keys>) -> convert::TypoSource<'_>
 }
 
 /// CONVNBEST の応答を作る。候補ごとに文節の「読み\x1f表記」を \x1e でつなぐ。
-/// kinds なら補正の候補の末尾に種類を付ける。keys は打鍵 (無ければかなを戻した近似で補正する)
+/// kinds なら補正の候補の末尾に種類を付ける。keys は打鍵 (無ければかなを戻した近似で補正する)、
+/// level はファジィ入力の段階
 fn nbest_response(
     kana: &str,
     ctx: Option<&convert::Context>,
     kinds: bool,
     keys: Option<&typo::Keys>,
+    level: i8,
     data: &EngineData,
 ) -> String {
-    let typo = data.config.lock().expect("config lock").typo_correction;
     let user = data.user.lock().expect("user lock");
     let learning = data.learning.lock().expect("learning lock");
     let candidates = convert::convert_nbest_scored(
@@ -800,19 +821,20 @@ fn nbest_response(
         &data.matrix,
         &data.functional,
         &learning,
-        typo_source(typo, keys),
-        &typo::TUNING,
+        typo_source(level, keys),
+        &typo::TUNING.at_level(level),
     )
     .candidates;
     format!("OK\t{}\n", format_candidates(&candidates, kinds))
 }
 
 /// SUGGEST の応答を作る。候補は「種類\x1d読み\x1f表記\x1e読み\x1f表記...」のタブ区切り、
-/// 候補なしは OK のみ
+/// 候補なしは OK のみ。level はファジィ入力の段階
 fn suggest_response(
     kana: &str,
     ctx: Option<&convert::Context>,
     keys: &typo::Keys,
+    level: i8,
     data: &EngineData,
 ) -> String {
     let cfg = *data.config.lock().expect("config lock");
@@ -829,6 +851,7 @@ fn suggest_response(
         &learning,
         &cfg,
         &typo::TUNING,
+        level,
     );
     if list.is_empty() {
         return "OK\n".to_string();
@@ -947,12 +970,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
         }
         Some("CONVNBEST") => {
-            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>]] : 入力全体の候補を返す
+            // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>[\t<段階>]]] : 入力全体の候補を返す
             let ctx = fields.next().and_then(parse_context);
+            let default = data.config.lock().expect("config lock").fuzzy_level;
             match fields.next() {
-                Some(kana) if !kana.is_empty() => match parse_kinds_and_keys(&mut fields, kana) {
-                    Ok((kinds, keys)) => {
-                        nbest_response(kana, ctx.as_ref(), kinds, keys.as_ref(), data)
+                Some(kana) if !kana.is_empty() => match parse_kinds_and_keys(&mut fields, kana, default) {
+                    Ok((kinds, keys, level)) => {
+                        nbest_response(kana, ctx.as_ref(), kinds, keys.as_ref(), level, data)
                     }
                     Err(e) => format!("ERR\t{e}\n"),
                 },
@@ -960,7 +984,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             }
         }
         Some("SUGGEST") => {
-            // SUGGEST\t<文脈読み>\x1f<文脈表記>\t<かな>\t<打鍵> : 全体変換と予測を 1 つの並びで返す
+            // SUGGEST\t<文脈読み>\x1f<文脈表記>\t<かな>\t<打鍵>[\t<段階>] : 全体変換と予測を 1 つの並びで返す
             let ctx = fields.next().and_then(parse_context);
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
@@ -968,8 +992,13 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             let Some(field) = fields.next() else {
                 return "ERR\t打鍵がありません\n".to_string();
             };
+            let default = data.config.lock().expect("config lock").fuzzy_level;
+            let level = match parse_level(fields.next(), default) {
+                Ok(level) => level,
+                Err(e) => return format!("ERR\t{e}\n"),
+            };
             match typo::Keys::parse(kana, field) {
-                Ok(keys) => suggest_response(kana, ctx.as_ref(), &keys, data),
+                Ok(keys) => suggest_response(kana, ctx.as_ref(), &keys, level, data),
                 Err(e) => format!("ERR\t{e}\n"),
             }
         }
@@ -1759,7 +1788,7 @@ mod tests {
             handle_request("CONVSEG\tはr\tkinds", &data),
             handle_request("CONVSEG\tはr", &data)
         );
-        data.config.lock().unwrap().typo_correction = false;
+        data.config.lock().unwrap().fuzzy_level = -1;
         let response = handle_request("CONVSEG\tよろしくおねぎあします\tkinds", &data);
         assert_eq!(response, handle_request("CONVSEG\tよろしくおねぎあします", &data));
         assert!(!response.contains(KIND_SEPARATOR), "{response}");
@@ -1791,7 +1820,7 @@ mod tests {
     #[test]
     fn タイプミス補正が無効ならconvnbestに補正の候補が出ない() {
         let data = typo_data();
-        data.config.lock().unwrap().typo_correction = false;
+        data.config.lock().unwrap().fuzzy_level = -1;
         let response = handle_request("CONVNBEST\t\tよろしくおねぎあします\tkinds", &data);
         assert!(candidate_field(&response, "よろしくお願いします").is_none(), "{response}");
         assert!(!response.contains(KIND_SEPARATOR), "{response}");
@@ -1864,6 +1893,70 @@ mod tests {
         assert!(handle_request("SUGGEST", &data).starts_with("ERR\t"));
         // 候補が無ければ OK のみ
         assert_eq!(handle_request("SUGGEST\t\tx\tx", &empty_data()), "OK\n");
+    }
+
+    #[test]
+    fn 段階を付けない要求は標準の段階と同じ() {
+        let data = typo_data();
+        let kana = "よろしくおねぎあします";
+        let suggest = |level: &str| handle_request(&format!("SUGGEST\t\t{kana}\t{TYPO_KEYS}{level}"), &data);
+        let nbest = |level: &str| handle_request(&format!("CONVNBEST\t\t{kana}\tkinds\t{TYPO_KEYS}{level}"), &data);
+        assert_eq!(suggest("\t0"), suggest(""));
+        assert_eq!(nbest("\t0"), nbest(""));
+        assert!(suggest("").contains("typo\x1d"), "{}", suggest(""));
+        // 段階 -1 の要求は補正しない
+        assert!(!suggest("\t-1").contains("typo"), "{}", suggest("\t-1"));
+        assert!(!nbest("\t-1").contains(KIND_SEPARATOR), "{}", nbest("\t-1"));
+        // 標準の段階を変えると、段階を付けない要求はその段階になる
+        data.config.lock().unwrap().fuzzy_level = -1;
+        assert_eq!(suggest(""), suggest("\t-1"));
+        assert_eq!(nbest(""), nbest("\t-1"));
+        assert!(suggest("\t0").contains("typo\x1d"), "{}", suggest("\t0"));
+    }
+
+    #[test]
+    fn 段階のフィールドが範囲外ならエラー() {
+        let data = typo_data();
+        let kana = "よろしくおねぎあします";
+        let mut session = Session::new();
+        for level in ["4", "-2", "x", ""] {
+            let request = format!("SUGGEST\t\t{kana}\t{TYPO_KEYS}\t{level}");
+            assert!(handle_request(&request, &data).starts_with("ERR\t"), "{level}");
+            let request = format!("CONVNBEST\t\t{kana}\tkinds\t{TYPO_KEYS}\t{level}");
+            assert!(handle_request(&request, &data).starts_with("ERR\t"), "{level}");
+            let request = format!("RERANK\t\t\t{kana}\tkinds\t{TYPO_KEYS}\t{level}");
+            assert!(handle_line(&request, &data, &mut session).starts_with("ERR\t"), "{level}");
+        }
+        for level in ["-1", "3"] {
+            let request = format!("SUGGEST\t\t{kana}\t{TYPO_KEYS}\t{level}");
+            assert!(handle_request(&request, &data).starts_with("OK"), "{level}");
+        }
+    }
+
+    #[test]
+    fn convnbestの空の打鍵のフィールドはかなを戻した近似で補正する() {
+        let data = typo_data();
+        let kana = "よろしくおねぎあします";
+        assert_eq!(
+            handle_request(&format!("CONVNBEST\t\t{kana}\tkinds\t"), &data),
+            handle_request(&format!("CONVNBEST\t\t{kana}\tkinds"), &data)
+        );
+        // 打鍵の無い要求にも段階を付けられる。段階 1 では補正の候補が先頭
+        let response = handle_request(&format!("CONVNBEST\t\t{kana}\tkinds\t\t1"), &data);
+        let first = response.strip_prefix("OK\t").and_then(|r| r.split('\t').next()).unwrap_or("");
+        assert!(first.ends_with("\x1dtypo"), "{response}");
+        assert_eq!(candidate_field(&response, "よろしくお願いします"), Some(first), "{response}");
+    }
+
+    #[test]
+    fn 文節uiの補正は標準の段階で決まる() {
+        let data = typo_data();
+        let request = "CONVSEG\tよろしくおねぎあします\tkinds";
+        assert!(handle_request(request, &data).contains(KIND_SEPARATOR));
+        data.config.lock().unwrap().fuzzy_level = 3;
+        assert!(handle_request(request, &data).contains(KIND_SEPARATOR));
+        data.config.lock().unwrap().fuzzy_level = -1;
+        assert!(!handle_request(request, &data).contains(KIND_SEPARATOR));
     }
 
     #[test]

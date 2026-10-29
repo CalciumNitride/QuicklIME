@@ -425,6 +425,12 @@ pub struct Tuning {
     pub tail_chars: usize,
     /// 予測の照合で誤りを認めない末尾のかなのかたまりの数 (未完成のローマ字は 1 以上なら常に含む)
     pub predict_tail: usize,
+    /// 許すずれの数に、上限 max_edits で抑えた後に足す数
+    pub extra_edits: usize,
+    /// 全体変換の補正の候補を並びの先頭から置く件数。0 なら最良の 1 件だけを Δ の足切りと位置の規則で置く
+    pub typo_list: usize,
+    /// 補正の語を、打ったかなの区間と補正した読みの組ごとに入れる上限の語数 (docs/spec/engine.md「補正の語」)
+    pub typo_words: usize,
 }
 
 pub const TUNING: Tuning = Tuning {
@@ -439,7 +445,14 @@ pub const TUNING: Tuning = Tuning {
     predict_bias: 2000,
     tail_chars: 1,
     predict_tail: 0,
+    extra_edits: 0,
+    typo_list: 0,
+    typo_words: 6,
 };
+
+/// ファジィ入力の段階の範囲 (docs/spec/engine.md「段階」)。−1 は補正しない、0 は自動の補正
+pub const MIN_LEVEL: i8 = -1;
+pub const MAX_LEVEL: i8 = 3;
 
 impl Tuning {
     pub fn cost(&self, kind: EditKind) -> i32 {
@@ -453,10 +466,18 @@ impl Tuning {
 
     /// 打鍵の数 keys (未完成のローマ字を含む) から許すずれの数
     pub fn allowed_edits(&self, keys: usize) -> usize {
-        if self.keys_per_edit == 0 {
-            return 0;
+        let base = if self.keys_per_edit == 0 { 0 } else { self.max_edits.min(keys / self.keys_per_edit) };
+        base + self.extra_edits
+    }
+
+    /// ファジィ入力の段階 level の調整値。段階 0 以下は self のまま (段階 −1 で補正しないことは、
+    /// 呼び出し側が補正の元と許すずれの数で決める)
+    pub fn at_level(&self, level: i8) -> Tuning {
+        if level <= 0 {
+            return *self;
         }
-        self.max_edits.min(keys / self.keys_per_edit)
+        let level = usize::from(level.unsigned_abs());
+        Tuning { tail_chars: 0, predict_tail: 0, extra_edits: level - 1, typo_list: level + 2, ..*self }
     }
 }
 
@@ -1495,6 +1516,21 @@ mod tests {
         // 打鍵 12 以上でずれ 3 つまで (onegaisimasu の抜け・余分・隣のキー)
         let got = matched("おねがしいまうす", "o\x1fne\x1fga\x1fsi\x1fi\x1fma\x1fu\x1fsu", "おねがいします");
         assert!(got.is_some_and(|(_, e)| e <= 3), "{got:?}");
+    }
+
+    #[test]
+    fn 段階2以上は許すずれの数を上限の後に増やす() {
+        let edits = |level: i8| -> Vec<usize> {
+            [0, 3, 4, 12, 30].iter().map(|&n| TUNING.at_level(level).allowed_edits(n)).collect()
+        };
+        assert_eq!(edits(0), vec![0, 0, 1, 3, 3]);
+        assert_eq!(edits(1), vec![0, 0, 1, 3, 3]);
+        assert_eq!(edits(2), vec![1, 1, 2, 4, 4]);
+        assert_eq!(edits(3), vec![2, 2, 3, 5, 5]);
+        // 段階 1 以上は末尾も補正し、補正の候補を段階ごとの件数だけ先頭から置く
+        let counts: Vec<(usize, usize)> =
+            (0..=3).map(|l| TUNING.at_level(l)).map(|t| (t.tail_chars, t.typo_list)).collect();
+        assert_eq!(counts, vec![(1, 0), (0, 3), (0, 4), (0, 5)]);
     }
 
     #[test]

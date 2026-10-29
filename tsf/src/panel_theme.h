@@ -111,7 +111,7 @@ struct PanelTheme {
     PanelColor accent;        // 選択中の候補・run の下線・キャレット
     PanelColor selectedText;  // selection fill の選択中の候補の文字と番号
     PanelColor nextWord;      // 読みなしの後続語予測の縁と「次の語」ラベル
-    PanelColor typo;          // 補正の候補 (docs/spec/engine.md「全体変換の補正」) の縁
+    PanelColor typo;          // ファジィ入力の候補 (docs/spec/engine.md「ファジィ入力」) の縁と段階の印
     PanelColor shadow;        // 影 (a は重ねたときの最大不透明度)
     PanelColor blurTint;      // ぼかし (blur on) の上に重ねる色
     PanelColor scrim;         // ghost のにじみの中心の色 (外へ向かって透明になる)

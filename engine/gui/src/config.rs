@@ -31,6 +31,8 @@ pub const PUNCT_ITEMS: [&str; 4] = ["、。", "，．", "、．", "，。"];
 
 /// 予測の件数 (max_predictions) の選択肢
 pub const MAX_PRED_ITEMS: [u32; 4] = [9, 18, 27, 36];
+/// ファジィ入力の段階 (fuzzy_level) の範囲。エンジン・TSF 層の段階の範囲と合わせる
+pub const FUZZY_LEVEL_RANGE: std::ops::RangeInclusive<i32> = -1..=3;
 /// 後続語の予測を消すまでの秒数 (next_word_timeout の値, 表示名)。0 は時間で消さない
 pub const NEXT_WORD_TIMEOUTS: [(u32, &str); 6] =
     [(0, "消さない"), (3, "3 秒"), (5, "5 秒"), (10, "10 秒"), (30, "30 秒"), (60, "60 秒")];
@@ -65,7 +67,8 @@ pub fn is_valid_font_name(name: &str) -> bool {
 pub struct Config {
     pub learning: bool,
     pub suggest: bool,
-    pub typo_correction: bool,
+    /// ファジィ入力の標準の段階 (FUZZY_LEVEL_RANGE の値)
+    pub fuzzy_level: i32,
     pub max_predictions: u32,   // 9 / 18 / 27 / 36
     pub min_suggest_chars: u32, // 1-5
     pub space_full: bool,
@@ -110,7 +113,7 @@ impl Default for Config {
         Config {
             learning: true,
             suggest: true,
-            typo_correction: true,
+            fuzzy_level: 0,
             max_predictions: 9,
             min_suggest_chars: 2,
             space_full: true,
@@ -267,19 +270,46 @@ impl Config {
         let Ok(file) = std::fs::File::open(&path) else {
             return config;
         };
-        for line in BufReader::new(file).lines() {
-            let Ok(line) = line else {
-                break;
-            };
+        config.apply_lines(BufReader::new(file).lines().map_while(Result::ok));
+        config
+    }
+
+    /// 設定ファイルの行を順に反映する (コメント・タブの無い行は読み飛ばす)。fuzzy_level の行が無ければ、
+    /// 古い書き方の typo_correction 0 を段階 -1 として読む (エンジン・TSF 層と同じ規則)
+    pub fn apply_lines(&mut self, lines: impl IntoIterator<Item = String>) {
+        let mut level_read = false;
+        let mut typo_off = false;
+        for line in lines {
             if line.starts_with('#') {
                 continue;
             }
             let Some((key, value)) = line.split_once('\t') else {
                 continue;
             };
-            config.apply(key, value);
+            match key {
+                "fuzzy_level" => level_read |= self.apply_fuzzy_level(value),
+                "typo_correction" => match value {
+                    "0" => typo_off = true,
+                    "1" => typo_off = false,
+                    _ => {}
+                },
+                _ => self.apply(key, value),
+            }
         }
-        config
+        if !level_read && typo_off {
+            self.fuzzy_level = *FUZZY_LEVEL_RANGE.start();
+        }
+    }
+
+    /// fuzzy_level の値を読む。範囲内の整数でなければ変えずに false
+    fn apply_fuzzy_level(&mut self, value: &str) -> bool {
+        match value.parse::<i32>() {
+            Ok(level) if FUZZY_LEVEL_RANGE.contains(&level) => {
+                self.fuzzy_level = level;
+                true
+            }
+            _ => false,
+        }
     }
 
     pub fn apply(&mut self, key: &str, value: &str) {
@@ -291,7 +321,9 @@ impl Config {
         match key {
             "learning" => parse_bool(&mut self.learning),
             "suggest" => parse_bool(&mut self.suggest),
-            "typo_correction" => parse_bool(&mut self.typo_correction),
+            "fuzzy_level" => {
+                self.apply_fuzzy_level(value);
+            }
             "max_predictions" => {
                 if let Ok(n) = value.parse::<u32>() {
                     self.max_predictions = round_max_predictions(n);
@@ -419,7 +451,7 @@ impl Config {
         text.push_str("\n# 変換エンジン\n");
         text.push_str(&format!("learning\t{}\n", self.learning as u32));
         text.push_str(&format!("suggest\t{}\n", self.suggest as u32));
-        text.push_str(&format!("typo_correction\t{}\n", self.typo_correction as u32));
+        text.push_str(&format!("fuzzy_level\t{}\n", self.fuzzy_level));
         text.push_str(&format!("max_predictions\t{}\n", self.max_predictions));
         text.push_str(&format!("min_suggest_chars\t{}\n", self.min_suggest_chars));
         text.push_str(&format!("llm\t{}\n", self.llm as u32));
@@ -546,6 +578,30 @@ mod tests {
         config.apply("key.next_word_next@run", "Ctrl+N");
         assert_eq!(config.keys[next].overrides[3], Some(vec![key("Ctrl+N")]));
         assert_eq!(config.keys[next].overrides[1], None);
+    }
+
+    #[test]
+    fn reads_fuzzy_level() {
+        let load = |text: &str| {
+            let mut config = Config::default();
+            config.apply_lines(text.lines().map(str::to_string));
+            config
+        };
+        assert_eq!(Config::default().fuzzy_level, 0);
+        assert_eq!(load("fuzzy_level\t2\n").fuzzy_level, 2);
+        assert_eq!(load("fuzzy_level\t-1\n").fuzzy_level, -1);
+        // 範囲外・数でない値は既定値
+        assert_eq!(load("fuzzy_level\t4\n").fuzzy_level, 0);
+        assert_eq!(load("fuzzy_level\tabc\n").fuzzy_level, 0);
+        // fuzzy_level が無ければ typo_correction 0 を段階 -1 として読む
+        assert_eq!(load("typo_correction\t0\n").fuzzy_level, -1);
+        assert_eq!(load("typo_correction\t1\n").fuzzy_level, 0);
+        assert_eq!(load("typo_correction\t0\nfuzzy_level\t1\n").fuzzy_level, 1);
+        assert_eq!(load("fuzzy_level\t0\ntypo_correction\t0\n").fuzzy_level, 0);
+        // 保存では fuzzy_level だけを書き、typo_correction の行は書かない
+        let text = load("typo_correction\t0\n").file_text();
+        assert!(text.contains("\nfuzzy_level\t-1\n"), "{text}");
+        assert!(!text.contains("typo_correction"), "{text}");
     }
 
     #[test]

@@ -36,7 +36,7 @@ public:
         Prediction,  // 予測
         Partial,     // 採用範囲を縮めた全体変換 (部分採用)
         NextWord,    // 読みなしの後続語予測 (横一列では「次の語」色の縁を付ける)
-        // 打ち間違いを戻した全体変換と、ずれを使った予測 (横一列では「補正」色の縁を付ける。
+        // 打ち間違いを戻した全体変換と、ずれを使った予測 (横一列ではテーマの typo 色の縁を付ける。
         // 変換の候補一覧でも種類のタグを出す)
         Typo,
     };
@@ -108,6 +108,11 @@ public:
     // 候補一覧を出したときは 1 ページの件数 (数字キーの対応付けに使う) を、出さなかったときは 0 を返す
     size_t ShowConversion(const Placement& placement, const std::vector<std::wstring>& candidates,
                           const std::vector<bool>& typo, size_t selection, const InputLine* input);
+
+    // 段階の印 (docs/spec/display.md「ファジィ入力の段階の印」) に出すファジィ入力の段階。0 なら印を
+    // 出さない。次の Show・ShowConversion から効く。印を出すときは、Show は候補も入力行も無くても
+    // 印だけのパネルを出す
+    void SetFuzzyLevel(int level) { fuzzyLevel_ = level; }
 
     // 表示中のパネルの矩形 (影を除く。スクリーン座標)。非表示なら false
     bool WindowRect(RECT* rect) const;
@@ -254,6 +259,10 @@ private:
     float TailTipX(float bodyLeft, float bodyRight, float radius) const;
     // 入力行の末尾に出すゴースト (ghost のとき選択中または先頭の候補。無ければ空)
     std::wstring GhostText() const;
+    // 段階 level の印の幅 (px)。level が 0 なら 0
+    float MarkWidth(int level) const;
+    // 今のレイアウトの段階の印を、右端 right・上端 top・高さ rowHeight の行に右揃えで描く
+    void DrawFuzzyMark(float right, float top, float rowHeight);
     void LogShow(const wchar_t* kind, const RECT* anchor, bool created, DWORD error) const;
 
     HWND hwnd_;
@@ -319,6 +328,8 @@ private:
     ColumnSide columnSide_;  // 縦の入力パネルを出す側 (Show・ShowConversion の時点で決めたもの)
     bool hasInput_;
     InputLine input_;
+    int fuzzyLevel_ = 0;  // SetFuzzyLevel で受け取った、次に出す段階の印
+    int markLevel_ = 0;   // 今のレイアウトの段階の印 (0 なら出さない)
     int bodyX_;       // パネル (影を除く) の左上 (スクリーン座標)
     int bodyY_;
     int bodyWidth_;

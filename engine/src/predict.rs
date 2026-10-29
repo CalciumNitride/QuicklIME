@@ -78,7 +78,7 @@ pub fn predict(
     // 完全一致で枠が埋まらないときだけタイプミス補正で補充する
     // (埋まっていれば曖昧検索そのものを実行せず、通常時のコストをゼロにする)。
     // PREDICT には打鍵が届かないので、かなを標準の綴りに戻した打鍵で照合する
-    if cfg.typo_correction && results.len() < max && kana.chars().count() >= MIN_FUZZY_CHARS {
+    if cfg.fuzzy_level >= 0 && results.len() < max && kana.chars().count() >= MIN_FUZZY_CHARS {
         let keys = typo::Keys::standard(kana);
         let matcher = typo::Matcher::new(&keys, typo::TUNING.allowed_edits(keys.len()), &typo::TUNING);
         let mut fuzzy: Vec<(i16, String, String)> = Vec::new();

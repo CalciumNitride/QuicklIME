@@ -43,7 +43,7 @@
 |---|---|---|
 | `learning` | エンジン | [learning.md](learning.md)「設定」 |
 | `suggest` | エンジン | [suggest.md](suggest.md)「設定」 |
-| `typo_correction` | エンジン | [engine.md](engine.md)「設定」・[suggest.md](suggest.md)「設定」 |
+| `fuzzy_level` | エンジン・TSF 層 | [engine.md](engine.md)「設定」・[suggest.md](suggest.md)「設定」 |
 | `max_predictions` | エンジン・TSF 層 | [suggest.md](suggest.md)「件数」 |
 | `min_suggest_chars` | エンジン・TSF 層 | [suggest.md](suggest.md)「設定」 |
 | `llm` | エンジン・TSF 層 | [engine.md](engine.md)「設定」 |
@@ -165,12 +165,14 @@ AppContainer で動くアプリ (スタートメニューの検索欄・UWP ア�
 - `newline_apps`・`ime_start_apps`・`no_learning_apps` は空でも書く (`newline_apps` を空で書くと対象なし)
 - `debug_log` は値があるときだけ書く
 - `input_buffer` と `panel_input` は下記「入力中の読み」の規則で書く
+- `fuzzy_level` を書き、`typo_correction` の行は書かない。読み込みでは、`fuzzy_level` の行が無く `typo_correction 0` が
+  あれば −1 として読む (エンジン・TSF 層と同じ規則)
 
 ### ページと項目
 
 | ページ | 項目 (設定キー) |
 |---|---|
-| 変換 | 学習する (`learning`)、タイプミス補正 (`typo_correction`)、文節単位で変換する (`segment_ui`)、AI で候補を並べ替える (`llm`。展開カードの見出しの Switch。展開すると実行環境 `llm_backend`) |
+| 変換 | 学習する (`learning`)、ファジィ入力の強さ (`fuzzy_level`。下記のスライダー)、文節単位で変換する (`segment_ui`)、AI で候補を並べ替える (`llm`。展開カードの見出しの Switch。展開すると実行環境 `llm_backend`) |
 | 候補バー | 候補バーを表示する (`candidate_bar`)、入力中に予測を表示する (`suggest`)、確定の後に次の語を予測する (`next_word`)、次の語の予測を消すまでの時間 (`next_word_timeout`)、件数 (`max_predictions`)、表示を始める文字数 (`min_suggest_chars`)、表示位置 (`candidate_position`) |
 | 入力 | 入力中の読み (`input_buffer`・`panel_input`)、スペース (`space`)、句読点 (`punctuation`)、数字 (`digits`)、モードレス入力 (`modeless`)、数字やメールアドレスの欄では日本語入力を使わない (`input_scope_passthrough`) |
 | 見た目 | 入力パネルのテーマ (`panel_theme`。横に [テーマのフォルダを開く])、フォント (`candidate_font`)、サイズ (`candidate_font_size`)、オン/オフの切り替え時に「あ」「A」を表示する (`mode_popup`)、プレビュー (下記「入力パネルの見本」) |
@@ -183,6 +185,18 @@ AppContainer で動くアプリ (スタートメニューの検索欄・UWP ア�
   表示位置はキャレットの下 (`caret`) / 画面中央 (`center`)、スペースは全角スペース (`full`) / 半角スペース (`half`)、
   句読点は `、。` / `，．` / `、．` / `，。` (値をそのまま出す)、数字は半角 (`half`) / 全角 (`full`)、サイズは 10〜40
 - 文言は、ページの名前で分かる部分は省く。「サジェスト」とは書かず「予測」にする
+- ファジィ入力の強さは、ほかの設定と同じカードの右端に「弱い」・スライダー・「強い」を並べて選ぶ (Windows の設定のスライダーの
+  項目と同じ形)。スライダーは −1〜3、1 刻みで整数に吸い付き、目盛りは無い。選べる値が 5 つしかないので、幅は 100px の短いものにする。
+  カードの説明には今の値の挙動を 1 行で出し、値を変えると切り替える。段階に名前を付けないのは、名前からは段階ごとの
+  違いが分からないため (強さの程度はスライダーの位置で分かる)
+
+| 値 | カードの説明に出す 1 行 |
+|---|---|
+| −1 | 打ち間違いを直さず、打ったとおりに変換する |
+| 0 | 標準。確かな打ち間違いだけを直す (最後の文字は直さない) |
+| 1 | 最後の文字の打ち間違いも直し、直した候補を先頭に並べる |
+| 2 | 1 に加えて、打ち間違いの多い入力も直す |
+| 3 | 直せる打ち間違いの数をさらに増やす。候補が出るまで少し遅くなる |
 
 ### 入力中の読み
 

@@ -39,6 +39,8 @@ bool DrawSample(SuggestPanel* panel, int sample, const RECT& caret)
     placement.position = SuggestPanel::Position::Caret;
     placement.caret = &caret;
     placement.x = caret.left;
+    // 段階 2 は塗った点と塗らない点の両方を含むので、テーマの印の色を両方とも確かめられる
+    panel->SetFuzzyLevel(2);
 
     SuggestPanel::InputLine input;
     if (sample == kSampleBar) {

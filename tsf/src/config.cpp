@@ -71,6 +71,24 @@ void ParseClamped(const std::wstring& value, int minValue, int maxValue, int& ou
     out = min(max(n, minValue), maxValue);
 }
 
+// ファジィ入力の段階 (-1〜3 の整数) として読めれば true で out に入れる
+bool ParseFuzzyLevel(const std::wstring& value, int& out)
+{
+    // エンジン・設定ツールの整数の読み方と同じく、先頭の符号を 1 つ許す
+    const bool negative = !value.empty() && value[0] == L'-';
+    const bool hasSign = !value.empty() && (value[0] == L'-' || value[0] == L'+');
+    const std::wstring digits = hasSign ? value.substr(1) : value;
+    if (digits.size() != 1 || digits[0] < L'0' || digits[0] > L'9') {
+        return false;
+    }
+    const int level = negative ? -(digits[0] - L'0') : digits[0] - L'0';
+    if (level < kMinFuzzyLevel || level > kMaxFuzzyLevel) {
+        return false;
+    }
+    out = level;
+    return true;
+}
+
 // 句読点の組 (読点+句点の2文字)。対応する4通り以外は変更しない
 void ParsePunctuation(const std::wstring& value, TsfConfig& config)
 {
@@ -109,6 +127,8 @@ const wchar_t* const kKeyFuncNames[kKeyFuncCount] = {
     L"key.next_word_next",
     L"key.next_word_prev",
     L"key.forget_learning",
+    L"key.fuzzy_stronger",
+    L"key.fuzzy_weaker",
 };
 
 // 状態別の上書きの接尾辞 (key.<機能>@<状態>。KeyState の並び順)
@@ -517,6 +537,9 @@ void Load(const std::wstring& path, TsfConfig& config)
     }
     std::string line;
     bool firstLine = true;
+    // fuzzy_level が無ければ、古い書き方の typo_correction 0 を段階 -1 として読む (行の順によらない)
+    bool levelRead = false;
+    bool typoOff = false;
     while (std::getline(file, line)) {
         if (!line.empty() && line.back() == '\r') {
             line.pop_back();
@@ -534,7 +557,18 @@ void Load(const std::wstring& path, TsfConfig& config)
         if (tab == std::string::npos) {
             continue;
         }
-        ApplyLine(Utf8ToWide(line.substr(0, tab)), Utf8ToWide(line.substr(tab + 1)), config);
+        const std::wstring key = Utf8ToWide(line.substr(0, tab));
+        const std::wstring value = Utf8ToWide(line.substr(tab + 1));
+        if (key == L"fuzzy_level") {
+            levelRead = ParseFuzzyLevel(value, config.fuzzyLevel) || levelRead;
+        } else if (key == L"typo_correction") {
+            typoOff = value == L"0" || (typoOff && value != L"1");
+        } else {
+            ApplyLine(key, value, config);
+        }
+    }
+    if (!levelRead && typoOff) {
+        config.fuzzyLevel = kMinFuzzyLevel;
     }
 }
 
@@ -567,6 +601,9 @@ bool KeyFuncWorksIn(KeyFunc func, KeyState state)
         return state == KeyState::Idle || state == KeyState::Suggest;
     case KeyFunc::ForgetLearning:
         return state == KeyState::Suggest;
+    case KeyFunc::FuzzyStronger:
+    case KeyFunc::FuzzyWeaker:
+        return state != KeyState::Idle;
     case KeyFunc::None:
         return false;
     default:
@@ -601,6 +638,8 @@ std::array<KeyAssignment, kKeyFuncCount> TsfConfig::DefaultKeyAssignments()
     set(KeyFunc::NextWordNext, {true, false, false, VK_DOWN});
     set(KeyFunc::NextWordPrev, {true, false, false, VK_UP});
     set(KeyFunc::ForgetLearning, {true, false, false, VK_DELETE});
+    set(KeyFunc::FuzzyStronger, {false, false, false, VK_F2});
+    set(KeyFunc::FuzzyWeaker, {false, false, true, VK_F2});
     return keys;
 }
 

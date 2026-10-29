@@ -16,7 +16,7 @@ pub const IN_INPUT: u8 = IN_RUN | IN_CANDIDATE | IN_SUGGEST;
 
 /// キー割当の機能一覧: (設定キー名, 表示名, 働く状態, 既定の割当)。
 /// 並び・働く状態・既定は TSF 層 (tsf/src/config.h の KeyFunc) と合わせる
-pub const KEY_ITEMS: [(&str, &str, u8, &str); 19] = [
+pub const KEY_ITEMS: [(&str, &str, u8, &str); 21] = [
     ("key.convert", "変換", IN_IDLE | IN_INPUT, "Convert"),
     ("key.next_candidate", "次候補", IN_CANDIDATE, "Space"),
     ("key.prev_candidate", "前候補", IN_CANDIDATE, "Shift+Space"),
@@ -36,6 +36,8 @@ pub const KEY_ITEMS: [(&str, &str, u8, &str); 19] = [
     ("key.next_word_next", "次の語の予測: 次", IN_IDLE | IN_SUGGEST, "Ctrl+Down"),
     ("key.next_word_prev", "次の語の予測: 前", IN_IDLE | IN_SUGGEST, "Ctrl+Up"),
     ("key.forget_learning", "学習の削除", IN_SUGGEST, "Ctrl+Delete"),
+    ("key.fuzzy_stronger", "ファジィを強める", IN_INPUT, "F2"),
+    ("key.fuzzy_weaker", "ファジィを弱める", IN_INPUT, "Shift+F2"),
 ];
 
 /// 英字・数字・F1〜F24 以外の名前を持つキー: (表記, 仮想キーコード)

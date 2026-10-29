@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -86,10 +87,12 @@ public:
                               std::vector<ConversionSegment>* segments);
 
     // かなに対する入力全体の候補を取得する (CONVNBEST)。keys はかなの打鍵
-    // (docs/spec/suggest.md「打鍵の受け渡し」の書式。空なら送らない)。CONVNBEST を知らない旧エンジンには
-    // CONVCTX / CONVSEG を送り、各文節の先頭候補を連結した1件だけを返す
+    // (docs/spec/suggest.md「打鍵の受け渡し」の書式。空なら打鍵なしのフィールドを送る)、level は
+    // ファジィ入力の段階。CONVNBEST を知らない旧エンジンには CONVCTX / CONVSEG を送り、各文節の
+    // 先頭候補を連結した1件だけを返す
     bool ConvertNBest(const std::wstring& kana, const ConversionContext& context,
-                      const std::wstring& keys, std::vector<SentenceCandidate>* candidates);
+                      const std::wstring& keys, int level,
+                      std::vector<SentenceCandidate>* candidates);
 
     // ConvertNBest の毎打鍵の候補バー用 (SUGGEST を知らない旧エンジンでバーを作る。打鍵は送らない)。
     // 接続待ちはせず、未接続ならエンジンを起動だけして即 false を返す (Predict と同じ方式)
@@ -97,11 +100,12 @@ public:
                           std::vector<SentenceCandidate>* candidates);
 
     // 全体変換と予測を 1 つの並びで取得する (SUGGEST。毎打鍵の候補バー用)。keys はかなの打鍵
-    // (docs/spec/suggest.md「打鍵の受け渡し」の書式)。接続待ちはせず、未接続ならエンジンを起動だけして
-    // 即 false を返す。SUGGEST を知らない旧エンジンのときも false で、以後 SuggestUnsupported が
-    // true になる (候補ゼロは true で candidates が空)
+    // (docs/spec/suggest.md「打鍵の受け渡し」の書式)、level はファジィ入力の段階。接続待ちはせず、
+    // 未接続ならエンジンを起動だけして即 false を返す。SUGGEST を知らない旧エンジンのときも false で、
+    // 以後 SuggestUnsupported が true になる (候補ゼロは true で candidates が空)
     bool SuggestLive(const std::wstring& kana, const ConversionContext& context,
-                     const std::wstring& keys, std::vector<SuggestCandidate>* candidates);
+                     const std::wstring& keys, int level,
+                     std::vector<SuggestCandidate>* candidates);
 
     // 今の接続の相手が SUGGEST を知らないエンジンか (CONVNBEST と PREDICT で代用する)
     bool SuggestUnsupported() const { return suggestUnsupported_ || legacyEngine_; }
@@ -139,12 +143,12 @@ public:
         None,     // ID が古い・不明、推論に失敗、LLM が無効
     };
 
-    // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。keys はかなの打鍵
-    // (ConvertNBest と同じ。空なら送らない)。毎打鍵の候補バー用に、接続待ちはしない (未接続なら
+    // かなに対する入力全体の候補の、LLM による並べ替えを依頼する (RERANK)。keys・level は
+    // ConvertNBest と同じ。毎打鍵の候補バー用に、接続待ちはしない (未接続なら
     // エンジンを起動だけする)。受け付けた ID を返す (0 = 並べ替えをしない。未接続・LLM が無効・
     // RERANK を知らない旧エンジンも 0)
     unsigned long long Rerank(const std::wstring& llmContext, const ConversionContext& context,
-                              const std::wstring& kana, const std::wstring& keys);
+                              const std::wstring& kana, const std::wstring& keys, int level);
 
     // 並べ替えの結果を問い合わせる (RERANKGET)。Done のときは candidates に CONVNBEST と同じ形の
     // 候補を入れる。通信に失敗したら false
@@ -234,9 +238,10 @@ private:
                          std::vector<ConversionSegment>* segments);
     // CONVSEG 系の応答1行を segments にパースする
     bool ParseSegmentsResponse(std::string response, std::vector<ConversionSegment>* segments);
-    // CONVNBEST (旧エンジンには CONVCTX / CONVSEG) を送って入力全体の候補を得る
+    // CONVNBEST (旧エンジンには CONVCTX / CONVSEG) を送って入力全体の候補を得る。level が無ければ
+    // 打鍵と段階のフィールドを付けない
     bool RequestNBest(const std::wstring& kana, const ConversionContext& context,
-                      const std::wstring& keys, bool live,
+                      const std::wstring& keys, std::optional<int> level, bool live,
                       std::vector<SentenceCandidate>* candidates);
     // CONVNBEST の応答1行を candidates にパースする
     bool ParseNBestResponse(std::string response, std::vector<SentenceCandidate>* candidates);

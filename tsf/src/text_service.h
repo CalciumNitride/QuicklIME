@@ -165,6 +165,14 @@ private:
 
     // 文字種変換・人名変換・記号変換・ユーザ語変換 (既定 F3-F10) を実行する。それ以外の機能は何もしない
     HRESULT ApplyFunctionKey(ITfContext* context, KeyFunc func);
+    // run のファジィ入力の段階を delta だけ変え (端で止める)、候補バーか変換の候補一覧を引き直す
+    // (docs/spec/suggest.md「ファジィ入力の段階」)。文節 UI の候補選択中と、段階が変わらないときは何もしない
+    HRESULT ChangeFuzzyLevel(ITfContext* context, int delta);
+    // run の段階を設定 fuzzy_level に戻す。run を始めたときと、候補バーの採用・変換の確定で
+    // 文書に文字列を入れたとき (run が続く採用も含む) に呼ぶ
+    void ResetFuzzyLevel();
+    // 入力パネルに出す段階の印の段階 (run が無ければ 0)
+    int PanelFuzzyLevel() const;
 
     // 同期 edit session の実行 (session の所有権を受け取り、実行後に解放する)
     HRESULT RequestSync(ITfContext* context, ITfEditSession* session, DWORD flags) const;
@@ -251,7 +259,7 @@ private:
         std::wstring reading;
         // 全体変換の文節ごとの (読み, 表記) (全体変換の学習と採用範囲の縮めに使う)
         std::vector<std::pair<std::wstring, std::wstring>> segments;
-        // 補正の候補 (全体変換の typo、ずれを使った予測 predict_typo)。「補正」の表示にする。
+        // 補正の候補 (全体変換の typo、ずれを使った予測 predict_typo)。「ファジィ」の表示にする。
         // 全体変換の補正の候補は、打ち間違えた読みで学習データを汚さないよう採用しても学習を送らない
         bool typo = false;
     };
@@ -583,7 +591,7 @@ private:
     // PanelKeyNeedsResend のキー: 読み (Enter のバー選択中は選択中の候補) を文書に入れて run を
     // 終えてから、その打鍵をアプリへ送り直す
     HRESULT EndPanelRunAndResend(ITfContext* context, WPARAM wparam);
-    // run の方式を今の設定で決める (run を始めるとき)
+    // run の方式とファジィ入力の段階を今の設定で決める (run を始めるとき)
     void BeginRunMode();
     // run の読みの composition を張る (開始と文字列の設定は別の edit session)。張れなければ
     // false を返し、その run はパネル保持入力として続ける
@@ -878,6 +886,8 @@ private:
     // 今の run (昇格した composition を含む) の方式。run を始めた時点の設定で決め、
     // run の途中で設定が読み直されても変えない
     RunMode runMode_;
+    // 今の run のファジィ入力の段階。設定 fuzzy_level で始め、キーで変え、文書に文字列を入れたら戻す
+    int fuzzyLevel_ = 0;
     // IME が直前に文書へ入れた文字列 (文書の分類用。照合したら忘れる)
     std::wstring lastInserted_;
 

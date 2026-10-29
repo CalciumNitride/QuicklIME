@@ -1029,6 +1029,10 @@ bool TextService::CanRunKeyFunc(ITfContext* context, KeyFunc func) const
     if (func == KeyFunc::NextWordNext || func == KeyFunc::NextWordPrev) {
         return nextWordBar_ && !barItems_.empty();
     }
+    // 後続語の予測を選んでいるだけ (run が無い) なら段階の対象が無いので、食べずにアプリへ渡す
+    if (func == KeyFunc::FuzzyStronger || func == KeyFunc::FuzzyWeaker) {
+        return InRun() || Composing();
+    }
     if (CurrentKeyState() != KeyState::Idle) {
         return true;
     }
@@ -1943,6 +1947,10 @@ HRESULT TextService::RunKeyFunc(ITfContext* context, const KeyMatch& match, WPAR
         return MoveNextWordSelection(ArrowOrder(wparam, -1));
     case KeyFunc::ForgetLearning:
         return ForgetBarLearning(context);
+    case KeyFunc::FuzzyStronger:
+        return ChangeFuzzyLevel(context, +1);
+    case KeyFunc::FuzzyWeaker:
+        return ChangeFuzzyLevel(context, -1);
     case KeyFunc::UndoCommit:
         return UndoCommit(context);
     case KeyFunc::RegisterWord:
@@ -2096,6 +2104,48 @@ HRESULT TextService::HandleKeyConverting(ITfContext* context, WPARAM wparam)
     }
 }
 
+HRESULT TextService::ChangeFuzzyLevel(ITfContext* context, int delta)
+{
+    if (!InRun() && !Composing()) {
+        return S_OK;
+    }
+    // 文節 UI は run の段階を使わない (打鍵は食べる)
+    if (converting_ && config_.Get().segmentUi) {
+        return S_OK;
+    }
+    const int level = (std::min)((std::max)(fuzzyLevel_ + delta, kMinFuzzyLevel), kMaxFuzzyLevel);
+    if (level == fuzzyLevel_) {
+        return S_OK;
+    }
+    fuzzyLevel_ = level;
+    DebugLog(L"ファジィ入力の段階: " + std::to_wstring(level));
+    // 前の段階で頼んだ並べ替えの結果を、候補一覧の作り直しで使わせない
+    ResetRerank();
+    if (!converting_) {
+        return UpdateBar(context);
+    }
+    // 範囲の伸縮と同じく今の範囲の変換をやり直す (選択は先頭に戻る)
+    const KeyFunc func = rangeFunc_;
+    ClearConversion();
+    const HRESULT hr =
+        func == KeyFunc::Convert ? StartConversion(context) : ApplyFunctionKey(context, func);
+    if (converting_) {
+        RequestRerank(composer_.Commit(), composer_.CommitKeyField());
+    }
+    return hr;
+}
+
+void TextService::ResetFuzzyLevel()
+{
+    // 段階はいま出ている候補に対する操作なので、確定した後の入力には持ち越さない
+    fuzzyLevel_ = config_.Get().fuzzyLevel;
+}
+
+int TextService::PanelFuzzyLevel() const
+{
+    return (InRun() || Composing()) ? fuzzyLevel_ : 0;
+}
+
 HRESULT TextService::ApplyFunctionKey(ITfContext* context, KeyFunc func)
 {
     // 範囲を変えたときは F6〜F10 なら同じ文字種変換を、人名変換・記号変換・ユーザ語変換の後は
@@ -2165,7 +2215,7 @@ void TextService::BuildConversionSegments()
         // 入力全体を1文節として候補を選ぶ。候補ごとの文節は確定時の学習に使う。
         // この読みの並べ替えの結果が出ていればその並びを使う (待たない)
         ok = TakeRerankedCandidates(kana, &wholeCandidates_) ||
-             engine_.ConvertNBest(kana, CurrentContext(), composer_.CommitKeyField(),
+             engine_.ConvertNBest(kana, CurrentContext(), composer_.CommitKeyField(), fuzzyLevel_,
                                   &wholeCandidates_);
         if (ok) {
             ConversionSegment segment;
@@ -2656,7 +2706,7 @@ HRESULT TextService::UpdateBar(ITfContext* context)
     std::wstring keys = BarKeys();
     if (suggest) {
         std::vector<SuggestCandidate> suggestions;
-        if (engine_.SuggestLive(kana, CurrentContext(), keys, &suggestions)) {
+        if (engine_.SuggestLive(kana, CurrentContext(), keys, fuzzyLevel_, &suggestions)) {
             items = BuildBarItems(suggestions);
         } else if (engine_.SuggestUnsupported()) {
             // 旧エンジンには打鍵を送らない (並べ替えも同じ並びの元で頼む)
@@ -2929,6 +2979,7 @@ size_t TextService::ShowPanel(const RECT* caret, const std::vector<SuggestPanel:
     SuggestPanel::InputLine input;
     const bool hasInput = PanelInputLine(&input);
     modePopup_.Hide();
+    suggestPanel_.SetFuzzyLevel(PanelFuzzyLevel());
     const size_t shown =
         suggestPanel_.Show(placement, labels, selection, hasInput ? &input : nullptr);
     SyncMouseHook();
@@ -3059,11 +3110,12 @@ void TextService::OnNextWordTimer()
 
 void TextService::ClearBarKeepingInput(ITfContext* context)
 {
-    if (!PanelInputShown() || context == nullptr) {
+    // ファジィ入力の段階を変えた手応えが見えるよう、入力行が無くても段階の印だけのパネルを残す
+    if ((!PanelInputShown() && PanelFuzzyLevel() == 0) || context == nullptr) {
         ClearBar();
         return;
     }
-    // 打鍵ごとにウィンドウを作り直さないよう、隠さずに入力行だけのパネルへ描き直す
+    // 打鍵ごとにウィンドウを作り直さないよう、隠さずに入力行 (と段階の印) だけのパネルへ描き直す
     ResetBarState();
     RefreshRunPanel(context);
 }
@@ -3204,7 +3256,8 @@ void TextService::RequestRerank(const std::wstring& kana, const std::wstring& ke
     if (!config_.Get().llm) {
         return;
     }
-    const unsigned long long id = engine_.Rerank(llmRunContext_, CurrentContext(), kana, keys);
+    const unsigned long long id =
+        engine_.Rerank(llmRunContext_, CurrentContext(), kana, keys, fuzzyLevel_);
     if (id == 0) {
         return;
     }
@@ -3548,6 +3601,7 @@ std::wstring TextService::PrepareConversionCommit()
     if (!committed.empty()) {
         SetCommitContext(committed.back().first, committed.back().second);
     }
+    ResetFuzzyLevel();
     // 範囲を縮めて外したかなは学習せず、確定文字列には含める
     return RangeExcludedInComposition() + ConvertedText();
 }
@@ -3948,6 +4002,8 @@ void TextService::ShowConversionPanel(ITfContext* context, bool list)
         }
     }
     modePopup_.Hide();
+    // 文節 UI の変換は run の段階を使わないので印を出さない
+    suggestPanel_.SetFuzzyLevel(config_.Get().segmentUi ? 0 : PanelFuzzyLevel());
     const size_t pageSize = suggestPanel_.ShowConversion(
         placement, candidates, typo, selected_[segmentIndex_], hasInput ? &input : nullptr);
     SyncMouseHook();

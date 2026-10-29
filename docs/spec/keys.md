@@ -53,6 +53,8 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
 | `NextWordNext` | `key.next_word_next` | 入力なし・サジェスト選択中 | `Ctrl+Down` | 後続語の予測の次の候補を選ぶ (未選択から先頭) |
 | `NextWordPrev` | `key.next_word_prev` | 入力なし・サジェスト選択中 | `Ctrl+Up` | 後続語の予測の前の候補を選ぶ (未選択から末尾、先頭から末尾) |
 | `ForgetLearning` | `key.forget_learning` | サジェスト選択中 | `Ctrl+Delete` | 選んでいる候補の学習を消す ([suggest.md](suggest.md)「学習の削除の後の候補」) |
+| `FuzzyStronger` | `key.fuzzy_stronger` | run 中・サジェスト選択中・候補選択中 | `F2` | ファジィ入力の段階を 1 上げる ([suggest.md](suggest.md)「ファジィ入力の段階」) |
+| `FuzzyWeaker` | `key.fuzzy_weaker` | run 中・サジェスト選択中・候補選択中 | `Shift+F2` | ファジィ入力の段階を 1 下げる (同上) |
 
 - 表の並びは、同じ状態で同じキーが重なったときの優先の順を兼ねる (下記「割当の照合」)
 - `Convert` の割当は、Shift を足した打鍵にも一致する。候補選択中は Shift を足すと前候補になり、ほかの状態では Shift の有無で
@@ -63,6 +65,8 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
   ([display.md](display.md)「キャレット行の上に出すときの反転」)
 - `ForgetLearning` は、英字候補・学習でない候補を選んでいるとき・エンジンに接続できないときも打鍵を食べて何もしない。
   アプリへ渡すとキャレットの後ろの文字が消えるため
+- `FuzzyStronger`・`FuzzyWeaker` は、段階が端 (3・−1) で変わらないときと、文節 UI (`segment_ui` 1) の候補選択中も打鍵を
+  食べて何もしない
 - 候補バーと後続語の予測の選択、範囲の伸縮、文節の移動と伸縮、変換の取消、番号での採用・確定は割当の機能にしない。
   コア操作 (矢印・Tab・Esc・Backspace など) と Ctrl+1〜9 に固定する (下記の表と「数字キーと Ctrl+1〜9」)
 
@@ -104,6 +108,7 @@ IME がオンのときに、打鍵を入力の状態と割当に照らして、�
   - 入力なし以外: 常に食べる
   - `InsertNewline`: 状態によらず、改行キーの対象のアプリ (`newline_apps`) のときだけ食べる
   - `NextWordNext`・`NextWordPrev`: 状態によらず、後続語の予測を出しているときだけ食べる。run のバーを選んでいるときは食べない
+  - `FuzzyStronger`・`FuzzyWeaker`: run か候補選択があるときだけ食べる。後続語の予測を選んでいるだけのときは食べない
 - 食べない打鍵はアプリへ渡す。run・候補選択を終えるかは、割当の無い打鍵と同じに決める (下記の表。run 中の Ctrl+J なら、
   割当の無い Ctrl 併用として run を終えて渡す)
 - 割当に一致しない打鍵は、キーの決まった働き (下記の表) に進む。たとえば候補選択中の Space の割当を外すと、Space は確定して
@@ -151,6 +156,7 @@ key event sink の `OnTestKeyDown` / `OnKeyDown` で、打鍵ごとに次の順�
 | Ctrl+1〜9 | アプリへ渡す。後続語の予測を出していれば、その番号の予測を入れ、次の語の予測を出す | その番号の予測を入れ、次の語の予測を出す |
 | `NextWordNext`・`NextWordPrev` (Ctrl+↓・Ctrl+↑) | 後続語の予測を出していれば先頭 / 末尾を選ぶ。出していなければアプリへ渡す | 次 / 前の候補を選ぶ |
 | `ForgetLearning` (Ctrl+Delete) | 働かない (アプリへ渡す) | 選んでいる予測の学習を消す |
+| `FuzzyStronger`・`FuzzyWeaker` (F2・Shift+F2) | 働かない (アプリへ渡す) | 予測を消す |
 | 変換キー・F6〜F10 | 入力なしの対象があれば変換する ([conversion.md](conversion.md)「変換の対象」)。無ければアプリへ渡す | 予測を消す |
 | F3〜F5 | 働かない (アプリへ渡す) | 予測を消す |
 | `UndoCommit` (Ctrl+Backspace) | 確定アンドゥ。働かないときはアプリへ渡す | 予測を消す |
@@ -184,6 +190,7 @@ key event sink の `OnTestKeyDown` / `OnKeyDown` で、打鍵ごとに次の順�
 | Ctrl+1〜9 | 候補バーがあれば、その番号の候補を採用する。無ければ run を終えて渡す | その番号の候補を採用する | その番号の候補で確定する |
 | 変換キー | 変換を始める | 変換を始める | 次候補 (Shift+変換キーは前候補) |
 | F3〜F10 | その変換を始める | その変換を始める | 今の候補選択にかける ([conversion.md](conversion.md)「ファンクションキー変換 (F3〜F10)」) |
+| `FuzzyStronger`・`FuzzyWeaker` (F2・Shift+F2) | ファジィ入力の段階を変え、候補バーを引き直す ([suggest.md](suggest.md)「ファジィ入力の段階」) | 段階を変え、候補バーを引き直す (選択は外れる) | `segment_ui` 0: 段階を変え、候補一覧を作り直す (選択は先頭)。`segment_ui` 1: 何もしない (キーは食べる) |
 | `ForgetLearning` (Ctrl+Delete) | run を終えて渡す | 選んでいる候補の学習を消す | 確定して渡す |
 | 改行キー (Ctrl+J。対象のアプリ) | 見えているとおりに run を終え、Shift+Enter を送る | 採用して run を終え、Shift+Enter を送る | 確定し、Shift+Enter を送る |
 | 割当の無い Ctrl 併用 (入力なしの機能・後続語の予測の選択の割当、対象外のアプリの改行キーを含む) | run を終えて渡す | run を終えて渡す | 確定して渡す |

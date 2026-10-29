@@ -421,20 +421,22 @@ bool EngineClient::ParseSegmentsResponse(std::string response,
 }
 
 bool EngineClient::ConvertNBest(const std::wstring& kana, const ConversionContext& context,
-                                const std::wstring& keys,
+                                const std::wstring& keys, int level,
                                 std::vector<SentenceCandidate>* candidates)
 {
-    return RequestNBest(kana, context, keys, false, candidates);
+    return RequestNBest(kana, context, keys, level, false, candidates);
 }
 
 bool EngineClient::ConvertNBestLive(const std::wstring& kana, const ConversionContext& context,
                                     std::vector<SentenceCandidate>* candidates)
 {
-    return RequestNBest(kana, context, L"", true, candidates);
+    // SUGGEST を知らない旧エンジンは段階も知らず、空の打鍵のフィールドを打鍵の誤りとして ERR にするので
+    // 打鍵と段階を付けない
+    return RequestNBest(kana, context, L"", std::nullopt, true, candidates);
 }
 
 bool EngineClient::SuggestLive(const std::wstring& kana, const ConversionContext& context,
-                               const std::wstring& keys,
+                               const std::wstring& keys, int level,
                                std::vector<SuggestCandidate>* candidates)
 {
     if (candidates == nullptr || kana.empty() || SuggestUnsupported()) {
@@ -447,7 +449,7 @@ bool EngineClient::SuggestLive(const std::wstring& kana, const ConversionContext
         context.Empty() ? std::string()
                         : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
     const std::string request = "SUGGEST\t" + contextField + "\t" + WideToUtf8(kana) + "\t" +
-                                WideToUtf8(keys) + "\n";
+                                WideToUtf8(keys) + "\t" + std::to_string(level) + "\n";
     std::string response;
     if (!SendReceive(request, &response)) {
         return false;
@@ -600,7 +602,7 @@ bool EngineClient::AsciiFormLive(const std::wstring& text, std::wstring* form)
 }
 
 bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContext& context,
-                                const std::wstring& keys, bool live,
+                                const std::wstring& keys, std::optional<int> level, bool live,
                                 std::vector<SentenceCandidate>* candidates)
 {
     if (candidates == nullptr || kana.empty()) {
@@ -613,10 +615,10 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
         const std::string contextField =
             context.Empty() ? std::string()
                             : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-        // kinds で補正の候補に種類を付けさせる (旧エンジンは kinds・打鍵の余分なフィールドを無視する)
+        // kinds で補正の候補に種類を付けさせる (旧エンジンは kinds・段階の余分なフィールドを無視する)
         std::string request = "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\tkinds";
-        if (!keys.empty()) {
-            request += "\t" + WideToUtf8(keys);
+        if (level.has_value()) {
+            request += "\t" + WideToUtf8(keys) + "\t" + std::to_string(*level);
         }
         request += "\n";
         std::string response;
@@ -683,7 +685,8 @@ bool EngineClient::ParseNBestResponse(std::string response,
 
 unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
                                         const ConversionContext& context,
-                                        const std::wstring& kana, const std::wstring& keys)
+                                        const std::wstring& kana, const std::wstring& keys,
+                                        int level)
 {
     if (kana.empty() || rerankUnsupported_ || legacyEngine_) {
         return 0;
@@ -695,11 +698,8 @@ unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
         context.Empty() ? std::string()
                         : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
     std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
-                          WideToUtf8(kana) + "\tkinds";
-    if (!keys.empty()) {
-        request += "\t" + WideToUtf8(keys);
-    }
-    request += "\n";
+                          WideToUtf8(kana) + "\tkinds\t" + WideToUtf8(keys) + "\t" +
+                          std::to_string(level) + "\n";
     std::string response;
     if (!SendReceive(request, &response)) {
         return 0;

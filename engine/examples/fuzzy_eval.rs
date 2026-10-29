@@ -25,8 +25,10 @@
 //                     無ければ既定値 (typo::TUNING) だけ。key は adj・extra・miss・swap (EDIT_*)・
 //                     edit (EDIT_* をすべて同じ値に)・kpe (KEYS_PER_EDIT)・max (MAX_EDITS)・
 //                     show (TYPO_SHOW)・top (TYPO_TOP)・bias (PREDICT_BIAS)・tail (全体変換の補正で
-//                     変えない読みの末尾の文字数)・ptail (予測の照合で誤りを認めない末尾のかなのかたまりの数)
-//   --timing          既定値で、文の打鍵を 1 打ずつ打ったときの SUGGEST の処理時間 (中央値・p95) も測る
+//                     変えない読みの末尾の文字数)・ptail (予測の照合で誤りを認めない末尾のかなのかたまりの数)・
+//                     words (補正の語を区間と補正した読みの組ごとに入れる語数)・
+//                     level (ファジィ入力の段階 -1〜3。既定 0。段階の調整値はほかの key を当てた後に重ねる)
+//   --timing          最初の --config で、文の打鍵を 1 打ずつ打ったときの SUGGEST の処理時間 (中央値・p95・最大) も測る
 //   --detail          既定値 (または最初の --config) で、崩さない入力で先頭が変わった例などを出す
 //   --dict <dir>      Mozc 辞書のディレクトリ (既定は references/mozc/src/data/dictionary_oss)
 //   --ut <file>       UT 辞書 (既定は references/mozcdic-ut/dictionary_ut.txt。無ければ使わない)
@@ -122,9 +124,10 @@ fn parse_args() -> BoxResult<Args> {
     Ok(args)
 }
 
-/// 調整値の組の文字列 (key=value のカンマ区切り) を既定値に当てる
-fn parse_tuning(spec: &str) -> BoxResult<Tuning> {
+/// 調整値の組の文字列 (key=value のカンマ区切り) を既定値に当て、ファジィ入力の段階とともに返す
+fn parse_tuning(spec: &str) -> BoxResult<(Tuning, i8)> {
     let mut t = typo::TUNING;
+    let mut level: i8 = 0;
     for item in spec.split(',').filter(|s| !s.is_empty()) {
         let (key, value) = item.split_once('=').ok_or_else(|| format!("key=value ではありません: {item}"))?;
         match key {
@@ -146,10 +149,17 @@ fn parse_tuning(spec: &str) -> BoxResult<Tuning> {
             "bias" => t.predict_bias = value.parse()?,
             "tail" => t.tail_chars = value.parse()?,
             "ptail" => t.predict_tail = value.parse()?,
+            "words" => t.typo_words = value.parse()?,
+            "level" => {
+                level = value.parse()?;
+                if !(typo::MIN_LEVEL..=typo::MAX_LEVEL).contains(&level) {
+                    return Err(format!("段階が範囲外です: {level}").into());
+                }
+            }
             other => return Err(format!("不明な key: {other}").into()),
         }
     }
-    Ok(t)
+    Ok((t, level))
 }
 
 /// テストセットの読み (重複は除く)
@@ -457,11 +467,12 @@ fn main() -> BoxResult<()> {
     println!("- 語: {} 語", word_list.len());
     println!("- 打ちかけの入力: {} 件", inputs.typing.len());
 
-    let run = |input: &Input, tuning: &Tuning| -> (Vec<suggest::Suggestion>, f64) {
+    let run = |input: &Input, (tuning, level): &(Tuning, i8)| -> (Vec<suggest::Suggestion>, f64) {
         let keys = Keys::parse(&input.kana, &input.field).expect("打鍵のフィールド");
         let started = Instant::now();
         let list = suggest::suggest(
             &input.kana, None, &keys, &dictionary, &user, &matrix, &functional, &learning, &cfg, tuning,
+            *level,
         );
         (list, started.elapsed().as_secs_f64() * 1000.0)
     };
@@ -480,12 +491,15 @@ fn main() -> BoxResult<()> {
     println!("補正=正解 = 崩した打ち終えた入力で、CONVNBEST (打鍵つき) の補正の候補が正解になった割合。");
     println!("括弧内は打鍵を使わずかなを戻した近似 (打鍵の無い CONVNBEST) の同じ割合 (コスト・状態の数・しきい値は同じ調整値)。");
     println!("文・語 = 途中までの入力で正解が 9 位以内の割合 (50%/75%、崩さない | 崩した)。");
-    println!("時間 = SUGGEST 1 回 (この表の入力すべて) の中央値 / p95 (ms)\n");
+    println!("時間 = SUGGEST 1 回 (この表の入力すべて) の中央値 / p95 / 最大 (ms)\n");
     println!("| 調整値 | 先頭変化 | 誤補正 | 途中誤補正 | 崩し 1 | 崩し 3 | 崩し 9 | 崩し 3 (誤り 1/2/3) | 補正=正解 (誤り 1/2/3) (近似) | 文 崩さない | 文 崩した | 語 崩さない | 語 崩した | 時間 |");
     println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
     let mut details: Vec<String> = Vec::new();
     for (ci, spec) in args.configs.iter().enumerate() {
         let tuning = parse_tuning(spec)?;
+        // CONVNBEST は SUGGEST と同じく段階の調整値で引き、段階 -1 なら補正しない
+        let level_tuning = tuning.0.at_level(tuning.1);
+        let fuzzy = tuning.1 >= 0;
         let mut times: Vec<f64> = Vec::new();
         let mut changed = 0;
         // 崩さない入力で、補正の候補・ずれのある予測が 3 位以内に出た件数と先頭に出た件数
@@ -510,9 +524,9 @@ fn main() -> BoxResult<()> {
                 }
             }
             let keys = Keys::parse(&input.kana, &input.field).unwrap();
-            let source = convert::TypoSource::Keys(&keys);
+            let source = if fuzzy { convert::TypoSource::Keys(&keys) } else { convert::TypoSource::Off };
             let nbest = convert::convert_nbest_scored(
-                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning, source, &tuning,
+                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning, source, &level_tuning,
             );
             // SUGGEST は表記が読みのかなと同じ候補を除き、書き換えの候補 (表記をひらがなに直すと読みと同じ。
             // 最良経路と読み全体の学習表記を除く) を全体変換の最後に置くので、比べる CONVNBEST の先頭は
@@ -525,8 +539,9 @@ fn main() -> BoxResult<()> {
                 .filter(|(_, s)| *s != input.kana)
                 .collect();
             let rewrite = |i: usize, s: &str| {
-                nbest.best != Some(i)
-                    && !(nbest.learned && i == 0)
+                i >= nbest.typo_head
+                    && nbest.best != Some(i)
+                    && !(nbest.learned && i == nbest.typo_head)
                     && suggest::to_hiragana(s) == input.kana
             };
             let top = shown
@@ -557,16 +572,16 @@ fn main() -> BoxResult<()> {
             times.push(ms);
             let r = rank(&list, &input.target);
             let keys = Keys::parse(&input.kana, &input.field).unwrap();
+            let source = if fuzzy { convert::TypoSource::Keys(&keys) } else { convert::TypoSource::Off };
             let nbest = convert::convert_nbest_scored(
-                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning,
-                convert::TypoSource::Keys(&keys), &tuning,
+                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning, source, &level_tuning,
             );
             typo_right[edits - 1] += usize::from(
                 nbest.candidates.iter().any(|c| c.typo && c.surface() == input.target),
             );
+            let source = if fuzzy { convert::TypoSource::Kana } else { convert::TypoSource::Off };
             let approx = convert::convert_nbest_scored(
-                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning,
-                convert::TypoSource::Kana, &tuning,
+                &input.kana, None, &dictionary, &user, &matrix, &functional, &learning, source, &level_tuning,
             );
             kana_right[edits - 1] += usize::from(
                 approx.candidates.iter().any(|c| c.typo && c.surface() == input.target),
@@ -595,6 +610,7 @@ fn main() -> BoxResult<()> {
         let total = inputs.crushed.len();
         let median = percentile(&mut times, 0.5);
         let p95 = percentile(&mut times, 0.95);
+        let max = percentile(&mut times, 1.0);
         // 時間の列は既存の入力だけで測るので、打ちかけの入力の時間は数えない
         let mut typing_shown = 0;
         let mut typing_top = 0;
@@ -618,7 +634,7 @@ fn main() -> BoxResult<()> {
         }
         let typing_total = inputs.typing.len();
         println!(
-            "| {} | {changed} | {false_shown}/{false_top} | 3位内 {typing_shown} ({}) / 先頭 {typing_top} ({}) | {} | {} | {} | {}/{}/{} | {}/{}/{} ({}/{}/{}) | {}/{} | {}/{} | {}/{} | {}/{} | {median:.2} / {p95:.2} |",
+            "| {} | {changed} | {false_shown}/{false_top} | 3位内 {typing_shown} ({}) / 先頭 {typing_top} ({}) | {} | {} | {} | {}/{}/{} | {}/{}/{} ({}/{}/{}) | {}/{} | {}/{} | {}/{} | {}/{} | {median:.2} / {p95:.2} / {max:.2} |",
             if spec.is_empty() { "既定" } else { spec },
             pct(typing_shown, typing_total),
             pct(typing_top, typing_total),

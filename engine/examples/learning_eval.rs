@@ -1485,7 +1485,7 @@ fn main() -> BoxResult<()> {
                 let t = Instant::now();
                 let list = suggest::suggest(
                     &kana, ctx.as_ref(), &keys, &dictionary, &user, &matrix, &functional, &store, &cfg,
-                    &typo::TUNING,
+                    &typo::TUNING, cfg.fuzzy_level,
                 );
                 suggest_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 list.iter().take(9).any(|s| s.surface() == row.surface)

@@ -36,6 +36,8 @@
 | 次の語の予測: 次へ | `key.next_word_next` | 入力なし・予測選択中 | `Ctrl+Down` |
 | 次の語の予測: 前へ | `key.next_word_prev` | 同上 | `Ctrl+Up` |
 | 学習の削除 | `key.forget_learning` | 予測選択中 | `Ctrl+Delete` |
+| ファジィを強める | `key.fuzzy_stronger` | 入力中・候補選択中・予測選択中 | `F2` |
+| ファジィを弱める | `key.fuzzy_weaker` | 同上 | `Shift+F2` |
 
 ### 状態の区分
 - **入力なし (`idle`)**: 読みを入力していない待機状態です。

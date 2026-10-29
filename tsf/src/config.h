@@ -28,10 +28,16 @@ enum class KeyFunc {
     NextWordNext,    // 読みなしの予測の次の候補を選ぶ (既定 Ctrl+↓)
     NextWordPrev,    // 読みなしの予測の前の候補を選ぶ (既定 Ctrl+↑)
     ForgetLearning,  // 選んでいるサジェスト候補の学習を消す (既定 Ctrl+Delete)
+    FuzzyStronger,   // ファジィ入力の段階を 1 上げる (既定 F2)
+    FuzzyWeaker,     // ファジィ入力の段階を 1 下げる (既定 Shift+F2)
     None,           // 割当なし (照合の「該当なし」も表す)
 };
 
 constexpr size_t kKeyFuncCount = static_cast<size_t>(KeyFunc::None);
+
+// ファジィ入力の段階の範囲 (エンジンの typo::MIN_LEVEL・MAX_LEVEL と同じ)
+constexpr int kMinFuzzyLevel = -1;
+constexpr int kMaxFuzzyLevel = 3;
 
 // キー割当の照合に使う入力状態
 enum class KeyState {
@@ -123,6 +129,9 @@ struct TsfConfig {
     // 変換キーの候補選択を文節単位 (文節移動・伸縮・文節別の候補) にする。
     // オフなら入力全体の候補から選ぶ (docs/spec/conversion.md「入力全体の候補選択 (`segment_ui` 0)」)
     bool segmentUi = false;
+    // run を始めたときのファジィ入力の段階 (設定 fuzzy_level。kMinFuzzyLevel〜kMaxFuzzyLevel。
+    // docs/spec/suggest.md「ファジィ入力の段階」)
+    int fuzzyLevel = 0;
     // LLM による候補の並べ替え (RERANK) を使う (docs/spec/engine.md「LLM の並べ替え」)。
     // バックエンドの選択 (llm_backend) はエンジンだけが読む
     bool llm = false;

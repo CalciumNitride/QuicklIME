@@ -23,6 +23,11 @@ constexpr float kTextShadowAlpha = 0.35f;  // text_shadow の影の不透明度
 constexpr float kDimTextAlpha = 0.5f;      // 採用範囲の外の文字の不透明度
 constexpr float kSegmentAlpha = 0.16f;     // 変換中の入力行で現在文節にアクセント色を敷く不透明度
 constexpr float kPageRowRatio = 1.6f;      // 位置の表示 (12/24) の行の高さ (label_text_size に対する比)
+// 段階の印の点の直径 (label_text_size に対する比) と、点の間隔 (直径に対する比)。段階 -1 の斜線の丸の
+// 直径は label_text_size
+constexpr float kMarkDotRatio = 0.7f;
+constexpr float kMarkGapRatio = 0.45f;
+constexpr int kMarkDots = 3;
 
 // ぼかしの方式の描画先の種類。hardware (DEFAULT) はホストのプロセスに D3D のデバイスを作るため、
 // まず software で試し、alpha が失われるときに切り替えて比べる
@@ -199,7 +204,7 @@ const wchar_t* KindTagLabel(SuggestPanel::ItemKind kind)
     case SuggestPanel::ItemKind::NextWord:
         return L"次の語";
     case SuggestPanel::ItemKind::Typo:
-        return L"補正";
+        return L"ファジィ";
     default:
         return L"変換";
     }
@@ -832,10 +837,16 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
         }
     }
     const bool hasInput = input != nullptr;
-    if (texts.empty() && !hasInput) {
+    const float markWidth = MarkWidth(fuzzyLevel_);
+    if (hasInput && markWidth > 0.0f) {
+        inputWidth += m.labelGap + markWidth;
+    }
+    if (texts.empty() && !hasInput && markWidth <= 0.0f) {
         Hide();
         return 0;
     }
+    // 入力行が無ければ、印はチップの列 (横一列) か位置の表示の行 (縦積み) の右端に置く
+    const float markReserve = !hasInput && markWidth > 0.0f ? m.chipGap + markWidth : 0.0f;
 
     HMONITOR monitor = nullptr;
     if (placement.position == Position::Center) {
@@ -870,9 +881,9 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     }
     if (total > 0 && column) {
         const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
-        // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+        // n 行を出すときのパネルの高さ。pages (か印をその行に置くとき) なら位置の表示の行を足す
         const auto heightOf = [&](size_t n, bool pages) {
-            return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+            return ColumnHeight(m, hasInput, n) + (n > 0 && (pages || markReserve > 0.0f) ? pageRow : 0);
         };
         const size_t limit = (std::min)(kMaxItems, total);
         size_t pageSize = 1;
@@ -916,11 +927,12 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
             }
             return (std::max)(count, static_cast<size_t>(1));
         };
-        if (total <= kMaxItems && fit(0, 0.0f) == total) {
+        if (total <= kMaxItems && fit(0, markReserve) == total) {
             pageStarts.push_back(0);
         } else {
             pageLabelWidth = labelWidth;
-            for (size_t begin = 0; begin < total; begin += fit(begin, m.chipGap + labelWidth)) {
+            for (size_t begin = 0; begin < total;
+                 begin += fit(begin, m.chipGap + labelWidth + markReserve)) {
                 pageStarts.push_back(begin);
             }
         }
@@ -943,6 +955,7 @@ size_t SuggestPanel::Show(const Placement& placement, const std::vector<Item>& i
     columnSide_ = side;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
+    markLevel_ = fuzzyLevel_;
     size_t page = 0;
     if (selection < total) {
         page = static_cast<size_t>(
@@ -961,9 +974,11 @@ size_t SuggestPanel::FitColumn(const Placement& placement, const RECT& work, boo
     const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
     const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
     const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
-    // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+    // 入力行が無ければ段階の印を位置の表示の行に置く
+    const bool markRow = !hasInput && fuzzyLevel_ != 0;
+    // n 行を出すときのパネルの高さ。pages (か印をその行に置くとき) なら位置の表示の行を足す
     const auto heightOf = [&](size_t n, bool pages) {
-        return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+        return ColumnHeight(m, hasInput, n) + (n > 0 && (pages || markRow) ? pageRow : 0);
     };
     // 今の候補の数ではなく出しうる最大の高さ (位置の表示の行を含む) で判定し、打鍵ごとに
     // 候補の数が変わっても出す側を変えない
@@ -1053,18 +1068,29 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
                                     allWidths_.begin() + static_cast<std::ptrdiff_t>(begin + count));
     // 入力行と区切り線 (前後の間を含む) の高さ
     const int header = hasInput ? m.inputRowHeight + m.rowGap * 2 + m.line : 0;
-    const int pageRow =
-        pages ? static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m) : 0;
-    // 縦積みで n 行を出すときのパネルの高さ。複数ページなら位置の表示の行を足す
+    // 入力行が無ければ、段階の印はチップの列 (横一列) か位置の表示の行 (縦積み) の右端に置く
+    const float markWidth = MarkWidth(markLevel_);
+    const bool markRow = !hasInput && markWidth > 0.0f;
+    const int pageRow = pages || markRow
+                            ? static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m)
+                            : 0;
+    // 縦積みで n 行を出すときのパネルの高さ。複数ページか印を置くなら位置の表示の行を足す。
+    // 候補も入力行も無ければ印の行だけ
     const auto columnHeight = [&](size_t n) {
+        if (n == 0 && markRow) {
+            return m.padding * 2 + PageRowHeight(theme_, m);
+        }
         return ColumnHeight(m, hasInput, n) + (n > 0 ? pageRow : 0);
     };
-    // 横一列のチップの列と位置の表示を合わせた幅
+    // 横一列のチップの列と位置の表示 (と段階の印) を合わせた幅
     float chipsWidth = 0.0f;
     for (size_t i = 0; i < widths.size(); ++i) {
         chipsWidth += (i > 0 ? m.chipGap : 0.0f) + widths[i];
     }
-    const float rowWidth = chipsWidth + (pages ? m.chipGap + pageLabelWidth_ : 0.0f);
+    float rowWidth = chipsWidth + (pages ? m.chipGap + pageLabelWidth_ : 0.0f);
+    if (markRow) {
+        rowWidth += (rowWidth > 0.0f ? m.chipGap : 0.0f) + markWidth;
+    }
 
     int x = 0;
     int y = 0;
@@ -1088,8 +1114,10 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
             for (const float rowWidthOfItem : widths) {
                 widest = (std::max)(widest, rowWidthOfItem);
             }
-            if (pages) {
-                widest = (std::max)(widest, m.chipPadding * 2 + pageLabelWidth_);
+            if (pages || markRow) {
+                const float pageWidth = pages ? pageLabelWidth_ : 0.0f;
+                const float markPart = markRow ? (pages ? m.chipGap : 0.0f) + markWidth : 0.0f;
+                widest = (std::max)(widest, m.chipPadding * 2 + pageWidth + markPart);
             }
             width = m.padding * 2 + static_cast<int>(std::ceil(widest));
             width = (std::max)(width, m.chipHeight * 2);
@@ -1163,8 +1191,10 @@ size_t SuggestPanel::LayoutPage(size_t page, size_t selection, const wchar_t* ki
             itemBoxes_.push_back({left, std::round(top), boxWidth});
         }
         pageInline_ = false;
-        pageTop_ = itemsTop + static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
-                   std::round(m.chipGap);
+        pageTop_ = count == 0 ? padding
+                              : itemsTop +
+                                    static_cast<float>(ColumnHeight(m, false, count) - m.padding * 2) +
+                                    std::round(m.chipGap);
     } else {
         // 1 件だけで幅を超える候補 (画面中央の固定幅など) は、チップを幅に収めて文字を「…」で切る
         const float maxChip =
@@ -1219,9 +1249,12 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     const int belowGap = pointerHeight > 0 ? pointerHeight : kAnchorGap + TriangleHeight(placement);
     const int aboveGap = pointerHeight > 0 ? pointerHeight : kAnchorGap;
     const int pageRow = static_cast<int>(std::lround(m.chipGap)) + PageRowHeight(theme_, m);
-    // n 行を出すときのパネルの高さ。pages なら位置の表示の行を足す
+    // 入力行が無ければ段階の印を位置の表示の行の右端に置く
+    const float markWidth = MarkWidth(fuzzyLevel_);
+    const bool markRow = !hasInput && markWidth > 0.0f;
+    // n 行を出すときのパネルの高さ。pages (か印をその行に置くとき) なら位置の表示の行を足す
     const auto heightOf = [&](size_t n, bool pages) {
-        return ColumnHeight(m, hasInput, n) + (n > 0 && pages ? pageRow : 0);
+        return ColumnHeight(m, hasInput, n) + (n > 0 && (pages || markRow) ? pageRow : 0);
     };
 
     HMONITOR monitor = nullptr;
@@ -1303,13 +1336,20 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
         for (const float rowWidth : widths) {
             widest = (std::max)(widest, rowWidth);
         }
-        if (!pageText.empty()) {
-            widest = (std::max)(widest, m.chipPadding * 2 + TextWidth(pageText, labelFormat_));
+        if (!pageText.empty() || markRow) {
+            float pageWidth = pageText.empty() ? 0.0f : TextWidth(pageText, labelFormat_);
+            if (markRow) {
+                pageWidth += (pageText.empty() ? 0.0f : m.chipGap) + markWidth;
+            }
+            widest = (std::max)(widest, m.chipPadding * 2 + pageWidth);
         }
         if (hasInput) {
             float inputWidth = TextWidth(input->excluded, inputFormat_);
             for (const std::wstring& segment : input->segments) {
                 inputWidth += TextWidth(segment, inputFormat_);
+            }
+            if (markWidth > 0.0f) {
+                inputWidth += m.labelGap + markWidth;
             }
             widest = (std::max)(widest, inputWidth);
         }
@@ -1366,6 +1406,7 @@ size_t SuggestPanel::ShowConversion(const Placement& placement,
     selection_ = current - begin;
     hasInput_ = hasInput;
     input_ = hasInput ? *input : InputLine{};
+    markLevel_ = fuzzyLevel_;
     bodyX_ = x;
     bodyY_ = y;
     bodyWidth_ = width;
@@ -1842,9 +1883,13 @@ void SuggestPanel::Draw()
     const float padding = static_cast<float>(m.padding);
     const float left = body.left + padding;
     const float contentWidth = width - padding * 2;
+    const float markWidth = MarkWidth(markLevel_);
     if (hasInput_) {
         const float top = body.top + inputTop_;
-        DrawInputLine(left, top, contentWidth);
+        // 段階の印は入力行の右端に置くので、入力行の文字はその手前で切る
+        const float inputWidth =
+            markWidth > 0.0f ? (std::max)(0.0f, contentWidth - m.labelGap - markWidth) : contentWidth;
+        DrawInputLine(left, top, inputWidth);
         if (separator_) {
             const float separatorY = body.top + separatorTop_;
             brush_->SetColor(ToD2D(theme_.separator));
@@ -1868,6 +1913,61 @@ void SuggestPanel::Draw()
         const float pageTop = body.top + pageTop_;
         DrawLabel(pageText_, labelFormat_, pageX, pageTop, left + contentWidth,
                   pageTop + static_cast<float>(PageRowHeight(theme_, m)), theme_.secondary);
+    }
+    if (markWidth > 0.0f) {
+        if (hasInput_) {
+            DrawFuzzyMark(left + contentWidth, body.top + inputTop_,
+                          static_cast<float>(m.inputRowHeight));
+        } else if (pageInline_) {
+            DrawFuzzyMark(left + contentWidth, body.top + pageTop_, static_cast<float>(m.chipHeight));
+        } else {
+            DrawFuzzyMark(left + contentWidth, body.top + pageTop_,
+                          static_cast<float>(PageRowHeight(theme_, m)));
+        }
+    }
+}
+
+float SuggestPanel::MarkWidth(int level) const
+{
+    if (level == 0) {
+        return 0.0f;
+    }
+    const float label = theme_.labelTextSize * static_cast<float>(fontSize_);
+    if (level < 0) {
+        return label;
+    }
+    const float dot = label * kMarkDotRatio;
+    return dot * kMarkDots + dot * kMarkGapRatio * (kMarkDots - 1);
+}
+
+void SuggestPanel::DrawFuzzyMark(float right, float top, float rowHeight)
+{
+    const Metrics m = ComputeMetrics(theme_, fontSize_);
+    const float line = static_cast<float>(m.line);
+    const float centerY = top + rowHeight / 2;
+    if (markLevel_ < 0) {
+        // 補正しない段階は斜線を引いた丸
+        const float radius = MarkWidth(markLevel_) / 2 - line / 2;
+        const D2D1_POINT_2F center = D2D1::Point2F(right - radius - line / 2, centerY);
+        const float slash = radius * 0.7071f;
+        brush_->SetColor(ToD2D(theme_.secondary));
+        drawTarget_->DrawEllipse(D2D1::Ellipse(center, radius, radius), brush_, line);
+        drawTarget_->DrawLine(D2D1::Point2F(center.x - slash, center.y + slash),
+                              D2D1::Point2F(center.x + slash, center.y - slash), brush_, line);
+        return;
+    }
+    const float dot = theme_.labelTextSize * static_cast<float>(fontSize_) * kMarkDotRatio;
+    const float step = dot + dot * kMarkGapRatio;
+    float x = right - MarkWidth(markLevel_) + dot / 2;
+    brush_->SetColor(ToD2D(theme_.typo));
+    for (int i = 0; i < kMarkDots; ++i, x += step) {
+        const D2D1_POINT_2F center = D2D1::Point2F(x, centerY);
+        if (i < markLevel_) {
+            drawTarget_->FillEllipse(D2D1::Ellipse(center, dot / 2, dot / 2), brush_);
+        } else {
+            const float radius = dot / 2 - line / 2;
+            drawTarget_->DrawEllipse(D2D1::Ellipse(center, radius, radius), brush_, line);
+        }
     }
 }
 

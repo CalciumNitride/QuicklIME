@@ -4,6 +4,11 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [fuzzy-level.md](fuzzy-level.md): ファジィ入力の段階 (−1〜3) を F2 / Shift+F2 で run ごとに変え、標準の段階を設定
+  `fuzzy_level` にする。機能の名前をファジィ入力に改め、補正の語の枠を補正した読みごとにする。
+  [docs/spec/engine.md](../spec/engine.md)・[docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/keys.md](../spec/keys.md)・
+  [docs/spec/conversion.md](../spec/conversion.md)・[docs/spec/display.md](../spec/display.md)・
+  [docs/spec/tools.md](../spec/tools.md)・[docs/protocol.md](../protocol.md) へ移した
 - [typo-tail.md](typo-tail.md): 補正で読みの末尾 1 文字を変えず、打ちかけの読みで補正が候補バーの先頭に出るのを
   減らす。[docs/spec/engine.md](../spec/engine.md)・[docs/spec/suggest.md](../spec/suggest.md) へ移した
 - [name-candidates.md](name-candidates.md): 変換の候補と予測でシステム辞書の人名を 3 件に抑え、辞書の候補の枠を

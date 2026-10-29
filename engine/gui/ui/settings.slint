@@ -35,7 +35,7 @@ export component SettingsWindow inherits Window {
 
     // 変換
     in-out property <bool> learning;
-    in-out property <bool> typo-correction;
+    in-out property <int> fuzzy-level;
     in-out property <bool> segment-ui;
     in-out property <bool> llm;
     in property <[string]> llm-backend-choices;
@@ -167,7 +167,7 @@ export component SettingsWindow inherits Window {
 
             if root.current-page == 0: ConversionPage {
                 learning <=> root.learning;
-                typo-correction <=> root.typo-correction;
+                fuzzy-level <=> root.fuzzy-level;
                 segment-ui <=> root.segment-ui;
                 llm <=> root.llm;
                 llm-backend-choices: root.llm-backend-choices;

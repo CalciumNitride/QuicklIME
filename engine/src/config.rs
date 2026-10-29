@@ -11,6 +11,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
+use crate::typo;
+
 /// エンジン側の設定。小さい値の集まりなので、リクエスト処理では
 /// Mutex から Copy で取り出してロックをすぐ手放す
 #[derive(Clone, Copy)]
@@ -19,8 +21,8 @@ pub struct Config {
     pub learning: bool,
     /// 予測サジェスト (PREDICT) を返すか
     pub suggest: bool,
-    /// タイプミス補正 (曖昧一致での候補補充) を使うか
-    pub typo_correction: bool,
+    /// ファジィ入力の標準の段階 (typo::MIN_LEVEL〜MAX_LEVEL)。段階を付けない要求と、文節 UI の補正の有無に使う
+    pub fuzzy_level: i8,
     /// 予測候補の最大数。TSF 層では候補バーの合計の上限として使う。
     /// 候補バーの最後のページも埋まるよう 1 ページ (9 件) の倍数にそろえる
     pub max_predictions: usize,
@@ -44,7 +46,7 @@ impl Default for Config {
         Config {
             learning: true,
             suggest: true,
-            typo_correction: true,
+            fuzzy_level: 0,
             max_predictions: 9,
             min_suggest_chars: 2,
             llm: false,
@@ -68,6 +70,8 @@ impl Config {
     /// 1ファイル分の設定を読み込む (テストからも使う)。不正な行・値は既定値のまま
     pub fn load_from(reader: impl BufRead) -> Self {
         let mut config = Config::default();
+        let mut fuzzy_level: Option<i8> = None;
+        let mut typo_correction = true;
         for line in reader.lines() {
             let Ok(line) = line else {
                 break;
@@ -81,7 +85,8 @@ impl Config {
             match key {
                 "learning" => parse_bool(value, &mut config.learning),
                 "suggest" => parse_bool(value, &mut config.suggest),
-                "typo_correction" => parse_bool(value, &mut config.typo_correction),
+                "fuzzy_level" => fuzzy_level = parse_level(value),
+                "typo_correction" => parse_bool(value, &mut typo_correction),
                 "max_predictions" => parse_page_multiple(value, &mut config.max_predictions),
                 "min_suggest_chars" => parse_clamped(value, 1, 5, &mut config.min_suggest_chars),
                 "llm" => parse_bool(value, &mut config.llm),
@@ -93,8 +98,15 @@ impl Config {
                 _ => {} // 未知キー (TSF 層向けを含む) は無視
             }
         }
+        // typo_correction 0 は補正を切る古い書き方なので、fuzzy_level が無いときだけ段階 −1 として読む
+        config.fuzzy_level = fuzzy_level.unwrap_or(if typo_correction { 0 } else { typo::MIN_LEVEL });
         config
     }
+}
+
+/// ファジィ入力の段階として読めれば返す。範囲外・数値でなければ None
+fn parse_level(value: &str) -> Option<i8> {
+    value.parse::<i8>().ok().filter(|l| (typo::MIN_LEVEL..=typo::MAX_LEVEL).contains(l))
 }
 
 /// "0"/"1" を bool にする。それ以外は変更しない
@@ -161,7 +173,7 @@ mod tests {
         let config = Config::load_from(Cursor::new(""));
         assert!(config.learning);
         assert!(config.suggest);
-        assert!(config.typo_correction);
+        assert_eq!(config.fuzzy_level, 0);
         assert_eq!(config.max_predictions, 9);
         assert_eq!(config.min_suggest_chars, 2);
         assert!(!config.llm);
@@ -180,13 +192,36 @@ mod tests {
 
     #[test]
     fn 設定を読み込める() {
-        let text = "learning\t0\nsuggest\t0\ntypo_correction\t0\nmax_predictions\t27\nmin_suggest_chars\t3\n";
+        let text = "learning\t0\nsuggest\t0\nfuzzy_level\t2\nmax_predictions\t27\nmin_suggest_chars\t3\n";
         let config = Config::load_from(Cursor::new(text));
         assert!(!config.learning);
         assert!(!config.suggest);
-        assert!(!config.typo_correction);
+        assert_eq!(config.fuzzy_level, 2);
         assert_eq!(config.max_predictions, 27);
         assert_eq!(config.min_suggest_chars, 3);
+    }
+
+    #[test]
+    fn ファジィ入力の段階は範囲外なら既定値() {
+        for value in ["4", "-2", "abc", ""] {
+            let config = Config::load_from(Cursor::new(format!("fuzzy_level\t{value}\n")));
+            assert_eq!(config.fuzzy_level, 0, "fuzzy_level {value}");
+        }
+        let config = Config::load_from(Cursor::new("fuzzy_level\t-1\n"));
+        assert_eq!(config.fuzzy_level, -1);
+    }
+
+    #[test]
+    fn typo_correctionの0はfuzzy_levelが無ければ段階マイナス1() {
+        let config = Config::load_from(Cursor::new("typo_correction\t0\n"));
+        assert_eq!(config.fuzzy_level, -1);
+        let config = Config::load_from(Cursor::new("typo_correction\t1\n"));
+        assert_eq!(config.fuzzy_level, 0);
+        // fuzzy_level があれば行の順によらずそちらに従う
+        let config = Config::load_from(Cursor::new("fuzzy_level\t1\ntypo_correction\t0\n"));
+        assert_eq!(config.fuzzy_level, 1);
+        let config = Config::load_from(Cursor::new("typo_correction\t0\nfuzzy_level\t0\n"));
+        assert_eq!(config.fuzzy_level, 0);
     }
 
     #[test]

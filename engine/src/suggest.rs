@@ -2,7 +2,8 @@
 //
 // 全体変換は CONVNBEST の並び (打鍵による補正を含む) の先頭から、予測は打鍵のファジィ照合の結果から取り、
 // 点数 s (小さいほど上) の順に並べる。読み全体の学習表記は先頭に固定し、全体変換の通常の最良経路が
-// 保護の対象なら、補正の候補とずれのある予測をその上に置かない。
+// 保護の対象なら、補正の候補とずれのある予測をその上に置かない。ファジィ入力の段階 1 以上では、
+// 全体変換の補正の候補をそれより前の先頭から置く。
 
 use crate::config::Config;
 use crate::convert::{self, Context, TypoSource};
@@ -68,7 +69,8 @@ struct Item {
     name: bool,
 }
 
-/// かな kana (打鍵は keys) の SUGGEST の並びを返す。ctx は直前に確定した文節
+/// かな kana (打鍵は keys) の SUGGEST の並びを返す。ctx は直前に確定した文節、level はファジィ入力の段階
+/// (tuning を段階に合わせて使う)
 pub fn suggest(
     kana: &str,
     ctx: Option<&Context>,
@@ -80,21 +82,30 @@ pub fn suggest(
     learning: &LearningStore,
     cfg: &Config,
     tuning: &Tuning,
+    level: i8,
 ) -> Vec<Suggestion> {
-    let source = if cfg.typo_correction { TypoSource::Keys(keys) } else { TypoSource::Off };
+    let fuzzy = level >= 0;
+    let tuning = &tuning.at_level(level);
+    let source = if fuzzy { TypoSource::Keys(keys) } else { TypoSource::Off };
     let nbest = convert::convert_nbest_scored(
         kana, ctx, dict, user, matrix, functional, learning, source, tuning,
     );
     let c0 = nbest.best_cost.unwrap_or(0);
+    let learned = nbest.learned.then_some(nbest.typo_head);
+    let heads: Vec<Suggestion> = nbest.candidates[..nbest.typo_head]
+        .iter()
+        .map(|c| Suggestion { kind: Kind::Typo, segments: c.segments.clone() })
+        .collect();
 
     // 書き換えの候補 (表記をひらがなに直すと読みと同じ候補) は、辞書の読み全体の書き換えの項目が
     // 2 語に分かれる変換より安く出て全体変換の枠を埋めるので、1 件だけを最後に置く。最良経路と読み全体の
     // 学習表記は、表記がかなの種類だけ違っても書き換えとして扱わない
     let is_rewrite = |i: usize, surface: &str| {
-        nbest.best != Some(i) && !(nbest.learned && i == 0) && to_hiragana(surface) == kana
+        nbest.best != Some(i) && learned != Some(i) && to_hiragana(surface) == kana
     };
-    let shown: Vec<usize> =
-        (0..nbest.candidates.len()).filter(|&i| nbest.candidates[i].surface() != kana).collect();
+    let shown: Vec<usize> = (nbest.typo_head..nbest.candidates.len())
+        .filter(|&i| nbest.candidates[i].surface() != kana)
+        .collect();
     let rewrite =
         shown.iter().take(MAX_WHOLES).copied().find(|&i| is_rewrite(i, &nbest.candidates[i].surface()));
     let mut taken: Vec<usize> = shown
@@ -110,7 +121,7 @@ pub fn suggest(
     let mut pinned: Option<Item> = None;
     let mut items: Vec<Item> = Vec::new();
     // 全体変換の先頭 (読み全体の学習表記が無ければ通常の最良経路) の表記
-    let head_index = if nbest.learned { Some(0) } else { nbest.best };
+    let head_index = learned.or(nbest.best);
     let mut head: Option<String> = None;
     let mut prev: Option<i64> = None;
     for &i in &taken {
@@ -133,7 +144,7 @@ pub fn suggest(
             rank: 0,
             name: false,
         };
-        if nbest.learned && i == 0 {
+        if learned == Some(i) {
             pinned = Some(item);
         } else {
             items.push(item);
@@ -142,7 +153,7 @@ pub fn suggest(
     let best_protected = nbest.best.is_some_and(|i| nbest.candidates[i].protected);
 
     if cfg.suggest && kana.chars().count() >= cfg.min_suggest_chars {
-        let edits = if cfg.typo_correction { tuning.allowed_edits(keys.len()) } else { 0 };
+        let edits = if fuzzy { tuning.allowed_edits(keys.len()) } else { 0 };
         let matcher = typo::Matcher::new(keys, edits, tuning);
         let ctx_id = nbest.context_id;
         let context = ctx.map(|c| c.surface.as_str());
@@ -218,7 +229,12 @@ pub fn suggest(
     }
     kept.extend(moved);
     let list = kept;
-    let mut list: Vec<Suggestion> = list.into_iter().map(|item| item.suggestion).collect();
+    let mut list: Vec<Suggestion> = list
+        .into_iter()
+        .map(|item| item.suggestion)
+        .filter(|s| !heads.iter().any(|h| h.surface() == s.surface()))
+        .collect();
+    list.splice(0..0, heads);
 
     if let Some(h) = head.as_ref().and_then(|head| list.iter().position(|s| s.surface() == *head)) {
         if h > HEAD_POSITION {
@@ -273,7 +289,8 @@ mod tests {
         )
     }
 
-    /// 打鍵のフィールド (要素を \x1f、未完成のローマ字を \x1e で区切る) で SUGGEST の並びを作る
+    /// 打鍵のフィールド (要素を \x1f、未完成のローマ字を \x1e で区切る) で SUGGEST の並びを作る。
+    /// 段階は cfg.fuzzy_level
     fn run(
         kana: &str,
         field: &str,
@@ -286,7 +303,7 @@ mod tests {
         let keys = Keys::parse(kana, field).unwrap();
         suggest(
             kana, None, &keys, dict, user, &ConnectionMatrix::empty(), &functional(), learning,
-            cfg, tuning,
+            cfg, tuning, cfg.fuzzy_level,
         )
     }
 
@@ -311,11 +328,11 @@ mod tests {
         )
         .unwrap();
         // 補正の全体変換 (せいこう → 静香) が予測と同じ表記で出ないよう、補正を切る
-        let cfg = Config { max_predictions: 18, typo_correction: false, ..Config::default() };
+        let cfg = Config { max_predictions: 18, fuzzy_level: -1, ..Config::default() };
         let keys = Keys::parse("せいこ", "se\x1fi\x1fko").unwrap();
         let got = suggest(
             "せいこ", None, &keys, &dict, &UserDict::empty(), &ConnectionMatrix::empty(), &functional,
-            &LearningStore::in_memory(), &cfg, &typo::TUNING,
+            &LearningStore::in_memory(), &cfg, &typo::TUNING, cfg.fuzzy_level,
         );
         let predictions: Vec<String> =
             got.iter().filter(|s| s.kind == Kind::Predict).map(Suggestion::surface).collect();
@@ -491,7 +508,7 @@ mod tests {
     #[test]
     fn 補正が無効なら予測は完全な前方一致と同じになる() {
         let mut cfg = Config::default();
-        cfg.typo_correction = false;
+        cfg.fuzzy_level = -1;
         let dict = sample_dict();
         // ありがとう の o を i と打った (補正があれば 有難う が出る)
         let got = run(
@@ -617,5 +634,123 @@ mod tests {
         let item = got.iter().find(|s| s.kind == Kind::Typo).expect("SUGGEST に補正の候補が無い");
         assert_eq!(item.segments, typo_candidate.segments);
         assert_eq!(item.surface(), "よろしくお願いします");
+    }
+
+    /// すきでう (sukidesu の s 抜け) の補正先が複数ある辞書。読み全体の語 好きです は補正なしの候補になる
+    fn sukideu_dict() -> Dictionary {
+        dict_from(
+            "すき\t1\t1\t3000\t好き\n\
+             です\t3\t3\t1000\tです\n\
+             でる\t1\t1\t2000\t出る\n\
+             でく\t1\t1\t2100\t出来\n\
+             でぬ\t1\t1\t2200\t出ぬ\n\
+             でい\t1\t1\t2300\t泥\n",
+        )
+    }
+
+    const SUKIDEU_KEYS: &str = "su\x1fki\x1fde\x1fu";
+
+    #[test]
+    fn 段階1では末尾の打ち間違いの補正の候補が先頭に出る() {
+        let dict = sukideu_dict();
+        let mut cfg = Config { suggest: false, ..Config::default() };
+        let got = run(
+            "すきでう", SUKIDEU_KEYS, &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg,
+            &typo::TUNING,
+        );
+        // 段階 0 は末尾のかなを補正しない
+        assert!(!surfaces(&got).contains(&"好きです".to_string()), "{:?}", surfaces(&got));
+        cfg.fuzzy_level = 1;
+        let got = run(
+            "すきでう", SUKIDEU_KEYS, &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg,
+            &typo::TUNING,
+        );
+        assert_eq!((got[0].surface().as_str(), got[0].kind), ("好きです", Kind::Typo), "{:?}", surfaces(&got));
+    }
+
+    #[test]
+    fn 同じ区間の別の補正の安い語が多くても補正の語が枠から押し出されない() {
+        // う を余分として消した で (品詞違いでコスト 0 が 7 語) と、す の抜けを足した です が同じ区間 でう に集まる
+        let dict = dict_from(
+            "すき\t1\t1\t3000\t好き\n\
+             です\t3\t3\t1000\tです\n\
+             で\t2\t2\t0\tで\n\
+             で\t3\t3\t0\tで\n\
+             で\t20\t20\t0\tで\n\
+             で\t21\t21\t0\tで\n\
+             で\t22\t22\t0\tで\n\
+             で\t23\t23\t0\tで\n\
+             で\t24\t24\t0\tで\n",
+        );
+        let cfg = Config { suggest: false, fuzzy_level: 1, ..Config::default() };
+        let got = run(
+            "すきでう", SUKIDEU_KEYS, &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg,
+            &typo::TUNING,
+        );
+        let item = got.iter().find(|s| s.surface() == "好きです").expect("好きです が無い");
+        assert_eq!(item.kind, Kind::Typo, "{:?}", surfaces(&got));
+    }
+
+    #[test]
+    fn 段階ごとの件数まで補正の候補を出し表記が補正なしの候補と重ならない() {
+        let mut data = String::from("すきでう\t1\t1\t9000\t好きです\n");
+        data.push_str(
+            "すき\t1\t1\t3000\t好き\nです\t3\t3\t1000\tです\nでる\t1\t1\t2000\t出る\n\
+             でく\t1\t1\t2100\t出来\nでぬ\t1\t1\t2200\t出ぬ\nでい\t1\t1\t2300\t泥\n",
+        );
+        let dict = dict_from(&data);
+        let keys = Keys::parse("すきでう", SUKIDEU_KEYS).unwrap();
+        for (level, count) in [(1, 3), (2, 4), (3, 5)] {
+            let nbest = convert::convert_nbest_scored(
+                "すきでう", None, &dict, &UserDict::empty(), &ConnectionMatrix::empty(), &functional(),
+                &LearningStore::in_memory(), TypoSource::Keys(&keys), &typo::TUNING.at_level(level),
+            );
+            let all: Vec<String> = nbest.candidates.iter().map(|c| c.surface()).collect();
+            assert_eq!(nbest.typo_head, count, "段階 {level}: {all:?}");
+            assert!(nbest.candidates[..count].iter().all(|c| c.typo), "{all:?}");
+            assert!(nbest.candidates[count..].iter().all(|c| !c.typo), "{all:?}");
+            // 読み全体の辞書の語と同じ表記の 好きです は補正の候補にしない
+            let typos = &all[..count];
+            assert!(!typos.contains(&"好きです".to_string()), "{all:?}");
+            assert!(typos.iter().all(|t| all[count..].iter().all(|s| s != t)), "{all:?}");
+            assert_eq!(all.iter().filter(|s| *s == "好きです").count(), 1, "{all:?}");
+            // 補正の候補はコストの安い順
+            assert_eq!(typos[0], "好き泥", "{all:?}");
+            assert_eq!(nbest.best, Some(count), "{all:?}");
+        }
+    }
+
+    #[test]
+    fn 段階マイナス1では補正の候補とずれのある予測が出ない() {
+        let dict = sukideu_dict();
+        let cfg = Config { fuzzy_level: -1, ..Config::default() };
+        let keys = Keys::parse("すきでう", SUKIDEU_KEYS).unwrap();
+        let got = suggest(
+            "すきでう", None, &keys, &dict, &UserDict::empty(), &ConnectionMatrix::empty(), &functional(),
+            &LearningStore::in_memory(), &cfg, &typo::TUNING, -1,
+        );
+        assert!(got.iter().all(|s| !matches!(s.kind, Kind::Typo | Kind::PredictTypo)), "{got:?}");
+        let got = run(
+            "ありがちう", "a\x1fri\x1fga\x1fti\x1fu", &sample_dict(), &UserDict::empty(),
+            &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        assert!(got.iter().all(|s| !matches!(s.kind, Kind::Typo | Kind::PredictTypo)), "{got:?}");
+    }
+
+    #[test]
+    fn 段階2では3打以下の打鍵でもずれのある予測が出る() {
+        let dict = dict_from("あいさつ\t1\t1\t3000\t挨拶\n");
+        let mut cfg = Config::default();
+        // ari の余分な r
+        let got = run(
+            "あり", "a\x1fri", &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        assert!(!surfaces(&got).contains(&"挨拶".to_string()), "{:?}", surfaces(&got));
+        cfg.fuzzy_level = 2;
+        let got = run(
+            "あり", "a\x1fri", &dict, &UserDict::empty(), &LearningStore::in_memory(), &cfg, &typo::TUNING,
+        );
+        let item = got.iter().find(|s| s.surface() == "挨拶").expect("挨拶 が無い");
+        assert_eq!(item.kind, Kind::PredictTypo);
     }
 }

@@ -28,7 +28,7 @@ use quicklime_gui::apps::{
     running_app_choices, split_app_settings,
 };
 use quicklime_gui::config::{
-    CANDIDATE_POSITIONS, Config, FONT_SIZE_RANGE, INPUT_BUFFERS, LLM_BACKENDS, MAX_PRED_ITEMS,
+    CANDIDATE_POSITIONS, Config, FONT_SIZE_RANGE, FUZZY_LEVEL_RANGE, INPUT_BUFFERS, LLM_BACKENDS, MAX_PRED_ITEMS,
     MIN_SUGGEST_CHARS_RANGE, NEXT_WORD_TIMEOUTS, PUNCT_ITEMS, apply_input_buffer_choice, default_debug_log_path,
     input_buffer_choice, theme_choices, theme_dir, user_theme_names,
 };
@@ -154,7 +154,7 @@ impl State {
         window.set_version(env!("CARGO_PKG_VERSION").into());
 
         window.set_learning(c.learning);
-        window.set_typo_correction(c.typo_correction);
+        window.set_fuzzy_level(c.fuzzy_level);
         window.set_segment_ui(c.segment_ui);
         window.set_llm(c.llm);
         window.set_llm_backend_choices(string_model(LLM_BACKENDS.iter().map(|(_, label)| label)));
@@ -223,7 +223,10 @@ impl State {
         let index = |value: i32| usize::try_from(value).unwrap_or(0);
         let c = &mut self.config;
         c.learning = window.get_learning();
-        c.typo_correction = window.get_typo_correction();
+        let level = window.get_fuzzy_level();
+        if FUZZY_LEVEL_RANGE.contains(&level) {
+            c.fuzzy_level = level;
+        }
         c.segment_ui = window.get_segment_ui();
         c.llm = window.get_llm();
         if let Some((name, _)) = LLM_BACKENDS.get(index(window.get_llm_backend_index())) {

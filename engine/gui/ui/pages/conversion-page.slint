@@ -1,16 +1,25 @@
 // 変換のページ
 
-import { ComboBox, Switch } from "std-widgets.slint";
+import { ComboBox, Slider, Switch } from "std-widgets.slint";
 import { Card, ExpanderCard, SettingRow } from "../components/card.slint";
 import { SettingsPage } from "../components/page.slint";
+import { Theme } from "../theme.slint";
 
 export component ConversionPage inherits SettingsPage {
     in-out property <bool> learning;
-    in-out property <bool> typo-correction;
+    // fuzzy_level の値 (-1〜3)
+    in-out property <int> fuzzy-level;
     in-out property <bool> segment-ui;
     in-out property <bool> llm;
     in property <[string]> llm-backend-choices;
     in-out property <int> llm-backend-index;
+
+    private property <string> fuzzy-level-text:
+        root.fuzzy-level == -1 ? "打ち間違いを直さず、打ったとおりに変換する"
+        : root.fuzzy-level == 0 ? "標準。確かな打ち間違いだけを直す (最後の文字は直さない)"
+        : root.fuzzy-level == 1 ? "最後の文字の打ち間違いも直し、直した候補を先頭に並べる"
+        : root.fuzzy-level == 2 ? "1 に加えて、打ち間違いの多い入力も直す"
+        : "直せる打ち間違いの数をさらに増やす。候補が出るまで少し遅くなる";
 
     callback changed();
 
@@ -30,15 +39,40 @@ export component ConversionPage inherits SettingsPage {
     }
 
     Card {
-        title: "タイプミス補正";
-        description: "曖昧一致の補充";
+        title: "ファジィ入力の強さ";
+        description: root.fuzzy-level-text;
 
-        Switch {
-            checked <=> root.typo-correction;
-            accessible-label: "タイプミス補正";
-            toggled => {
-                root.changed();
+        Text {
+            text: "弱い";
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+
+        Slider {
+            width: 100px;
+            minimum: -1;
+            maximum: 3;
+            step: 1;
+            value: root.fuzzy-level;
+            accessible-label: "ファジィ入力の強さ";
+            accessible-description: root.fuzzy-level-text;
+            // ドラッグ中の値は連続なので、整数の段階に吸い付ける
+            changed(value) => {
+                let level = Math.round(value);
+                self.value = level;
+                if level != root.fuzzy-level {
+                    root.fuzzy-level = level;
+                    root.changed();
+                }
             }
+        }
+
+        Text {
+            text: "強い";
+            font-size: Theme.body-size;
+            color: Theme.text-primary;
+            vertical-alignment: center;
         }
     }
 
