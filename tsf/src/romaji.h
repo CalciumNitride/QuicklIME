@@ -115,6 +115,8 @@ public:
 
     // 確定用文字列: 未変換ローマ字は "n" のみ「ん」へ救済し、残りはそのまま付ける
     std::wstring Commit() const;
+    // 未完成のローマ字が残っているか ("n" だけは確定で「ん」になるので含めない)
+    bool HasPendingRomaji() const { return !pending_.empty() && pending_ != L"n"; }
 
     // 打鍵した文字列そのもの (生ローマ字候補用)
     std::wstring Raw() const;

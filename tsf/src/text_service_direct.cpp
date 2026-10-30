@@ -1643,9 +1643,13 @@ void TextService::EndRun(const std::wstring& text)
     if (!text.empty()) {
         // 無変換の確定: 英字を含む入力 (英単語など) は読み=表記で学習し、
         // 確定したかなは次の変換の文脈にする (かなのみの学習はしない。学習は変換候補の
-        // 並び替えにも使われ、「きょう→きょう」が入るとひらがな候補が先頭へ来るため)
+        // 並び替えにも使われ、「きょう→きょう」が入るとひらがな候補が先頭へ来るため)。
+        // 未完成のローマ字が残る run (「きょうはk」) は打ちかけの文字列なので学習を汚さないよう学習しない。
+        // ただし英字だけの run は除く (モードレス入力では「cat」のような短い英単語が未完成の
+        // ローマ字のまま保留されるため)
         const std::wstring kana = composer_.Commit();
-        if (ContainsAsciiLetter(kana) && !IsNoLearningApp()) {
+        const bool unfinished = composer_.HasPendingRomaji() && !IsAllAscii(kana);
+        if (ContainsAsciiLetter(kana) && !unfinished && !IsNoLearningApp()) {
             engine_.Learn({ContextLearnEntry(kana, kana)});
         }
         SetCommitContext(kana, kana);

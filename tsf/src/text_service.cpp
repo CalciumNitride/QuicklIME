@@ -113,6 +113,16 @@ bool ContainsAsciiLetter(const std::wstring& text)
     return false;
 }
 
+bool IsAllAscii(const std::wstring& text)
+{
+    for (wchar_t c : text) {
+        if (c > 0x7F) {
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace key_util
 
 namespace {

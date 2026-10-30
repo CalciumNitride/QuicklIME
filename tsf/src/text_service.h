@@ -37,6 +37,7 @@ bool IsDigitKey(WPARAM wparam);
 wchar_t NumpadChar(WPARAM wparam);
 bool IsShiftPressed();
 bool ContainsAsciiLetter(const std::wstring& text);
+bool IsAllAscii(const std::wstring& text);
 
 } // namespace key_util
 

@@ -266,7 +266,7 @@ Backspace の 1 回分の削り方は [input.md](input.md)「読みの編集」�
   ([suggest.md](suggest.md)「候補バーの候補」)
 - 英字を含む候補は LLM の並べ替えから外す ([engine.md](engine.md)「保護の印」)
 - 変換して確定したときは、英字を含む読みでも文節ごとの通常の学習を送る ([conversion.md](conversion.md)「学習」)。変換せずに
-  run を終えたときは 読み = 表記 で学習する
+  run を終えたときは 読み = 表記 で学習する。未完成のローマ字が残る run の例外は [learning.md](learning.md)「学習しない確定」
 
 ## 大文字小文字の補正
 

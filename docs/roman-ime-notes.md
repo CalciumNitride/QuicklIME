@@ -33,7 +33,7 @@ QuicklIME は文書を自動で書き換えない ([input.md](spec/input.md)「�
 | 1 文字あたりのコストそのものを補正の判定に足す | Δ は通常と補正の経路の差だけを見る | 見送り。打ち間違いの無い文を途中で切った読みのコストが打ち間違いのある文と重なる (中央値 1851 と 2094、打ち間違いの無い文で 0% になる 2750 以上が途中で切った読みで 8%・打ち間違いのある文で 14%。typo_eval) |
 | 並べ替えの結果が採用の直前に届く | 組み直しを止める条件 ([suggest.md](spec/suggest.md)「LLM の並べ替えの結果の反映」) | 未検討 |
 | 辞書だけで同じ答えが出る学習を消す | 文節境界の学習を消す手段が無い ([roadmap.md](roadmap.md)) | roadmap |
-| 英字の残った読みから学習しない | `kyouhak` の学習 ([roadmap.md](roadmap.md)「見送り・既知の問題」) | 未検討 |
+| 英字の残った読みから学習しない | `kyouhak` の学習 | 未完成のローマ字が残る run は学習しない ([learning.md](spec/learning.md)「学習しない確定」) |
 | 単語登録のよみを打鍵の履歴から埋める | TSF 層はよみを渡さない ([dictionary.md](spec/dictionary.md)「単語登録ツール」) | roadmap |
 | 語を足すときの乗っ取りの確認 | インポート辞書の語は 5000 ([dictionary.md](spec/dictionary.md)「語のコスト」) | 未検討 |
 | LLM の生成の候補の変換の取り残し (メールをそうしん) | 生成の後処理 ([engine.md](spec/engine.md)「後処理」) | 未検討 |
