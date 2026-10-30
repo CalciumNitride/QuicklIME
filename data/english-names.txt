@@ -89,6 +89,7 @@ PostgreSQL
 PowerShell
 PyTorch
 Qualcomm
+QuicklIME
 README
 Reddit
 Redis
