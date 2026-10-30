@@ -7,19 +7,21 @@
 // 完全一致で枠が埋まらないときは、タイプミス補正 (かなを標準の綴りに戻した打鍵のファジィ照合) で補充する。
 // SUGGEST の予測 (scored) は短縮よみ・ユーザ辞書の名詞系・句の学習・辞書の語を打鍵のファジィ照合で
 // 常に引き、候補に点数を付ける (docs/spec/suggest.md「予測の照合」「点数」)。
-// NEXTWORD は文脈の句の学習 → 後続語の統計の文節の表 → バックオフの表の順に前文脈で引く
-// (辞書には語の連接の統計が無いため、日本語版ウィキペディアから数えた表を別に持つ。
+// SUGGEST の予測の句の学習は、打鍵が句の頭の語を打ち切るまで頭の語に置き換える (docs/spec/suggest.md「頭の語」)。
+// NEXTWORD は前文脈が助詞の付かない名詞で終わるなら付属語 (文脈の句の学習 → 句の学習の頭の語の後ろ →
+// 統計の付属語の表) を、それ以外は文脈の句の学習 → 後続語の統計の文節の表 → バックオフの表を頭の語に
+// 置き換えて出す (辞書には語の連接の統計が無いため、日本語版ウィキペディアから数えた表を別に持つ。
 // docs/spec/suggest.md「文節の連なりの統計」)。
 // 候補の最大数・最小読み文字数・補正の有無は設定 (config.rs) に従う。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::ops::Range;
 use std::path::Path;
 
 use crate::config::Config;
 use crate::dict::Dictionary;
-use crate::learn::{self, LearningStore};
+use crate::learn::{self, Head, HeadFinder, LearningStore, PhraseMatch};
 use crate::pos::FunctionalIds;
 use crate::typo;
 use crate::userdict::UserDict;
@@ -123,7 +125,8 @@ pub struct Prediction {
 /// word_score(読み, 表記, left_id, right_id, 単語コスト) は、その語 1 語だけの経路のコスト (学習の
 /// 割引を引いたもの) から c0 を引き、PREDICT_BIAS を足した値。句の学習の点数は
 /// PHRASE_BASE − 句の学習の割引 − c0 (前文脈があればその文脈の句の学習の割引も引き、前文脈に続いた
-/// 文節で句の学習に無いものも候補にする)
+/// 文節で句の学習に無いものも候補にする)。打鍵が句の頭の語を打ち切っていなければ、句の点数のまま頭の語を
+/// 候補にする。find_head は句の頭の語を求める処理
 /// (docs/spec/suggest.md「点数」)
 pub fn scored(
     kana: &str,
@@ -136,6 +139,7 @@ pub fn scored(
     word_score: &dyn Fn(&str, &str, u16, u16, i16) -> i64,
     c0: i64,
     functional: &FunctionalIds,
+    find_head: &HeadFinder,
 ) -> Vec<Prediction> {
     let max = cfg.max_predictions;
     let mut results: Vec<Prediction> = Vec::new();
@@ -176,24 +180,27 @@ pub fn scored(
         push(&word.reading, &word.surface, score, edits, false);
     }
     let base = learning.phrase_base() - c0;
-    let mut phrases: Vec<(i64, &str, &str, usize)> = learning
-        .phrase_fuzzy(matcher)
-        .into_iter()
-        .map(|m| {
-            let ctx_bonus = context.map_or(0, |c| learning.ctx_phrase_bonus(c, m.reading, m.surface));
-            (base - m.bonus - ctx_bonus + i64::from(m.cost), m.reading, m.surface, m.edits)
-        })
-        .collect();
+    // (点数, 読み, 表記, ずれの数)。打鍵が頭の語を打ち切っていない句は頭の語にする
+    let mut phrases: Vec<(i64, &str, &str, usize)> = Vec::new();
+    for m in learning.phrase_fuzzy(matcher, find_head) {
+        let ctx_bonus = context.map_or(0, |c| learning.ctx_phrase_bonus(c, m.reading, m.surface));
+        let (reading, surface) = shown(&m);
+        phrases.push((base - m.bonus - ctx_bonus + i64::from(m.cost), reading, surface, m.edits));
+    }
     // 前文脈に続いた文節は、句の学習が古くなって消えていても候補にする
     if let Some(c) = context {
-        for m in learning.ctx_phrase_fuzzy(c, matcher) {
+        for m in learning.ctx_phrase_fuzzy(c, matcher, find_head) {
             if !learning.has_phrase(m.reading, m.surface) {
-                phrases.push((base - m.bonus + i64::from(m.cost), m.reading, m.surface, m.edits));
+                let (reading, surface) = shown(&m);
+                phrases.push((base - m.bonus + i64::from(m.cost), reading, surface, m.edits));
             }
         }
     }
-    // 学習は数千件あり短い打鍵では多く当たるので、点数の小さい max 件だけを入れる
+    // 学習は数千件あり短い打鍵では多く当たるので、点数の小さい max 件だけを入れる。同じ頭の語の句が
+    // 枠を使い切らないよう、同じ表記を点数の小さいほうの 1 件にしてから数える
     phrases.sort_by_key(|&(score, _, _, _)| score);
+    let mut seen: HashSet<&str> = HashSet::new();
+    phrases.retain(|&(_, _, surface, _)| seen.insert(surface));
     phrases.truncate(max);
     for (score, reading, surface, edits) in phrases {
         push(reading, surface, score, edits, false);
@@ -225,6 +232,14 @@ pub fn scored(
     results
 }
 
+/// 照合した句の、候補に出す (読み, 表記)。打鍵が頭の語を打ち切っていなければ頭の語
+fn shown<'a>(m: &PhraseMatch<'a>) -> (&'a str, &'a str) {
+    match m.head {
+        Some(h) => (&m.reading[..h.reading], &m.surface[..h.surface]),
+        None => (m.reading, m.surface),
+    }
+}
+
 /// 後続語の統計の表 (next_word.tsv。docs/spec/suggest.md「表」)。
 /// 行は文脈ごとに連続し回数の多い順に並んでいるので、ファイルの本文をそのまま持ち、文脈から行の範囲を引く
 /// (行ごとに文字列を持つと、表の数倍のメモリを使うため)
@@ -234,6 +249,8 @@ pub struct NextWordTable {
     bunsetsu: HashMap<Box<str>, Range<usize>>,
     /// バックオフの表 (b): 前の文節の最後の自立語の表記 → text の行の範囲
     backoff: HashMap<Box<str>, Range<usize>>,
+    /// 付属語の表 (s): 名詞系の語の表記 → text の行の範囲
+    suffix: HashMap<Box<str>, Range<usize>>,
     rows: usize,
 }
 
@@ -247,12 +264,17 @@ impl NextWordTable {
     pub fn from_text(text: String) -> Self {
         let mut bunsetsu: HashMap<Box<str>, Range<usize>> = HashMap::new();
         let mut backoff: HashMap<Box<str>, Range<usize>> = HashMap::new();
+        let mut suffix: HashMap<Box<str>, Range<usize>> = HashMap::new();
         let mut rows = 0;
         // 読んでいるまとまりの (表の区別, 文脈, 範囲)
         let mut current: Option<(&str, &str, Range<usize>)> = None;
         let mut close = |block: Option<(&str, &str, Range<usize>)>| {
             if let Some((tag, context, range)) = block {
-                let map = if tag == "c" { &mut bunsetsu } else { &mut backoff };
+                let map = match tag {
+                    "c" => &mut bunsetsu,
+                    "b" => &mut backoff,
+                    _ => &mut suffix,
+                };
                 map.entry(context.into()).or_insert(range);
             }
         };
@@ -270,7 +292,7 @@ impl NextWordTable {
             }
         }
         close(current);
-        NextWordTable { text, bunsetsu, backoff, rows }
+        NextWordTable { text, bunsetsu, backoff, suffix, rows }
     }
 
     /// 読み込んだ件数
@@ -294,7 +316,7 @@ impl NextWordTable {
 /// next_word.tsv の 1 行 (表の区別\t文脈\t読み\t表記\t回数) を (表の区別, 文脈, 読み, 表記) にする
 fn parse_next_word_line(line: &str) -> Option<(&str, &str, &str, &str)> {
     let mut fields = line.trim_end_matches(['\r', '\n']).split('\t');
-    let tag = fields.next().filter(|t| matches!(*t, "c" | "b"))?;
+    let tag = fields.next().filter(|t| matches!(*t, "c" | "b" | "s"))?;
     let context = fields.next().filter(|s| !s.is_empty())?;
     let reading = fields.next().filter(|s| !s.is_empty())?;
     let surface = fields.next().filter(|s| !s.is_empty())?;
@@ -302,32 +324,72 @@ fn parse_next_word_line(line: &str) -> Option<(&str, &str, &str, &str)> {
     Some((tag, context, reading, surface))
 }
 
-/// 前文脈 context (直前に確定した文節の表記) の後に続く文節 (読み, 表記) を返す (読みなしの後続語予測)。
-/// 文脈の句の学習 (割引の大きい順) → 統計の文節の表を context で引いた件 → バックオフの表を head
-/// (前文脈の最後の自立語の表記) で引いた件の順に並べ、表記の重複は先勝ちで除く。table が無い
-/// (読み込み前・ファイルなし) ときは学習だけ、head が無いときはバックオフの表を引かない
+/// NEXTWORD の前文脈 (連結したもの。docs/spec/engine.md「前文脈」)
+pub struct NextContext<'a> {
+    pub reading: &'a str,
+    pub surface: &'a str,
+    /// 前文脈が助詞の付かない名詞系の語で終わるときの、その語の表記
+    pub noun: Option<&'a str>,
+    /// 前文脈の最後の自立語の表記 (バックオフの表を引く文脈)
+    pub last: Option<&'a str>,
+}
+
+/// 前文脈 ctx の後に続く文節 (読み, 表記) を返す (読みなしの後続語予測)。表記の重複は先勝ちで除く。
+/// 前文脈が名詞で終わる (ctx.noun がある) ときは付属語を、文脈の句の学習 (割引の大きい順) → 句の学習のうち
+/// 頭の語が前文脈と同じ句の残りの部分 (割引の大きい順) → 付属語の表を ctx.noun で引いた件の順に並べる。
+/// それ以外は、文脈の句の学習 → 統計の文節の表を前文脈の表記で引いた件 → バックオフの表を ctx.last で引いた件の
+/// 順に並べ、各候補を頭の語に置き換える。table が無い (読み込み前・ファイルなし) ときは学習だけ、ctx.last が
+/// 無いときはバックオフの表を引かない。find_head は句の頭の語を求める処理
 pub fn next_words(
-    context: &str,
-    head: Option<&str>,
+    ctx: &NextContext<'_>,
     learning: &LearningStore,
     table: Option<&NextWordTable>,
+    find_head: &HeadFinder,
     cfg: &Config,
 ) -> Vec<(String, String)> {
     let max = cfg.max_predictions;
     let mut results: Vec<(String, String)> = Vec::new();
-    for (reading, surface) in learning.context_prefix(context, "", max) {
-        push_unique(&mut results, "", reading.to_string(), surface.to_string());
+    if let Some(noun) = ctx.noun {
+        // 文節の表とバックオフの表は引かない。助詞の付かない名詞の後に「大学」のような句の後ろの語が出るため
+        for (reading, surface) in learning.context_prefix(ctx.surface, "", max) {
+            push_unique(&mut results, "", reading.to_string(), surface.to_string());
+        }
+        let stats = table.map_or_else(Vec::new, |t| t.lookup(&t.suffix, noun));
+        let rests = learning.head_rest(ctx.reading, ctx.surface, find_head);
+        for (reading, surface) in rests.into_iter().chain(stats) {
+            if results.len() >= max {
+                break;
+            }
+            push_unique(&mut results, "", reading.to_string(), surface.to_string());
+        }
+        results.truncate(max);
+        return results;
+    }
+    let push_head = |results: &mut Vec<(String, String)>, reading: &str, surface: &str, head: Option<Head>| {
+        let (reading, surface) = match head {
+            Some(h) => (&reading[..h.reading], &surface[..h.surface]),
+            None => (reading, surface),
+        };
+        push_unique(results, "", reading.to_string(), surface.to_string());
+    };
+    // 頭の語に置き換えると重複で減るので、文脈の句の学習は件数で切らずに引く
+    for (reading, surface) in learning.context_prefix(ctx.surface, "", usize::MAX) {
+        if results.len() >= max {
+            break;
+        }
+        push_head(&mut results, reading, surface, learning.head(reading, surface, find_head));
     }
     if let Some(table) = table {
-        let mut stats = table.lookup(&table.bunsetsu, &learn::context_key(context));
-        if let Some(head) = head {
-            stats.extend(table.lookup(&table.backoff, head));
+        let mut stats = table.lookup(&table.bunsetsu, &learn::context_key(ctx.surface));
+        if let Some(last) = ctx.last {
+            stats.extend(table.lookup(&table.backoff, last));
         }
         for (reading, surface) in stats {
             if results.len() >= max {
                 break;
             }
-            push_unique(&mut results, "", reading.to_string(), surface.to_string());
+            // 表の文節は句の学習ではないので、頭の語を覚えずに求める
+            push_head(&mut results, reading, surface, find_head(reading, surface));
         }
     }
     results.truncate(max);
@@ -634,13 +696,25 @@ mod tests {
         let word_score = |_: &str, _: &str, _: u16, _: u16, cost: i16| i64::from(cost);
         let run = |context: Option<&str>| {
             let functional = FunctionalIds::empty();
-            scored("きょう", &matcher, context, &sample_dict(), &no_user(), &learning, &cfg(), &word_score, 0, &functional)
+            scored("きょう", &matcher, context, &sample_dict(), &no_user(), &learning, &cfg(), &word_score, 0, &functional, &|_, _| None)
         };
         // PHRASE_BASE − 句の学習の割引 0 − 文脈の句の学習の割引 2500 − c0 0
         let expected = crate::learn::WEIGHTS.phrase_base - 2500;
         assert!(run(Some("今日は")).iter().any(|p| p.surface == "教会で" && p.score == expected));
         assert!(run(None).iter().all(|p| p.surface != "教会で"));
         assert!(run(Some("明日は")).iter().all(|p| p.surface != "教会で"));
+    }
+
+    /// 名詞で終わらない前文脈 context で後続語を引く (どの句も頭の語を持たないものとする)
+    fn next_of(
+        context: &str,
+        last: Option<&str>,
+        learning: &LearningStore,
+        table: Option<&NextWordTable>,
+        cfg: &Config,
+    ) -> Vec<(String, String)> {
+        let ctx = NextContext { reading: "", surface: context, noun: None, last };
+        next_words(&ctx, learning, table, &|_, _| None, cfg)
     }
 
     #[test]
@@ -651,7 +725,7 @@ mod tests {
         record(&mut learning, "あめ", "雨");
         // 同じ回数なら今の度合いの大きい (新しい) ほうが先
         assert_eq!(
-            next_words("今日は", None, &learning, None, &cfg()),
+            next_of("今日は", None, &learning, None, &cfg()),
             vec![
                 ("はれ".to_string(), "晴れ".to_string()),
                 ("いいてんき".to_string(), "いい天気".to_string()),
@@ -661,11 +735,11 @@ mod tests {
         record_ctx(&mut learning, "今日は", "いいてんき", "いい天気");
         record_ctx(&mut learning, "今日は", "はれ", "晴れ");
         record_ctx(&mut learning, "今日は", "いいてんき", "いい天気");
-        assert_eq!(next_words("今日は", None, &learning, None, &cfg())[0].1, "いい天気");
+        assert_eq!(next_of("今日は", None, &learning, None, &cfg())[0].1, "いい天気");
         let mut one = cfg();
         one.max_predictions = 1;
-        assert_eq!(next_words("今日は", None, &learning, None, &one).len(), 1);
-        assert!(next_words("明日は", None, &learning, None, &cfg()).is_empty());
+        assert_eq!(next_of("今日は", None, &learning, None, &one).len(), 1);
+        assert!(next_of("明日は", None, &learning, None, &cfg()).is_empty());
     }
 
     fn sample_table() -> NextWordTable {
@@ -703,12 +777,12 @@ mod tests {
         let mut learning = LearningStore::in_memory();
         record_ctx(&mut learning, "今日は", "はれ", "晴れ");
         let table = sample_table();
-        let got = next_words("今日は", Some("今日"), &learning, Some(&table), &cfg());
+        let got = next_of("今日は", Some("今日"), &learning, Some(&table), &cfg());
         assert_eq!(surfaces(&got), ["晴れ", "いい天気", "曇り", "寒い"]);
         // max_predictions で切れる
         let mut three = cfg();
         three.max_predictions = 3;
-        let got = next_words("今日は", Some("今日"), &learning, Some(&table), &three);
+        let got = next_of("今日は", Some("今日"), &learning, Some(&table), &three);
         assert_eq!(surfaces(&got), ["晴れ", "いい天気", "曇り"]);
     }
 
@@ -716,7 +790,7 @@ mod tests {
     fn 後続語予測の文節の表は前文脈の末尾16文字で引く() {
         let table = NextWordTable::from_text("c\tおかきくけこさしすせそたちつてと\tはれ\t晴れ\t3\n".to_string());
         let learning = LearningStore::in_memory();
-        let got = next_words("あいうえおかきくけこさしすせそたちつてと", None, &learning, Some(&table), &cfg());
+        let got = next_of("あいうえおかきくけこさしすせそたちつてと", None, &learning, Some(&table), &cfg());
         assert_eq!(surfaces(&got), ["晴れ"]);
     }
 
@@ -726,12 +800,12 @@ mod tests {
         record_ctx(&mut learning, "今日も", "はれ", "晴れ");
         let table = sample_table();
         assert_eq!(
-            next_words("今日も", Some("今日"), &learning, None, &cfg()),
-            next_words("今日も", None, &learning, None, &cfg())
+            next_of("今日も", Some("今日"), &learning, None, &cfg()),
+            next_of("今日も", None, &learning, None, &cfg())
         );
-        assert_eq!(surfaces(&next_words("今日も", None, &learning, Some(&table), &cfg())), ["晴れ"]);
+        assert_eq!(surfaces(&next_of("今日も", None, &learning, Some(&table), &cfg())), ["晴れ"]);
         assert_eq!(
-            surfaces(&next_words("今日も", Some("今日"), &learning, Some(&table), &cfg())),
+            surfaces(&next_of("今日も", Some("今日"), &learning, Some(&table), &cfg())),
             ["晴れ", "曇り", "いい天気", "寒い"]
         );
     }
@@ -745,7 +819,7 @@ mod tests {
         };
         let functional = FunctionalIds::empty();
         let mut got: Vec<(String, String, i64)> =
-            scored(kana, &matcher, context, &sample_dict(), &no_user(), learning, &cfg(), &word_score, c0, &functional)
+            scored(kana, &matcher, context, &sample_dict(), &no_user(), learning, &cfg(), &word_score, c0, &functional, &|_, _| None)
                 .into_iter()
                 .map(|p| (p.reading, p.surface, p.score))
                 .collect();
@@ -786,6 +860,156 @@ mod tests {
         let got = scored_of("きょう", "kyo\x1f\x1fu", None, &learning, 0);
         assert!(got.contains(&("きょうと".to_string(), "京都府".to_string(), 4500)), "{got:?}");
         assert!(got.contains(&("きょうと".to_string(), "京都".to_string(), 2000)), "{got:?}");
+    }
+
+    /// テスト用の頭の語: 表の句 (読み, 表記, 頭の語の読み, 頭の語の表記) を引き、無ければ頭の語なし
+    fn head_table(table: &'static [(&'static str, &'static str, &'static str, &'static str)]) -> impl Fn(&str, &str) -> Option<Head> {
+        move |reading: &str, surface: &str| {
+            table
+                .iter()
+                .find(|(r, s, _, _)| *r == reading && *s == surface)
+                .map(|(_, _, hr, hs)| Head { reading: hr.len(), surface: hs.len() })
+        }
+    }
+
+    const HEADS: &[(&str, &str, &str, &str)] = &[
+        ("とうきょうの", "東京の", "とうきょう", "東京"),
+        ("とうきょうが", "東京が", "とうきょう", "東京"),
+        ("とうきょうに", "東京に", "とうきょう", "東京"),
+        ("きょうはいいてんき", "今日はいい天気", "きょう", "今日"),
+        ("あめが", "雨が", "あめ", "雨"),
+        ("あめの", "雨の", "あめ", "雨"),
+    ];
+
+    /// 打鍵 (かな, 打鍵のフィールド) の予測の (読み, 表記, 点数, ずれの数)。edits は許すずれの数
+    fn head_scored(learning: &LearningStore, kana: &str, field: &str, edits: usize) -> Vec<(String, String, i64, usize)> {
+        let keys = typo::Keys::parse(kana, field).unwrap();
+        let matcher = typo::Matcher::new(&keys, edits, &typo::TUNING);
+        let word_score = |_: &str, _: &str, _: u16, _: u16, cost: i16| i64::from(cost);
+        let functional = FunctionalIds::empty();
+        let find = head_table(HEADS);
+        scored(kana, &matcher, None, &sample_dict(), &no_user(), learning, &cfg(), &word_score, 0, &functional, &find)
+            .into_iter()
+            .map(|p| (p.reading, p.surface, p.score, p.edits))
+            .collect()
+    }
+
+    fn has(got: &[(String, String, i64, usize)], surface: &str) -> bool {
+        got.iter().any(|p| p.1 == surface)
+    }
+
+    /// 東京の を 2 回、東京が を 1 回確定した学習
+    fn tokyo_learning() -> LearningStore {
+        let mut learning = LearningStore::in_memory();
+        record(&mut learning, "とうきょうの", "東京の");
+        record(&mut learning, "とうきょうの", "東京の");
+        record(&mut learning, "とうきょうが", "東京が");
+        learning
+    }
+
+    #[test]
+    fn 頭の語を打ち切るまでは句の代わりに頭の語を1件だけ出す() {
+        let learning = tokyo_learning();
+        let got = head_scored(&learning, "とうき", "to\x1fu\x1fki", 0);
+        let tokyo: Vec<_> = got.iter().filter(|p| p.1 == "東京").collect();
+        // 点数は割引の大きい 東京の の句の点数
+        let expected = crate::learn::WEIGHTS.phrase_base - learning.phrase_bonus("とうきょうの", "東京の");
+        assert_eq!(tokyo, vec![&("とうきょう".to_string(), "東京".to_string(), expected, 0)], "{got:?}");
+        assert!(!has(&got, "東京の") && !has(&got, "東京が"), "{got:?}");
+    }
+
+    #[test]
+    fn 頭の語を打ち切ったら句を出す() {
+        let learning = tokyo_learning();
+        let got = head_scored(&learning, "とうきょう", "to\x1fu\x1fkyo\x1f\x1fu", 0);
+        assert!(has(&got, "東京の") && has(&got, "東京が") && !has(&got, "東京"), "{got:?}");
+        let got = head_scored(&learning, "とうきょう", "to\x1fu\x1fkyo\x1f\x1fu\x1en", 0);
+        assert!(has(&got, "東京の") && !has(&got, "東京が"), "{got:?}");
+    }
+
+    #[test]
+    fn 頭の語を持たない句と読み全体の句の頭の語() {
+        let mut learning = LearningStore::in_memory();
+        record(&mut learning, "たべました", "食べました");
+        learning.learn_phrase("きょうはいいてんき", "今日はいい天気", crate::learn::PhraseKind::Whole, true);
+        assert!(has(&head_scored(&learning, "たべ", "ta\x1fbe", 0), "食べました"));
+        let got = head_scored(&learning, "きょ", "kyo\x1f", 0);
+        assert!(has(&got, "今日") && !has(&got, "今日はいい天気"), "{got:?}");
+        assert!(has(&head_scored(&learning, "きょう", "kyo\x1f\x1fu", 0), "今日はいい天気"));
+    }
+
+    #[test]
+    fn ずれのある打鍵でも頭の語を出す() {
+        let learning = tokyo_learning();
+        // toikyo: tou の u を隣の i と打った
+        let got = head_scored(&learning, "といきょ", "to\x1fi\x1fkyo\x1f", 1);
+        let tokyo: Vec<_> = got.iter().filter(|p| p.1 == "東京").collect();
+        assert_eq!(tokyo.len(), 1, "{got:?}");
+        assert_eq!(tokyo[0].3, 1);
+        assert!(!has(&got, "東京の") && !has(&got, "東京が"), "{got:?}");
+    }
+
+    #[test]
+    fn 頭の語の候補は置き換えたあとの候補で件数を数える() {
+        // 点数は 語 (3 回) < 東京の・東京が (2 回) < 唐黍 (1 回)
+        let mut learning = LearningStore::in_memory();
+        for i in 0..cfg().max_predictions - 2 {
+            for _ in 0..3 {
+                learning.learn_segment(&format!("とうき{i}"), &format!("語{i}"), "", None);
+            }
+        }
+        for _ in 0..2 {
+            record(&mut learning, "とうきょうの", "東京の");
+            record(&mut learning, "とうきょうが", "東京が");
+        }
+        record(&mut learning, "とうきび", "唐黍");
+        // 置き換える前に数えると 東京 の 2 件で枠が埋まり 唐黍 が切られる
+        let got = head_scored(&learning, "とうき", "to\x1fu\x1fki", 0);
+        assert!(has(&got, "東京") && has(&got, "唐黍"), "{got:?}");
+    }
+
+    #[test]
+    fn 名詞で終わる前文脈には付属語を出し文節の表は引かない() {
+        let mut learning = LearningStore::in_memory();
+        record(&mut learning, "とうきょうに", "東京に");
+        let table = NextWordTable::from_text(
+            "c\t東京\tだいがく\t大学\t50\n\
+             s\t東京\tの\tの\t40\n\
+             s\t東京\tは\tは\t30\n\
+             s\t東京\tに\tに\t20\n"
+                .to_string(),
+        );
+        let find = head_table(HEADS);
+        let ctx = NextContext { reading: "とうきょう", surface: "東京", noun: Some("東京"), last: Some("東京") };
+        let got = next_words(&ctx, &learning, Some(&table), &find, &cfg());
+        assert_eq!(surfaces(&got), ["に", "の", "は"]);
+        // 付属語の表が無い表でも学習から付属語が出る
+        let table = NextWordTable::from_text("c\t東京\tだいがく\t大学\t50\n".to_string());
+        assert_eq!(surfaces(&next_words(&ctx, &learning, Some(&table), &find, &cfg())), ["に"]);
+        assert_eq!(surfaces(&next_words(&ctx, &learning, None, &find, &cfg())), ["に"]);
+    }
+
+    #[test]
+    fn 名詞で終わらない前文脈の候補は頭の語に置き換えて重複を除く() {
+        let learning = LearningStore::in_memory();
+        let table = NextWordTable::from_text(
+            "c\t今日は\tあめが\t雨が\t50\n\
+             c\t今日は\tあめの\t雨の\t40\n\
+             c\t今日は\tには\tには\t30\n"
+                .to_string(),
+        );
+        let find = head_table(HEADS);
+        let ctx = NextContext { reading: "きょうは", surface: "今日は", noun: None, last: None };
+        let got = next_words(&ctx, &learning, Some(&table), &find, &cfg());
+        assert_eq!(got, vec![("あめ".to_string(), "雨".to_string()), ("には".to_string(), "には".to_string())]);
+    }
+
+    #[test]
+    fn 付属語の表を読む() {
+        let table = NextWordTable::from_text("s\t東京\tの\tの\t40\ns\t東京\tに\tに\t20\nb\t東京\tの\tの\t5\n".to_string());
+        assert_eq!(table.len(), 3);
+        assert_eq!(table.lookup(&table.suffix, "東京"), [("の", "の"), ("に", "に")]);
+        assert_eq!(table.lookup(&table.backoff, "東京"), [("の", "の")]);
     }
 
     #[test]

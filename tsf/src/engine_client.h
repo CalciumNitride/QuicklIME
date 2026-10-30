@@ -46,23 +46,33 @@ struct PredictionCandidate {
     std::wstring surface;  // 表記
 };
 
-// 前文脈 (直前に確定した文節の読みと表記)。文脈補正 (CONVCTX) に使う
+// 前文脈 (直前に確定した文節の読みと表記)。文脈補正 (CONVCTX) に使う。
+// prevReading・prevSurface は前文脈の 1 つ前の文節 (無ければ空)。エンジンが前文脈を連結するかの判定に使う
 struct ConversionContext {
     std::wstring reading;
     std::wstring surface;
+    std::wstring prevReading;
+    std::wstring prevSurface;
     bool Empty() const { return reading.empty() || surface.empty(); }
     void Clear()
     {
         reading.clear();
         surface.clear();
+        prevReading.clear();
+        prevSurface.clear();
     }
 };
 
-// 確定学習の1文節。context は直前文節の表記 (空なら文脈なしの学習になる)
+// 確定学習の1文節。context は直前文節の表記 (空なら文脈なしの学習になる)。
+// contextReading・prevReading・prevSurface は前文脈の読みと 1 つ前の文節で、エンジンが文脈を連結するかの
+// 判定に使う (確定の先頭の文節にだけ付ける。無ければ空)
 struct LearnEntry {
     std::wstring reading;
     std::wstring surface;
     std::wstring context;
+    std::wstring contextReading;
+    std::wstring prevReading;
+    std::wstring prevSurface;
 };
 
 // 変換エンジン (quicklime-engine.exe) への named pipe クライアント。

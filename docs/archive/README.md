@@ -4,6 +4,10 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [word-prediction.md](word-prediction.md): 予測を語の単位にする。打鍵が句の頭の語 (名詞系の語の後ろに助詞・助動詞が
+  続く句の名詞まで) を打ち切るまで頭の語を予測し、後続語の予測は名詞の後に付属語を出し、前文脈を名詞 + 付属語に連結する。
+  [docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/engine.md](../spec/engine.md)・[docs/spec/learning.md](../spec/learning.md)・
+  [docs/spec/input.md](../spec/input.md)・[docs/protocol.md](../protocol.md) へ移した
 - [fuzzy-level.md](fuzzy-level.md): ファジィ入力の段階 (−1〜3) を F2 / Shift+F2 で run ごとに変え、標準の段階を設定
   `fuzzy_level` にする。機能の名前をファジィ入力に改め、補正の語の枠を補正した読みごとにする。
   [docs/spec/engine.md](../spec/engine.md)・[docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/keys.md](../spec/keys.md)・

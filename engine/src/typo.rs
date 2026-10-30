@@ -1295,21 +1295,36 @@ impl<'a> Matcher<'a> {
 
     /// 読み reading の先頭で打鍵を使い切る最小のずれ (前方一致の照合)。使い切れなければ None
     pub fn match_reading(&self, reading: &str) -> Consumed {
+        self.match_positions(reading, usize::MAX).0
+    }
+
+    /// 読み reading の照合のうち、打鍵を使い切った位置 (使い切ったかなのかたまりの終わり) が読みの from 文字目
+    /// 以降のものの最小のずれ。読みの途中 (予測の頭の語) を打ち切ったかを見るのに使う
+    pub fn match_reading_from(&self, reading: &str, from: usize) -> Consumed {
+        self.match_positions(reading, from).1
+    }
+
+    /// (読みのどこかで使い切る最小のずれ, from 文字目以降で使い切る最小のずれ)
+    fn match_positions(&self, reading: &str, from: usize) -> (Consumed, Consumed) {
         let path: Vec<char> = reading.chars().collect();
         // 学習とユーザ辞書は読みを 1 件ずつ照合するので、先頭 2 字で照合が尽きた読みを覚えて、同じ先頭の
         // 読みを計算しない (かなのかたまりが 2 文字までなら、先頭 2 字の行で先が決まる)
         let head = (path.len() >= 2 && self.max_token == 2).then(|| (path[0], path[1]));
         if head.is_some_and(|h| self.dead_heads.borrow().contains(&h)) {
-            return None;
+            return (None, None);
         }
         let mut rows: Vec<Row> = vec![self.start()];
         let mut best: Consumed = None;
+        let mut best_from: Consumed = None;
         for d in 1..=path.len() {
             if !self.reachable(&path[..d], &rows) {
                 break;
             }
             let (row, consumed) = self.step(&path[..d], &rows);
             best = better(best, consumed);
+            if d >= from {
+                best_from = better(best_from, consumed);
+            }
             rows.push(row);
             if !self.alive(&rows) {
                 break;
@@ -1320,7 +1335,7 @@ impl<'a> Matcher<'a> {
                 self.dead_heads.borrow_mut().insert(h);
             }
         }
-        best
+        (best, best_from)
     }
 }
 
@@ -1465,6 +1480,23 @@ mod tests {
         let keys = Keys::parse(kana, field).unwrap();
         let matcher = Matcher::new(&keys, TUNING.allowed_edits(keys.len()), &TUNING);
         matcher.match_reading(reading)
+    }
+
+    #[test]
+    fn 読みの途中から先で打鍵を使い切る照合だけを見る() {
+        let from = |kana: &str, field: &str, reading: &str, from: usize| {
+            let keys = Keys::parse(kana, field).unwrap();
+            Matcher::new(&keys, 0, &TUNING).match_reading_from(reading, from)
+        };
+        // とうき は とうきょうの の 3 字目までで使い切る (きょ の綴りの途中を含めても 4 字目)
+        assert_eq!(from("とうき", "to\x1fu\x1fki", "とうきょうの", 3), Some((0, 0)));
+        assert_eq!(from("とうき", "to\x1fu\x1fki", "とうきょうの", 5), None);
+        // とうきょう は 5 字目、とうきょうn は の の綴りの途中 (6 字目) で使い切る
+        assert_eq!(from("とうきょう", "to\x1fu\x1fkyo\x1f\x1fu", "とうきょうの", 5), Some((0, 0)));
+        assert_eq!(from("とうきょう", "to\x1fu\x1fkyo\x1f\x1fu\x1en", "とうきょうの", 5), Some((0, 0)));
+        assert_eq!(from("とうきょう", "to\x1fu\x1fkyo\x1f\x1fu\x1en", "とうきょうが", 5), None);
+        // from が 0 なら前方一致の照合と同じ
+        assert_eq!(from("とうき", "to\x1fu\x1fki", "とうきょうの", 0), matched("とうき", "to\x1fu\x1fki", "とうきょうの"));
     }
 
     #[test]

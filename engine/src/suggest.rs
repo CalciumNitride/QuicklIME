@@ -163,8 +163,12 @@ pub fn suggest(
                 - c0
                 + tuning.predict_bias
         };
-        let predictions =
-            predict::scored(kana, &matcher, context, dict, user, learning, cfg, &word_score, c0, functional);
+        let find_head = |reading: &str, surface: &str| {
+            convert::phrase_head(reading, surface, dict, user, matrix, functional)
+        };
+        let predictions = predict::scored(
+            kana, &matcher, context, dict, user, learning, cfg, &word_score, c0, functional, &find_head,
+        );
         for p in predictions {
             let kind = if p.edits > 0 { Kind::PredictTypo } else { Kind::Predict };
             items.push(Item {

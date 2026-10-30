@@ -919,8 +919,18 @@ HRESULT TextService::ConvertIdleTarget(ITfContext* context, KeyFunc func)
         // 範囲の直前が記憶なら、その最後の文節を前文脈にする。それ以外は文書の漢字の読みが
         // 分からないので、範囲の直前が直前の確定の表記で終わるときだけその確定を前文脈にする
         if (chainTo > chainFrom) {
-            const auto& last = adopted_[chainTo - 1].segments.back();
-            SetCommitContext(last.first, last.second);
+            // 1 つ前の文節は、同じ記憶の前の文節か、その前の記憶の最後の文節
+            const auto& segments = adopted_[chainTo - 1].segments;
+            const auto& last = segments.back();
+            if (segments.size() >= 2) {
+                const auto& prev = segments[segments.size() - 2];
+                SetCommitContext(last.first, last.second, prev.first, prev.second);
+            } else if (chainTo - 1 > chainFrom) {
+                const auto& prev = adopted_[chainTo - 2].segments.back();
+                SetCommitContext(last.first, last.second, prev.first, prev.second);
+            } else {
+                SetCommitContext(last.first, last.second, L"", L"");
+            }
         } else if (contextSurface_.empty() || !EndsWith(target.before, contextSurface_)) {
             ClearContext();
         }
@@ -1042,12 +1052,10 @@ void TextService::ApplyRangeContext()
     // 縮めて外したかなは読み = 表記の前文脈にする。外したかなが無ければ範囲を始めたときの前文脈
     const std::wstring excluded = RangeExcludedInComposition();
     if (excluded.empty()) {
-        contextReading_ = rangeBaseContext_.reading;
-        contextSurface_ = rangeBaseContext_.surface;
+        RestoreContext(rangeBaseContext_);
         return;
     }
-    contextReading_ = excluded;
-    contextSurface_ = excluded;
+    RestoreContext({excluded, excluded, rangeBaseContext_.reading, rangeBaseContext_.surface});
 }
 
 void TextService::RestoreExcludedKana()
@@ -1066,8 +1074,7 @@ void TextService::RestoreExcludedKana()
     rangeStates_.clear();
     rangeBefore_.erase(rangeBefore_.size() - excluded.size());
     rangeShift_ = 0;
-    contextReading_ = rangeBaseContext_.reading;
-    contextSurface_ = rangeBaseContext_.surface;
+    RestoreContext(rangeBaseContext_);
 }
 
 HRESULT TextService::ResizeConversionRange(ITfContext* context, int delta)
@@ -1310,7 +1317,9 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
                 surface += segmentSurface;
                 readingLength += segmentReading.size();
                 if (!item.typo) {
-                    adoption.learn.push_back({segmentReading, segmentSurface, previous});
+                    adoption.learn.push_back(
+                        adoption.learn.empty() ? ContextLearnEntry(segmentReading, segmentSurface)
+                                               : LearnEntry{segmentReading, segmentSurface, previous});
                 }
                 previous = segmentSurface;
             }
@@ -1324,13 +1333,18 @@ HRESULT TextService::AdoptBarItem(ITfContext* context, size_t index, BarAdopt mo
             adoption.contextReading = adoption.segments.back().first;
             adoption.contextSurface = adoption.segments.back().second;
         }
+        if (adoption.segments.size() >= 2) {
+            const auto& prev = adoption.segments[adoption.segments.size() - 2];
+            adoption.contextPrevReading = prev.first;
+            adoption.contextPrevSurface = prev.second;
+        }
         if (adoption.segments.empty()) {
             adoption.segments.push_back({kana.substr(0, readingLength), surface});
         }
         break;
     case BarKind::Prediction:
         // ずれを使った予測も、候補の読み (辞書の正しい読み) と表記で学習する
-        adoption.learn.push_back({item.reading, item.surface, contextSurface_});
+        adoption.learn.push_back(ContextLearnEntry(item.reading, item.surface));
         adoption.contextReading = item.reading;
         adoption.contextSurface = item.surface;
         adoption.segments.push_back({item.reading, item.surface});
@@ -1426,7 +1440,12 @@ void TextService::FinishBarAdoption(ITfContext* context, bool updateBar)
     if (!IsNoLearningApp()) {
         engine_.Learn(adoption_.learn);
     }
-    SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
+    if (adoption_.contextPrevReading.empty()) {
+        SetCommitContext(adoption_.contextReading, adoption_.contextSurface);
+    } else {
+        SetCommitContext(adoption_.contextReading, adoption_.contextSurface,
+                         adoption_.contextPrevReading, adoption_.contextPrevSurface);
+    }
     // 採用した部分は run から外す
     composer_.RemoveFront(adoption_.readingLength);
     if (adoption_.dropPending) {
@@ -1593,7 +1612,7 @@ HRESULT TextService::AdoptNextWord(ITfContext* context, BarAdopt mode,
         return E_FAIL;
     }
     if (!IsNoLearningApp()) {
-        engine_.Learn({{item.reading, item.surface, contextSurface_}});
+        engine_.Learn({ContextLearnEntry(item.reading, item.surface)});
     }
     SetCommitContext(item.reading, item.surface);
     const RomajiComposer composer = ComposerForReading(RomajiComposer(), item.reading);
@@ -1627,7 +1646,7 @@ void TextService::EndRun(const std::wstring& text)
         // 並び替えにも使われ、「きょう→きょう」が入るとひらがな候補が先頭へ来るため)
         const std::wstring kana = composer_.Commit();
         if (ContainsAsciiLetter(kana) && !IsNoLearningApp()) {
-            engine_.Learn({{kana, kana, contextSurface_}});
+            engine_.Learn({ContextLearnEntry(kana, kana)});
         }
         SetCommitContext(kana, kana);
         // Space で終えた run は IME が入れたスペースで終わる。スペースは記憶に含めず、

@@ -50,6 +50,8 @@ engine/src/learn.rs `learn_segment`)。
 - 読みか表記が空の組は数えない。日付・時刻の候補と同じ表記の組も数えない ([engine.md](engine.md)「日付・時刻の候補」)
 - 文脈の句の学習の文脈は、直前の文節の表記の末尾 16 文字 (`MAX_CONTEXT_KEY_CHARS`)。長文の貼り付けなどで異常に
   長い文脈を、そのままキーにしないため
+- LEARN2 の先頭の組に前文脈の読みと 1 つ前の文節が付いていれば、直前の文節の表記は前文脈の連結
+  ([engine.md](engine.md)「前文脈」) を当てたものにする (「東京」→「に」の後の文節は、文脈「東京に」で数える)
 
 ### 文節を辞書の語に分ける
 
@@ -116,7 +118,7 @@ engine/src/learn.rs `learn_segment`)。
 | 学習 | 効く所 |
 |---|---|
 | 語の学習 | Viterbi の自立語の単語コストの割引 ([engine.md](engine.md)「コスト」)。全体変換・文節の候補・N-best・予測の 1 語の経路のコスト ([suggest.md](suggest.md)「点数」)・逆変換 ([engine.md](engine.md)「逆変換 (REVERSE)」) に同じ割引を使う |
-| 句の学習 | 文節の候補の経路の表記の次 ([engine.md](engine.md)「文節の候補 (CONVSEG・CONVCTX)」)、読み全体の学習表記 ([engine.md](engine.md)「候補の並び」)、予測の確定履歴 ([suggest.md](suggest.md)「予測」)、辞書の語に分けられない句のラティスの語 ([engine.md](engine.md)「ラティスの語」)、逆変換の読みの優先 ([engine.md](engine.md)「学習の優先」) |
+| 句の学習 | 文節の候補の経路の表記の次 ([engine.md](engine.md)「文節の候補 (CONVSEG・CONVCTX)」)、読み全体の学習表記 ([engine.md](engine.md)「候補の並び」)、予測の確定履歴と頭の語 ([suggest.md](suggest.md)「予測」「頭の語」)、名詞で終わる前文脈の後続語の予測の付属語 ([suggest.md](suggest.md)「後続語の予測」)、辞書の語に分けられない句のラティスの語 ([engine.md](engine.md)「ラティスの語」)、逆変換の読みの優先 ([engine.md](engine.md)「学習の優先」) |
 | 文脈の句の学習 | 前文脈付きの予測 ([suggest.md](suggest.md)「点数」) と後続語の予測 ([suggest.md](suggest.md)「後続語の予測」) |
 | 文節境界の学習 | 文節境界ペナルティの増減 ([engine.md](engine.md)「学習した文節境界」) |
 | 複合語の学習 | ユーザ辞書の名詞系の語としてラティスに載る ([engine.md](engine.md)「ラティスの語」) |

@@ -287,6 +287,19 @@ bool IsUnknownCommandError(const std::string& response)
     return response.rfind("ERR\t\xE4\xB8\x8D\xE6\x98\x8E", 0) == 0;
 }
 
+// 前文脈のフィールド「読み\x1f表記[\x1f前の読み\x1f前の表記]」(前文脈が空なら空)
+std::string ContextField(const ConversionContext& context)
+{
+    if (context.Empty()) {
+        return std::string();
+    }
+    std::string field = WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+    if (!context.prevReading.empty() && !context.prevSurface.empty()) {
+        field += "\x1f" + WideToUtf8(context.prevReading) + "\x1f" + WideToUtf8(context.prevSurface);
+    }
+    return field;
+}
+
 } // namespace
 
 std::string EngineClient::BuildSegmentsRequest(const std::wstring& kana,
@@ -297,8 +310,7 @@ std::string EngineClient::BuildSegmentsRequest(const std::wstring& kana,
     if (context.Empty() || legacyEngine_) {
         request = "CONVSEG\t" + WideToUtf8(kana);
     } else {
-        request = "CONVCTX\t" + WideToUtf8(context.reading) + "\x1f" +
-                  WideToUtf8(context.surface) + "\t" + WideToUtf8(kana);
+        request = "CONVCTX\t" + ContextField(context) + "\t" + WideToUtf8(kana);
     }
     if (!lengthsField.empty()) {
         request += "\t" + lengthsField;
@@ -445,10 +457,7 @@ bool EngineClient::SuggestLive(const std::wstring& kana, const ConversionContext
     if (!OpenPipeLive()) {
         return false;
     }
-    const std::string contextField =
-        context.Empty() ? std::string()
-                        : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-    const std::string request = "SUGGEST\t" + contextField + "\t" + WideToUtf8(kana) + "\t" +
+    const std::string request = "SUGGEST\t" + ContextField(context) + "\t" + WideToUtf8(kana) + "\t" +
                                 WideToUtf8(keys) + "\t" + std::to_string(level) + "\n";
     std::string response;
     if (!SendReceive(request, &response)) {
@@ -612,11 +621,8 @@ bool EngineClient::RequestNBest(const std::wstring& kana, const ConversionContex
         if (live && !OpenPipeLive()) {
             return false;
         }
-        const std::string contextField =
-            context.Empty() ? std::string()
-                            : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
         // kinds で補正の候補に種類を付けさせる (旧エンジンは kinds・段階の余分なフィールドを無視する)
-        std::string request = "CONVNBEST\t" + contextField + "\t" + WideToUtf8(kana) + "\tkinds";
+        std::string request = "CONVNBEST\t" + ContextField(context) + "\t" + WideToUtf8(kana) + "\tkinds";
         if (level.has_value()) {
             request += "\t" + WideToUtf8(keys) + "\t" + std::to_string(*level);
         }
@@ -694,10 +700,7 @@ unsigned long long EngineClient::Rerank(const std::wstring& llmContext,
     if (!OpenPipeLive()) {
         return 0;
     }
-    const std::string contextField =
-        context.Empty() ? std::string()
-                        : WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
-    std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + contextField + "\t" +
+    std::string request = "RERANK\t" + WideToUtf8(llmContext) + "\t" + ContextField(context) + "\t" +
                           WideToUtf8(kana) + "\tkinds\t" + WideToUtf8(keys) + "\t" +
                           std::to_string(level) + "\n";
     std::string response;
@@ -838,7 +841,7 @@ bool EngineClient::Predict(const std::wstring& kana, const ConversionContext& co
     // 旧エンジンは前文脈のフィールドを読まずに無視するので、判定せずに付けてよい
     std::string request = "PREDICT\t" + WideToUtf8(kana);
     if (!context.Empty()) {
-        request += "\t" + WideToUtf8(context.reading) + "\x1f" + WideToUtf8(context.surface);
+        request += "\t" + ContextField(context);
     }
     return RequestPredictions(request + "\n", candidates);
 }
@@ -850,9 +853,7 @@ bool EngineClient::NextWord(const ConversionContext& context,
         return false;
     }
     // 旧エンジンの「不明なコマンド」は OK で始まらないので、RequestPredictions が false にする
-    return RequestPredictions("NEXTWORD\t" + WideToUtf8(context.reading) + "\x1f" +
-                                  WideToUtf8(context.surface) + "\n",
-                              candidates);
+    return RequestPredictions("NEXTWORD\t" + ContextField(context) + "\n", candidates);
 }
 
 bool EngineClient::Forget(const std::vector<std::pair<std::wstring, std::wstring>>& pairs,
@@ -984,6 +985,11 @@ bool EngineClient::Learn(const std::vector<LearnEntry>& entries)
         request += pair;
         if (useContext) {
             request += "\x1f" + WideToUtf8(entry.context);
+            if (!entry.context.empty() && !entry.contextReading.empty() &&
+                !entry.prevReading.empty() && !entry.prevSurface.empty()) {
+                request += "\x1f" + WideToUtf8(entry.contextReading) + "\x1f" +
+                           WideToUtf8(entry.prevReading) + "\x1f" + WideToUtf8(entry.prevSurface);
+            }
         }
         fallback += pair;
         ++count;

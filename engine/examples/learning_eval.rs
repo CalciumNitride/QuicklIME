@@ -12,8 +12,10 @@
 //   - 後ろの件のうち d - 1 が MIN_KEEP 以上の件は、分け目より前にも使っていたものとみなし、d - 1 と分け目の t で
 //     前の学習にも入れる。同じ件は後の行にまとめるので、こうしないと繰り返し使った件だけが自分の学習を失う
 //   - 変換 (p の行): CONVNBEST と同じ関数で 1 位・3 位以内に入る割合
-//   - 予測 (p と q の行): 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、行の表記が
-//     9 位以内に入る割合。q の行は文脈の表記を前文脈にする (文脈の読みはファイルに無いので空)
+//   - 予測 (p と q の行): 読みを標準のローマ字にした打鍵の先頭 50% (切り上げ) で SUGGEST を引き、正解が
+//     9 位以内に入る割合。正解は、打鍵が行の句の頭の語を打ち切っていなければ頭の語、それ以外は行の表記。
+//     頭の語を正解にしない (行の表記で判定する) 割合も並べて出す。q の行は文脈の表記を前文脈にする
+//     (文脈の読みはファイルに無いので空)
 //   - 「既出」は前の学習に入れた件か (読み, 表記) が前の p か q の件にもある行、「初出」はそれ以外の行
 // 読みに ASCII 英字を含む p の行は、どちらのモードでも変換の測定から除く。モードレス入力の英字区間は
 // (読み = 表記) の句として学習に入るが、実際の入力では変換に渡らないため。学習の取り込みと既出・初出の判定には
@@ -39,8 +41,9 @@
 // q の件はあるが文脈の読みを引けない文節・q の件が無い文節) でも分ける。
 // --next-word を指定したときは、後ろの q の行の表記が読みなしの後続語予測 (NEXTWORD) の 9 位以内・1 位に入る割合を、
 // 学習なし・あり × 後続語の統計の表なし・ありの 4 つの組で出す (docs/spec/engine.md「再生評価」)。バックオフの表を引く
-// 前文脈の最後の自立語は、文脈の表記と同じ表記の文節の p の件の読みで文脈を辞書の語に分けて求める (q の件の文脈は
-// 表記だけのため)。引けない行はバックオフの表を引かない。
+// 前文脈の最後の自立語と、前文脈が助詞の付かない名詞で終わるかは、文脈の表記と同じ表記の文節の p の件の読みで文脈を
+// 辞書の語に分けて求める (q の件の文脈は表記だけのため)。引けない行はバックオフの表を引かず、名詞で終わらない行に
+// 入れる。割合は、名詞で終わる前文脈の行とそれ以外の行に分けても出す。
 // 結果は件数と割合だけを Markdown で標準出力へ書く (読み・表記は書かない)。
 //
 // 使い方:
@@ -321,7 +324,10 @@ struct Tally {
     miss_pinned: usize,
     /// 予測を測れた行 (読みを打鍵にできた行)
     pred_total: [usize; 2],
+    /// 予測の正解 (打鍵が句の頭の語を打ち切っていなければ頭の語) が 9 位以内に入った行
     pred9: [usize; 2],
+    /// 行の句の表記そのものが 9 位以内に入った行 (頭の語を正解にしない判定)
+    pred9_phrase: [usize; 2],
 }
 
 /// 変換の 1 位を外した行の内訳 (学習が空のときとの比較)
@@ -1053,6 +1059,17 @@ impl NextTally {
     }
 }
 
+/// 予測の正解の表記。打鍵 keys が句 (reading, surface) の頭の語 head を打ち切っていなければ頭の語、それ以外は句
+/// (SUGGEST が句の代わりに頭の語を出す条件と同じ。打鍵は読みのローマ字の先頭なので、ずれは許さない)
+fn prediction_target<'a>(reading: &str, surface: &'a str, head: Option<learn::Head>, keys: &Keys) -> &'a str {
+    let Some(head) = head else {
+        return surface;
+    };
+    let chars = reading[..head.reading].chars().count();
+    let matcher = typo::Matcher::new(keys, 0, &typo::TUNING);
+    if matcher.match_reading_from(reading, chars).is_some() { surface } else { &surface[..head.surface] }
+}
+
 /// 文節の p の行を変換するときの前文脈 (segment_contexts で引けたときだけ)
 fn segment_ctx<'a>(
     contexts: &'a HashMap<(&'a str, &'a str), Option<Context>>,
@@ -1357,10 +1374,11 @@ fn main() -> BoxResult<()> {
 
     println!("\n## 学習あり (後ろの p と q の行)\n");
     println!("変換 1/3 = p の行 (読みに英字を含む行を除く) の CONVNBEST で 1 位・3 位以内の割合、予測 9 = 打鍵の先頭 50% の SUGGEST で 9 位以内の割合");
-    println!("(全体 (p / q) の順)。既出は前の学習にも入れた件か (読み, 表記) が前の p か q の件にもある行、初出はそれ以外の行。");
+    println!("(全体 (p / q) の順)。予測の正解は、打鍵が行の句の頭の語を打ち切っていなければ頭の語、それ以外は行の表記。予測 9 (句) は");
+    println!("頭の語を正解にせず、行の表記で判定した割合。既出は前の学習にも入れた件か (読み, 表記) が前の p か q の件にもある行、初出はそれ以外の行。");
     println!("変換 1 位外 (固定) = 変換で 1 位に入らなかった行の数 (うち 1 位が読み全体の学習表記の行の数)。時間は CONVNBEST・SUGGEST 1 回の中央値 / p95 (ms)。\n");
-    println!("| 方式 | 変換 1 | 変換 3 | 予測 9 | 既出 変換 1 | 既出 変換 3 | 既出 予測 9 | 初出 変換 1 | 初出 変換 3 | 初出 予測 9 | 変換 1 位外 (固定) | CONVNBEST | SUGGEST |");
-    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+    println!("| 方式 | 変換 1 | 変換 3 | 予測 9 | 予測 9 (句) | 既出 変換 1 | 既出 変換 3 | 既出 予測 9 | 初出 変換 1 | 初出 変換 3 | 初出 予測 9 | 変換 1 位外 (固定) | CONVNBEST | SUGGEST |");
+    println!("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
 
     let mut details: Vec<String> = Vec::new();
     let mut class_tables: Vec<String> = Vec::new();
@@ -1488,7 +1506,10 @@ fn main() -> BoxResult<()> {
                     &typo::TUNING, cfg.fuzzy_level,
                 );
                 suggest_times.push(t.elapsed().as_secs_f64() * 1000.0);
-                list.iter().take(9).any(|s| s.surface() == row.surface)
+                let head = convert::phrase_head(&row.reading, &row.surface, &dictionary, &user, &matrix, &functional);
+                let target = prediction_target(&row.reading, &row.surface, head, &keys);
+                let top9 = |surface: &str| list.iter().take(9).any(|s| s.surface() == surface);
+                (top9(target), top9(&row.surface))
             });
             let part = if row.seen { &mut seen } else { &mut unseen };
             for tally in [&mut all, part] {
@@ -1498,26 +1519,29 @@ fn main() -> BoxResult<()> {
                     tally.conv3 += usize::from(rank.is_some_and(|r| r < 3));
                     tally.miss_pinned += usize::from(rank != Some(0) && learned);
                 }
-                if let Some(hit) = predicted {
+                if let Some((hit, phrase_hit)) = predicted {
                     tally.pred_total[kind] += 1;
                     tally.pred9[kind] += usize::from(hit);
+                    tally.pred9_phrase[kind] += usize::from(phrase_hit);
                 }
             }
         }
-        let pred = |t: &Tally| {
+        let pred_of = |hits: [usize; 2], t: &Tally| {
             let p = |a: usize, b: usize| 100.0 * a as f64 / b.max(1) as f64;
             format!(
                 "{:.1}% ({:.1} / {:.1})",
-                p(t.pred9[0] + t.pred9[1], t.pred_total[0] + t.pred_total[1]),
-                p(t.pred9[0], t.pred_total[0]),
-                p(t.pred9[1], t.pred_total[1])
+                p(hits[0] + hits[1], t.pred_total[0] + t.pred_total[1]),
+                p(hits[0], t.pred_total[0]),
+                p(hits[1], t.pred_total[1])
             )
         };
+        let pred = |t: &Tally| pred_of(t.pred9, t);
         println!(
-            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} |",
+            "| {name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} ({}) | {} | {} |",
             percent(all.conv1, all.conv_total),
             percent(all.conv3, all.conv_total),
             pred(&all),
+            pred_of(all.pred9_phrase, &all),
             percent(seen.conv1, seen.conv_total),
             percent(seen.conv3, seen.conv_total),
             pred(&seen),
@@ -1582,45 +1606,73 @@ fn main() -> BoxResult<()> {
         store.refresh_phrases(&split);
         let readings = context_readings(&entries);
         let q_rows: Vec<&Row> = rows.iter().filter(|r| r.context.is_some()).collect();
-        // 前文脈の最後の自立語 (バックオフの表を引く文脈)
-        let heads: Vec<Option<String>> = q_rows
+        // 前文脈の (読み, 最後の名詞系の語 (名詞で終わるとき), 最後の自立語 (バックオフの表を引く文脈))。
+        // 読みを引けない行は分けられず、名詞で終わらない行に入れる
+        let shapes: Vec<(&str, Option<String>, Option<String>)> = q_rows
             .iter()
             .map(|r| {
                 let context = r.context.as_deref().expect("q の行");
-                let reading = readings.get(context)?;
-                split(reading, context)?.pop().map(|(_, surface)| surface)
+                let Some(&reading) = readings.get(context) else {
+                    return ("", None, None);
+                };
+                let Some(p) = path(reading, context) else {
+                    return (reading, None, None);
+                };
+                let noun = convert::noun_end(&p, &functional).map(str::to_string);
+                let last = p.iter().rev().find(|w| !w.functional).map(|w| w.surface.clone());
+                (reading, noun, last)
             })
             .collect();
+        let noun_rows = shapes.iter().filter(|s| s.1.is_some()).count();
         println!("\n## 後続語の予測 (NEXTWORD。後ろの q の行)\n");
         println!(
             "q の行の表記が、文脈の表記を前文脈にした NEXTWORD の 9 位以内・1 位に入る割合 (既出・初出は学習ありと同じ分け方)。\n\
              学習ありは既定の定数で前の学習を取り込んだもの。q の行 {} 行のうち、前文脈の最後の自立語を引けた行 {} 行 \
-             (引けない行はバックオフの表を引かない)。表は {} 件。\n",
+             (引けない行はバックオフの表を引かない)、前文脈が助詞の付かない名詞で終わる行 {} 行・それ以外の行 {} 行。\
+             表は {} 件。\n",
             q_rows.len(),
-            heads.iter().filter(|h| h.is_some()).count(),
+            shapes.iter().filter(|s| s.2.is_some()).count(),
+            noun_rows,
+            q_rows.len() - noun_rows,
             table.len(),
         );
-        println!("| 学習 | 表 | 9 位以内 | 1 位 | 既出 9 位以内 | 既出 1 位 | 初出 9 位以内 | 初出 1 位 |");
-        println!("|---|---|---|---|---|---|---|---|");
+        println!(
+            "| 学習 | 表 | 9 位以内 | 1 位 | 既出 9 位以内 | 既出 1 位 | 初出 9 位以内 | 初出 1 位 | \
+             名詞で終わる 9 位以内 | 名詞で終わる 1 位 | それ以外 9 位以内 | それ以外 1 位 |"
+        );
+        println!("|---|---|---|---|---|---|---|---|---|---|---|---|");
         let empty = LearningStore::in_memory();
+        let find_head = |r: &str, s: &str| convert::phrase_head(r, s, &dictionary, &user, &matrix, &functional);
         for (learning_name, learning) in [("なし", &empty), ("あり", &store)] {
             for (table_name, table) in [("なし", None), ("あり", Some(&table))] {
                 let (mut all, mut seen, mut unseen) = (NextTally::default(), NextTally::default(), NextTally::default());
-                for (row, head) in q_rows.iter().zip(&heads) {
+                let (mut noun, mut other) = (NextTally::default(), NextTally::default());
+                for (row, (reading, noun_word, last)) in q_rows.iter().zip(&shapes) {
                     let context = row.context.as_deref().expect("q の行");
-                    let list = predict::next_words(context, head.as_deref(), learning, table, &cfg);
+                    let next = predict::NextContext {
+                        reading,
+                        surface: context,
+                        noun: noun_word.as_deref(),
+                        last: last.as_deref(),
+                    };
+                    let list = predict::next_words(&next, learning, table, &find_head, &cfg);
                     let rank = list.iter().position(|(_, surface)| *surface == row.surface);
                     all.add(rank);
                     if row.seen { seen.add(rank) } else { unseen.add(rank) }
+                    if noun_word.is_some() { noun.add(rank) } else { other.add(rank) }
                 }
                 println!(
-                    "| {learning_name} | {table_name} | {} | {} | {} | {} | {} | {} |",
+                    "| {learning_name} | {table_name} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
                     percent(all.top9, all.total),
                     percent(all.top1, all.total),
                     percent(seen.top9, seen.total),
                     percent(seen.top1, seen.total),
                     percent(unseen.top9, unseen.total),
                     percent(unseen.top1, unseen.total),
+                    percent(noun.top9, noun.total),
+                    percent(noun.top1, noun.total),
+                    percent(other.top9, other.total),
+                    percent(other.top1, other.total),
                 );
             }
         }
@@ -1745,6 +1797,17 @@ mod tests {
     }
 
     #[test]
+    fn prediction_target_is_head_until_keys_cut_it() {
+        let head = Some(learn::Head { reading: "とうきょう".len(), surface: "東京".len() });
+        let keys = |kana: &str, field: &str| Keys::parse(kana, field).unwrap();
+        let touki = keys("とうき", "to\x1fu\x1fki");
+        let toukyou = keys("とうきょう", "to\x1fu\x1fkyo\x1f\x1fu");
+        assert_eq!(prediction_target("とうきょうの", "東京の", head, &touki), "東京");
+        assert_eq!(prediction_target("とうきょうの", "東京の", head, &toukyou), "東京の");
+        assert_eq!(prediction_target("とうきょうの", "東京の", None, &touki), "東京の");
+    }
+
+    #[test]
     fn next_tally_counts_top1_and_top9() {
         let mut tally = NextTally::default();
         for rank in [Some(0), Some(8), Some(9), None] {
@@ -1826,7 +1889,7 @@ mod tests {
         list.iter()
             .map(|&(r, s, functional)| {
                 let end = start + r.chars().count();
-                let w = SplitWord { start, end, reading: r.to_string(), surface: s.to_string(), functional };
+                let w = SplitWord { start, end, reading: r.to_string(), surface: s.to_string(), functional, left_id: 0 };
                 start = end;
                 w
             })

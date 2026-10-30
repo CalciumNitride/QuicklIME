@@ -539,9 +539,21 @@ private:
 
     // ---- 文脈補正 (直前確定文節の読み・表記を覚えておき、次の変換に渡す) ----
     // 現在の文脈補正用コンテキストを取得する (未設定なら空)
-    ConversionContext CurrentContext() const { return {contextReading_, contextSurface_}; }
-    // 確定した文節の読み・表記を文脈として記憶する
+    ConversionContext CurrentContext() const
+    {
+        return {contextReading_, contextSurface_, contextPrevReading_, contextPrevSurface_};
+    }
+    // 確定した文節の読み・表記を文脈として記憶する。置き換える前の前文脈を 1 つ前の文節にする
     void SetCommitContext(const std::wstring& reading, const std::wstring& surface);
+    // 確定した文節の読み・表記を文脈として記憶し、(prevReading, prevSurface) を 1 つ前の文節にする
+    void SetCommitContext(const std::wstring& reading, const std::wstring& surface,
+                          const std::wstring& prevReading, const std::wstring& prevSurface);
+    // 確定した文節の列の最後を文脈にする。1 つ前の文節は列の最後から 2 番目 (1 文節なら置き換える前の前文脈)
+    void SetCommitContext(const std::vector<std::pair<std::wstring, std::wstring>>& segments);
+    // 前文脈 (と 1 つ前の文節) を context に戻す
+    void RestoreContext(const ConversionContext& context);
+    // 前文脈の後に確定した文節の学習。前文脈の読みと 1 つ前の文節も付ける (確定の先頭の文節に使う)
+    LearnEntry ContextLearnEntry(const std::wstring& reading, const std::wstring& surface) const;
     // 文脈を破棄する (フォーカス移動・IMEオフ・確定アンドゥなど、直前の確定が
     // 次の変換の左文脈として使えなくなったとき)
     void ClearContext();
@@ -868,6 +880,8 @@ private:
         std::vector<LearnEntry> learn;
         std::wstring contextReading;   // 次の前文脈にする文節
         std::wstring contextSurface;
+        std::wstring contextPrevReading;  // その 1 つ前の文節 (空なら置き換える前の前文脈)
+        std::wstring contextPrevSurface;
         size_t readingLength = 0;      // 読みの先頭から取り除く文字数
         size_t adoptedLength = 0;      // written のうち採用部分の長さ
         std::wstring written;          // 文書に入れる文字列
@@ -944,6 +958,9 @@ private:
     // lastCommitText_ (確定アンドゥ用、使うと消える) とは寿命が異なるため別に持つ
     std::wstring contextReading_;
     std::wstring contextSurface_;
+    // 前文脈の 1 つ前の文節 (同じ確定の前の文節か、前の確定の最後の文節)。前文脈を捨てるときは一緒に捨てる
+    std::wstring contextPrevReading_;
+    std::wstring contextPrevSurface_;
 
     DWORD openCloseCookie_;         // OPENCLOSE compartment sink の cookie
     DWORD threadMgrEventCookie_;    // thread manager event sink の cookie

@@ -1,7 +1,8 @@
 // 品詞ID表 (Mozc の id.def) の読み込み
 //
 // フォーマット: "<ID> <品詞情報 (カンマ区切り)>" が1行ずつ。
-// 文節区切りの「付属語 (助詞・助動詞・接尾語) かどうか」の判定、人名の判定と、
+// 文節区切りの「付属語 (助詞・助動詞・接尾語) かどうか」の判定、人名の判定、
+// 予測の頭の語に使う名詞系・助詞・助動詞の判定と、
 // ユーザ辞書の品詞名 → 文脈ID の解決 (find_id) に使う。
 
 use std::fs::File;
@@ -75,6 +76,16 @@ impl FunctionalIds {
         self.is_person_name.get(id as usize).copied().unwrap_or(false)
     }
 
+    /// この品詞IDが名詞系 (品詞名が「名詞」で始まる。名詞,接尾・名詞,形容動詞語幹を含む) か
+    pub fn is_noun(&self, id: u16) -> bool {
+        self.names.get(id as usize).is_some_and(|n| n.starts_with("名詞"))
+    }
+
+    /// この品詞IDが助詞・助動詞か (接尾語は含めない)
+    pub fn is_particle(&self, id: u16) -> bool {
+        self.names.get(id as usize).is_some_and(|n| n.starts_with("助詞") || n.starts_with("助動詞"))
+    }
+
     /// 品詞パスが prefix で始まる最初のIDを返す (ユーザ辞書の品詞名解決用)。
     /// 呼ばれるのは登録・読み込み時のみなので線形走査で足りる
     pub fn find_id(&self, prefix: &str) -> Option<u16> {
@@ -103,6 +114,23 @@ mod tests {
         assert!(ids.is_functional(5));
         assert!(!ids.is_functional(6));
         assert!(!ids.is_functional(7));
+    }
+
+    #[test]
+    fn 名詞系と助詞_助動詞を品詞名で判定する() {
+        let data = "1 名詞,一般,*,*,*,*,*\n\
+                    2 助詞,係助詞,*,*,*,*,は\n\
+                    3 助動詞,*,*,*,特殊・デス,基本形,です\n\
+                    4 名詞,接尾,人名,*,*,*,さん\n\
+                    5 名詞,形容動詞語幹,*,*,*,*,*\n\
+                    6 動詞,自立,*,*,*,*,*\n\
+                    7 動詞,接尾,*,*,一段,基本形,られる\n";
+        let ids = FunctionalIds::load_from(data.as_bytes()).unwrap();
+        assert!(ids.is_noun(1) && ids.is_noun(4) && ids.is_noun(5));
+        assert!(!ids.is_noun(2) && !ids.is_noun(6));
+        assert!(ids.is_particle(2) && ids.is_particle(3));
+        assert!(!ids.is_particle(4) && !ids.is_particle(7) && !ids.is_particle(1));
+        assert!(!FunctionalIds::empty().is_noun(1));
     }
 
     #[test]

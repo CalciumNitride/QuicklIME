@@ -2,11 +2,12 @@
 //
 // 日本語版ウィキペディアの CirrusSearch のダンプ (jawiki_content-*.json.bz2) の本文を、逆変換の対象の文字の
 // 連続ごとに区切って逆変換 (src/reverse.rs) し、変換の group_path と同じ規則で文節にまとめ、隣り合う文節の
-// 組を数える。学習とユーザ辞書は空にし、利用者のデータに依らない表にする。取得と実行は
-// scripts\fetch-wiki-ngram.ps1 が行う。
+// 組と、文節の末尾の「名詞系の語 + 助詞・助動詞の語の連続」を数える。学習とユーザ辞書は空にし、利用者の
+// データに依らない表にする。取得と実行は scripts\fetch-wiki-ngram.ps1 が行う。
 //
 // 出力は 1 行 1 件の「表の区別\t文脈\t読み\t表記\t回数」(UTF-8、BOM なし)。表の区別は c (文節の表。
-// 文脈は前の文節の表記の末尾 16 文字) と b (バックオフの表。文脈は前の文節の最後の自立語の表記)。
+// 文脈は前の文節の表記の末尾 16 文字)、b (バックオフの表。文脈は前の文節の最後の自立語の表記)、
+// s (付属語の表。文脈は名詞系の語の表記、読みと表記はその後ろの助詞・助動詞の語の連続)。
 // 文脈ごとにまとめ、回数の多い順に並べる。
 //
 // 使い方:
@@ -129,11 +130,23 @@ struct Bunsetsu {
     head: Option<String>,
     /// 未知語を含むか
     unknown: bool,
+    /// 文節の末尾が「名詞系の語 + 助詞・助動詞の語の連続」の形なら、(名詞系の語の表記, 連続の読み, 連続の表記)
+    suffix: Option<(String, String, String)>,
 }
 
 /// 語の列を文節にまとめる。変換の group_path と同じく付属語を前の文節にまとめ、先頭の付属語は単独の文節にする
-fn group(words: Vec<ReversedWord>) -> Vec<Bunsetsu> {
+fn group(words: Vec<ReversedWord>, functional: &FunctionalIds) -> Vec<Bunsetsu> {
     let mut groups: Vec<Bunsetsu> = Vec::new();
+    // 作っている文節の、末尾の助詞・助動詞の連続の前にある名詞系の語の表記と、連続の (読み, 表記)
+    let mut noun: Option<String> = None;
+    let mut tail = (String::new(), String::new());
+    let finish = |last: Option<&mut Bunsetsu>, noun: &mut Option<String>, tail: &mut (String, String)| {
+        if let Some(last) = last {
+            let tail = std::mem::take(tail);
+            last.suffix = noun.take().filter(|_| !tail.0.is_empty()).map(|n| (n, tail.0, tail.1));
+        }
+        *noun = None;
+    };
     for word in words {
         match groups.last_mut() {
             Some(last) if word.functional => {
@@ -141,13 +154,29 @@ fn group(words: Vec<ReversedWord>) -> Vec<Bunsetsu> {
                 last.surface.push_str(&word.surface);
                 last.unknown |= word.unknown;
             }
-            _ => {
+            last => {
+                finish(last, &mut noun, &mut tail);
                 let head = (!word.functional).then(|| word.surface.clone());
-                let unknown = word.unknown;
-                groups.push(Bunsetsu { reading: word.reading, surface: word.surface, head, unknown });
+                groups.push(Bunsetsu {
+                    reading: word.reading.clone(),
+                    surface: word.surface.clone(),
+                    head,
+                    unknown: word.unknown,
+                    suffix: None,
+                });
             }
         }
+        if functional.is_particle(word.left_id) {
+            if noun.is_some() {
+                tail.0.push_str(&word.reading);
+                tail.1.push_str(&word.surface);
+            }
+        } else {
+            noun = functional.is_noun(word.left_id).then_some(word.surface);
+            tail = (String::new(), String::new());
+        }
     }
+    finish(groups.last_mut(), &mut noun, &mut tail);
     groups
 }
 
@@ -206,7 +235,7 @@ struct Batch {
     docs: u64,
     runs: u64,
     failed: u64,
-    /// 連続ごとの文節の列。組を作れない 1 文節以下の連続は入れない
+    /// 連続ごとの文節の列。1 文節の連続も付属語の表に数えるので入れる
     bunsetsu: Vec<Vec<Bunsetsu>>,
 }
 
@@ -247,8 +276,8 @@ impl<'a> Reverser<'a> {
             match words {
                 Some(mut words) => {
                     mark_fragments(&mut words);
-                    let bunsetsu = group(words);
-                    if bunsetsu.len() >= 2 {
+                    let bunsetsu = group(words, self.functional);
+                    if !bunsetsu.is_empty() {
                         batch.bunsetsu.push(bunsetsu);
                     }
                 }
@@ -305,7 +334,11 @@ struct Counter {
     /// (文脈, 次の文節) → 回数
     bunsetsu_table: HashMap<(u32, u32), u32>,
     backoff_table: HashMap<(u32, u32), u32>,
+    /// (名詞系の語の表記, 助詞・助動詞の語の連続) → 回数
+    suffix_table: HashMap<(u32, u32), u32>,
     pairs: u64,
+    /// 付属語の表に数えた文節の数
+    suffixes: u64,
 }
 
 impl Counter {
@@ -313,6 +346,19 @@ impl Counter {
     /// (読点の直後の「と」「は」などは予測の文脈としての価値が低い)。未知語を含む文節の組も数えない
     /// (辞書に無いカタカナ語が「ー」「ちろう」のような 1 文字ずつの断片に分かれている)
     fn add_run(&mut self, run: &[Bunsetsu]) {
+        // 付属語の表は文節ごとに数える。除く文節は組と同じ (付属語だけ・数字を含む・未知語を含む)
+        for b in run {
+            let Some((noun, reading, surface)) = &b.suffix else {
+                continue;
+            };
+            if b.head.is_none() || b.unknown || has_digit(&b.surface) {
+                continue;
+            }
+            self.suffixes += 1;
+            let next_id = self.nexts.id(&format!("{reading}\t{surface}"));
+            let context = self.contexts.id(noun);
+            *self.suffix_table.entry((context, next_id)).or_default() += 1;
+        }
         for pair in run.windows(2) {
             let (prev, next) = (&pair[0], &pair[1]);
             let Some(head) = &prev.head else {
@@ -479,9 +525,11 @@ fn main() -> BoxResult<()> {
 
     let bunsetsu_list = counter.select(&counter.bunsetsu_table, args.min_count);
     let backoff_list = counter.select(&counter.backoff_table, args.min_count);
+    let suffix_list = counter.select(&counter.suffix_table, args.min_count);
     let mut out = BufWriter::new(File::create(&args.out)?);
     write_table(&mut out, "c", &bunsetsu_list)?;
     write_table(&mut out, "b", &backoff_list)?;
+    write_table(&mut out, "s", &suffix_list)?;
     out.flush()?;
 
     let rows = |list: &[ContextRows<'_>]| list.iter().map(|(_, rows)| rows.len()).sum::<usize>();
@@ -502,6 +550,13 @@ fn main() -> BoxResult<()> {
         counter.backoff_table.len(),
         backoff_list.len(),
         rows(&backoff_list)
+    );
+    println!(
+        "付属語の表 (s): 数えた文節の数 {}・組の種類 {}・残した文脈 {}・件数 {}",
+        counter.suffixes,
+        counter.suffix_table.len(),
+        suffix_list.len(),
+        rows(&suffix_list)
     );
     println!("所要時間: {:.1} 秒 [{}]", started.elapsed().as_secs_f64(), args.out.display());
     Ok(())
@@ -548,7 +603,8 @@ mod tests {
 
     fn table_rows(counter: &Counter, min_count: u32) -> Vec<(String, String, String, String, u32)> {
         let mut rows = Vec::new();
-        for (tag, table) in [("c", &counter.bunsetsu_table), ("b", &counter.backoff_table)] {
+        let tables = [("c", &counter.bunsetsu_table), ("b", &counter.backoff_table), ("s", &counter.suffix_table)];
+        for (tag, table) in tables {
             for (context, list) in counter.select(table, min_count) {
                 for (reading, surface, count) in list {
                     rows.push((tag.to_string(), context.to_string(), reading.to_string(), surface.to_string(), count));
@@ -568,36 +624,88 @@ mod tests {
             surface: surface.to_string(),
             head: head.map(str::to_string),
             unknown: false,
+            suffix: None,
+        }
+    }
+
+    /// 逆変換した語。付属語は id 2 (助詞)、それ以外は id 1 (名詞)
+    fn word(reading: &str, surface: &str, functional: bool, unknown: bool) -> ReversedWord {
+        ReversedWord {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            functional,
+            unknown,
+            left_id: if functional { 2 } else { 1 },
         }
     }
 
     #[test]
     fn 付属語を前の語にまとめ先頭の付属語は単独の文節にする() {
-        let word = |reading: &str, surface: &str, functional: bool, unknown: bool| ReversedWord {
-            reading: reading.to_string(),
-            surface: surface.to_string(),
-            functional,
-            unknown,
-        };
+        let mut tail = bunsetsu("きょうはも", "今日はも", Some("今日"));
+        tail.suffix = Some(("今日".to_string(), "はも".to_string(), "はも".to_string()));
         assert_eq!(
-            group(vec![
-                word("は", "は", true, false),
-                word("きょう", "今日", false, false),
-                word("は", "は", true, false),
-                word("も", "も", true, false),
-            ]),
-            [bunsetsu("は", "は", None), bunsetsu("きょうはも", "今日はも", Some("今日"))]
+            group(
+                vec![
+                    word("は", "は", true, false),
+                    word("きょう", "今日", false, false),
+                    word("は", "は", true, false),
+                    word("も", "も", true, false),
+                ],
+                &functional()
+            ),
+            [bunsetsu("は", "は", None), tail]
         );
         // 未知語は付属語としてまとめた語にあっても文節の印になる
-        let got = group(vec![word("ぬ", "ヌ", false, true), word("きょう", "今日", false, false), word("ぬ", "ヌ", true, true)]);
+        let got = group(
+            vec![word("ぬ", "ヌ", false, true), word("きょう", "今日", false, false), word("ぬ", "ヌ", true, true)],
+            &functional(),
+        );
         assert_eq!(got.iter().map(|b| b.unknown).collect::<Vec<_>>(), [true, true]);
+    }
+
+    #[test]
+    fn 文節の末尾の名詞系の語と助詞_助動詞の連続を付属語にする() {
+        // 1 名詞・2 助詞・3 助動詞・4 名詞,接尾・5 動詞
+        let functional =
+            FunctionalIds::load_from("1 名詞,一般\n2 助詞,格助詞\n3 助動詞\n4 名詞,接尾,人名\n5 動詞,自立\n".as_bytes())
+                .unwrap();
+        let w = |reading: &str, surface: &str, left_id: u16| ReversedWord {
+            reading: reading.to_string(),
+            surface: surface.to_string(),
+            functional: matches!(left_id, 2..=4),
+            unknown: false,
+            left_id,
+        };
+        let suffixes = |words: Vec<ReversedWord>| -> Vec<Option<(String, String, String)>> {
+            group(words, &functional).into_iter().map(|b| b.suffix).collect()
+        };
+        let some = |n: &str, r: &str, s: &str| Some((n.to_string(), r.to_string(), s.to_string()));
+        // 田中さんでした|雨: さん (名詞,接尾) をキーに、でした (助詞・助動詞の連続) を数える
+        assert_eq!(
+            suffixes(vec![w("たなか", "田中", 1), w("さん", "さん", 4), w("で", "で", 2), w("した", "した", 3), w("あめ", "雨", 1)]),
+            [some("さん", "でした", "でした"), None]
+        );
+        // 名詞の後に付属語が無い・動詞の後の助動詞は数えない
+        assert_eq!(suffixes(vec![w("たべ", "食べ", 5), w("た", "た", 3)]), [None]);
+        assert_eq!(suffixes(vec![w("あめ", "雨", 1)]), [None]);
+    }
+
+    #[test]
+    fn 付属語の表に名詞系の語の後ろの付属語の連続を数える() {
+        let (rows, _) = count_texts(&["今日は", "今日は良い天気", "今日も"], 1);
+        let suffix: Vec<_> = rows.into_iter().filter(|r| r.0 == "s").collect();
+        assert_eq!(suffix, [row("s", "今日", "は", "は", 2), row("s", "今日", "も", "も", 1)]);
+        // 最小回数で捨てる
+        let (rows, _) = count_texts(&["今日は", "今日は良い天気", "今日も"], 2);
+        let suffix: Vec<_> = rows.into_iter().filter(|r| r.0 == "s").collect();
+        assert_eq!(suffix, [row("s", "今日", "は", "は", 2)]);
     }
 
     /// 表記の列から語の列を作り、カタカナの断片の印を付けて未知語かどうかを返す
     fn fragments(surfaces: &[&str]) -> Vec<bool> {
         let mut words: Vec<ReversedWord> = surfaces
             .iter()
-            .map(|s| ReversedWord { reading: s.to_string(), surface: s.to_string(), functional: false, unknown: false })
+            .map(|s| word(s, s, false, false))
             .collect();
         mark_fragments(&mut words);
         words.iter().map(|w| w.unknown).collect()
@@ -679,6 +787,7 @@ mod tests {
                 row("c", "良い", "てんき", "天気", 2),
                 row("b", "今日", "よい", "良い", 2),
                 row("b", "良い", "てんき", "天気", 2),
+                row("s", "今日", "は", "は", 2),
             ]
         );
     }
@@ -688,7 +797,11 @@ mod tests {
         // 今日は|良い と 今日|天気 は区切りをまたぐ
         let (rows, batch) = count_texts(&["今日は、良い。今日 天気良い"], 1);
         assert_eq!(batch.runs, 4);
-        assert_eq!(rows, [row("c", "天気", "よい", "良い", 1), row("b", "天気", "よい", "良い", 1)]);
+        // 付属語の表は 1 文節の連続 (今日は) も数える
+        assert_eq!(
+            rows,
+            [row("c", "天気", "よい", "良い", 1), row("b", "天気", "よい", "良い", 1), row("s", "今日", "は", "は", 1)]
+        );
     }
 
     #[test]
@@ -732,6 +845,7 @@ mod tests {
                 row("c", "良い", "てんき", "天気", 2),
                 row("b", "今日", "よい", "良い", 2),
                 row("b", "良い", "てんき", "天気", 2),
+                row("s", "今日", "は", "は", 3),
             ]
         );
     }

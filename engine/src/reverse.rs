@@ -59,6 +59,8 @@ pub struct ReversedWord {
     pub functional: bool,
     /// 未知語 (どの語にも当たらず 1 文字の一般名詞として入れたかな) か
     pub unknown: bool,
+    /// 左の品詞 ID
+    pub left_id: u16,
 }
 
 /// 表記 text を語の列 (読み, 表記) にする。対象外の文字がある・格子が繋がらない・読みが
@@ -353,6 +355,7 @@ fn best_path(
             surface: std::mem::take(&mut nodes[cursor].surface),
             functional: functional.is_functional(nodes[cursor].left_id),
             unknown: nodes[cursor].unknown,
+            left_id: nodes[cursor].left_id,
         });
         match nodes[cursor].best_prev {
             usize::MAX => break,

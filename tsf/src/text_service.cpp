@@ -1870,18 +1870,62 @@ std::wstring TextService::StandaloneSpaceText() const
 
 void TextService::SetCommitContext(const std::wstring& reading, const std::wstring& surface)
 {
+    SetCommitContext(reading, surface, contextReading_, contextSurface_);
+}
+
+void TextService::SetCommitContext(const std::wstring& reading, const std::wstring& surface,
+                                   const std::wstring& prevReading,
+                                   const std::wstring& prevSurface)
+{
     if (reading.empty() || surface.empty()) {
         ClearContext();
         return;
     }
+    // prevReading・prevSurface が今の前文脈 (contextReading_ など) を指すことがあるので、先に写す
+    const std::wstring newPrevReading = prevReading;
+    const std::wstring newPrevSurface = prevSurface;
     contextReading_ = reading;
     contextSurface_ = surface;
+    contextPrevReading_ = newPrevReading;
+    contextPrevSurface_ = newPrevSurface;
+}
+
+void TextService::SetCommitContext(
+    const std::vector<std::pair<std::wstring, std::wstring>>& segments)
+{
+    if (segments.empty()) {
+        return;
+    }
+    const auto& last = segments.back();
+    if (segments.size() >= 2) {
+        const auto& prev = segments[segments.size() - 2];
+        SetCommitContext(last.first, last.second, prev.first, prev.second);
+    } else {
+        SetCommitContext(last.first, last.second);
+    }
+}
+
+void TextService::RestoreContext(const ConversionContext& context)
+{
+    contextReading_ = context.reading;
+    contextSurface_ = context.surface;
+    contextPrevReading_ = context.prevReading;
+    contextPrevSurface_ = context.prevSurface;
+}
+
+LearnEntry TextService::ContextLearnEntry(const std::wstring& reading,
+                                          const std::wstring& surface) const
+{
+    return {reading, surface, contextSurface_, contextReading_, contextPrevReading_,
+            contextPrevSurface_};
 }
 
 void TextService::ClearContext()
 {
     contextReading_.clear();
     contextSurface_.clear();
+    contextPrevReading_.clear();
+    contextPrevSurface_.clear();
     // 前文脈を捨てる場面 (キャレット移動・フォーカス移動など) では、IME が入れた文字列も
     // キャレットの前にあるとは限らない
     llmHistory_.clear();
@@ -3598,9 +3642,7 @@ std::wstring TextService::PrepareConversionCommit()
         }
     }
     RememberConversion(committed);
-    if (!committed.empty()) {
-        SetCommitContext(committed.back().first, committed.back().second);
-    }
+    SetCommitContext(committed);
     ResetFuzzyLevel();
     // 範囲を縮めて外したかなは学習せず、確定文字列には含める
     return RangeExcludedInComposition() + ConvertedText();
@@ -3615,7 +3657,11 @@ std::vector<LearnEntry> TextService::SentenceLearnEntries(
     std::wstring reading;
     std::wstring surface;
     for (const auto& [segmentReading, segmentSurface] : segments) {
-        entries.push_back({segmentReading, segmentSurface, prevSurface});
+        if (entries.empty()) {
+            entries.push_back(ContextLearnEntry(segmentReading, segmentSurface));
+        } else {
+            entries.push_back({segmentReading, segmentSurface, prevSurface});
+        }
         prevSurface = segmentSurface;
         reading += segmentReading;
         surface += segmentSurface;

@@ -578,7 +578,7 @@ fn handle_line(line: &str, data: &EngineData, session: &mut Session) -> String {
             // RERANK\t<LLM 文脈>\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>[\t<段階>]]] : LLM による
             // 並べ替えを依頼する。LLM が無効・使えない (読み込み中を含む)・読みが短いときは ID 0 (並べ替えをしない)
             let llm_context = fields.next().unwrap_or("");
-            let ctx = fields.next().and_then(parse_context);
+            let ctx = fields.next().and_then(|f| parse_context(f, data));
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
             };
@@ -670,19 +670,52 @@ const FIELD_SEPARATOR: char = '\x1f';
 /// 異常に長い文脈が送られてもビタビ復元の計算量を抑えるためのガード
 const MAX_CONTEXT_CHARS: usize = 64;
 
-/// CONVCTX の前文脈フィールド「読み\x1f表記」を解釈する。
-/// どちらかが空なら前文脈なし (None) として扱う
-fn parse_context(field: &str) -> Option<convert::Context> {
-    let (reading, surface) = field.split_once(FIELD_SEPARATOR)?;
+/// 前文脈のフィールド「読み\x1f表記[\x1f前の読み\x1f前の表記]」を解釈する。
+/// 読みか表記が空なら前文脈なし (None) として扱う。前の文節 (前文脈の 1 つ前の文節) があれば、
+/// join_context の条件に当たるとき前の文節 + 前文脈を前文脈にする
+fn parse_context(field: &str, data: &EngineData) -> Option<convert::Context> {
+    let mut parts = field.split(FIELD_SEPARATOR);
+    let (reading, surface) = (parts.next()?, parts.next()?);
     if reading.is_empty() || surface.is_empty() {
         return None;
     }
+    let (reading, surface) = match (parts.next(), parts.next()) {
+        (Some(prev_reading), Some(prev_surface)) => {
+            join_context(reading, surface, prev_reading, prev_surface, data)
+        }
+        _ => (reading.to_string(), surface.to_string()),
+    };
     // 長すぎる場合は末尾を残して切り詰める (文脈IDの復元に効くのは末尾)
     let tail = |s: &str| -> String {
         let chars: Vec<char> = s.chars().collect();
         chars[chars.len().saturating_sub(MAX_CONTEXT_CHARS)..].iter().collect()
     };
-    Some(convert::Context { reading: tail(reading), surface: tail(surface) })
+    Some(convert::Context { reading: tail(&reading), surface: tail(&surface) })
+}
+
+/// 前文脈の連結 (docs/spec/engine.md「前文脈」)。前の文節が助詞の付かない名詞で終わり、前文脈が助詞・助動詞の
+/// 語だけに分けられるなら、前の文節 + 前文脈の (読み, 表記) を返す。それ以外は前文脈のまま。
+/// 「東京」→「に」の確定で前文脈が「に」だけになると、後続語の予測にも文脈の句の学習にも役立たないため
+fn join_context(
+    reading: &str,
+    surface: &str,
+    prev_reading: &str,
+    prev_surface: &str,
+    data: &EngineData,
+) -> (String, String) {
+    let joined = !prev_reading.is_empty() && !prev_surface.is_empty() && {
+        let user = data.user.lock().expect("user lock");
+        let path = |r: &str, s: &str| {
+            convert::split_path(r, s, &data.dictionary, &user, &data.matrix, &data.functional)
+        };
+        path(prev_reading, prev_surface).is_some_and(|p| convert::noun_end(&p, &data.functional).is_some())
+            && path(reading, surface).is_some_and(|p| convert::only_particles(&p, &data.functional))
+    };
+    if joined {
+        (format!("{prev_reading}{reading}"), format!("{prev_surface}{surface}"))
+    } else {
+        (reading.to_string(), surface.to_string())
+    }
 }
 
 /// CONVSEG / CONVCTX 共通の文節変換応答を作る。
@@ -961,7 +994,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         Some("CONVCTX") => {
             // CONVCTX\t<文脈読み>\x1f<文脈表記>\t<かな>[\t<文節長>][\tkinds] :
             // 前文脈 (直前確定の文節) 付きの文節変換。応答は CONVSEG と同一形式
-            let ctx = fields.next().and_then(parse_context);
+            let ctx = fields.next().and_then(|f| parse_context(f, data));
             match fields.next() {
                 Some(kana) if !kana.is_empty() => {
                     segments_response(kana, fields.next(), ctx.as_ref(), data)
@@ -971,7 +1004,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         }
         Some("CONVNBEST") => {
             // CONVNBEST\t<文脈読み>\x1f<文脈表記>\t<かな>[\tkinds[\t<打鍵>[\t<段階>]]] : 入力全体の候補を返す
-            let ctx = fields.next().and_then(parse_context);
+            let ctx = fields.next().and_then(|f| parse_context(f, data));
             let default = data.config.lock().expect("config lock").fuzzy_level;
             match fields.next() {
                 Some(kana) if !kana.is_empty() => match parse_kinds_and_keys(&mut fields, kana, default) {
@@ -985,7 +1018,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
         }
         Some("SUGGEST") => {
             // SUGGEST\t<文脈読み>\x1f<文脈表記>\t<かな>\t<打鍵>[\t<段階>] : 全体変換と予測を 1 つの並びで返す
-            let ctx = fields.next().and_then(parse_context);
+            let ctx = fields.next().and_then(|f| parse_context(f, data));
             let Some(kana) = fields.next().filter(|k| !k.is_empty()) else {
                 return "ERR\tかなが空です\n".to_string();
             };
@@ -1105,7 +1138,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 if !cfg.suggest {
                     return "OK\n".to_string();
                 }
-                let ctx = fields.next().and_then(parse_context);
+                let ctx = fields.next().and_then(|f| parse_context(f, data));
                 let user = data.user.lock().expect("user lock");
                 let learning = data.learning.lock().expect("learning lock");
                 let candidates = predict::predict(
@@ -1121,9 +1154,10 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             _ => "ERR\tかなが空です\n".to_string(),
         },
         Some("NEXTWORD") => {
-            // NEXTWORD\t<文脈読み>\x1f<文脈表記> : 読みなしの後続語予測。前文脈の後に確定した
-            // ことのある語を返す。該当なし・サジェスト無効時は候補ゼロの OK
-            let Some(ctx) = fields.next().and_then(parse_context) else {
+            // NEXTWORD\t<文脈読み>\x1f<文脈表記>[\x1f<前の読み>\x1f<前の表記>] : 読みなしの後続語予測。
+            // 前文脈が助詞の付かない名詞で終わるなら付属語を、それ以外は前文脈の後に続く語を返す。
+            // 該当なし・サジェスト無効時は候補ゼロの OK
+            let Some(ctx) = fields.next().and_then(|f| parse_context(f, data)) else {
                 return "ERR\t前文脈がありません\n".to_string();
             };
             let cfg = *data.config.lock().expect("config lock");
@@ -1131,21 +1165,29 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 return "OK\n".to_string();
             }
             let table = data.next_word.get();
-            // バックオフの表は前文脈の最後の自立語で引く。表が無ければ分ける必要が無い
-            let head = table.and_then(|_| {
-                let user = data.user.lock().expect("user lock");
-                let words = convert::split_words(
-                    &ctx.reading,
-                    &ctx.surface,
-                    &data.dictionary,
-                    &user,
-                    &data.matrix,
-                    &data.functional,
-                )?;
-                words.into_iter().last().map(|(_, surface)| surface)
-            });
+            let user = data.user.lock().expect("user lock");
+            let path = convert::split_path(
+                &ctx.reading,
+                &ctx.surface,
+                &data.dictionary,
+                &user,
+                &data.matrix,
+                &data.functional,
+            );
+            let next = predict::NextContext {
+                reading: &ctx.reading,
+                surface: &ctx.surface,
+                noun: path.as_deref().and_then(|p| convert::noun_end(p, &data.functional)),
+                last: path
+                    .as_deref()
+                    .and_then(|p| p.iter().rev().find(|w| !w.functional))
+                    .map(|w| w.surface.as_str()),
+            };
+            let find_head = |reading: &str, surface: &str| {
+                convert::phrase_head(reading, surface, &data.dictionary, &user, &data.matrix, &data.functional)
+            };
             let learning = data.learning.lock().expect("learning lock");
-            predictions_response(&predict::next_words(&ctx.surface, head.as_deref(), &learning, table, &cfg))
+            predictions_response(&predict::next_words(&next, &learning, table, &find_head, &cfg))
         }
         Some("LEARN") => {
             // LEARN\t読み\x1f表記\t読み\x1f表記... : 文節ごとの確定結果を記録する。
@@ -1164,25 +1206,37 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             "OK\n".to_string()
         }
         Some("LEARN2") => {
-            // LEARN2\t読み\x1f表記\x1f文脈\t... : 前文脈付きの確定学習。
-            // 文脈 (直前文節の表記) が空の文節は従来の学習のみ記録する
+            // LEARN2\t読み\x1f表記\x1f文脈[\x1f文脈読み\x1f前の読み\x1f前の表記]\t... : 前文脈付きの確定学習。
+            // 文脈 (直前文節の表記) が空の文節は従来の学習のみ記録する。文脈読みと前の文節は、文脈を
+            // 連結するか (join_context) の判定にだけ使う
             if !data.config.lock().expect("config lock").learning {
                 return "OK\n".to_string();
             }
-            let mut entries: Vec<(&str, &str, &str)> = Vec::new();
+            let mut parsed: Vec<(&str, &str, std::borrow::Cow<str>)> = Vec::new();
             for entry in fields {
-                let mut parts = entry.splitn(3, FIELD_SEPARATOR);
+                let mut parts = entry.split(FIELD_SEPARATOR);
                 let (Some(reading), Some(surface)) = (parts.next(), parts.next()) else {
                     continue;
                 };
                 if reading.is_empty() || surface.is_empty() {
                     continue;
                 }
-                entries.push((reading, surface, parts.next().unwrap_or("")));
+                let context = parts.next().unwrap_or("");
+                let context = match (parts.next(), parts.next(), parts.next()) {
+                    (Some(ctx_reading), Some(prev_reading), Some(prev_surface))
+                        if !context.is_empty() && !ctx_reading.is_empty() =>
+                    {
+                        join_context(ctx_reading, context, prev_reading, prev_surface, data).1.into()
+                    }
+                    _ => context.into(),
+                };
+                parsed.push((reading, surface, context));
             }
-            if entries.is_empty() {
+            if parsed.is_empty() {
                 return "ERR\t記録する内容がありません\n".to_string();
             }
+            let entries: Vec<(&str, &str, &str)> =
+                parsed.iter().map(|(reading, surface, context)| (*reading, *surface, context.as_ref())).collect();
             learn_entries(&entries, data, now);
             "OK\n".to_string()
         }
@@ -1233,6 +1287,8 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 }
                 count += 1;
             }
+            // 学習した複合語で句の分け方が変わりうる
+            learning.clear_heads();
             if count > 0 {
                 "OK\n".to_string()
             } else {
@@ -1265,6 +1321,8 @@ fn handle_request(line: &str, data: &EngineData) -> String {
                 count += learning.forget(reading, surface, words.as_deref());
                 count += user.forget_learned(reading, surface);
             }
+            // 学習した複合語を消すと句の分け方が変わりうる
+            learning.clear_heads();
             format!("OK\t{count}\n")
         }
         Some("ADDWORD") => {
@@ -1277,7 +1335,10 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             };
             let mut user = data.user.lock().expect("user lock");
             match user.add(reading, surface, pos, &data.functional) {
-                Ok(()) => "OK\n".to_string(),
+                Ok(()) => {
+                    data.learning.lock().expect("learning lock").clear_heads();
+                    "OK\n".to_string()
+                }
                 Err(e) => format!("ERR\t{e}\n"),
             }
         }
@@ -1337,6 +1398,7 @@ fn handle_request(line: &str, data: &EngineData) -> String {
             // ユーザ辞書ファイルとインポート辞書を読み直す (手動編集・インポートの反映用)
             let mut user = data.user.lock().expect("user lock");
             user.reload(&data.functional);
+            data.learning.lock().expect("learning lock").clear_heads();
             eprintln!(
                 "ユーザ辞書を再読込しました: 短縮よみ {} 件・単語 {} 件・複合語 {} 件・インポート辞書 {} 件",
                 user.shortcut_count(),
@@ -2298,6 +2360,83 @@ mod tests {
         );
         data.config.lock().unwrap().suggest = false;
         assert_eq!(handle_request("NEXTWORD\tきょうは\x1f今日は", &data), "OK\n");
+    }
+
+    /// 頭の語と前文脈の連結を確かめる辞書 (1 名詞・2 助詞・3 動詞)
+    fn word_data() -> EngineData {
+        let mut data = sample_data();
+        let mut dictionary = Dictionary::empty();
+        dictionary
+            .load_from(
+                "とうきょう\t1\t1\t3000\t東京\nに\t2\t2\t500\tに\nの\t2\t2\t500\tの\nは\t2\t2\t500\tは\n\
+                 だいがく\t1\t1\t3000\t大学\nいく\t3\t3\t3000\t行く\n"
+                    .as_bytes(),
+            )
+            .unwrap();
+        dictionary.finalize();
+        data.dictionary = dictionary;
+        data.functional =
+            FunctionalIds::load_from("1 名詞,一般\n2 助詞,格助詞\n3 動詞,自立\n".as_bytes()).unwrap();
+        data
+    }
+
+    #[test]
+    fn 前の文節が名詞で終わり前文脈が付属語だけなら前文脈を連結する() {
+        let data = word_data();
+        assert_eq!(handle_request("LEARN2\tいく\x1f行く\x1f東京に", &data), "OK\n");
+        assert_eq!(handle_request("NEXTWORD\tに\x1fに\x1fとうきょう\x1f東京", &data), "OK\tいく\x1f行く\n");
+        // フィールドを付けない要求は今と同じ (前文脈は に)
+        assert_eq!(handle_request("NEXTWORD\tに\x1fに", &data), "OK\n");
+        // 前の文節が名詞で終わらない・前文脈が付属語だけでないときはつながない
+        assert_eq!(handle_request("NEXTWORD\tに\x1fに\x1fとうきょうの\x1f東京の", &data), "OK\n");
+        assert_eq!(handle_request("LEARN2\tとうきょう\x1f東京\x1f行く", &data), "OK\n");
+        assert_eq!(
+            handle_request("NEXTWORD\tいく\x1f行く\x1fとうきょう\x1f東京", &data),
+            "OK\tとうきょう\x1f東京\n"
+        );
+    }
+
+    #[test]
+    fn learn2の先頭の組に前の文節を付けると文脈の句の学習の文脈を連結する() {
+        let data = word_data();
+        let request = "LEARN2\tだいがく\x1f大学\x1fに\x1fに\x1fとうきょう\x1f東京\tに\x1fに\x1f大学";
+        assert_eq!(handle_request(request, &data), "OK\n");
+        let learning = data.learning.lock().unwrap();
+        assert!(learning.ctx_phrase_stat("東京に", "だいがく", "大学").is_some());
+        assert!(learning.ctx_phrase_stat("に", "だいがく", "大学").is_none());
+        // 2 つ目以降の組の文脈は今のまま
+        assert!(learning.ctx_phrase_stat("大学", "に", "に").is_some());
+        drop(learning);
+        // 前の文節を付けない組は今と同じ
+        assert_eq!(handle_request("LEARN2\tだいがく\x1f大学\x1fに", &data), "OK\n");
+        assert!(data.learning.lock().unwrap().ctx_phrase_stat("に", "だいがく", "大学").is_some());
+    }
+
+    #[test]
+    fn nextwordは名詞で終わる前文脈に付属語を出す() {
+        let data = word_data();
+        assert_eq!(handle_request("LEARN\tとうきょうに\x1f東京に", &data), "OK\n");
+        assert_eq!(handle_request("NEXTWORD\tとうきょう\x1f東京", &data), "OK\tに\x1fに\n");
+        let _ = data.next_word.set(predict::NextWordTable::from_text(
+            "c\t東京\tだいがく\t大学\t50\ns\t東京\tの\tの\t40\ns\t東京\tは\tは\t30\n".to_string(),
+        ));
+        assert_eq!(handle_request("NEXTWORD\tとうきょう\x1f東京", &data), "OK\tに\x1fに\tの\x1fの\tは\x1fは\n");
+    }
+
+    #[test]
+    fn suggestは頭の語を打ち切るまで句の代わりに頭の語を出す() {
+        let data = word_data();
+        assert_eq!(handle_request("LEARN\tとうきょうの\x1f東京の", &data), "OK\n");
+        assert_eq!(handle_request("LEARN\tとうきょうに\x1f東京に", &data), "OK\n");
+        let fields = |request: &str| -> Vec<String> {
+            let response = handle_request(request, &data);
+            response.trim_end().strip_prefix("OK\t").unwrap_or("").split('\t').map(str::to_string).collect()
+        };
+        let got = fields("SUGGEST\t\tとうき\tto\x1fu\x1fki");
+        assert_eq!(got.iter().filter(|f| f.as_str() == "predict\x1dとうきょう\x1f東京").count(), 1, "{got:?}");
+        assert!(got.iter().all(|f| !f.ends_with("東京の") && !f.ends_with("東京に")), "{got:?}");
+        let got = fields("SUGGEST\t\tとうきょう\tto\x1fu\x1fkyo\x1f\x1fu");
+        assert!(got.iter().any(|f| f == "predict\x1dとうきょうの\x1f東京の"), "{got:?}");
     }
 
     #[test]

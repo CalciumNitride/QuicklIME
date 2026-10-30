@@ -14,6 +14,7 @@
 // 境界学習: 人が文節伸縮で直した分割の文節読みを記憶し、変換時の文節境界を
 // その位置へ寄せるのに使う。永続化は learning_boundary.tsv (1行1読み)
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -72,6 +73,16 @@ pub struct Stat {
 /// 文節 (読み, 表記) を辞書の語に分けた結果。分けられれば自立語の (読み, 表記) を経路の順に返す
 /// (付属語は含めない)。分けられなければ None
 pub type Splitter<'a> = dyn Fn(&str, &str) -> Option<Vec<(String, String)>> + 'a;
+
+/// 句の頭の語 (docs/spec/suggest.md「頭の語」)。句の読みの先頭 reading バイトと表記の先頭 surface バイト
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Head {
+    pub reading: usize,
+    pub surface: usize,
+}
+
+/// 句 (読み, 表記) の頭の語を求める処理 (convert::phrase_head)。頭の語を持たなければ None
+pub type HeadFinder<'a> = dyn Fn(&str, &str) -> Option<Head> + 'a;
 
 /// 句の学習の種類
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +148,8 @@ pub struct LearningStore {
     boundary_path: Option<PathBuf>,
     /// boundary に入っている読みの最大文字数。変換時の部分文字列探索の上限に使う
     boundary_max: usize,
+    /// 読み → 表記 → 句の頭の語。予測で照合した句だけを求めて覚える (ファイルには書かない)
+    heads: RefCell<HashMap<String, HashMap<String, Option<Head>>>>,
 }
 
 impl LearningStore {
@@ -181,6 +194,7 @@ impl LearningStore {
             boundary: HashSet::new(),
             boundary_path: None,
             boundary_max: 0,
+            heads: RefCell::new(HashMap::new()),
         }
     }
 
@@ -618,16 +632,17 @@ impl LearningStore {
         matches.into_iter().map(|(r, s, _)| (r, s)).collect()
     }
 
-    /// 句の学習を打鍵のファジィ照合 matcher で引き、(読み, 表記, 割引, ずれのコスト, ずれの数) を返す
-    /// (SUGGEST の予測。並びは呼び出し側が点数で決める)
-    pub fn phrase_fuzzy(&self, matcher: &typo::Matcher) -> Vec<PhraseMatch<'_>> {
+    /// 句の学習を打鍵のファジィ照合 matcher で引き、(読み, 表記, 割引, ずれのコスト, ずれの数, 頭の語) を返す
+    /// (SUGGEST の予測。並びは呼び出し側が点数で決める)。find は句の頭の語を求める処理
+    pub fn phrase_fuzzy(&self, matcher: &typo::Matcher, find: &HeadFinder) -> Vec<PhraseMatch<'_>> {
         let mut result = Vec::new();
         for (reading, surfaces) in &self.phrases {
-            let Some((cost, edits)) = matcher.match_reading(reading) else {
+            let Some(full) = matcher.match_reading(reading) else {
                 continue;
             };
             for (surface, p) in surfaces {
-                result.push(PhraseMatch { reading, surface, bonus: self.phrase_value(p).0, cost, edits });
+                let ((cost, edits), head) = self.fit_head(reading, surface, full, matcher, find);
+                result.push(PhraseMatch { reading, surface, bonus: self.phrase_value(p).0, cost, edits, head });
             }
         }
         // HashMap の走査順によらず同じ並びにする
@@ -636,22 +651,86 @@ impl LearningStore {
     }
 
     /// 前文脈 context の文脈の句の学習を打鍵のファジィ照合 matcher で引き、(読み, 表記, 文脈の句の学習の割引,
-    /// ずれのコスト, ずれの数) を返す (SUGGEST の予測)
-    pub fn ctx_phrase_fuzzy(&self, context: &str, matcher: &typo::Matcher) -> Vec<PhraseMatch<'_>> {
+    /// ずれのコスト, ずれの数, 頭の語) を返す (SUGGEST の予測)
+    pub fn ctx_phrase_fuzzy(&self, context: &str, matcher: &typo::Matcher, find: &HeadFinder) -> Vec<PhraseMatch<'_>> {
         let Some(readings) = self.ctx_phrases.get(&context_key(context)) else {
             return Vec::new();
         };
         let mut result = Vec::new();
         for (reading, surfaces) in readings {
-            let Some((cost, edits)) = matcher.match_reading(reading) else {
+            let Some(full) = matcher.match_reading(reading) else {
                 continue;
             };
             for (surface, s) in surfaces {
-                result.push(PhraseMatch { reading, surface, bonus: self.ctx_value(s).0, cost, edits });
+                let ((cost, edits), head) = self.fit_head(reading, surface, full, matcher, find);
+                result.push(PhraseMatch { reading, surface, bonus: self.ctx_value(s).0, cost, edits, head });
             }
         }
         result.sort_by(|a, b| (a.reading, a.surface).cmp(&(b.reading, b.surface)));
         result
+    }
+
+    /// 照合できた句 (読みの照合の最小のずれ full) の、出すときのずれと頭の語。頭の語を持つ句は、頭の語の読みの
+    /// 長さ以上の位置で打鍵を使い切る照合があればそのずれで句のまま出し、無ければ頭の語を返す
+    fn fit_head(
+        &self,
+        reading: &str,
+        surface: &str,
+        full: (i32, usize),
+        matcher: &typo::Matcher,
+        find: &HeadFinder,
+    ) -> ((i32, usize), Option<Head>) {
+        let Some(head) = self.head(reading, surface, find) else {
+            return (full, None);
+        };
+        let chars = reading[..head.reading].chars().count();
+        match matcher.match_reading_from(reading, chars) {
+            Some(cut) => (cut, None),
+            None => (full, Some(head)),
+        }
+    }
+
+    /// 句 (読み, 表記) の頭の語。句ごとに 1 回だけ find で求めて覚える
+    pub fn head(&self, reading: &str, surface: &str, find: &HeadFinder) -> Option<Head> {
+        if let Some(&head) = self.heads.borrow().get(reading).and_then(|s| s.get(surface)) {
+            return head;
+        }
+        let head = find(reading, surface);
+        self.heads.borrow_mut().entry(reading.to_string()).or_default().insert(surface.to_string(), head);
+        head
+    }
+
+    /// 覚えた頭の語を捨てる (ユーザ辞書が変わり、句の分け方が変わりうるとき)
+    pub fn clear_heads(&mut self) {
+        self.heads.get_mut().clear();
+    }
+
+    /// 頭の語が (reading, surface) の句の、頭の語の後ろの部分 (読み, 表記) を句の割引の大きい順に返す。
+    /// 表記の重複は先勝ちで除く (NEXTWORD の名詞で終わる前文脈)
+    pub fn head_rest(&self, reading: &str, surface: &str, find: &HeadFinder) -> Vec<(&str, &str)> {
+        let target = Head { reading: reading.len(), surface: surface.len() };
+        let mut matches: Vec<(&str, &str, (i64, f64, u64))> = Vec::new();
+        for (r, surfaces) in &self.phrases {
+            let Some(rest_reading) = r.strip_prefix(reading).filter(|rest| !rest.is_empty()) else {
+                continue;
+            };
+            for (s, p) in surfaces {
+                let Some(rest_surface) = s.strip_prefix(surface).filter(|rest| !rest.is_empty()) else {
+                    continue;
+                };
+                if self.head(r, s, find) == Some(target) {
+                    matches.push((rest_reading, rest_surface, self.phrase_value(p)));
+                }
+            }
+        }
+        sort_matches(&mut matches);
+        let mut results: Vec<(&str, &str)> = Vec::new();
+        for (reading, surface, _) in matches {
+            if !results.iter().any(|(_, s)| *s == surface) {
+                results.push((reading, surface));
+            }
+        }
+        results
     }
 
     /// 前文脈 context の後に数えた文脈の句の学習のうち、読みが prefix で始まるものを割引の大きい順に返す
@@ -771,6 +850,8 @@ pub struct PhraseMatch<'a> {
     pub bonus: i64,
     pub cost: i32,
     pub edits: usize,
+    /// 打鍵が句の頭の語を打ち切っていないときの頭の語 (句の代わりに頭の語を出す)
+    pub head: Option<Head>,
 }
 
 /// 語の学習に数える語か。読みが 1 文字の語・表記が読みと同じひらがなの語・表記に数字を含む語に割引が付くと、
@@ -1066,16 +1147,16 @@ mod tests {
         // kyouti: kyouto の o を隣の i と打った
         let keys = typo::Keys::parse("きょうち", "kyo\x1f\x1fu\x1fti").unwrap();
         let matcher = typo::Matcher::new(&keys, 1, &typo::TUNING);
-        let got = store.phrase_fuzzy(&matcher);
+        let got = store.phrase_fuzzy(&matcher, &|_, _| None);
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].reading, got[0].surface, got[0].bonus), ("きょうと", "京都", store.phrase_bonus("きょうと", "京都")));
         assert_eq!((got[0].cost, got[0].edits), (typo::TUNING.edit_adjacent, 1));
         // 文脈の句の学習も前文脈で引く
         learn(&mut store, "きょうと", "京都", "明日は");
-        let got = store.ctx_phrase_fuzzy("明日は", &matcher);
+        let got = store.ctx_phrase_fuzzy("明日は", &matcher, &|_, _| None);
         assert_eq!(got.len(), 1);
         assert_eq!((got[0].reading, got[0].surface, got[0].bonus), ("きょうと", "京都", 2500));
-        assert!(store.ctx_phrase_fuzzy("今日は", &matcher).is_empty());
+        assert!(store.ctx_phrase_fuzzy("今日は", &matcher, &|_, _| None).is_empty());
     }
 
     #[test]

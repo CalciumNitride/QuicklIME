@@ -9,7 +9,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 
 use crate::dict::Dictionary;
-use crate::learn::{LearningStore, MIN_BOUNDARY_CHARS};
+use crate::learn::{Head, LearningStore, MIN_BOUNDARY_CHARS};
 use crate::matrix::ConnectionMatrix;
 use crate::number;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
@@ -1870,6 +1870,7 @@ pub struct SplitWord {
     pub reading: String,
     pub surface: String,
     pub functional: bool,
+    pub left_id: u16,
 }
 
 /// 確定した文節 (読み, 表記) を辞書 (システム辞書・ユーザ辞書・インポート辞書) の語に分け、経路の
@@ -1983,11 +1984,53 @@ pub fn split_path(
             reading: chars[word.start..word.end].iter().collect(),
             surface: word.surface.to_string(),
             functional: functional.is_functional(word.left_id),
+            left_id: word.left_id,
         });
         cursor = states[cursor].3;
     }
     result.reverse();
     Some(result)
+}
+
+/// 句 (読み, 表記) の頭の語 (docs/spec/suggest.md「頭の語」)。辞書の語に分けられない句は None
+pub fn phrase_head(
+    reading: &str,
+    surface: &str,
+    dict: &Dictionary,
+    user: &UserDict,
+    matrix: &ConnectionMatrix,
+    functional: &FunctionalIds,
+) -> Option<Head> {
+    path_head(&split_path(reading, surface, dict, user, matrix, functional)?, functional)
+}
+
+/// 句を辞書の語に分けた経路 path の頭の語。最初の文節 (変換と同じく付属語を前の語にまとめたもの) の末尾が、
+/// 名詞系の語の後ろに助詞・助動詞の語が 1 つ以上続く形なら、その名詞系の語までを頭の語にする。それ以外は None
+pub fn path_head(path: &[SplitWord], functional: &FunctionalIds) -> Option<Head> {
+    let len = 1 + path.iter().skip(1).take_while(|w| w.functional).count();
+    let first = path.get(..len)?;
+    let particles = first.iter().rev().take_while(|w| functional.is_particle(w.left_id)).count();
+    if particles == 0 || particles == first.len() {
+        return None;
+    }
+    let head = &first[..first.len() - particles];
+    if !functional.is_noun(head.last()?.left_id) {
+        return None;
+    }
+    Some(Head {
+        reading: head.iter().map(|w| w.reading.len()).sum(),
+        surface: head.iter().map(|w| w.surface.len()).sum(),
+    })
+}
+
+/// 経路 path が名詞系の語で終わる (後ろに付属語が無い) なら、最後の名詞系の語の表記
+pub fn noun_end<'a>(path: &'a [SplitWord], functional: &FunctionalIds) -> Option<&'a str> {
+    path.last().filter(|w| functional.is_noun(w.left_id)).map(|w| w.surface.as_str())
+}
+
+/// 経路 path が助詞・助動詞の語だけか
+pub fn only_particles(path: &[SplitWord], functional: &FunctionalIds) -> bool {
+    !path.is_empty() && path.iter().all(|w| functional.is_particle(w.left_id))
 }
 
 /// 表記の接頭辞の制約つきの Viterbi (docs/archive/experiment-0c-llm-gen.md の C)。エンジンは LLM で
@@ -2173,24 +2216,100 @@ mod tests {
         let path = |reading: &str, surface: &str| {
             split_path(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &sample_functional())
         };
-        let word = |start: usize, end: usize, reading: &str, surface: &str, functional: bool| SplitWord {
+        let word = |start: usize, end: usize, reading: &str, surface: &str, left_id: u16| SplitWord {
             start,
             end,
             reading: reading.to_string(),
             surface: surface.to_string(),
-            functional,
+            functional: left_id != 1,
+            left_id,
         };
         assert_eq!(
             path("きょうははれです", "今日は晴れです"),
             Some(vec![
-                word(0, 3, "きょう", "今日", false),
-                word(3, 4, "は", "は", true),
-                word(4, 6, "はれ", "晴れ", false),
-                word(6, 8, "です", "です", true),
+                word(0, 3, "きょう", "今日", 1),
+                word(3, 4, "は", "は", 2),
+                word(4, 6, "はれ", "晴れ", 1),
+                word(6, 8, "です", "です", 3),
             ])
         );
-        assert_eq!(path("は", "は"), Some(vec![word(0, 1, "は", "は", true)]));
+        assert_eq!(path("は", "は"), Some(vec![word(0, 1, "は", "は", 2)]));
         assert_eq!(path("きょうは", "教は"), None);
+    }
+
+    /// 頭の語の判定に使う辞書と品詞
+    fn head_sample() -> (Dictionary, FunctionalIds) {
+        let dict = dict_from(
+            "とうきょう\t1\t1\t3000\t東京\n\
+             の\t2\t2\t500\tの\n\
+             が\t2\t2\t500\tが\n\
+             に\t2\t2\t500\tに\n\
+             です\t3\t3\t500\tです\n\
+             あめ\t1\t1\t3000\t雨\n\
+             たなか\t1\t1\t3000\t田中\n\
+             さん\t4\t4\t500\tさん\n\
+             しずか\t5\t5\t3000\t静か\n\
+             な\t3\t3\t500\tな\n\
+             たべ\t6\t6\t3000\t食べ\n\
+             まし\t3\t3\t500\tまし\n\
+             た\t3\t3\t500\tた\n\
+             きょう\t1\t1\t3000\t今日\n\
+             は\t2\t2\t500\tは\n\
+             いい\t7\t7\t3000\tいい\n\
+             てんき\t1\t1\t3000\t天気\n\
+             よろしく\t7\t7\t3000\tよろしく\n\
+             お\t8\t8\t1000\tお\n\
+             ねがい\t1\t1\t3000\t願い\n\
+             し\t6\t6\t1000\tし\n\
+             ます\t3\t3\t500\tます\n",
+        );
+        let functional = FunctionalIds::load_from(
+            "1 名詞,一般\n2 助詞,格助詞\n3 助動詞\n4 名詞,接尾,人名\n5 名詞,形容動詞語幹\n\
+             6 動詞,自立\n7 副詞,一般\n8 接頭詞,名詞接続\n"
+                .as_bytes(),
+        )
+        .unwrap();
+        (dict, functional)
+    }
+
+    #[test]
+    fn 句の頭の語は最初の文節の名詞系の語まで() {
+        let (dict, functional) = head_sample();
+        let head = |reading: &str, surface: &str| {
+            phrase_head(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &functional)
+                .map(|h| (reading[..h.reading].to_string(), surface[..h.surface].to_string()))
+        };
+        let some = |r: &str, s: &str| Some((r.to_string(), s.to_string()));
+        assert_eq!(head("とうきょうの", "東京の"), some("とうきょう", "東京"));
+        assert_eq!(head("とうきょうです", "東京です"), some("とうきょう", "東京"));
+        assert_eq!(head("あめが", "雨が"), some("あめ", "雨"));
+        // さん は名詞,接尾、静か は名詞,形容動詞語幹
+        assert_eq!(head("たなかさんが", "田中さんが"), some("たなかさん", "田中さん"));
+        assert_eq!(head("しずかな", "静かな"), some("しずか", "静か"));
+        // 2 文節以上の句は最初の文節に当てる
+        assert_eq!(head("きょうはいいてんき", "今日はいい天気"), some("きょう", "今日"));
+        // 名詞系の語の後ろに助詞・助動詞が続かない形、分けられない句は頭の語を持たない
+        assert_eq!(head("たべました", "食べました"), None);
+        assert_eq!(head("よろしくおねがいします", "よろしくお願いします"), None);
+        assert_eq!(head("とうきょう", "東京"), None);
+        assert_eq!(head("まいぐらふぃは", "マイグラフィは"), None);
+        assert_eq!(head("のに", "のに"), None);
+    }
+
+    #[test]
+    fn 名詞で終わるかと助詞_助動詞だけかを経路で判定する() {
+        let (dict, functional) = head_sample();
+        let path = |reading: &str, surface: &str| {
+            split_path(reading, surface, &dict, &no_user(), &ConnectionMatrix::empty(), &functional).unwrap()
+        };
+        assert_eq!(noun_end(&path("とうきょう", "東京"), &functional), Some("東京"));
+        assert_eq!(noun_end(&path("たなかさん", "田中さん"), &functional), Some("さん"));
+        assert_eq!(noun_end(&path("とうきょうの", "東京の"), &functional), None);
+        assert_eq!(noun_end(&path("たべました", "食べました"), &functional), None);
+        assert!(only_particles(&path("に", "に"), &functional));
+        assert!(only_particles(&path("ですが", "ですが"), &functional));
+        assert!(!only_particles(&path("とうきょうに", "東京に"), &functional));
+        assert!(!only_particles(&path("さん", "さん"), &functional));
     }
 
     #[test]
