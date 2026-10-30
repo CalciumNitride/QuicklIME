@@ -1,10 +1,11 @@
 ﻿# QuicklIME デバッグ反映スクリプト
 #
 # 実行内容 (既定, 引数なし):
-#   1. 常用エンジン (quicklime-engine.exe) を停止
+#   1. 常用エンジン (quicklime-engine.exe) と設定ツール (quicklime-config.exe)・
+#      単語登録ツール (quicklime-regword.exe) を停止
 #   2. engine を release ビルド
-#   3. C:\Program Files\QuicklIME へコピー (常用インストール版を直接更新)
-#   4. 次の変換操作で TSF が自動起動
+#   3. エンジンと両ツールを C:\Program Files\QuicklIME へコピー (常用インストール版を直接更新)
+#   4. 次の変換操作で TSF がエンジンを自動起動
 #
 # -Dll 指定時: 上記に加えて TSF DLL (64bit) をビルドする。反映方法は2通り:
 #   - 既定 (Configuration Debug): 開発版 (tsf\build\Debug\QuicklIME.dll) に
@@ -16,7 +17,9 @@
 #     コピーする (パスは変わらないためレジストリ再登録は不要。インストーラの
 #     restartreplace と違い再起動不要)。管理者権限は不要
 #     (Program Files への書き込みが通常権限で成功する環境の場合)。
-#     32bit 版 (x86\QuicklIME.dll) も同じ手順で更新する (ビルドツリーは tsf\build32)
+#     32bit 版 (x86\QuicklIME.dll) も同じ手順で更新する (ビルドツリーは tsf\build32)。
+#     最後に InprocServer32 の登録先を読み、Program Files の DLL を指していなければ
+#     (-Dll で開発版に切り替えたまま等) 警告する
 #
 # -Restore 指定時: 開発版からインストール版 (Program Files) の DLL に regsvr32 で戻すだけ。
 #                   他の処理は行わない
@@ -25,9 +28,9 @@
 #       64bit の tsf\build は構成済みであること (32bit の tsf\build32 は未構成なら自動で構成する)
 #
 # 使用例:
-#   scripts\dev-deploy.ps1                       # エンジンのみ常用環境へ反映
-#   scripts\dev-deploy.ps1 -Dll                  # エンジン + DLL (Debug) を反映、DLL は開発版へ切替
-#   scripts\dev-deploy.ps1 -Dll -Install         # エンジン + DLL (Release) を常用インストール版へ直接反映
+#   scripts\dev-deploy.ps1                       # エンジンとツールのみ常用環境へ反映
+#   scripts\dev-deploy.ps1 -Dll                  # エンジン・ツール + DLL (Debug) を反映、DLL は開発版へ切替
+#   scripts\dev-deploy.ps1 -Dll -Install         # エンジン・ツール + DLL (Release) を常用インストール版へ直接反映
 #   scripts\dev-deploy.ps1 -Dll -Configuration Release
 #   scripts\dev-deploy.ps1 -Restore              # 開発版からインストール版の DLL に戻す
 
@@ -103,6 +106,20 @@ function Update-InstalledDll([string]$srcDll, [string]$destDll) {
     Copy-Item $srcDll $destDll -Force
 }
 
+# tsf/src/globals.cpp の kClsid と同じ値
+$clsid = '{D8FA8028-4371-40E9-8F49-4E465ECE9A41}'
+
+# InprocServer32 の既定値 (登録先 DLL のパス) が期待するパスでなければ警告する。
+# -Dll で開発版に切り替えたままだと、Program Files の DLL を差し替えても使われないため
+function Test-InprocServer([string]$keyPath, [string]$expected) {
+    $key = Get-Item -LiteralPath $keyPath -ErrorAction SilentlyContinue
+    $actual = if ($key) { $key.GetValue('') } else { $null }
+    if ($actual -ieq $expected) { return }
+    $shown = if ($actual) { $actual } else { '(登録なし)' }
+    Write-Warning "登録先が更新したインストール版の DLL ではありません: $shown"
+    Write-Warning "更新したインストール版の DLL ($expected) は使われていません。管理者権限で scripts\dev-deploy.ps1 -Restore を実行して登録をインストール版に戻してください"
+}
+
 # ---- -Restore: インストール版の DLL に戻すだけ ----
 if ($Restore) {
     if (-not (Test-Admin)) {
@@ -129,9 +146,11 @@ if ($Dll -and -not (Test-Path $cmake)) {
     throw "VS 同梱 cmake がありません: $cmake"
 }
 
-# ---- エンジンの反映 (常用インストール版を直接更新) ----
-Write-Host '=== エンジンを停止' -ForegroundColor Cyan
+# ---- エンジン・ツールの反映 (常用インストール版を直接更新) ----
+Write-Host '=== エンジンと設定ツール・単語登録ツールを停止' -ForegroundColor Cyan
 Stop-Process -Name quicklime-engine -Force -ErrorAction SilentlyContinue
+# 起動中のツールは exe がロックされてコピーに失敗する (インストーラも更新前に止めている)
+Stop-Process -Name quicklime-config, quicklime-regword -Force -ErrorAction SilentlyContinue
 
 Write-Host '=== エンジンを release ビルド' -ForegroundColor Cyan
 Push-Location (Join-Path $root 'engine')
@@ -142,8 +161,10 @@ try {
     Pop-Location
 }
 
-Write-Host '=== Program Files へコピー' -ForegroundColor Cyan
-Copy-Item (Join-Path $root 'engine\target\release\quicklime-engine.exe') $installDir -Force
+Write-Host '=== エンジンと設定ツール・単語登録ツールを Program Files へコピー' -ForegroundColor Cyan
+foreach ($exe in 'quicklime-engine.exe', 'quicklime-config.exe', 'quicklime-regword.exe') {
+    Copy-Item (Join-Path $root "engine\target\release\$exe") $installDir -Force
+}
 
 # ---- DLL の反映 (任意, 開発版への regsvr32 切替) ----
 if ($Dll) {
@@ -179,6 +200,11 @@ if ($Dll) {
         Write-Host ''
         Write-Host 'インストール版 DLL を更新しました。既に起動中のアプリには反映されません。' -ForegroundColor Green
         Write-Host 'メモ帳などで確認する場合は taskkill /IM Notepad.exe /F してから開き直してください。' -ForegroundColor Green
+
+        Test-InprocServer "HKLM:\SOFTWARE\Classes\CLSID\$clsid\InprocServer32" "$installDir\QuicklIME.dll"
+        if (Test-Path $installDir32) {
+            Test-InprocServer "HKLM:\SOFTWARE\WOW6432Node\Classes\CLSID\$clsid\InprocServer32" (Join-Path $installDir32 'QuicklIME.dll')
+        }
     } else {
         # ---- 開発版への regsvr32 切替 ----
         Write-Host '=== 開発版 DLL に切替 (regsvr32)' -ForegroundColor Cyan

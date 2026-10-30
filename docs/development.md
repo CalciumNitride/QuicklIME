@@ -192,12 +192,13 @@ CMake と VC++ ランタイムは Visual Studio 2022 Community の既定のイ�
 
 | コマンド | 動作 |
 |---|---|
-| `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
-| `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 (要管理者権限) |
-| `scripts\dev-deploy.ps1 -Dll -Install` | エンジン反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (再起動は不要。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
-| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限)。エンジンは戻さない |
+| `scripts\dev-deploy.ps1` | エンジンと設定ツール・単語登録ツールのみ反映 (release ビルド → 常用の Program Files へコピー。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
+| `scripts\dev-deploy.ps1 -Dll` | エンジン・ツールの反映に加え、TSF DLL を Debug ビルドして開発版へ切替 (要管理者権限) |
+| `scripts\dev-deploy.ps1 -Dll -Install` | エンジン・ツールの反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (再起動は不要。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
+| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限)。エンジン・ツールは戻さない |
 
-エンジンには開発版への切替が無く、`-Restore` 以外はどの指定でも常用の Program Files のエンジンを上書きする。
+エンジンと設定ツール (`quicklime-config.exe`)・単語登録ツール (`quicklime-regword.exe`) には開発版への切替が無く、
+`-Restore` 以外はどの指定でも常用の Program Files の exe を上書きする。コピーの前に、起動中のエンジンとツールを止める。
 常用のエンジンに触れずに試すときは、[検証用の環境変数](#検証用の環境変数) と `.claude/CLAUDE.md`
 「エンジン検証の隔離」の環境変数で隔離したエンジンを使う。
 
@@ -210,7 +211,9 @@ DLL の反映方法は用途で使い分ける。
   差し替える。ロード中の DLL を `.old-<日時>` にリネーム退避してから同じパスに新 DLL を
   コピーするので、レジストリ再登録も PC 再起動も不要 (インストーラでの更新は
   ロード中だと `restartreplace` により再起動待ちになる)。32bit 版 (`x86\QuicklIME.dll`) も
-  同じ手順で更新する (ビルドツリーは `tsf\build32`。未構成なら自動で生成する)
+  同じ手順で更新する (ビルドツリーは `tsf\build32`。未構成なら自動で生成する)。
+  最後にレジストリの登録先 (InprocServer32) を読み、Program Files の DLL を指していなければ
+  (`-Dll` で開発版に切り替えたままのときなど) 更新した DLL は使われないと警告する。そのときは `-Restore` で戻す
 
 手動で行う場合 (開発版切替):
 
