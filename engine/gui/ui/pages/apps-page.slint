@@ -105,12 +105,12 @@ export component AppsPage inherits SettingsPage {
 
             Rectangle {
                 background: Theme.card-background;
-                border-radius: 8px;
+                border-radius: Theme.overlay-radius;
                 border-width: 1px;
                 border-color: Theme.card-stroke;
                 drop-shadow-blur: 16px;
                 drop-shadow-offset-y: 8px;
-                drop-shadow-color: #00000040;
+                drop-shadow-color: Theme.overlay-shadow;
 
                 ScrollView {
                     viewport-width: self.visible-width;

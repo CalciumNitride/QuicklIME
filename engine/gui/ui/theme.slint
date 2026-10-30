@@ -31,12 +31,20 @@ export global Theme {
     out property <brush> warning-background: dark ? #433519 : #FFF4CE;
     out property <brush> error-background: dark ? #442726 : #FDE7E9;
     out property <brush> info-icon: Palette.accent-background;
+    out property <brush> info-badge-foreground: dark ? #000000 : #FFFFFF;
     out property <brush> success-icon: dark ? #6CCB5F : #0F7B0F;
     out property <brush> warning-icon: dark ? #FCE100 : #9D5D00;
     out property <brush> error-icon: dark ? #FF99A4 : #C42B1C;
     out property <brush> error-text: dark ? #FF99A4 : #C42B1C;
 
+    out property <brush> overlay-shadow: #00000040;
+
+    // 入力パネルの見本の明暗は OS のダークモードではなくパネルのテーマで決まるので、dark で切り替えない
+    out property <brush> preview-background-light: #FFFFFF;
+    out property <brush> preview-background-dark: #1F1F1F;
+
     out property <length> radius: 4px;
+    out property <length> overlay-radius: 8px;
     out property <length> card-min-height: 68px;
     out property <length> card-padding-x: 16px;
     out property <length> card-spacing: 4px;
@@ -47,6 +55,10 @@ export global Theme {
     out property <length> body-size: 14px;
     out property <length> caption-size: 12px;
     out property <length> icon-size: 16px;
+    out property <length> icon-size-small: 12px;
+    out property <length> chip-icon-size: 10px;
+    out property <length> info-badge-icon-size: 8px;
+    out property <length> info-badge-text-size: 11px;
 
     out property <string> text-font: "Yu Gothic UI";
     out property <string> icon-font: "Segoe Fluent Icons";

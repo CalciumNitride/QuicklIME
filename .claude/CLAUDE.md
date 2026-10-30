@@ -36,6 +36,23 @@
   `docs/archive/` へ移動する
 - 仕様書へ内容を移し終えた設計書 (実装前の合意の記録) も `docs/archive/` へ移す。今の仕様は `docs/spec/` を見る
 
+# 設定ツール・単語登録ツールの UI
+- 画面は Windows 11 の設定アプリ (WinUI 3 / Fluent 2) の部品と振る舞いに倣う。今の構成は
+  `docs/spec/tools.md`「画面の構成」
+- 色・文字サイズ・フォント・角丸は `engine/gui/ui/theme.slint` のトークンを使い、.slint に値を直に書かない。
+  足りなければトークンを足す。余白・間隔は WinUI 3 の対応する値に合わせて各部品に直に書いてよい。
+  アイコンは Segoe Fluent Icons の字形を `Icons` に足して使う
+- `engine/gui/ui/components/` に無い部品は、WinUI 3 の対応するコントロールの既定の見た目
+  (寸法・色・状態ごとの変化) と操作を、次のソースで確かめてから作る。記憶で値を決めない。
+  対応するものが無い独自の部品は作る前に相談する
+  - 色・寸法: microsoft/microsoft-ui-xaml の `controls/dev/CommonStyles/` にある
+    `Common_themeresources_any.xaml` と、コントロールごとの `*_themeresources.xaml`
+  - 設定アプリのカード: CommunityToolkit/Windows の
+    `components/SettingsControls/src/SettingsCard/SettingsCard.xaml`
+  - 人が見比べる資料: Windows Design Kit for Figma
+    (https://learn.microsoft.com/windows/apps/design/downloads)
+- 入力パネル (TSF 層の描画) は対象外。テーマで見た目を変える作りのため
+
 # テストケース
 - 機能実装時や変更時などテストが必要なときは、テストケースを例示する
 

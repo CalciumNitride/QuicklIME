@@ -37,7 +37,7 @@ export component InfoBar inherits Rectangle {
             Rectangle {
                 width: 16px;
                 height: 16px;
-                border-radius: 8px;
+                border-radius: self.height / 2;
                 background: root.severity == InfoBarSeverity.error ? Theme.error-icon
                     : root.severity == InfoBarSeverity.warning ? Theme.warning-icon
                     : root.severity == InfoBarSeverity.success ? Theme.success-icon
@@ -48,9 +48,9 @@ export component InfoBar inherits Rectangle {
                         : root.severity == InfoBarSeverity.success ? Icons.check
                         : root.severity == InfoBarSeverity.warning ? "!" : "i";
                     font-family: root.severity == InfoBarSeverity.error || root.severity == InfoBarSeverity.success ? Theme.icon-font : Theme.text-font;
-                    font-size: root.severity == InfoBarSeverity.error || root.severity == InfoBarSeverity.success ? 8px : 11px;
+                    font-size: root.severity == InfoBarSeverity.error || root.severity == InfoBarSeverity.success ? Theme.info-badge-icon-size : Theme.info-badge-text-size;
                     font-weight: 700;
-                    color: Theme.dark ? #000000 : #FFFFFF;
+                    color: Theme.info-badge-foreground;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -92,7 +92,7 @@ export component InfoBar inherits Rectangle {
             Text {
                 text: Icons.dismiss;
                 font-family: Theme.icon-font;
-                font-size: 12px;
+                font-size: Theme.icon-size-small;
                 color: Theme.text-primary;
                 horizontal-alignment: center;
                 vertical-alignment: center;
