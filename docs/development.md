@@ -118,8 +118,7 @@ QuicklIME のビルド・インストーラの作成・開発版の動作確認�
   cargo run --release --example learning_eval -- --stats <learning_stats.tsv> [--weights "half=5000"]...
   ```
   `--next-word ..\references\jawiki\next_word.tsv` を付けると、読みなしの後続語予測 (NEXTWORD) を学習と後続語の
-  統計のあり・なしの 4 つの組で測る (前文脈が助詞の付かない名詞で終わる行とそれ以外の行に分けても出す)。
-  付属語の表 (`s` の行) は、作り直した表 (下記「後続語の統計」) で測る
+  統計のあり・なしの 4 つの組で測る (前文脈が助詞の付かない名詞で終わる行とそれ以外の行に分けても出す)
 
 ## インストーラのビルド
 
@@ -169,7 +168,7 @@ CMake と VC++ ランタイムは Visual Studio 2022 Community の既定のイ�
   `engine/examples/build_next_word.rs` で文節の連なりと、名詞系の語の後ろの付属語 (付属語の表) の回数を数えて生成する
   ([suggest.md](spec/suggest.md)「文節の連なりの統計」)。ダンプの置き場所
   (https://dumps.wikimedia.org/other/cirrus_search_index/) は週ごとに作られ直近 4 週だけが残るので、日付は
-  そこで今あるものを選ぶ。1 分割 (約 650MB) の取得に約 30 分、4 分割の生成に約 15 分かかる
+  そこで今あるものを選ぶ。1 分割 (約 650MB) の取得に約 30 分、4 分割の生成に約 20 分かかる
   ```
   scripts\fetch-wiki-ngram.ps1 -Date <日付> -Parts (0..3)
   ```

@@ -66,8 +66,6 @@
   (installer/build.ps1) は crt-static で、そろっていない ([runtime.md](spec/runtime.md)「CRT のリンク」)
 - installer/build.ps1 は LLM の exe があるかだけを確かめ、古い exe があってもそのまま同梱する
   ([runtime.md](spec/runtime.md)「インストーラのビルド」)
-- 付属語の表を含めた next_word.tsv の作り直し。作り直した表で、表の大きさ・行数・生成時間 ([suggest.md](spec/suggest.md)「表」、
-  [development.md](development.md)) を測り直し、再生評価 (予測と `--next-word`) で頭の語と付属語の後続語予測の効きを測る
 - 辞書の読み込みを速くする (バイナリキャッシュなど)。エンジンは辞書を読み終えてからパイプを作るので、起動から
   パイプができるまで約 2 秒かかる ([runtime.md](spec/runtime.md)「起動の間隔と待ち」「採らなかった案」)
 
