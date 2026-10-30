@@ -112,6 +112,7 @@ pub fn to_hiragana(s: &str) -> String {
 /// QuicklIME の TSV (userdict.tsv・imported\*.tsv) から既存の (読み, 表記) を集める。
 /// 取り込み時の重複判定に使う
 pub fn collect_pairs(text: &str, pairs: &mut HashSet<(String, String)>) {
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
     for line in text.lines() {
         if line.starts_with('#') {
             continue;
@@ -383,6 +384,15 @@ mod tests {
             ]
         );
         assert_eq!(result.duplicate, 3);
+    }
+
+    #[test]
+    fn 既存の語を集めるときは先頭のbomを除く() {
+        let mut existing = HashSet::new();
+        collect_pairs("\u{FEFF}てすと\tテスト\t名詞\n", &mut existing);
+        let result = parse("てすと\tテスト\t名詞\n", &existing);
+        assert!(result.entries.is_empty());
+        assert_eq!(result.duplicate, 1);
     }
 
     #[test]

@@ -3,19 +3,30 @@
 // UTF-8 として読めない行は、その行だけを読み飛ばして続きを読む。読めない行で後ろを読まずにいると、
 // ファイル全体を書き直す保存でその後半が消え、追記した行も次の起動で読まれないため。
 // U+FFFD に置き換えて読まないのは、置き換えた読みや表記が正しい語として学習やユーザ辞書に入るため
+//
+// ファイル先頭の UTF-8 BOM は除いて読む。残すと 1 行目の読みやキーの一部になり、一致しなくなるため
 
 use std::io::{self, BufRead};
 use std::path::Path;
 
-/// reader を 1 行ずつ f に渡す。UTF-8 として読めない行は飛ばし、その数を返す。
+/// reader を 1 行ずつ f に渡す。1 行目の先頭の BOM (U+FEFF) は除く。
+/// UTF-8 として読めない行は飛ばし、その数を返す。
 /// それ以外の I/O エラーではそこで止め、エラーを返す
 pub fn read_lines(reader: impl BufRead, mut f: impl FnMut(String)) -> io::Result<usize> {
     let mut skipped = 0;
+    let mut first = true;
     // lines() は不正な UTF-8 の行で InvalidData を返すが、その行のバイト列は読み終えているので
     // 次の呼び出しは次の行から続く。ほかのエラーは同じエラーが返り続けうるので止める
     for line in reader.lines() {
+        // 1 行目を読み飛ばしたときの次の行はファイル先頭ではないので、BOM を除かない
+        let is_first = std::mem::replace(&mut first, false);
         match line {
-            Ok(line) => f(line),
+            Ok(mut line) => {
+                if is_first && line.starts_with('\u{FEFF}') {
+                    line.drain(..'\u{FEFF}'.len_utf8());
+                }
+                f(line)
+            }
             Err(e) if e.kind() == io::ErrorKind::InvalidData => skipped += 1,
             Err(e) => return Err(e),
         }
@@ -54,6 +65,26 @@ mod tests {
     fn 改行のない最終行が読めなければそれまでの行を渡す() {
         let (lines, result) = collect(b"one\ntwo\n\xff\xfe");
         assert_eq!(lines, ["one", "two"]);
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[test]
+    fn 一行目の先頭のbomを除く() {
+        let (lines, result) = collect("\u{FEFF}あい\t愛\n二\n".as_bytes());
+        assert_eq!(lines, ["あい\t愛", "二"]);
+        assert_eq!(result.unwrap(), 0);
+        // 除くのは 1 文字だけ
+        let (lines, _) = collect("\u{FEFF}\u{FEFF}一\n".as_bytes());
+        assert_eq!(lines, ["\u{FEFF}一"]);
+    }
+
+    #[test]
+    fn 二行目以降のbomは残す() {
+        let (lines, _) = collect("一\n\u{FEFF}二\n".as_bytes());
+        assert_eq!(lines, ["一", "\u{FEFF}二"]);
+        // 1 行目を読み飛ばしても、次の行はファイル先頭ではない
+        let (lines, result) = collect(b"\xff\xfe\n\xef\xbb\xbftwo\n");
+        assert_eq!(lines, ["\u{FEFF}two"]);
         assert_eq!(result.unwrap(), 1);
     }
 
