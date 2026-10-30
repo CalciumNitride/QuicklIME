@@ -92,8 +92,8 @@ struct TsfConfig {
     bool digitsFullwidth = false;  // 数字キー・テンキーの数字を全角で入れる
     std::wstring punctComma = L"、";   // 読点 (VK_OEM_COMMA の非 Shift)
     std::wstring punctPeriod = L"。";  // 句点 (VK_OEM_PERIOD の非 Shift)
-    std::wstring candidateFont = L"Yu Gothic UI";  // 候補ウィンドウのフォント名
-    int candidateFontSize = 18;    // 候補ウィンドウのフォントの高さ (px)
+    std::wstring candidateFont = L"Yu Gothic UI";  // 入力パネルのフォント名
+    int candidateFontSize = 18;    // 入力パネルのフォントの高さ (px)
     // モードレス入力 (英語の打鍵を自動で判定して英字のまま入れる。
     // docs/spec/modeless.md)
     bool modeless = false;

@@ -4,6 +4,9 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [mouse-click-panel.md](mouse-click-panel.md): 入力パネルを出している間にパネルの外でマウスのボタンが押されたら、入力を
+  終えてパネルを消す。選ばないまま設定 `next_word_timeout` の秒数がたった後続語の予測を消す。
+  [docs/spec/input.md](../spec/input.md)・[docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/tools.md](../spec/tools.md) へ移した
 - [unreadable-lines.md](unreadable-lines.md): 辞書・学習・ユーザ辞書・設定のファイルの UTF-8 として読めない行を、その行だけ
   読み飛ばして続きを読む。書き直す学習のファイル (learning_stats.tsv・learning_word.tsv) は起動時に退避する。
   [docs/spec/dictionary.md](../spec/dictionary.md)・[docs/spec/learning.md](../spec/learning.md)・

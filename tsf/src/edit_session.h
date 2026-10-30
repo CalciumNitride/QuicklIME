@@ -82,7 +82,7 @@ private:
     LONG targetLength_;
 };
 
-// composition の画面上の矩形 (スクリーン座標) を取得する (候補ウィンドウの位置決め用)
+// composition の画面上の矩形 (スクリーン座標) を取得する (入力パネルの位置決め用)
 class GetTextExtentEditSession : public EditSessionBase {
 public:
     GetTextExtentEditSession(ITfContext* context, ITfComposition* composition, RECT* rectOut,

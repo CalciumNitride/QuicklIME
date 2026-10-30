@@ -3873,7 +3873,9 @@ HRESULT TextService::LaunchWordRegister(ITfContext* context)
     }
     std::wstring commandLine = L"\"" + exePath + L"\"";
     if (!selection.empty()) {
-        commandLine += L" \"" + selection + L"\"";
+        // 閉じる引用符の直前の \ の並びは、重ねないと引用符のエスケープとして読まれる
+        const size_t trailing = selection.size() - (selection.find_last_not_of(L'\\') + 1);
+        commandLine += L" \"" + selection + std::wstring(trailing, L'\\') + L"\"";
     }
 
     STARTUPINFOW startupInfo = {};
@@ -3958,7 +3960,7 @@ HRESULT TextService::UpdateConvertingDisplay(ITfContext* context)
 
 RECT TextService::CandidateAnchor(ITfContext* context)
 {
-    // composition の矩形を取得して候補ウィンドウの位置を決める
+    // composition の矩形を取得して入力パネルの位置を決める
     RECT rect = {};
     bool succeeded = false;
     const wchar_t* source = L"なし";
@@ -3992,14 +3994,14 @@ RECT TextService::CandidateAnchor(ITfContext* context)
         }
     }
     if (!config_.Get().debugLog.empty()) {
-        std::wstring message = std::wstring(L"候補ウィンドウの位置: ") + source + L" " +
+        std::wstring message = std::wstring(L"入力パネルの位置: ") + source + L" " +
                                DebugRectText(rect);
         if (failedSource != nullptr) {
             message += std::wstring(L" (取得失敗: ") + failedSource + L")";
         }
         DebugLog(message);
     }
-    FallbackIfOutsideWindow(context, &rect, L"候補ウィンドウの位置");
+    FallbackIfOutsideWindow(context, &rect, L"入力パネルの位置");
     return rect;
 }
 
@@ -4154,7 +4156,7 @@ HRESULT TextService::EndComposition(ITfContext* context, const std::wstring& com
         lastComposer_.PrependKana(RangeExcludedInComposition());
     }
 
-    // 変換状態・バーと候補ウィンドウの後始末
+    // 変換状態と入力パネルの後始末
     ClearConversion();
     ClearBar();
     barXFixed_ = false;

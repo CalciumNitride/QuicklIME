@@ -53,9 +53,6 @@
   理由が残っていない ([dictionary.md](spec/dictionary.md)「語のコスト」)
 - RELOADUSER がユーザ辞書のロックを持ったままインポート辞書の索引を作り直すので、大きいインポート辞書ではその間の変換が
   止まるおそれがある。計測はしていない ([dictionary.md](spec/dictionary.md)「登録と読み直し」)
-- 設定ファイルに書き出すコメントの見出し (`# 候補ウィンドウ`。engine/gui/src/config.rs) と、tsf/src/config.h・
-  tsf/src/text_service.cpp のログの文言に残る「候補ウィンドウ」を、[display.md](spec/display.md)「画面の部品の呼び名」の
-  呼び名に直す。コメントは利用者がファイルで目にする
 - 改行キーで送り直すアプリの既定の一覧の exe 名 (ms-teams.exe・Teams.exe・LINE.exe) が、実際のプロセス名と合っているかを
   実機で確かめる ([input.md](spec/input.md)「改行キー」)
 - ツールを前面に出す方法の見直し。設定ツールの起動では TSF 層が `AllowSetForegroundWindow` を呼び、単語登録ツールの起動では
@@ -144,8 +141,6 @@
   プロセスが残っているときにだけ起きる
 - 和暦の元号を西暦の年だけで決めるので、2019 年 1〜4 月の日付も「令和元年」になる (engine/src/datetime.rs)。
   今の日付の候補にしか使わないので、実害はほぼない
-- 単語登録ツールを開くとき、選択した文字列の末尾が `\` だと、コマンドラインの引用符の囲みが崩れる
-  (tsf/src/text_service.cpp `LaunchWordRegister`)
 - 直前の確定が英字のときの英字判定 (ルール 6) と、run の無いときの Space を半角にする判定は、確定アンドゥの記憶を見る。
   この記憶はキャレットの移動やクリックでは消えず、キャレットの前の文字列とも照らさないので、別の場所へ移っても英文の
   途中とみなすことがある ([modeless.md](spec/modeless.md)「直前の確定が英字のとき (ルール 6)」)

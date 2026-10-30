@@ -181,7 +181,7 @@ private:
     HRESULT StartComposition(ITfContext* context);
     // composition のテキストを任意の文字列に差し替える
     HRESULT UpdateCompositionText(ITfContext* context, const std::wstring& text);
-    // 確定 (commitText が空なら取消)。変換状態と候補ウィンドウも後始末する
+    // 確定 (commitText が空なら取消)。変換状態と入力パネルも後始末する
     HRESULT EndComposition(ITfContext* context, const std::wstring& commitText);
     // composition を使わない直接挿入 (run が無いときのスペース入力用)
     HRESULT InsertText(ITfContext* context, const std::wstring& text);
@@ -201,7 +201,7 @@ private:
     // 表示は行わない (両方式で共用)
     void BuildConversionSegments();
     HRESULT CycleCandidate(ITfContext* context, int delta);
-    // Ctrl+1〜9: 候補ウィンドウの表示中ページ内の番号 (0始まり) の候補を現在文節で選び、
+    // Ctrl+1〜9: 変換の候補一覧の表示中ページ内の番号 (0始まり) の候補を現在文節で選び、
     // 変換全体を確定する (対応する候補が無ければ何もしない)
     HRESULT CommitCandidateByNumber(ITfContext* context, size_t number);
     // 現在文節の選択を index に変えて表示へ反映する共通処理
@@ -217,7 +217,7 @@ private:
     // F6-F10: 現在文節 (未変換なら全文を1文節にして) を指定の文字種へ直接変換する。
     // F7/F8 は連打で後ろから1文字ずつひらがなに戻し、F9/F10 は連打で
     // 元のまま → 先頭大文字 → 全部大文字 (→ 全部小文字) と循環する。
-    // 候補ウィンドウは表示しない
+    // 変換の候補一覧は表示しない
     HRESULT DirectConvert(ITfContext* context, ConversionForm form);
     // F3: 現在文節 (未変換なら全文) を人名の候補のみで変換する
     HRESULT ConvertToNames(ITfContext* context);
@@ -396,7 +396,7 @@ private:
                    bool* replaced = nullptr);
     // 文字位置から得た rect の左上が文書のルートウィンドウの外なら、ルートウィンドウの中央の点
     // (幅・高さ 0) に置き換えて true を返す。TSF が入力欄と無関係な位置 (モニタの隅に丸めた値など) を
-    // 返すアプリでも候補ウィンドウ等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
+    // 返すアプリでも入力パネル等を見える場所に出すため。ルートウィンドウが得られなければ何もしない。
     // where は置き換えたときのデバッグログの見出し
     bool FallbackIfOutsideWindow(ITfContext* context, RECT* rect, const wchar_t* where) const;
     // 文書のルートウィンドウ。ビューの GetWnd のルート、取れなければ入力を受けているスレッドの

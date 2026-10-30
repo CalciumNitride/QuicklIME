@@ -480,7 +480,7 @@ impl Config {
             "input_scope_passthrough\t{}\n",
             self.input_scope_passthrough as u32
         ));
-        text.push_str("\n# 候補ウィンドウ\n");
+        text.push_str("\n# 入力パネル\n");
         text.push_str(&format!("candidate_bar\t{}\n", self.candidate_bar as u32));
         text.push_str(&format!("next_word\t{}\n", self.next_word as u32));
         text.push_str(&format!("next_word_timeout\t{}\n", self.next_word_timeout));
