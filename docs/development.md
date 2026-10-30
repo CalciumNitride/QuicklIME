@@ -195,12 +195,17 @@ CMake と VC++ ランタイムは Visual Studio 2022 Community の既定のイ�
 | `scripts\dev-deploy.ps1` | エンジンのみ反映 (release ビルド → 常用の Program Files へコピー。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
 | `scripts\dev-deploy.ps1 -Dll` | エンジン反映に加え、TSF DLL を Debug ビルドして開発版へ切替 (要管理者権限) |
 | `scripts\dev-deploy.ps1 -Dll -Install` | エンジン反映に加え、TSF DLL を Release ビルドして常用インストール版へ直接反映 (再起動は不要。Program Files への書き込みが通常権限で成功する環境なら管理者権限は不要) |
-| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限) |
+| `scripts\dev-deploy.ps1 -Restore` | DLL を開発版からインストール版へ戻す (要管理者権限)。エンジンは戻さない |
+
+エンジンには開発版への切替が無く、`-Restore` 以外はどの指定でも常用の Program Files のエンジンを上書きする。
+常用のエンジンに触れずに試すときは、[検証用の環境変数](#検証用の環境変数) と `.claude/CLAUDE.md`
+「エンジン検証の隔離」の環境変数で隔離したエンジンを使う。
 
 DLL の反映方法は用途で使い分ける。
 
 - **`-Dll`** (開発版切替): `tsf\build\Debug\QuicklIME.dll` に regsvr32 で排他的に切り替える。
-  常用インストール版には触れない。確認が終わったら `-Restore` で必ず戻すこと
+  常用インストール版の DLL には触れない。切り替わるのは 64bit のアプリだけで、32bit のアプリは
+  インストール版の `x86\QuicklIME.dll` を使い続ける。確認が終わったら `-Restore` で必ず戻すこと
 - **`-Dll -Install`** (インストール版更新): 常用インストール版の DLL 自体を新しいビルドに
   差し替える。ロード中の DLL を `.old-<日時>` にリネーム退避してから同じパスに新 DLL を
   コピーするので、レジストリ再登録も PC 再起動も不要 (インストーラでの更新は
@@ -210,13 +215,15 @@ DLL の反映方法は用途で使い分ける。
 手動で行う場合 (開発版切替):
 
 ```
-regsvr32 tsf\build\Debug\QuicklIME.dll      # 登録
-regsvr32 /u tsf\build\Debug\QuicklIME.dll   # 解除
+regsvr32 tsf\build\Debug\QuicklIME.dll
 ```
 
 インストール版と開発版は同じ CLSID を共有し、後から regsvr32 (または再インストール) した
 方に登録が切り替わる。開発を終えて常用へ戻すときは、インストーラを再実行するか
 `regsvr32 "%ProgramFiles%\QuicklIME\QuicklIME.dll"` で戻す。
+
+`regsvr32 /u` は戻す操作に使わない。共通の CLSID と入力方式のプロファイルを丸ごと消すため、
+どちらの DLL で実行してもインストール版を含めて QuicklIME が IME の一覧から消える。
 
 ## 注意
 
