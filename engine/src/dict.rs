@@ -19,6 +19,7 @@ use fst::automaton::Str;
 use fst::raw::Output;
 use fst::{Automaton, IntoStreamer, Streamer};
 
+use crate::textfile;
 use crate::typo;
 
 /// 辞書の1エントリ (読みは Dictionary のキー側に持つ)
@@ -322,7 +323,7 @@ impl Dictionary {
                 continue;
             }
             found = true;
-            dict.load_from(BufReader::new(File::open(&path)?))?;
+            textfile::report_skipped(dict.load_from(BufReader::new(File::open(&path)?))?, &path);
         }
         if !found {
             return Err(io::Error::new(
@@ -332,7 +333,7 @@ impl Dictionary {
         }
         for path in extra {
             if path.is_file() {
-                dict.load_from(BufReader::new(File::open(path)?))?;
+                textfile::report_skipped(dict.load_from(BufReader::new(File::open(path)?))?, path);
             }
         }
         dict.finalize();
@@ -371,10 +372,9 @@ impl Dictionary {
         self.fst = builder.into_map();
     }
 
-    /// 1ファイル分のエントリを読み込む (テストからも使う)
-    pub fn load_from(&mut self, reader: impl BufRead) -> io::Result<()> {
-        for line in reader.lines() {
-            let line = line?;
+    /// 1ファイル分のエントリを読み込む (テストからも使う)。戻り値は読み飛ばした行の数
+    pub fn load_from(&mut self, reader: impl BufRead) -> io::Result<usize> {
+        textfile::read_lines(reader, |line| {
             let mut fields = line.split('\t');
             let (Some(reading), Some(left), Some(right), Some(cost), Some(surface)) = (
                 fields.next(),
@@ -383,12 +383,12 @@ impl Dictionary {
                 fields.next(),
                 fields.next(),
             ) else {
-                continue; // 列が足りない行は無視
+                return; // 列が足りない行は無視
             };
             let (Ok(left_id), Ok(right_id), Ok(cost)) =
                 (left.parse::<u16>(), right.parse::<u16>(), cost.parse::<i16>())
             else {
-                continue; // 数値でない行は無視
+                return; // 数値でない行は無視
             };
             self.staging.push((
                 reading.to_string(),
@@ -400,8 +400,7 @@ impl Dictionary {
                 },
             ));
             self.entry_count += 1;
-        }
-        Ok(())
+        })
     }
 
     /// 文脈ID・コストを解決済みのエントリを1件積む (インポート辞書用)。
@@ -412,26 +411,26 @@ impl Dictionary {
     }
 
     /// Mozc の symbol.tsv (記号辞書) を読み込む。
-    /// フォーマット: 品詞\t記号\t読み(空白区切りで複数)\t説明... (先頭行はヘッダ)
-    pub fn load_symbols(&mut self, path: &Path) -> io::Result<()> {
+    /// フォーマット: 品詞\t記号\t読み(空白区切りで複数)\t説明... (先頭行はヘッダ)。戻り値は読み飛ばした行の数
+    pub fn load_symbols(&mut self, path: &Path) -> io::Result<usize> {
         self.load_symbols_from(BufReader::new(File::open(path)?))
     }
 
-    /// 1ファイル分の記号エントリを読み込む (テストからも使う)
-    pub fn load_symbols_from(&mut self, reader: impl BufRead) -> io::Result<()> {
-        for (i, line) in reader.lines().enumerate() {
-            let line = line?;
-            if i == 0 && line.starts_with("POS\t") {
-                continue; // ヘッダ行
+    /// 1ファイル分の記号エントリを読み込む (テストからも使う)。戻り値は読み飛ばした行の数
+    pub fn load_symbols_from(&mut self, reader: impl BufRead) -> io::Result<usize> {
+        let mut first = true;
+        textfile::read_lines(reader, |line| {
+            if std::mem::take(&mut first) && line.starts_with("POS\t") {
+                return; // ヘッダ行
             }
             let mut fields = line.split('\t');
             let (Some(_pos), Some(symbol), Some(readings)) =
                 (fields.next(), fields.next(), fields.next())
             else {
-                continue; // 列が足りない行は無視
+                return; // 列が足りない行は無視
             };
             if symbol.is_empty() {
-                continue;
+                return;
             }
             for reading in readings.split(' ').filter(|r| !r.is_empty()) {
                 let list = self.symbols.entry(reading.to_string()).or_default();
@@ -440,28 +439,26 @@ impl Dictionary {
                     self.symbol_count += 1;
                 }
             }
-        }
-        Ok(())
+        })
     }
 
     /// Mozc の single_kanji.tsv (単漢字辞書) を読み込む。
-    /// フォーマット: 読み\t漢字を連結した文字列 (# で始まる行と空行は読み飛ばす)
-    pub fn load_single_kanji(&mut self, path: &Path) -> io::Result<()> {
+    /// フォーマット: 読み\t漢字を連結した文字列 (# で始まる行と空行は読み飛ばす)。戻り値は読み飛ばした行の数
+    pub fn load_single_kanji(&mut self, path: &Path) -> io::Result<usize> {
         self.load_single_kanji_from(BufReader::new(File::open(path)?))
     }
 
-    /// 1ファイル分の単漢字エントリを読み込む (テストからも使う)
-    pub fn load_single_kanji_from(&mut self, reader: impl BufRead) -> io::Result<()> {
-        for line in reader.lines() {
-            let line = line?;
+    /// 1ファイル分の単漢字エントリを読み込む (テストからも使う)。戻り値は読み飛ばした行の数
+    pub fn load_single_kanji_from(&mut self, reader: impl BufRead) -> io::Result<usize> {
+        textfile::read_lines(reader, |line| {
             if line.is_empty() || line.starts_with('#') {
-                continue;
+                return;
             }
             let Some((reading, kanji)) = line.split_once('\t') else {
-                continue; // 列が足りない行は無視
+                return; // 列が足りない行は無視
             };
             if reading.is_empty() {
-                continue;
+                return;
             }
             let list = self.single_kanji.entry(reading.to_string()).or_default();
             for c in kanji.chars() {
@@ -472,8 +469,7 @@ impl Dictionary {
                     self.single_kanji_readings.entry(c).or_default().push(reading.to_string());
                 }
             }
-        }
-        Ok(())
+        })
     }
 
     /// 読みに対応する単漢字の一覧を返す (single_kanji.tsv の記載順)
@@ -987,6 +983,22 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].surface, "神戸");
         assert_eq!((entries[1].surface.as_str(), entries[1].left_id), ("寛部", 1921));
+        assert_eq!(dict.lookup("あられ")[0].surface, "霰");
+    }
+
+    #[test]
+    fn utf8として読めない行だけを読み飛ばして前後の語を引ける() {
+        let dir = std::env::temp_dir().join(format!("quicklime-dict-unreadable-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut data = "かんべ\t1851\t1851\t5000\t神戸\n".as_bytes().to_vec();
+        data.extend_from_slice(b"\xff\xfe\t1851\t1851\t5000\t\xff\n");
+        data.extend_from_slice("あられ\t1851\t1851\t8999\t霰\n".as_bytes());
+        std::fs::write(dir.join("dictionary00.txt"), data).unwrap();
+        let dict = Dictionary::load(&dir, &[]).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(dict.entry_count(), 2);
+        assert_eq!(dict.lookup("かんべ")[0].surface, "神戸");
         assert_eq!(dict.lookup("あられ")[0].surface, "霰");
     }
 }

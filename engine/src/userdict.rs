@@ -31,6 +31,7 @@ use crate::dict::{self, Dictionary, Entry, FuzzyPrefix, SurfaceIndex, SurfaceMat
 use crate::english;
 use crate::learn;
 use crate::pos::{FunctionalIds, DEFAULT_NOUN_ID};
+use crate::textfile;
 use crate::typo;
 
 /// 短縮よみの品詞名 (ファイル上の表記)
@@ -147,7 +148,7 @@ impl UserDict {
         let mut dict =
             UserDict { path: Some(path.clone()), learned_path, import_dir, ..UserDict::empty() };
         if let Ok(file) = File::open(&path) {
-            dict.load_from(BufReader::new(file), functional);
+            textfile::report_skipped(dict.load_from(BufReader::new(file), functional), &path);
             eprintln!(
                 "ユーザ辞書を読み込みました: 短縮よみ {} 件・単語 {} 件 [{}]",
                 dict.shortcut_count(),
@@ -155,7 +156,7 @@ impl UserDict {
                 path.display()
             );
         }
-        dict.load_learned(functional);
+        dict.load_learned_on_start(functional);
         if dict.learned_count() > 0 {
             eprintln!("複合語の学習データを読み込みました: {} 件", dict.learned_count());
         }
@@ -175,32 +176,44 @@ impl UserDict {
         self.english.clear();
         self.english_forms.clear();
         if let Ok(file) = File::open(&path) {
-            self.load_from(BufReader::new(file), functional);
+            textfile::report_skipped(self.load_from(BufReader::new(file), functional), &path);
         }
         self.learned.clear();
         self.load_learned(functional);
     }
 
-    /// 複合語の学習ログ (読み\t表記) を読み込む
-    fn load_learned(&mut self, functional: &FunctionalIds) {
-        let Some(path) = self.learned_path.clone() else {
-            return;
-        };
-        if let Ok(file) = File::open(&path) {
-            self.load_learned_from(BufReader::new(file), functional);
+    /// 起動時に複合語の学習ログを読み込む。読み飛ばした行があれば、ファイル全体の書き直し
+    /// (forget_learned) で消える前に元のファイルを退避する。RELOADUSER は単語登録のたびに来るので、
+    /// そこで退避すると壊れているあいだ退避ファイルが増え続ける。起動時の退避で元の内容は残っている
+    fn load_learned_on_start(&mut self, functional: &FunctionalIds) {
+        if self.load_learned(functional) > 0
+            && let Some(path) = &self.learned_path
+        {
+            learn::backup_unreadable(path);
         }
     }
 
-    /// 複合語の学習ログを読み込む (テストからも使う)。不正な行は無視する
-    pub fn load_learned_from(&mut self, reader: impl BufRead, functional: &FunctionalIds) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// 複合語の学習ログ (読み\t表記) を読み込む。戻り値は読み飛ばした行の数
+    fn load_learned(&mut self, functional: &FunctionalIds) -> usize {
+        let Some(path) = self.learned_path.clone() else {
+            return 0;
+        };
+        let Ok(file) = File::open(&path) else {
+            return 0;
+        };
+        let skipped = self.load_learned_from(BufReader::new(file), functional);
+        textfile::report_skipped(skipped, &path);
+        skipped
+    }
+
+    /// 複合語の学習ログを読み込む (テストからも使う)。不正な行は無視する。戻り値は読み飛ばした行の数
+    pub fn load_learned_from(&mut self, reader: impl BufRead, functional: &FunctionalIds) -> usize {
+        textfile::read_lines(reader, |line| {
             if let Some((reading, surface)) = line.trim_end().split_once('\t') {
                 self.insert_learned(reading, surface, functional);
             }
-        }
+        })
+        .unwrap_or(0)
     }
 
     /// インポート辞書のディレクトリにある *.tsv をすべて読み直す。
@@ -222,9 +235,12 @@ impl UserDict {
             .unwrap_or_default();
         // 同じ読みの候補の並びを起動ごとに変えないため、ファイル名順に読む
         paths.sort();
-        let readers: Vec<BufReader<File>> =
-            paths.iter().filter_map(|p| File::open(p).ok().map(BufReader::new)).collect();
-        self.load_imported_from(readers, functional);
+        let (opened, readers): (Vec<&PathBuf>, Vec<BufReader<File>>) =
+            paths.iter().filter_map(|p| File::open(p).ok().map(|f| (p, BufReader::new(f)))).unzip();
+        let skipped = self.load_imported_from(readers, functional);
+        for (path, skipped) in opened.into_iter().zip(skipped) {
+            textfile::report_skipped(skipped, path);
+        }
         if self.imported_count() > 0 {
             eprintln!(
                 "インポート辞書を読み込みました: {} ファイル・{} 件 [{}]",
@@ -236,12 +252,13 @@ impl UserDict {
     }
 
     /// インポート辞書を読み込み直す (テストからも使う)。readers は1ファイルずつ。
-    /// 形式は正規化済みの 読み\t表記\t品詞 で、未対応の品詞・不正な行は無視する
+    /// 形式は正規化済みの 読み\t表記\t品詞 で、未対応の品詞・不正な行は無視する。
+    /// 戻り値は readers の順の、読み飛ばした行の数
     pub fn load_imported_from(
         &mut self,
         readers: impl IntoIterator<Item = impl BufRead>,
         functional: &FunctionalIds,
-    ) {
+    ) -> Vec<usize> {
         // 品詞ごとの find_id は id.def の線形走査なので、語ごとに引かず先に解決しておく
         let ids: HashMap<&str, u16> = NOUN_POS
             .iter()
@@ -252,19 +269,17 @@ impl UserDict {
             .collect();
         let mut imported = Dictionary::empty();
         let mut shortcuts = Vec::new();
+        let mut skipped = Vec::new();
         for reader in readers {
-            for line in reader.lines() {
-                let Ok(line) = line else {
-                    break;
-                };
+            let count = textfile::read_lines(reader, |line| {
                 let mut fields = line.trim_end_matches('\r').split('\t');
                 let (Some(reading), Some(surface), Some(pos)) =
                     (fields.next(), fields.next(), fields.next())
                 else {
-                    continue;
+                    return;
                 };
                 if reading.is_empty() || surface.is_empty() {
-                    continue;
+                    return;
                 }
                 if pos == SHORTCUT_POS {
                     shortcuts.push((reading.to_string(), surface.to_string()));
@@ -279,31 +294,31 @@ impl UserDict {
                         },
                     );
                 }
-            }
+            });
+            skipped.push(count.unwrap_or(0));
         }
         imported.finalize();
         self.imported_index = SurfaceIndex::build(&imported);
         self.imported = imported;
         self.imported_shortcuts = shortcuts;
+        skipped
     }
 
-    /// 1ファイル分のエントリを読み込む (テストからも使う)。不正な行は無視する
-    pub fn load_from(&mut self, reader: impl BufRead, functional: &FunctionalIds) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// 1ファイル分のエントリを読み込む (テストからも使う)。不正な行は無視する。戻り値は読み飛ばした行の数
+    pub fn load_from(&mut self, reader: impl BufRead, functional: &FunctionalIds) -> usize {
+        textfile::read_lines(reader, |line| {
             if line.starts_with('#') {
-                continue; // コメント行
+                return; // コメント行
             }
             let mut fields = line.split('\t');
             let (Some(reading), Some(surface)) = (fields.next(), fields.next()) else {
-                continue; // 列が足りない行は無視
+                return; // 列が足りない行は無視
             };
             // 品詞列が無い行は短縮よみとみなす (旧フォーマット互換)
             let pos = fields.next().unwrap_or(SHORTCUT_POS);
             let _ = self.insert(reading, surface, pos, functional);
-        }
+        })
+        .unwrap_or(0)
     }
 
     /// 1件登録する: メモリへ反映し、ユーザ辞書ファイルへ追記する (ADDWORD 用)。
@@ -1090,5 +1105,77 @@ mod tests {
 
         let _ = std::fs::remove_file(&learned_path);
         let _ = std::fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn ユーザ辞書の読めない行の後ろに追記した語を引ける() {
+        let dir = std::env::temp_dir()
+            .join(format!("quicklime-userdict-unreadable-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("userdict.tsv");
+        let mut data = "かんべ\t神戸\t姓\n".as_bytes().to_vec();
+        data.extend_from_slice(b"\xff\xfe\t\xff\t\xe5\x90\x8d\xe8\xa9\n");
+        std::fs::write(&path, data).unwrap();
+        let functional = sample_functional();
+
+        let mut dict = UserDict { path: Some(path.clone()), ..UserDict::empty() };
+        dict.add("めーる", "mail@example.com", "短縮よみ", &functional).unwrap();
+        dict.reload(&functional);
+        assert_eq!(dict.lookup_words("かんべ")[0].surface, "神戸");
+        assert_eq!(dict.lookup_shortcuts("めーる"), ["mail@example.com"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn インポート辞書の読めない行の後ろの行を読む() {
+        let mut dict = UserDict::empty();
+        let mut data = b"\xff\xfe\t\xff\t\xe5\x90\x8d\xe8\xa9\n".to_vec();
+        data.extend_from_slice("にこにこ\tニコニコ大百科\t固有名詞\n".as_bytes());
+        let skipped = dict.load_imported_from([data.as_slice()], &sample_functional());
+        assert_eq!(skipped, [1]);
+        assert_eq!(dict.imported_words("にこにこ")[0].surface, "ニコニコ大百科");
+    }
+
+    /// dir にある learning_word.tsv の退避ファイル
+    fn learned_backups(dir: &std::path::Path) -> Vec<PathBuf> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("learning_word.tsv.unreadable-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn 複合語の学習の読めない行の後ろを読み起動時だけ退避する() {
+        let dir = std::env::temp_dir()
+            .join(format!("quicklime-learnword-unreadable-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let learned_path = dir.join("learning_word.tsv");
+        let mut data = b"\xff\xfe\t\xff\n".to_vec();
+        data.extend_from_slice("けいしょうか\t形象化\n".as_bytes());
+        std::fs::write(&learned_path, &data).unwrap();
+        let functional = sample_functional();
+
+        let mut dict = UserDict { learned_path: Some(learned_path.clone()), ..UserDict::empty() };
+        dict.load_learned_on_start(&functional);
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+        let backups = learned_backups(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(std::fs::read(&backups[0]).unwrap(), data);
+
+        // RELOADUSER の読み直しでは退避しない
+        std::fs::remove_file(&backups[0]).unwrap();
+        dict.reload(&functional);
+        assert_eq!(dict.lookup_words("けいしょうか")[0].surface, "形象化");
+        assert!(learned_backups(&dir).is_empty());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

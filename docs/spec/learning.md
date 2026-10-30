@@ -217,6 +217,22 @@ learning_stats.tsv が無く、古い形式の learning.tsv か learning_context
 - 取り込んだ後は learning_stats.tsv を書き直して作り、learning.tsv と learning_context.tsv には書かない。古いファイルは
   消さずに残す (古いエンジンに戻したときに使えるようにするため)
 
+### 読めない行
+
+- 学習のファイル (learning_stats.tsv・learning_boundary.tsv・learning_word.tsv と、取り込む learning.tsv・
+  learning_context.tsv) の UTF-8 として読めない行は、その行だけを読み飛ばして続きを読む。読み飛ばした行があれば、
+  ファイルごとに行数をログに出す
+- エンジンの起動時に learning_stats.tsv か learning_word.tsv で行を読み飛ばしたら、書き直しより前に、元のファイルを
+  同じディレクトリの `<ファイル名>.unreadable-<YYYYMMDD-HHMMSS>` (ローカル時刻) へコピーし、退避先をログに出す。
+  この 2 つはエンジンがメモリの内容でファイル全体を書き直す (起動時の書き直し・学習の削除) ので、読めない行が消える前に
+  元のバイト列を残すため。コピーに失敗したらログに出して続ける
+- 書き直しで読めない行は消えるので、それより後の起動では退避しない
+- RELOADUSER で learning_word.tsv を読み直すときは退避しない。単語登録のたびに読み直すので、ファイルが壊れているあいだ
+  退避ファイルが増え続けるため。起動時に退避した時点で元の内容は残っている
+- learning_boundary.tsv は追記だけで書き直さないので、読めない行はファイルに残る。退避しない
+- 採らなかった案: 読めない行を U+FFFD に置き換えて読む。置き換えた読みや表記が正しい語として学習やユーザ辞書に入り、
+  そのあとの書き直しで元のバイト列が失われるため
+
 ## 学習の削除 (FORGET)
 
 候補バーと後続語の予測で選んでいる候補の学習を、`key.forget_learning` (既定 Ctrl+Delete) で消す。誤って確定した

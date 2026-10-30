@@ -11,4 +11,7 @@ pub mod keys;
 pub mod package_acl;
 pub mod preview;
 pub mod regword;
+// 読めない行を読み飛ばす行の読み方はエンジン本体と共有する
+#[path = "../../src/textfile.rs"]
+pub mod textfile;
 pub mod win32;

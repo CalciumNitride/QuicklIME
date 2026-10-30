@@ -20,6 +20,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
+use crate::textfile;
 use crate::typo;
 
 /// 文脈キー (直前文節の表記) の最大文字数。
@@ -170,7 +171,8 @@ impl LearningStore {
         store.load_files(path, split);
         let boundary_path = sibling_path(path, "_boundary");
         if let Ok(file) = File::open(&boundary_path) {
-            store.load_boundary_from(BufReader::new(file));
+            let skipped = store.load_boundary_from(BufReader::new(file));
+            textfile::report_skipped(skipped, &boundary_path);
             eprintln!(
                 "境界学習データを読み込みました: {} 件 [{}]",
                 store.boundary.len(),
@@ -208,7 +210,11 @@ impl LearningStore {
     fn load_files(&mut self, learning_path: &Path, split: &Splitter) {
         let stats_path = self.stats_path.clone().expect("stats_path");
         if let Ok(file) = File::open(&stats_path) {
-            let lines = self.load_stats_from(BufReader::new(file));
+            let (lines, skipped) = self.load_stats_from(BufReader::new(file));
+            textfile::report_skipped(skipped, &stats_path);
+            if skipped > 0 {
+                backup_unreadable(&stats_path);
+            }
             self.refresh_phrases(split);
             eprintln!("学習データを読み込みました: {} 件 [{}]", self.entry_count(), stats_path.display());
             if lines > 2 * self.entry_count() {
@@ -223,10 +229,10 @@ impl LearningStore {
             return;
         }
         if let Some(file) = plain {
-            self.import_plain(BufReader::new(file), split);
+            textfile::report_skipped(self.import_plain(BufReader::new(file), split), learning_path);
         }
         if let Some(file) = context {
-            self.import_context(BufReader::new(file));
+            textfile::report_skipped(self.import_context(BufReader::new(file)), &ctx_path);
         }
         eprintln!(
             "古い学習データを取り込みました: {} 件 [{}・{}]",
@@ -237,13 +243,10 @@ impl LearningStore {
         self.rewrite();
     }
 
-    /// learning_stats.tsv の内容を読む (同じ件は後の行が勝つ)。戻り値は読んだ有効な行の数
-    pub fn load_stats_from(&mut self, reader: impl BufRead) -> usize {
+    /// learning_stats.tsv の内容を読む (同じ件は後の行が勝つ)。戻り値は読んだ有効な行の数と読み飛ばした行の数
+    pub fn load_stats_from(&mut self, reader: impl BufRead) -> (usize, usize) {
         let mut lines = 0;
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+        let skipped = textfile::read_lines(reader, |line| {
             let f: Vec<&str> = line.split('\t').collect();
             let parse = |d: &str, t: &str| -> Option<Stat> {
                 Some(Stat { d: d.parse().ok()?, t: t.parse().ok()? })
@@ -273,8 +276,9 @@ impl LearningStore {
                 _ => false,
             };
             lines += usize::from(ok);
-        }
-        lines
+        })
+        .unwrap_or(0);
+        (lines, skipped)
     }
 
     /// 読み込んだ句を辞書の語に分け直し、分けられない句を求める (learning_stats.tsv は分けた結果を持たない)
@@ -287,27 +291,23 @@ impl LearningStore {
         self.rebuild_index();
     }
 
-    /// 古い learning.tsv (読み\t表記) を記録順に、各行を 1 回の文脈なしの文節の確定として取り込む
-    pub fn import_plain(&mut self, reader: impl BufRead, split: &Splitter) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// 古い learning.tsv (読み\t表記) を記録順に、各行を 1 回の文脈なしの文節の確定として取り込む。
+    /// 戻り値は読み飛ばした行の数
+    pub fn import_plain(&mut self, reader: impl BufRead, split: &Splitter) -> usize {
+        textfile::read_lines(reader, |line| {
             if let Some((reading, surface)) = line.split_once('\t') {
                 if !reading.is_empty() && !surface.is_empty() && !surface.contains('\t') {
                     self.learn_segment(reading, surface, "", split(reading, surface).as_deref());
                 }
             }
-        }
+        })
+        .unwrap_or(0)
     }
 
     /// 古い learning_context.tsv (文脈\t読み\t表記) を記録順に取り込む。各行は文脈の句の学習だけを数える
-    /// (同じ確定の語の学習と句の学習は learning.tsv の行で数えるため)
-    pub fn import_context(&mut self, reader: impl BufRead) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// (同じ確定の語の学習と句の学習は learning.tsv の行で数えるため)。戻り値は読み飛ばした行の数
+    pub fn import_context(&mut self, reader: impl BufRead) -> usize {
+        textfile::read_lines(reader, |line| {
             let mut parts = line.splitn(3, '\t');
             if let (Some(context), Some(reading), Some(surface)) =
                 (parts.next(), parts.next(), parts.next())
@@ -316,7 +316,8 @@ impl LearningStore {
                     self.count_ctx_phrase(context, reading, surface);
                 }
             }
-        }
+        })
+        .unwrap_or(0)
     }
 
     /// 確定した文節を数える (docs/spec/learning.md「確定の数え方 (LEARN・LEARN2)」の 2〜4)。words は文節を辞書の語に分けた
@@ -795,14 +796,12 @@ impl LearningStore {
         count
     }
 
-    /// 境界学習の追記ログ (1行1読み) を読み込む
-    pub fn load_boundary_from(&mut self, reader: impl BufRead) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// 境界学習の追記ログ (1行1読み) を読み込む。戻り値は読み飛ばした行の数
+    pub fn load_boundary_from(&mut self, reader: impl BufRead) -> usize {
+        textfile::read_lines(reader, |line| {
             self.insert_boundary(line.trim_end());
-        }
+        })
+        .unwrap_or(0)
     }
 
     /// 人が文節伸縮で直した分割の文節読みを境界として記録し、ファイルへ追記する
@@ -895,6 +894,18 @@ pub fn rewrite_file(path: &Path, content: &str) -> std::io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// 読み飛ばした行のある学習のファイルを、同じディレクトリの <ファイル名>.unreadable-<日時> へコピーする。
+/// ファイル全体の書き直しで読めない行が消える前に、元のバイト列を残すため
+pub fn backup_unreadable(path: &Path) {
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(format!(".unreadable-{}", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    let backup = path.with_file_name(name);
+    match fs::copy(path, &backup) {
+        Ok(_) => eprintln!("読めない行のある学習ファイルを退避しました [{}]", backup.display()),
+        Err(e) => eprintln!("学習ファイルの退避に失敗しました ({e}) [{}]", backup.display()),
+    }
 }
 
 /// 文脈キーの正規化: 末尾 MAX_CONTEXT_KEY_CHARS 文字に切り詰める
@@ -1249,6 +1260,69 @@ mod tests {
         let store = LearningStore::open(&dir.join("learning.tsv"), &splitter(TABLE));
         assert_eq!(store.entry_count(), 0);
         assert!(!dir.join("learning_stats.tsv").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// 2 行目が UTF-8 として読めない learning_stats.tsv の中身
+    fn unreadable_stats() -> Vec<u8> {
+        let mut data = "w\tきる\t切る\t1\t1\n".as_bytes().to_vec();
+        data.extend_from_slice(b"w\t\xff\xfe\t\xff\t1\t1\n");
+        data.extend_from_slice("w\tはれ\t晴れ\t1\t2\nn\t2\n".as_bytes());
+        data
+    }
+
+    /// dir にある learning_stats.tsv の退避ファイル
+    fn stats_backups(dir: &Path) -> Vec<PathBuf> {
+        fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| {
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with("learning_stats.tsv.unreadable-"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn 学習の統計の読めない行を飛ばして続きを読み元のファイルを退避する() {
+        let dir = temp_dir("learn-unreadable");
+        let data = unreadable_stats();
+        fs::write(dir.join("learning_stats.tsv"), &data).unwrap();
+        let store = LearningStore::open(&dir.join("learning.tsv"), &splitter(TABLE));
+        assert_eq!(store.entry_count(), 2);
+        assert!(store.word_stat("きる", "切る").is_some());
+        assert!(store.word_stat("はれ", "晴れ").is_some());
+        assert_eq!(store.serial(), 2);
+        let backups = stats_backups(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), data);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 読めない行のある学習の統計を書き直しても退避ファイルに元のバイト列が残る() {
+        let dir = temp_dir("learn-unreadable-forget");
+        let stats = dir.join("learning_stats.tsv");
+        let data = unreadable_stats();
+        fs::write(&stats, &data).unwrap();
+        let mut store = LearningStore::open(&dir.join("learning.tsv"), &splitter(TABLE));
+        let words = vec![("きる".to_string(), "切る".to_string())];
+        assert_eq!(store.forget("きる", "切る", Some(&words)), 1);
+        assert_eq!(fs::read_to_string(&stats).unwrap(), "n\t2\nw\tはれ\t晴れ\t1\t2\n");
+        let backups = stats_backups(&dir);
+        assert_eq!(backups.len(), 1);
+        assert_eq!(fs::read(&backups[0]).unwrap(), data);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 学習の統計に読めない行が無ければ退避しない() {
+        let dir = temp_dir("learn-readable");
+        fs::write(dir.join("learning_stats.tsv"), "w\tきる\t切る\t1\t1\nn\t1\n").unwrap();
+        let store = LearningStore::open(&dir.join("learning.tsv"), &splitter(TABLE));
+        assert_eq!(store.entry_count(), 1);
+        assert!(stats_backups(&dir).is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 

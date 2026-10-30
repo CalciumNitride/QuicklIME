@@ -11,6 +11,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
+use crate::textfile;
 use crate::typo;
 
 /// エンジン側の設定。小さい値の集まりなので、リクエスト処理では
@@ -62,25 +63,32 @@ impl Config {
             return Config::default();
         };
         match File::open(&path) {
-            Ok(file) => Config::load_from(BufReader::new(file)),
+            Ok(file) => {
+                let (config, skipped) = Config::read(BufReader::new(file));
+                textfile::report_skipped(skipped, &path);
+                config
+            }
             Err(_) => Config::default(),
         }
     }
 
     /// 1ファイル分の設定を読み込む (テストからも使う)。不正な行・値は既定値のまま
+    #[cfg(test)]
     pub fn load_from(reader: impl BufRead) -> Self {
+        Config::read(reader).0
+    }
+
+    /// 設定と読み飛ばした行の数を返す
+    fn read(reader: impl BufRead) -> (Self, usize) {
         let mut config = Config::default();
         let mut fuzzy_level: Option<i8> = None;
         let mut typo_correction = true;
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+        let skipped = textfile::read_lines(reader, |line| {
             if line.starts_with('#') {
-                continue; // コメント行
+                return; // コメント行
             }
             let Some((key, value)) = line.split_once('\t') else {
-                continue;
+                return;
             };
             match key {
                 "learning" => parse_bool(value, &mut config.learning),
@@ -97,10 +105,11 @@ impl Config {
                 },
                 _ => {} // 未知キー (TSF 層向けを含む) は無視
             }
-        }
+        })
+        .unwrap_or(0);
         // typo_correction 0 は補正を切る古い書き方なので、fuzzy_level が無いときだけ段階 −1 として読む
         config.fuzzy_level = fuzzy_level.unwrap_or(if typo_correction { 0 } else { typo::MIN_LEVEL });
-        config
+        (config, skipped)
     }
 }
 
@@ -250,5 +259,15 @@ mod tests {
         let config = Config::load_from(Cursor::new(text));
         assert!(config.learning);
         assert_eq!(config.max_predictions, 9);
+    }
+
+    #[test]
+    fn 読めない行の後ろの設定を読む() {
+        let mut data = b"learning\t\xff\xfe\n".to_vec();
+        data.extend_from_slice(b"suggest\t0\n");
+        let (config, skipped) = Config::read(Cursor::new(data));
+        assert_eq!(skipped, 1);
+        assert!(config.learning);
+        assert!(!config.suggest);
     }
 }

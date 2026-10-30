@@ -104,6 +104,9 @@ mod predict;
 #[path = "../src/suggest.rs"]
 mod suggest;
 #[allow(dead_code)]
+#[path = "../src/textfile.rs"]
+mod textfile;
+#[allow(dead_code)]
 #[path = "../src/typo.rs"]
 mod typo;
 #[allow(dead_code)]
@@ -1742,7 +1745,7 @@ mod tests {
         assert_eq!(train.last(), Some(&"n\t5"));
 
         let mut store = LearningStore::in_memory();
-        assert_eq!(store.load_stats_from(split.train_text.as_bytes()), 20);
+        assert_eq!(store.load_stats_from(split.train_text.as_bytes()).0, 20);
     }
 
     #[test]

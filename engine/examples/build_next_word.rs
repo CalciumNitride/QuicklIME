@@ -53,6 +53,9 @@ mod reverse;
 #[path = "../src/suggest.rs"]
 mod suggest;
 #[allow(dead_code)]
+#[path = "../src/textfile.rs"]
+mod textfile;
+#[allow(dead_code)]
 #[path = "../src/typo.rs"]
 mod typo;
 #[allow(dead_code)]

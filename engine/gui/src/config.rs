@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::apps::{DEFAULT_NEWLINE_APPS, ImeStart, format_ime_start_apps, parse_app_list, parse_ime_start_apps};
 use crate::keys::{KEY_ITEMS, KeyAssign, STATES, default_key_assigns, format_key_list, parse_key_list};
+use crate::textfile;
 
 /// LLM のバックエンド: (設定上の名前, 表示名)
 pub const LLM_BACKENDS: [(&str, &str); 2] = [("cpu", "CPU"), ("vulkan", "GPU (Vulkan)")];
@@ -270,8 +271,17 @@ impl Config {
         let Ok(file) = std::fs::File::open(&path) else {
             return config;
         };
-        config.apply_lines(BufReader::new(file).lines().map_while(Result::ok));
+        textfile::report_skipped(config.read_from(BufReader::new(file)), &path);
         config
+    }
+
+    /// reader の行を apply_lines で反映する。UTF-8 として読めない行は読み飛ばし、その数を返す。
+    /// ほかの読み込みのエラーではそこまでの行を反映する
+    pub fn read_from(&mut self, reader: impl BufRead) -> usize {
+        let mut lines = Vec::new();
+        let skipped = textfile::read_lines(reader, |line| lines.push(line)).unwrap_or(0);
+        self.apply_lines(lines);
+        skipped
     }
 
     /// 設定ファイルの行を順に反映する (コメント・タブの無い行は読み飛ばす)。fuzzy_level の行が無ければ、
@@ -918,5 +928,13 @@ input_buffer	panel
         assert_eq!(config.keys[7].overrides[0], Some(vec![key("Ctrl+K")]));
         assert_eq!(config.keys[5].overrides[0], None);
         assert_eq!(config.keys[0].keys, vec![key("Convert"), key("Ctrl+Space")]);
+    }
+
+    #[test]
+    fn skips_unreadable_lines() {
+        let mut config = Config::default();
+        let skipped = config.read_from(b"fuzzy_level\t\xff\xfe\nfuzzy_level\t2\n".as_slice());
+        assert_eq!(skipped, 1);
+        assert_eq!(config.fuzzy_level, 2);
     }
 }

@@ -4,6 +4,10 @@
 ドキュメントの構成の設計書と、採らなかった案・検討段階の草案を置く。今の仕様は
 [docs/spec/README.md](../spec/README.md) を見る。
 
+- [unreadable-lines.md](unreadable-lines.md): 辞書・学習・ユーザ辞書・設定のファイルの UTF-8 として読めない行を、その行だけ
+  読み飛ばして続きを読む。書き直す学習のファイル (learning_stats.tsv・learning_word.tsv) は起動時に退避する。
+  [docs/spec/dictionary.md](../spec/dictionary.md)・[docs/spec/learning.md](../spec/learning.md)・
+  [docs/spec/tools.md](../spec/tools.md)・[docs/spec/modeless.md](../spec/modeless.md) へ移した
 - [word-prediction.md](word-prediction.md): 予測を語の単位にする。打鍵が句の頭の語 (名詞系の語の後ろに助詞・助動詞が
   続く句の名詞まで) を打ち切るまで頭の語を予測し、後続語の予測は名詞の後に付属語を出し、前文脈を名詞 + 付属語に連結する。
   [docs/spec/suggest.md](../spec/suggest.md)・[docs/spec/engine.md](../spec/engine.md)・[docs/spec/learning.md](../spec/learning.md)・

@@ -21,6 +21,7 @@ mod pos;
 mod predict;
 mod reverse;
 mod suggest;
+mod textfile;
 mod typo;
 mod userdict;
 
@@ -420,11 +421,14 @@ fn load_single_kanji(dict: &mut Dictionary, dictionary_dir: &Path) {
         return;
     };
     match dict.load_single_kanji(path) {
-        Ok(()) => eprintln!(
-            "単漢字辞書を読み込みました: {} エントリ [{}]",
-            dict.single_kanji_count(),
-            path.display()
-        ),
+        Ok(skipped) => {
+            eprintln!(
+                "単漢字辞書を読み込みました: {} エントリ [{}]",
+                dict.single_kanji_count(),
+                path.display()
+            );
+            textfile::report_skipped(skipped, path);
+        }
         Err(e) => {
             eprintln!("単漢字辞書の読み込みに失敗しました ({e})。単漢字候補なしで動作します")
         }
@@ -444,11 +448,14 @@ fn load_symbols(dict: &mut Dictionary, dictionary_dir: &Path) {
         return;
     };
     match dict.load_symbols(path) {
-        Ok(()) => eprintln!(
-            "記号辞書を読み込みました: {} エントリ [{}]",
-            dict.symbol_count(),
-            path.display()
-        ),
+        Ok(skipped) => {
+            eprintln!(
+                "記号辞書を読み込みました: {} エントリ [{}]",
+                dict.symbol_count(),
+                path.display()
+            );
+            textfile::report_skipped(skipped, path);
+        }
         Err(e) => eprintln!("記号辞書の読み込みに失敗しました ({e})。記号候補なしで動作します"),
     }
 }

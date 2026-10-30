@@ -11,6 +11,8 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::textfile;
+
 /// 英単語辞書のファイル名 (辞書ディレクトリ直下)。先頭が一般語、2番目が固有名詞・技術用語
 pub const WORD_FILES: [&str; 2] = ["english-words.txt", "english-names.txt"];
 
@@ -57,8 +59,14 @@ impl EnglishDict {
 
     /// dir 直下の WORD_FILES を読み込む。無いファイルは飛ばし、読めた語数を返す
     pub fn load_dir(dir: &Path) -> (Self, usize) {
-        let open = |name: &str| File::open(dir.join(name)).ok().map(BufReader::new);
-        let dict = Self::load_with_names(open(WORD_FILES[0]), open(WORD_FILES[1]));
+        let mut dict = EnglishDict::empty();
+        for (name, keep_forms) in [(WORD_FILES[0], false), (WORD_FILES[1], true)] {
+            let path = dir.join(name);
+            if let Ok(file) = File::open(&path) {
+                textfile::report_skipped(dict.read_words(BufReader::new(file), keep_forms), &path);
+            }
+        }
+        dict.finish();
         let count = dict.words.len();
         (dict, count)
     }
@@ -70,6 +78,7 @@ impl EnglishDict {
     }
 
     /// words と names の語を照合に使い、names の語は表記も持つ (1行の形式は load_from と同じ)
+    #[cfg(test)]
     pub fn load_with_names(
         words: impl IntoIterator<Item = impl BufRead>,
         names: impl IntoIterator<Item = impl BufRead>,
@@ -81,26 +90,30 @@ impl EnglishDict {
         for reader in names {
             dict.read_words(reader, true);
         }
-        dict.words.sort();
-        dict.words.dedup();
+        dict.finish();
         dict
     }
 
-    fn read_words(&mut self, reader: impl BufRead, keep_forms: bool) {
-        for line in reader.lines() {
-            let Ok(line) = line else {
-                break;
-            };
+    /// 1ファイル分の語を積む (finish を呼ぶまで照合に使えない)。戻り値は読み飛ばした行の数
+    fn read_words(&mut self, reader: impl BufRead, keep_forms: bool) -> usize {
+        textfile::read_lines(reader, |line| {
             let word = line.trim();
             if word.starts_with('#') || !is_ascii_word(word) {
-                continue;
+                return;
             }
             let lowered = word.to_ascii_lowercase();
             if keep_forms && lowered != word {
                 self.forms.entry(lowered.clone()).or_insert_with(|| word.to_string());
             }
             self.words.push(lowered);
-        }
+        })
+        .unwrap_or(0)
+    }
+
+    /// 積んだ語を照合用に整列する
+    fn finish(&mut self) {
+        self.words.sort();
+        self.words.dedup();
     }
 
     /// 固有名詞・技術用語の「小文字の形 → 表記」(表記が小文字だけでない語)
@@ -294,5 +307,11 @@ mod tests {
         assert_eq!(word("abx"), (false, vec![]));
         // 大文字は小文字にして照合する
         assert_eq!(word("GitHubD"), (false, vec![6]));
+    }
+
+    #[test]
+    fn 読めない行の後ろの語を読む() {
+        let d = EnglishDict::load_from([b"apple\n\xff\xfe\nzoom\n".as_slice()]);
+        assert_eq!(d.words, vec!["apple", "zoom"]);
     }
 }

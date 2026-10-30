@@ -146,11 +146,6 @@
   プロセスが残っているときにだけ起きる
 - 和暦の元号を西暦の年だけで決めるので、2019 年 1〜4 月の日付も「令和元年」になる (engine/src/datetime.rs)。
   今の日付の候補にしか使わないので、実害はほぼない
-- 辞書・学習のファイルに UTF-8 として読めない行があるときの扱い。コードを読んで見つけたもので、実行しては確かめていない
-  - Mozc 辞書か UT 辞書に 1 行でもあると、システム辞書全体が空で起動する (engine/src/dict.rs `load_from` の `line?`)
-  - learning_stats.tsv・learning.tsv・userdict.tsv・learning_word.tsv・インポート辞書のファイルは、そこで読み込みを止め、
-    後ろを黙って読まない (engine/src/learn.rs `load_stats_from`、engine/src/userdict.rs `load_from` など)。学習は、
-    そのあと FORGET などで書き直すと読めた分だけでファイルが置き換わり、残りの学習を失うおそれがある
 - userdict.tsv の先頭の UTF-8 の BOM を除かないので、BOM があると 1 行目の読みに U+FEFF が付く
   (engine/src/userdict.rs `load_from`。取り込みの側の engine/src/import.rs は除いている)
 - 単語登録ツールを開くとき、選択した文字列の末尾が `\` だと、コマンドラインの引用符の囲みが崩れる

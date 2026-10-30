@@ -9,6 +9,8 @@ use std::fs::File;
 use std::io::{self, BufRead, BufReader};
 use std::path::Path;
 
+use crate::textfile;
+
 /// Mozc 辞書の一般名詞相当の文脈ID。
 /// id.def が無い・引けないときの未知語ノードとユーザ登録語のフォールバック
 pub const DEFAULT_NOUN_ID: u16 = 1851;
@@ -28,20 +30,27 @@ impl FunctionalIds {
     }
 
     pub fn load(path: &Path) -> io::Result<Self> {
-        Self::load_from(BufReader::new(File::open(path)?))
+        let (ids, skipped) = Self::read(BufReader::new(File::open(path)?))?;
+        textfile::report_skipped(skipped, path);
+        Ok(ids)
     }
 
+    #[cfg(test)]
     pub fn load_from(reader: impl BufRead) -> io::Result<Self> {
+        Self::read(reader).map(|(ids, _)| ids)
+    }
+
+    /// 品詞ID表と読み飛ばした行の数を返す
+    fn read(reader: impl BufRead) -> io::Result<(Self, usize)> {
         let mut is_functional = Vec::new();
         let mut is_person_name = Vec::new();
         let mut names = Vec::new();
-        for line in reader.lines() {
-            let line = line?;
+        let skipped = textfile::read_lines(reader, |line| {
             let Some((id, pos)) = line.split_once(' ') else {
-                continue;
+                return;
             };
             let Ok(id) = id.parse::<usize>() else {
-                continue;
+                return;
             };
             // 接尾語は「名詞,接尾,助数詞」「動詞,接尾」のように2列目が「接尾」。
             // 「名詞,接尾可能」(単独でも使える語) は別品詞なので一致させない
@@ -57,8 +66,8 @@ impl FunctionalIds {
             // ID の数値は id.def ごとに違う (テスト用の表など) ので、品詞名から求める
             is_person_name[id] = pos.starts_with("名詞,固有名詞,人名,");
             names[id] = pos.to_string();
-        }
-        Ok(FunctionalIds { is_functional, is_person_name, names })
+        })?;
+        Ok((FunctionalIds { is_functional, is_person_name, names }, skipped))
     }
 
     /// この品詞IDの単語を前の文節にまとめるべきか
